@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
 import {
+  isFullscreenViewport,
   messages,
   notificationFor,
   resolveLang,
@@ -10,6 +11,7 @@ import {
 } from '@/core';
 import {
   defaultStatePath,
+  enterAltScreen,
   loadConfig,
   loadState,
   notify,
@@ -93,6 +95,13 @@ async function main(): Promise<void> {
   process.once('SIGTERM', flushSyncAndExit(143));
   process.once('SIGHUP', flushSyncAndExit(129));
 
+  // 全画面レイアウトで描くときは alt screen に入り、スクロールバックを無効化する
+  // （上へのスクロールをロック）。低すぎる端末はインライン描画へフォールバックし
+  // 端末スクロールに頼るため、通常バッファのまま。判定は起動時の一度きり
+  // （途中のリサイズでバッファを切り替えると画面が壊れるため追従しない）。
+  const useAltScreen = process.stdout.isTTY && isFullscreenViewport(process.stdout.rows ?? 0);
+  const leaveAltScreen = useAltScreen ? enterAltScreen(process.stdout) : undefined;
+
   const { waitUntilExit } = render(<App manager={manager} cwd={repoRoot} messages={t} />, {
     exitOnCtrlC: false,
   });
@@ -104,6 +113,9 @@ async function main(): Promise<void> {
     clearTimeout(persistTimer);
   }
   await saveState(manager.persistableState(), statePath).catch(() => undefined);
+
+  // 終了メッセージは alt screen を抜けてから書き、通常バッファ（シェルの履歴）に残す。
+  leaveAltScreen?.();
 
   // Sessions are aborted on quit but their worktrees are intentionally kept so
   // no work is lost. Tell the user where they are.

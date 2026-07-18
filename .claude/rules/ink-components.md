@@ -23,6 +23,10 @@
   やめてインライン描画へフォールバックする（クリップで入力欄・フッタが消えるのを防ぐ）。
   判定は `isFullscreenViewport(rows)`。
 - 各 view は `flexGrow={1}` の縦 flex にし、入力欄+フッタは flexGrow スペーサで最下部に固定する。
+- 全画面で描くときは起動時に **alt screen**（`\x1b[?1049h`、`utils/alt-screen.ts`）へ入る。
+  通常バッファのままだとスクロールバックが残り上へスクロールできてしまうため。
+  インライン描画フォールバック時（TTY でない / 起動時 rows が閾値未満）は enter しない。
+  配線は `src/index.tsx`（合成ルート）で行い、終了メッセージは leave 後に書く。
 - **`<Static>` は使わない**。Static はスクロールバック側に書き出すため、全画面レイアウトでは
   ビューポート外に消えて見えなくなる。追記ログは「末尾ビューポート」
   （`flexGrow={1}` + `overflowY="hidden"` + `justifyContent="flex-end"`）で最新行を下端に表示し、
