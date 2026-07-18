@@ -1,0 +1,4 @@
+[tools]
+node = "24"
+
+# npm version is pinned via package.json "packageManager": "npm@11.14.1".

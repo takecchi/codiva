@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.idea/
+.vscode/
+.codiva/
+# raw spike output is throwaway; the promoted, cleaned fixtures live in tests/fixtures/ and ARE tracked
+scripts/fixtures/
