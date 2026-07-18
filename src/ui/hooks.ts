@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import type { SessionManager, SessionState } from '@/core';
+import type { RunMode, SessionManager, SessionState } from '@/core';
 
 /**
  * Subscribe to the manager's snapshot. Notifications are coalesced to ~100ms so
@@ -26,6 +26,15 @@ export function useSessions(manager: SessionManager): SessionState[] {
     subscribe,
     () => manager.getSnapshot(),
     () => manager.getSnapshot(),
+  );
+}
+
+/** Subscribe to the manager's global tool-approval mode (auto ⇄ confirm). */
+export function useRunMode(manager: SessionManager): RunMode {
+  return useSyncExternalStore(
+    (onChange) => manager.subscribe(onChange),
+    () => manager.getMode(),
+    () => manager.getMode(),
   );
 }
 

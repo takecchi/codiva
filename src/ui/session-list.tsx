@@ -1,19 +1,24 @@
 import { Box, Text, useInput } from 'ink';
 import { type FC, useState } from 'react';
 import type { SessionManager } from '@/core';
-import { useClock, useSessions } from './hooks';
+import { Banner } from './banner';
+import { useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { editBuffer, formatElapsed } from './input';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
+import { StatusFooter } from './status-footer';
+import { glyph, theme } from './theme';
 
 export const SessionList: FC<{
   manager: SessionManager;
   onOpen: (id: string) => void;
   onQuit: () => void;
-}> = ({ manager, onOpen, onQuit }) => {
+  cwd?: string;
+}> = ({ manager, onOpen, onQuit, cwd }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
+  const mode = useRunMode(manager);
   const now = useClock(1000);
   const [buffer, setBuffer] = useState('');
   const [sel, setSel] = useState(0);
@@ -27,6 +32,10 @@ export const SessionList: FC<{
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
       onQuit();
+      return;
+    }
+    if (key.tab && key.shift) {
+      manager.cycleMode();
       return;
     }
     if (key.upArrow) {
@@ -60,34 +69,28 @@ export const SessionList: FC<{
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Box marginBottom={1}>
-        <Text bold color="cyan">
-          codiva{' '}
-        </Text>
-        <Text dimColor>{m.list.sessionCount(sessions.length)}</Text>
-      </Box>
+      <Banner cwd={cwd} sessionCount={sessions.length} />
 
-      {sorted.length === 0 ? (
-        <Box marginBottom={1}>
+      <Box flexDirection="column" marginY={1}>
+        {sorted.length === 0 ? (
           <Text dimColor>{m.list.emptyHint}</Text>
-        </Box>
-      ) : (
-        <Box flexDirection="column" marginBottom={1}>
-          {sorted.map((s, i) => {
+        ) : (
+          sorted.map((s, i) => {
             const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
             const archived = s.status === 'archived';
+            const isSel = i === selected;
             return (
               <Box key={s.id}>
-                <Text color={i === selected ? 'cyan' : undefined}>
-                  {i === selected ? '❯ ' : '  '}
+                <Text color={isSel ? theme.accent : undefined}>
+                  {isSel ? `${glyph.caret} ` : '  '}
                 </Text>
                 <Box width={2}>
                   <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
-                    {attention ? '●' : ' '}
+                    {attention ? glyph.attention : ' '}
                   </Text>
                 </Box>
                 <Box width={30}>
-                  <Text bold={i === selected || attention} dimColor={archived} wrap="truncate-end">
+                  <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
                     {s.title}
                   </Text>
                 </Box>
@@ -102,15 +105,12 @@ export const SessionList: FC<{
                 <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
               </Box>
             );
-          })}
-        </Box>
-      )}
+          })
+        )}
+      </Box>
 
       <PromptInput value={buffer} focused placeholder={m.list.promptPlaceholder} />
-
-      <Box marginTop={1}>
-        <Text dimColor>{m.list.help}</Text>
-      </Box>
+      <StatusFooter mode={mode} hint={m.list.help} />
     </Box>
   );
 };
