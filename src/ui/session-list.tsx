@@ -2,6 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import { type FC, useState } from 'react';
 import type { SessionManager } from '@/core';
 import { useClock, useSessions } from './hooks';
+import { useMessages } from './i18n-context';
 import { editBuffer, formatElapsed } from './input';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
@@ -11,6 +12,7 @@ export const SessionList: FC<{
   onOpen: (id: string) => void;
   onQuit: () => void;
 }> = ({ manager, onOpen, onQuit }) => {
+  const m = useMessages();
   const sessions = useSessions(manager);
   const now = useClock(1000);
   const [buffer, setBuffer] = useState('');
@@ -62,14 +64,12 @@ export const SessionList: FC<{
         <Text bold color="cyan">
           codiva{' '}
         </Text>
-        <Text dimColor>
-          {sessions.length} session{sessions.length === 1 ? '' : 's'}
-        </Text>
+        <Text dimColor>{m.list.sessionCount(sessions.length)}</Text>
       </Box>
 
       {sorted.length === 0 ? (
         <Box marginBottom={1}>
-          <Text dimColor>指示を入力して Enter を押すと最初のセッションが始まります。</Text>
+          <Text dimColor>{m.list.emptyHint}</Text>
         </Box>
       ) : (
         <Box flexDirection="column" marginBottom={1}>
@@ -106,10 +106,10 @@ export const SessionList: FC<{
         </Box>
       )}
 
-      <PromptInput value={buffer} focused placeholder="実装してほしいことを入力…" />
+      <PromptInput value={buffer} focused placeholder={m.list.promptPlaceholder} />
 
       <Box marginTop={1}>
-        <Text dimColor>Enter: 投入 ・ ↑↓: 選択 ・ →: 詳細 ・ Ctrl+C: 終了</Text>
+        <Text dimColor>{m.list.help}</Text>
       </Box>
     </Box>
   );

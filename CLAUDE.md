@@ -29,6 +29,7 @@ npm run spike      # scripts/spike.ts（Phase 1 の SDK 挙動検証）
 @.claude/rules/architecture.md
 @.claude/rules/coding-rules.md
 @.claude/rules/ink-components.md
+@.claude/rules/i18n.md
 
 ## ビルド/モジュール構成（重要）
 

@@ -140,11 +140,27 @@ interface SessionState {
 - `SessionDetail`: メッセージログ + 追加指示入力 + `PermissionDialog`。ログは Ink の `<Static>` で追記描画し再描画コストを抑える。
 - 再描画スロットリング: SessionManager の通知を UI 側で ~100ms にスロットルする。
 
+## 多言語対応（i18n）
+
+UI 文字列は日本語/英語を設定で切り替えられる。規約は [.claude/rules/i18n.md](../.claude/rules/i18n.md)。
+
+- **カタログ**: 全 UI 文字列は `core/i18n.ts` の `messages`（`Record<Lang, Messages>`）に集約する（純粋）。
+  UI にリテラルを直書きせず、`useMessages()`（`ui/i18n-context.tsx` の React コンテキスト）で引く。
+  純関数（`badgeFor` 等）は `Messages` を引数で受ける。動的差し込み・複数形は型安全な文字列テンプレート関数で持つ。
+- **設定**: 表示言語は `~/.codiva/config.json`（`{ "language": "ja" | "en" | "auto" }`）に永続化する
+  （Claude Code の `~/.claude/` と同じユーザーグローバルの流儀）。検証変換は `core/config.ts` の
+  `toConfig()`、ファイル I/O は `utils/config.ts`（`loadConfig` / `saveConfig`）。
+- **言語解決**（`core/i18n.ts` の `resolveLang`、優先順）: `CODIVA_LANG` 環境変数 → 設定ファイルの
+  `language`（`auto` 以外）→ OS ロケール（`LC_ALL`/`LC_MESSAGES`/`LANG` が `ja*` なら日本語、他は英語）。
+  配線は合成ルート `index.tsx` で行い、解決済みカタログを `App` の `messages` prop に注入する。
+- **番人**: `Messages` 型がキー欠落を型で捕え、`i18n.spec.ts` が ja/en のキー集合一致を実行時にも検証する。
+
 ## 設計上の決定と理由
 
 | 決定 | 理由 |
 |------|------|
 | 分離手段は git worktree | 同一リポジトリの並列作業では最軽量。ブランチがそのまま成果物になる。Docker 等はMVPではオーバーキル |
+| UI 文字列はカタログ集約 + 設定で言語切替 | 日本語/英語の利用者が混在する。ハードコードを排し、追加言語も `Lang`/`messages` 拡張だけで済む |
 | セッション = SDK `query()` 1本（サブプロセス1本） | SDK の設計単位に素直。プロセス分離により1セッションのクラッシュが他に波及しない |
 | streaming input を常用（単発 prompt を使わない） | 追加指示（F-6）と質問への回答（F-7）を同一機構で実現でき、セッションを開いたまま維持できる |
 | コアと UI の分離 + queryFn の DI | SDK もネットワークも不要なユニットテストを可能にする（N-3 の 80% カバレッジはこれが前提） |

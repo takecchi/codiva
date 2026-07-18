@@ -3,6 +3,7 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { AsyncQueue } from '@/core/async-queue';
+import { messages } from '@/core/i18n';
 import type { QueryFn } from '@/core/session';
 import { SessionManager, type WorktreeService } from '@/core/session-manager';
 import { initialState } from '@/core/status-reducer';
@@ -58,6 +59,13 @@ describe('App (list view)', () => {
     expect(lastFrame()).toContain('最初のセッション');
   });
 
+  it('renders in English when the en catalog is injected', () => {
+    // The path index.tsx uses: resolved catalog → App messages prop → provider → components.
+    const { lastFrame } = render(<App manager={makeManager()} messages={messages.en} />);
+    expect(lastFrame()).toContain('Type an instruction');
+    expect(lastFrame()).toContain('Ctrl+C: quit');
+  });
+
   it('creates a session when the user types and presses Enter', async () => {
     const manager = makeManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);
@@ -67,7 +75,7 @@ describe('App (list view)', () => {
     await flush();
     expect(manager.getSnapshot()).toHaveLength(1);
     expect(lastFrame()).toContain('build login');
-    expect(lastFrame()).toContain('1 session');
+    expect(lastFrame()).toContain('1 セッション');
   });
 });
 
