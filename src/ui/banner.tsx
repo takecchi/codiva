@@ -6,11 +6,11 @@ import { glyph, theme } from './theme';
 // codiva mascot. Each glyph is rendered in its own <Text>, so you can paint it
 // one character at a time via paint() below.
 const LOGO = [
-  ' ▄  ▄▄▄▄▄▄▄  ▄',
-  ' █▒██▓▓█████▒█',
-  '██▒▓▓▀▓▓▓▀▓▓▒██',
-  '██ ▓ █ ▀ █ ▓ ██',
-  '██ ▓▒▒   ▒▒▓ ██',
+  ' ▄▄ ▄▄▄▄▄▄▄ ▄▄',
+  ' █████████████',
+  '██▀██▀███▀██▀██',
+  '██ █ █ ▀ █ █ ██',
+  '██ █       █ ██',
   '▀   ▀▀▀▀▀▀▀   ▀',
 ];
 
@@ -23,12 +23,15 @@ const LOGO = [
  *   - by line: switch on `row`
  */
 function paint(ch: string, row: number, col: number): string | undefined {
-  if (row === 3 && (col === 5 || col === 9)) return 'cyan'; // eyes
-  if (ch === '█') return '#ff7847';
-  if (ch === '▓') return '#ff9d5c';
-  if (ch === '▒') return '#ffd7a8';
-  if (ch === '▄' || ch === '▀') return '#e85d2f';
-  return undefined; // spaces
+  if (col === 0 || col === 1 || col === 13 || col === 14) return '#86cecb';
+  if (row === 1 && (col === 5 || col === 7)) return '#c3e5e7';
+  if (row === 0 && (col === 2 || col === 12)) return '#373b3e';
+  if (row === 1 && (col === 2 || col === 12)) return '#e12885';
+  if (row === 2 && (col === 2 || col === 12)) return '#373b3e';
+  if (row === 3 && (col === 5 || col === 9)) return '#137a7f';
+  if (row === 4 && (col === 3 || col === 11)) return '#137a7f';
+  if (row === 5 && 4 <= col && col <= 10) return '#137a7f';
+  return '#86cecb';
 }
 
 // Precompute cells with stable keys (so JSX keys aren't raw array indices).

@@ -8,3 +8,5 @@ coverage/
 .codiva/
 # raw spike output is throwaway; the promoted, cleaned fixtures live in tests/fixtures/ and ARE tracked
 scripts/fixtures/
+
+.claude/worktrees/
