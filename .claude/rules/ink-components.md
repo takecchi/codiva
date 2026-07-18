@@ -13,9 +13,23 @@
 - **1画面につき `useInput` は1つ**（view コンポーネントに置く）。`PromptInput` 等は presentational にして、キー処理は view 側の単一ハンドラに集約する（複数 `useInput` の競合を避ける）。
 - モーダルな状態（`pendingPermission` あり）では、そのダイアログにキーを委譲し、背後の view はキーを処理しない。
 
+## 全画面レイアウト
+
+- アプリは端末の縦幅いっぱい（web の 100dvh 相当）に描画する。Ink はコンテンツの高さぶんしか
+  描画しないため、`App` の root `<Box>` に `useWindowSize()` の `rows` を `height` 指定する
+  （リサイズ追従込み）。root には `overflow="hidden"` を付け、フレームが端末高さを超えて
+  Ink が全画面クリアにフォールバックする（ちらつく）のを防ぐ。
+- ただし端末が `MIN_FULLSCREEN_ROWS`（`core/layout.ts`）未満に低い場合は height 固定を
+  やめてインライン描画へフォールバックする（クリップで入力欄・フッタが消えるのを防ぐ）。
+  判定は `isFullscreenViewport(rows)`。
+- 各 view は `flexGrow={1}` の縦 flex にし、入力欄+フッタは flexGrow スペーサで最下部に固定する。
+- **`<Static>` は使わない**。Static はスクロールバック側に書き出すため、全画面レイアウトでは
+  ビューポート外に消えて見えなくなる。追記ログは「末尾ビューポート」
+  （`flexGrow={1}` + `overflowY="hidden"` + `justifyContent="flex-end"`）で最新行を下端に表示し、
+  `tailMessages(messages, rows)`（`core/layout.ts`）で描画ノード数に上限を掛ける。
+
 ## 描画パフォーマンス
 
-- 追記ログは `<Static>` を使う（全再描画を避ける）。
 - ストア購読（`useSessions`）は ~100ms スロットル。`useSyncExternalStore` の getSnapshot が同一参照を返せば再描画されない性質を使う。
 - 経過時間など時間依存表示は `useClock()` で定期再描画する。
 

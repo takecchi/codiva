@@ -68,10 +68,11 @@ export const SessionList: FC<{
   });
 
   return (
-    <Box flexDirection="column" padding={1}>
+    <Box flexDirection="column" flexGrow={1} padding={1}>
       <Banner cwd={cwd} sessionCount={sessions.length} />
 
-      <Box flexDirection="column" marginY={1}>
+      {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる */}
+      <Box flexDirection="column" marginY={1} flexGrow={1} overflowY="hidden">
         {sorted.length === 0 ? (
           <Text dimColor>{m.list.emptyHint}</Text>
         ) : (

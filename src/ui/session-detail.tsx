@@ -1,6 +1,6 @@
-import { Box, Static, Text, useInput } from 'ink';
+import { Box, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useState } from 'react';
-import type { DiffStat, LogEntry, SessionManager } from '@/core';
+import { type DiffStat, type LogEntry, type SessionManager, tailMessages } from '@/core';
 import { useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { editBuffer } from './input';
@@ -41,6 +41,7 @@ export const SessionDetail: FC<{
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
+  const { rows } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
   const [buffer, setBuffer] = useState('');
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
@@ -151,7 +152,7 @@ export const SessionDetail: FC<{
 
   if (!session) {
     return (
-      <Box padding={1}>
+      <Box flexGrow={1} padding={1}>
         <Text dimColor>{m.detail.notFound}</Text>
       </Box>
     );
@@ -165,12 +166,9 @@ export const SessionDetail: FC<{
       : m.detail.helpInput;
 
   return (
-    <Box flexDirection="column" padding={1}>
-      <Static items={session.messages}>
-        {(entry) => <LogLine key={entry.seq} entry={entry} />}
-      </Static>
-
-      <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" flexGrow={1} padding={1}>
+      {/* ステータスヘッダ（画面上部に固定） */}
+      <Box flexDirection="column" flexShrink={0}>
         <Box>
           <Text color={theme.accent}>{glyph.star} </Text>
           <Text bold>{session.title} </Text>
@@ -192,9 +190,29 @@ export const SessionDetail: FC<{
             {m.detail.errorLabel}: {session.error}
           </Text>
         ) : null}
+      </Box>
 
+      {/*
+       * メッセージログの末尾ビューポート。flexGrow で残り高さを占め、
+       * justifyContent="flex-end" + overflowY="hidden" で「最新行が下端、
+       * 溢れた古い行は上へクリップ」にする。<Static> はスクロールバック側に
+       * 書くため全画面レイアウトでは画面外に消えてしまい使えない。
+       */}
+      <Box
+        flexDirection="column"
+        flexGrow={1}
+        marginTop={1}
+        overflowY="hidden"
+        justifyContent="flex-end"
+      >
+        {tailMessages(session.messages, rows).map((entry) => (
+          <LogLine key={entry.seq} entry={entry} />
+        ))}
+      </Box>
+
+      <Box flexDirection="column" marginTop={1} flexShrink={0}>
         {isTerminal && diff ? (
-          <Box flexDirection="column" marginTop={1}>
+          <Box flexDirection="column" marginBottom={1}>
             <Text dimColor>{m.detail.changesTitle(session.branch)}</Text>
             {diff.committed ? (
               <Text>{diff.committed}</Text>
@@ -212,9 +230,6 @@ export const SessionDetail: FC<{
             {m.detail.actionErrorLabel}: {actionError}
           </Text>
         ) : null}
-      </Box>
-
-      <Box flexDirection="column" marginTop={1}>
         {pending ? (
           <PermissionDialog
             request={pending}

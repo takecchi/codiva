@@ -161,7 +161,8 @@ function toUserMessage(text: string): SDKUserMessage {
 ## Ink 7 の実装メモ
 
 - Ink 7 は React 19 前提。コンポーネントは通常の React。`render(<App/>)` で起動。
-- **`<Static>`**: 一度描画したら再描画しない追記専用領域。セッション詳細のメッセージログに必須（全ログ再描画は即座に破綻する）。
+- **全画面（100dvh 相当）**: Ink はコンテンツの高さぶんしか描画しないインラインレンダラ。root Box に `useWindowSize()` の rows を `height` 指定すると Ink 7 がフルスクリーンフレームとして扱う（末尾改行なし・インクリメンタル消去。ただしフレームが端末高さを**超える**と全画面クリアにフォールバックしてちらつくので、root に `overflow="hidden"` を付けて超過を防ぐ）。端末が極端に低い（`MIN_FULLSCREEN_ROWS` 未満）ときは height 固定をやめてインライン描画へフォールバックする — クリップで入力欄・フッタが消えて操作不能になるより、端末スクロールに任せる方が安全。
+- **`<Static>` は全画面レイアウトと両立しない**: Static はスクロールバック側に書き出すため、フレームが画面いっぱいだとビューポート外に消える。メッセージログは末尾ビューポート（flexGrow + `justifyContent="flex-end"` + `overflowY="hidden"`）+ `tailMessages(messages, rows)`（`core/layout.ts`）で再描画コストに上限を掛ける方式に変更した。
 - **`useInput`**: グローバルキーハンドラ。フォーカス管理は `useFocus` もあるが、MVP はビュー単位の単純な状態分岐で足りる。
 - **`useApp().exit()`**: 終了。終了前に SessionManager.dispose()（全 abort）を呼ぶ。
 - 再描画スロットリング: コアからの onChange を UI 側で ~100ms デバウンス。`useSyncExternalStore` の getSnapshot が返す参照が変わらなければ再描画されない点を利用する。
