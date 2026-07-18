@@ -6,6 +6,26 @@
   "bin": {
     "codiva": "dist/index.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/takecchi/codiva.git"
+  },
+  "homepage": "https://github.com/takecchi/codiva#readme",
+  "bugs": {
+    "url": "https://github.com/takecchi/codiva/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-agent-sdk",
+    "tui",
+    "ink",
+    "git-worktree",
+    "ai",
+    "agent",
+    "cli"
+  ],
+  "author": "takecchi",
   "engines": {
     "node": ">=20"
   },
