@@ -92,7 +92,7 @@ const options = {
 
 **注意**: streaming input mode では `result` はターンの区切りごとに届き、セッション終了を意味しない。`result` 受信 = 「Claude のターンが終わり入力待ちになった」と解釈する（completed 判定はこのタイミング）。
 
-`includePartialMessages: true` にすると `{ type: 'stream_event', event }` で生のストリーミングデルタが届く。MVP では使わない（再描画コスト増）。詳細ビューのタイピング風表示を入れたくなったら検討。
+`includePartialMessages: true` にすると `{ type: 'stream_event', event }`（`SDKPartialAssistantMessage`）で生のストリーミングデルタが届く。**Phase 6 で採用**：`event.type === 'content_block_delta'` かつ `delta.type === 'text_delta'` のときのみ `delta.text` を `state.streamingText` に連結し、詳細ビューにタイピング風プレビューを出す。確定 `assistant` メッセージ / `result` / 追加入力で `streamingText` はクリア（確定ログが正）。`streamingText` は transient で永続しない。非テキストデルタ（`input_json_delta`・thinking 等）は状態を変えない。`~100ms` スロットル（`useSessions`）で再描画コストを抑える。
 
 ### TODO進捗の抽出（Step n/m）— 要スパイク検証
 
@@ -170,7 +170,8 @@ function toUserMessage(text: string): SDKUserMessage {
 
 - Ink 7 は React 19 前提。コンポーネントは通常の React。`render(<App/>)` で起動。
 - **全画面（100dvh 相当）**: Ink はコンテンツの高さぶんしか描画しないインラインレンダラ。root Box に `useWindowSize()` の rows を `height` 指定すると Ink 7 がフルスクリーンフレームとして扱う（末尾改行なし・インクリメンタル消去。ただしフレームが端末高さを**超える**と全画面クリアにフォールバックしてちらつくので、root に `overflow="hidden"` を付けて超過を防ぐ）。端末が極端に低い（`MIN_FULLSCREEN_ROWS` 未満）ときは height 固定をやめてインライン描画へフォールバックする — クリップで入力欄・フッタが消えて操作不能になるより、端末スクロールに任せる方が安全。
-- **`<Static>` は全画面レイアウトと両立しない**: Static はスクロールバック側に書き出すため、フレームが画面いっぱいだとビューポート外に消える。メッセージログは末尾ビューポート（flexGrow + `justifyContent="flex-end"` + `overflowY="hidden"`）+ `tailMessages(messages, rows)`（`core/layout.ts`）で再描画コストに上限を掛ける方式に変更した。
+- **`<Static>` は全画面レイアウトと両立しない**: Static はスクロールバック側に書き出すため、フレームが画面いっぱいだとビューポート外に消える。メッセージログは末尾ビューポート（flexGrow + `justifyContent="flex-end"` + `overflowY="hidden"`）+ `logWindow(messages, rows, anchor)`（`core/scroll.ts`）で再描画コストに上限を掛ける方式にした。`anchor` は `'bottom'`（末尾追従）か絶対 end index（上スクロール中は固定＝新着で view がぶれない）。PgUp/PgDn で `scrollUp`/`scrollDown`。alt screen でスクロールバックを無効化しているため、過去ログはこのアプリ内スクロールでのみ辿れる。
+- **複数行入力**: 純粋モデルは `core/text-buffer.ts`（value + cursor、insert/backspace/move*/`visibleLineRange`）。キー→操作の対応は `ui/input.ts`（`editText`／`resolveEnter`）。Shift/Meta+Enter か末尾バックスラッシュ+Enter で改行、それ以外は送信（バックスラッシュは Shift+Enter を送れない端末向けの堅牢なフォールバック）。一覧ビューは矢印を行選択に温存するためカーソル移動なし（末尾編集＋改行のみ）、詳細ビューは矢印でフルにカーソル移動。`PromptInput` は `INPUT_MAX_ROWS` まで伸び、超過分は `visibleLineRange` でカーソル付近を内部スクロール（空/1行時は従来どおり1行高）。
 - **`useInput`**: グローバルキーハンドラ。フォーカス管理は `useFocus` もあるが、MVP はビュー単位の単純な状態分岐で足りる。
 - **`useApp().exit()`**: 終了。終了前に SessionManager.dispose()（全 abort）を呼ぶ。
 - 再描画スロットリング: コアからの onChange を UI 側で ~100ms デバウンス。`useSyncExternalStore` の getSnapshot が返す参照が変わらなければ再描画されない点を利用する。

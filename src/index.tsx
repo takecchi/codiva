@@ -10,6 +10,7 @@ import {
   WorktreeManager,
 } from '@/core';
 import {
+  createTitleGenerator,
   defaultStatePath,
   enterAltScreen,
   loadConfig,
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   const manager = new SessionManager({
     worktrees,
     queryFn: query,
+    generateTitle: createTitleGenerator(query, { cwd: repoRoot }),
     options: {
       model: config.model,
       effort: config.effort,

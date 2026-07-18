@@ -1,26 +1,58 @@
 import type { Key } from 'ink';
 import stringWidth from 'string-width';
+import {
+  backspace,
+  insert,
+  moveDown,
+  moveLeft,
+  moveRight,
+  moveUp,
+  newline,
+  type TextBuffer,
+} from '@/core';
 import { glyph } from './theme';
 
+export interface EditResult {
+  buffer: TextBuffer;
+  changed: boolean;
+}
+
+function result(prev: TextBuffer, next: TextBuffer): EditResult {
+  return { buffer: next, changed: next !== prev };
+}
+
 /**
- * Apply a keypress to a single-line text buffer. Returns the (possibly) updated
- * value and whether it changed. Non-text keys (arrows, enter, esc, modifiers)
- * are left for the view to handle and report `changed: false`.
+ * Apply a keypress to a multi-line text buffer. `opts.arrows` enables horizontal
+ * caret movement (←/→); `opts.vertical` also enables ↑/↓. The list view leaves
+ * arrows off so they stay free for row navigation; the detail composer turns both
+ * on. Keys the owning view handles itself (Enter, Tab, Esc, modifiers, PageUp/Down)
+ * report `changed: false` and are left untouched.
  */
-export function editBuffer(
-  value: string,
+export function editText(
+  buffer: TextBuffer,
   input: string,
   key: Key,
-): { value: string; changed: boolean } {
+  opts: { arrows?: boolean; vertical?: boolean } = {},
+): EditResult {
+  const { arrows = false, vertical = false } = opts;
+
+  // macOS reports Backspace as `delete`; treat both as delete-before-caret.
   if (key.backspace || key.delete) {
-    if (value.length === 0) {
-      return { value, changed: false };
-    }
-    // コードポイント単位で1文字消す。code unit の slice(0, -1) だと
-    // サロゲートペア（絵文字等）が半分だけ残って壊れる。
-    const chars = [...value];
-    return { value: chars.slice(0, -1).join(''), changed: true };
+    return result(buffer, backspace(buffer));
   }
+  if (arrows && key.leftArrow) {
+    return result(buffer, moveLeft(buffer));
+  }
+  if (arrows && key.rightArrow) {
+    return result(buffer, moveRight(buffer));
+  }
+  if (vertical && key.upArrow) {
+    return result(buffer, moveUp(buffer));
+  }
+  if (vertical && key.downArrow) {
+    return result(buffer, moveDown(buffer));
+  }
+  // Non-text keys the view owns (or that we don't map): no change.
   if (
     key.return ||
     key.escape ||
@@ -34,21 +66,43 @@ export function editBuffer(
     key.pageUp ||
     key.pageDown
   ) {
-    return { value, changed: false };
+    return { buffer, changed: false };
   }
   if (input.length > 0) {
-    return { value: value + input, changed: true };
+    return result(buffer, insert(buffer, input));
   }
-  return { value, changed: false };
+  return { buffer, changed: false };
 }
 
 /**
- * Column (0-based, in terminal cells) of the caret inside PromptInput's content
- * line: the `❯ ` prefix plus the buffer. CJK/絵文字は2セル幅なので string-width
- * で数える（.length だと日本語入力でカーソルがズレる）。
+ * Decide what Enter does for a composer:
+ * - Shift/Meta held → insert a newline (terminals that distinguish the chord).
+ * - a backslash immediately before the caret → replace it with a newline
+ *   (a robust fallback for terminals that send plain `\r` for Shift+Enter).
+ * - otherwise → submit the trimmed text.
  */
-export function promptCaretColumn(value: string): number {
-  return stringWidth(`${glyph.caret} ${value}`);
+export type EnterAction =
+  | { kind: 'newline'; buffer: TextBuffer }
+  | { kind: 'submit'; text: string };
+
+export function resolveEnter(buffer: TextBuffer, key: Key): EnterAction {
+  if (key.shift || key.meta) {
+    return { kind: 'newline', buffer: newline(buffer) };
+  }
+  if (buffer.cursor > 0 && buffer.value[buffer.cursor - 1] === '\\') {
+    return { kind: 'newline', buffer: newline(backspace(buffer)) };
+  }
+  return { kind: 'submit', text: buffer.value.trim() };
+}
+
+/**
+ * Column (0-based, in terminal cells) of the caret within a PromptInput row:
+ * the 2-cell `❯ `／`  ` prefix plus the text before the caret on that line.
+ * CJK/絵文字は2セル幅なので string-width で数える（.length だと日本語入力で
+ * カーソルと IME preedit の位置がズレる）。
+ */
+export function promptCaretColumn(textBeforeCaret: string): number {
+  return stringWidth(`${glyph.caret} ${textBeforeCaret}`);
 }
 
 /** Format elapsed time between startedAt and end (finishedAt or now). */

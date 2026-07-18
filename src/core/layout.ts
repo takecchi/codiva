@@ -1,5 +1,3 @@
-import type { LogEntry } from './types';
-
 /**
  * 全画面レイアウトに必要な最小の端末行数。固定部分（バナー6行 + 入力欄3行 +
  * フッタ・余白・パディング）だけで約15行あり、これ未満で root の height を
@@ -17,10 +15,17 @@ export function isFullscreenViewport(rows: number): boolean {
 }
 
 /**
- * 詳細ビューの末尾ビューポートへ渡すログ行。画面には端末の行数ぶんしか映らない
- * ため末尾 rows 件に絞り、Ink の描画ノード数に上限を掛ける。rows が 0 以下でも
- * 最新 1 件は返す（slice(-0) が全件になる事故の防止）。
+ * 詳細ビューでログ以外に消費される固定の縦幅（ステータスヘッダ + 余白 + 入力欄 +
+ * フッタ）のおおよその見積り。実測値の下限をやや大きめに取る（過小評価すると
+ * スクロール1回の移動量が実際の可視ログ高さを超え、未表示の行を飛ばしてしまうため）。
  */
-export function tailMessages(messages: LogEntry[], rows: number): LogEntry[] {
-  return messages.slice(-Math.max(1, rows));
+export const DETAIL_CHROME_ROWS = 10;
+
+/**
+ * 詳細ビューで実際にログが見える行数のおおよその見積り。端末全体の rows から
+ * 固定 chrome を引く。ページスクロールの移動量（`scroll.ts` の `pageStep`）を
+ * この可視高さから導くことで「一度に画面外の行を飛び越える」のを防ぐ。
+ */
+export function logViewportRows(rows: number): number {
+  return Math.max(1, rows - DETAIL_CHROME_ROWS);
 }

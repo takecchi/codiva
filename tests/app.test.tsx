@@ -167,6 +167,90 @@ describe('App fullscreen layout', () => {
     expect(frame).not.toContain('log line 0');
     app.unmount();
   });
+
+  it('scrolls the detail log with PageUp/PageDown (terminal scrollback is off)', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20);
+    stdin.write('long task');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-scroll' }));
+    for (let i = 0; i < 40; i += 1) {
+      out.push(
+        asMsg({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `log line ${i}` }] },
+        }),
+      );
+    }
+    await flush();
+    stdin.write('\x1b[C'); // → detail
+    await flush();
+    expect(lastFrame()).toContain('log line 39');
+
+    stdin.write('\x1b[5~'); // PageUp → scroll back
+    await flush();
+    const up = lastFrame();
+    expect(up).toContain('過去ログを表示中'); // scrollback indicator
+    expect(up).not.toContain('log line 39'); // newest scrolled off the bottom
+
+    stdin.write('\x1b[6~'); // PageDown → back toward the tail
+    await flush();
+    stdin.write('\x1b[6~');
+    await flush();
+    const down = lastFrame();
+    expect(down).toContain('log line 39'); // following the tail again
+    expect(down).not.toContain('過去ログを表示中');
+    app.unmount();
+  });
+
+  it('shows the streaming preview and enables includePartialMessages', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    let captured: Options | undefined;
+    const queryFn = ((params: { options: Options }) => {
+      captured = params.options;
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20);
+    stdin.write('stream it');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect((captured as { includePartialMessages?: boolean }).includePartialMessages).toBe(true);
+
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-stream' }));
+    out.push(
+      asMsg({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Reticulating splines' },
+        },
+      }),
+    );
+    await flush();
+    stdin.write('\x1b[C'); // → detail
+    await flush();
+    expect(lastFrame()).toContain('Reticulating splines');
+    app.unmount();
+  });
 });
 
 describe('App (list view)', () => {
@@ -193,6 +277,23 @@ describe('App (list view)', () => {
     expect(manager.getSnapshot()).toHaveLength(1);
     expect(lastFrame()).toContain('build login');
     expect(lastFrame()).toContain('1 セッション');
+  });
+
+  it('a trailing backslash + Enter inserts a newline instead of submitting', async () => {
+    const manager = makeManager();
+    const { stdin } = render(<App manager={manager} />);
+    stdin.write('line one\\'); // ends with a backslash
+    await flush();
+    stdin.write('\r'); // Enter → newline (continuation), not submit
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(0); // nothing created yet
+
+    stdin.write('line two');
+    await flush();
+    stdin.write('\r'); // no trailing backslash → submit the two-line prompt
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(1);
+    expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');
   });
 });
 

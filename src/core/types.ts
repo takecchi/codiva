@@ -75,6 +75,12 @@ export interface SessionState {
   finishedAt?: number;
   totalCostUsd?: number;
   error?: string;
+  /**
+   * The assistant text streamed so far for the in-flight message (from
+   * `includePartialMessages` stream events). Transient live-typing preview —
+   * cleared when the full message/result arrives; never persisted.
+   */
+  streamingText?: string;
   /** Internal monotonic counter for LogEntry.seq; keeps the reducer pure. */
   logSeq: number;
 }
@@ -88,6 +94,9 @@ export type CodivaEvent =
   | { kind: 'permission_request'; request: PermissionRequest; at: number }
   | { kind: 'permission_resolved'; at: number }
   | { kind: 'user_input'; text: string; at: number }
+  // A Claude-generated title (from the content of the task), replacing the
+  // input-derived placeholder. Fired once, asynchronously, after a fresh start.
+  | { kind: 'title'; title: string; at: number }
   | { kind: 'aborted'; error?: string; at: number }
   | { kind: 'archived'; at: number };
 

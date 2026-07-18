@@ -35,6 +35,7 @@ export interface Messages {
     uncommitted: (n: number) => string;
     actionErrorLabel: string;
     followupPlaceholder: string;
+    scrollHint: (newerBelow: number) => string;
     actionsTitle: string;
     mergePrompt: string;
     discardPrompt: string;
@@ -95,7 +96,7 @@ const ja: Messages = {
     totalCost: (usd) => `合計 ${usd}`,
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
-    help: 'Enter: 投入 ・ ↑↓: 選択 ・ →: 詳細 ・ Ctrl+C: 終了',
+    help: 'Enter: 投入 ・ Shift+Enter: 改行 ・ ↑↓: 選択 ・ →: 詳細 ・ Ctrl+C: 終了',
   },
   detail: {
     notFound: 'セッションが見つかりません。Esc で戻ります。',
@@ -107,6 +108,7 @@ const ja: Messages = {
     uncommitted: (n) => `未コミット ${n} 件`,
     actionErrorLabel: '操作エラー',
     followupPlaceholder: '追加の指示を入力…',
+    scrollHint: (n) => `▲ 過去ログを表示中 — 最新まで ${n} 件（PgDn で下へ）`,
     actionsTitle: '操作',
     mergePrompt: 'ベースへマージします。',
     discardPrompt: 'worktree とブランチを破棄します。',
@@ -116,7 +118,7 @@ const ja: Messages = {
     discardAction: '破棄（worktree削除）',
     helpPending: 'Esc: 一覧へ戻る',
     helpActions: 'm/d: 操作 ・ Tab: 入力へ ・ Esc: 戻る',
-    helpInput: 'Enter: 送信 ・ Tab: 操作 ・ Esc/←: 一覧へ戻る',
+    helpInput: 'Enter: 送信 ・ Shift+Enter: 改行 ・ PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ',
   },
   badge: {
     creating: '準備中',
@@ -163,7 +165,7 @@ const en: Messages = {
     totalCost: (usd) => `total ${usd}`,
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
-    help: 'Enter: submit · ↑↓: select · →: detail · Ctrl+C: quit',
+    help: 'Enter: submit · Shift+Enter: newline · ↑↓: select · →: detail · Ctrl+C: quit',
   },
   detail: {
     notFound: 'Session not found. Press Esc to go back.',
@@ -175,6 +177,7 @@ const en: Messages = {
     uncommitted: (n) => `${n} uncommitted change${n === 1 ? '' : 's'}`,
     actionErrorLabel: 'Action error',
     followupPlaceholder: 'Enter a follow-up instruction…',
+    scrollHint: (n) => `▲ Viewing older log — ${n} newer below (PgDn to go down)`,
     actionsTitle: 'Actions',
     mergePrompt: 'Merge into the base branch.',
     discardPrompt: 'Discard the worktree and branch.',
@@ -184,7 +187,7 @@ const en: Messages = {
     discardAction: 'Discard (remove worktree)',
     helpPending: 'Esc: back to list',
     helpActions: 'm/d: actions · Tab: input · Esc: back',
-    helpInput: 'Enter: send · Tab: actions · Esc/←: back to list',
+    helpInput: 'Enter: send · Shift+Enter: newline · PgUp/PgDn: log · Tab: actions · Esc: back',
   },
   badge: {
     creating: 'Preparing',

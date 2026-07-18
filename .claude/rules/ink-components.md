@@ -30,7 +30,14 @@
 - **`<Static>` は使わない**。Static はスクロールバック側に書き出すため、全画面レイアウトでは
   ビューポート外に消えて見えなくなる。追記ログは「末尾ビューポート」
   （`flexGrow={1}` + `overflowY="hidden"` + `justifyContent="flex-end"`）で最新行を下端に表示し、
-  `tailMessages(messages, rows)`（`core/layout.ts`）で描画ノード数に上限を掛ける。
+  `logWindow(messages, rows, anchor)`（`core/scroll.ts`）で描画ノード数に上限を掛ける。
+- **ログスクロールは純関数に委譲**。`anchor`（`'bottom'`=末尾追従／絶対 end index=上スクロール中は固定）
+  を UI 状態に持ち、PgUp/PgDn で `scrollUp`/`scrollDown`（`core/scroll.ts`）。alt screen で端末スクロールバックを
+  無効化しているため、過去ログはこのアプリ内スクロールでのみ辿れる。追加指示の送信時は `'bottom'` へ戻す。
+- **複数行入力も純粋モデルへ委譲**。テキストバッファは `core/text-buffer.ts`（value+cursor）、キー→操作の
+  対応だけ `ui/input.ts`（`editText`/`resolveEnter`）に置く。Shift/Meta+Enter か末尾バックスラッシュ+Enter で
+  改行、他は送信。一覧は矢印を行選択に温存（カーソル移動なし）、詳細は矢印でカーソル移動。`PromptInput` は
+  `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` でカーソル付近を内部スクロール。
 
 ## IME（日本語入力）対応
 

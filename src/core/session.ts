@@ -52,6 +52,13 @@ export interface SessionDeps {
   now?: () => number;
   policy?: PermissionPolicy;
   onChange?: (state: SessionState) => void;
+  /**
+   * Optional title generator. When provided, a fresh session asks it to
+   * summarize the initial prompt into a short title (à la Claude Code's tab
+   * title) and swaps it in for the input-derived placeholder. I/O is injected
+   * so the reducer/session stay pure and testable.
+   */
+  generateTitle?: (prompt: string) => Promise<string | null | undefined>;
   /** SDK session id to resume (session restoration). Loads prior history. */
   resume?: string;
   /** Pre-built state to start from instead of a fresh `creating` (session restoration). */
@@ -114,6 +121,26 @@ export class Session {
     }
     this.inputQueue.push(toUserMessage(this.state.prompt));
     this.ensureConsuming();
+    void this.runTitleGen();
+  }
+
+  /**
+   * Fire-and-forget: derive a concise title from the prompt content and dispatch
+   * it. Only fresh starts call this, so restored sessions keep their saved title.
+   * Failures are swallowed — the placeholder title stands.
+   */
+  private async runTitleGen(): Promise<void> {
+    if (!this.deps.generateTitle) {
+      return;
+    }
+    try {
+      const title = await this.deps.generateTitle(this.state.prompt);
+      if (title && !this.abortController.signal.aborted) {
+        this.dispatch({ kind: 'title', title, at: this.now() });
+      }
+    } catch {
+      // best-effort — keep the input-derived placeholder title
+    }
   }
 
   /** Send an additional instruction into the (possibly not-yet-started) session. */
@@ -232,6 +259,9 @@ export class Session {
           canUseTool: this.canUseTool,
           abortController: this.abortController,
           settingSources: ['project'],
+          // Stream partial assistant text so the detail view shows a live preview
+          // (reduced into state.streamingText). See status-reducer reduceStreamEvent.
+          includePartialMessages: true,
           ...(opts?.model ? { model: opts.model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
           ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
