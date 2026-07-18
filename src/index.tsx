@@ -15,6 +15,7 @@ import {
   notify,
   pruneMissingWorktrees,
   saveState,
+  saveStateSync,
 } from '@/utils';
 import { App } from './app';
 
@@ -77,6 +78,20 @@ async function main(): Promise<void> {
 
   // Restore sessions from a previous run (worktrees that still exist on disk).
   manager.restore(pruneMissingWorktrees(await loadState(statePath)));
+
+  // Flush synchronously on hard termination (kill / terminal close), where the
+  // debounced async save wouldn't run before the process dies. Ctrl+C is handled
+  // by the App (dispose → exit → final flush below), so we only cover SIGTERM/SIGHUP.
+  const flushSyncAndExit = (code: number) => () => {
+    try {
+      saveStateSync(manager.persistableState(), statePath);
+    } catch {
+      // best-effort — never block shutdown on a failed save
+    }
+    process.exit(code);
+  };
+  process.once('SIGTERM', flushSyncAndExit(143));
+  process.once('SIGHUP', flushSyncAndExit(129));
 
   const { waitUntilExit } = render(<App manager={manager} cwd={repoRoot} messages={t} />, {
     exitOnCtrlC: false,

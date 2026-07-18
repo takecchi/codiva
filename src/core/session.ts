@@ -168,8 +168,17 @@ export class Session {
    * Quietly shut down the subprocess without changing state — used on app quit so
    * an in-flight session persists as resumable (rather than being marked failed by
    * abort()). Its SDK session lives on and can be resumed on next launch.
+   *
+   * If a permission prompt is still pending, deny it first so the transcript ends
+   * on a resolved tool_use (deny → tool_result) rather than a dangling tool_use,
+   * which can make a later `resume` error out. We resolve the promise directly
+   * (no dispatch) to keep stop() quiet — status must not change.
    */
   stop(): void {
+    if (this.pending) {
+      this.pending.resolve({ behavior: 'deny', message: 'session stopped' });
+      this.pending = undefined;
+    }
     this.inputQueue.close();
     this.abortController.abort();
   }

@@ -15,8 +15,8 @@ export interface PersistedSession {
   worktreePath: string;
   /** Base branch this session was cut from / merges back into. */
   base: string;
-  /** SDK session id for `resume`. Absent if the session never reached init. */
-  sdkSessionId?: string;
+  /** SDK session id for `resume`. Always present — only sessions that reached init (and are thus truly resumable) are persisted. */
+  sdkSessionId: string;
   /** Only idle/terminal states are restorable (see restorableStatus). */
   status: 'completed' | 'failed';
   startedAt: number;
@@ -57,14 +57,17 @@ export function restorableStatus(status: SessionStatus): 'completed' | 'failed' 
 
 /**
  * Build a PersistedSession from live state + worktree meta, or undefined if this
- * session isn't worth persisting (non-restorable status, or no worktree on disk yet).
+ * session isn't worth persisting. We require an `sdkSessionId`: without it there's
+ * nothing to `resume`, and restoring such a session would silently start a brand-new
+ * conversation on the first follow-up (losing the original prompt). The worktree is
+ * still kept on disk regardless, so no work is lost — only the codiva session entry.
  */
 export function toPersistedSession(
   state: SessionState,
   meta: { slug: string; base: string },
 ): PersistedSession | undefined {
   const status = restorableStatus(state.status);
-  if (!status || !state.worktreePath) {
+  if (!status || !state.worktreePath || !state.sdkSessionId) {
     return undefined;
   }
   return {
@@ -98,7 +101,10 @@ export function restoredSessionState(p: PersistedSession): SessionState {
     messages: [],
     sdkSessionId: p.sdkSessionId,
     startedAt: p.startedAt,
-    finishedAt: p.finishedAt,
+    // In-flight sessions persisted as `completed` have no finishedAt; freeze the
+    // elapsed clock at startedAt so a restored (idle) row doesn't show an
+    // ever-growing timer computed from an old startedAt.
+    finishedAt: p.finishedAt ?? p.startedAt,
     totalCostUsd: p.totalCostUsd,
     logSeq: 0,
   };
@@ -145,10 +151,17 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
   const id = str(o.id);
   const worktreePath = str(o.worktreePath);
   const base = str(o.base);
+  const sdkSessionId = str(o.sdkSessionId);
   const status = o.status === 'completed' || o.status === 'failed' ? o.status : undefined;
   const startedAt = num(o.startedAt);
-  // These four are the minimum needed to rebuild + re-associate a session.
-  if (id === undefined || worktreePath === undefined || status === undefined) {
+  // These are the minimum needed to rebuild + resume a session. sdkSessionId is
+  // required — a persisted session without it can't be resumed (see toPersistedSession).
+  if (
+    id === undefined ||
+    worktreePath === undefined ||
+    status === undefined ||
+    sdkSessionId === undefined
+  ) {
     return undefined;
   }
   const todos = Array.isArray(o.todos)
@@ -162,7 +175,7 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
     branch: str(o.branch) ?? `codiva/${id}`,
     worktreePath,
     base: base ?? 'HEAD',
-    sdkSessionId: str(o.sdkSessionId),
+    sdkSessionId,
     status,
     startedAt: startedAt ?? 0,
     finishedAt: num(o.finishedAt),

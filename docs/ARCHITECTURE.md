@@ -128,7 +128,7 @@ interface SessionState {
 - `interrupt()` / `abort()`: SDK の interrupt / AbortController。
 - `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
 - **復元対応**: `resume`（SDK セッションID）と `restored`（復元済み `SessionState`）を DI で受けられる。復元セッションは `start()` せず、最初の `send()` で遅延的に query を開始（`resume` 付き）。これで起動時にサブプロセスを乱立させない。
-- `stop()`: 状態を変えずにサブプロセスだけ落とす quiet 停止。アプリ終了時はこれを使い、実行中セッションを resumable のまま保存する（`abort()` は failed にする点が違い）。
+- `stop()`: 状態を変えずにサブプロセスだけ落とす quiet 停止。アプリ終了時はこれを使い、実行中セッションを resumable のまま保存する（`abort()` は failed にする点が違い）。保留中の許可要求があれば deny で解決してから停止する（未応答の `tool_use` で resume が壊れるのを防ぐ）。
 
 ### SessionManager (`core/session-manager.ts`)
 
@@ -194,10 +194,14 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 - **セッション復元**: 永続スナップショットの型・変換・検証は純粋な `core/persistence.ts`
   （`toPersistedSession` / `restoredSessionState` / `fromPersistedJson`）。ファイル I/O は
   `utils/state-store.ts`（`<repo>/.codiva/state.json`。破損時は空へフォールバック、起動時に存在しない
-  worktree を prune）。永続対象は `completed`/`failed` のみ（実行中は `completed`＝resumable に丸める。
-  `archived`/`creating` は除外）。メッセージログは永続しない（resume が SDK 側で履歴を復元し、以降のターンで
-  再ストリームされる）。復元セッションは遅延 resume（最初の追加指示まで query を立てない）。
-  保存は `onPersist` → debounce（合成ルート）＋終了時に最終フラッシュ。
+  worktree を prune）。永続対象は `completed`/`failed` かつ **`sdkSessionId` を持つ**もののみ（実行中は
+  `completed`＝resumable に丸める。`archived`/`creating`、および init 前に落ちて resume 不能なものは除外）。
+  メッセージログは永続しない（resume が SDK 側で履歴を復元し、以降のターンで再ストリームされる）。
+  復元セッションは遅延 resume（最初の追加指示まで query を立てない）。復元時は `finishedAt` を
+  `startedAt` にフォールバックし、経過時間が復元後に伸び続けないようにする。
+  保存は `onPersist` → debounce（合成ルート）＋終了時の最終フラッシュ＋ SIGTERM/SIGHUP 時の
+  同期フラッシュ（`saveStateSync`）。`stop()` は保留中の許可要求を deny で解決してから停止し、
+  resume 先のトランスクリプトが未応答の `tool_use` で終わらないようにする（best-effort）。
 
 ## 設計上の決定と理由
 

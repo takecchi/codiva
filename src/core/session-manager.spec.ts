@@ -61,8 +61,8 @@ class FakeSession implements SessionHandle {
     this.state = { ...this.state, status: 'archived' };
     this.onChange(this.state);
   }
-  drive(status: SessionState['status']) {
-    this.state = { ...this.state, status };
+  drive(status: SessionState['status'], sdkSessionId?: string) {
+    this.state = { ...this.state, status, sdkSessionId: sdkSessionId ?? this.state.sdkSessionId };
     this.onChange(this.state);
   }
 }
@@ -284,7 +284,7 @@ describe('SessionManager', () => {
       const { manager, created } = makeManager();
       manager.create('add login');
       await flush();
-      created[0]?.drive('completed');
+      created[0]?.drive('completed', 'sdk-1');
       const persisted = manager.persistableState();
       expect(persisted.version).toBe(1);
       expect(persisted.sessions).toHaveLength(1);
@@ -293,8 +293,17 @@ describe('SessionManager', () => {
         slug: 'add-login',
         branch: 'codiva/add-login',
         base: 'main',
+        sdkSessionId: 'sdk-1',
         status: 'completed',
       });
+    });
+
+    it('persistableState omits sessions that never got an sdkSessionId', async () => {
+      const { manager, created } = makeManager();
+      manager.create('no session id');
+      await flush();
+      created[0]?.drive('completed'); // no sdkSessionId → not resumable
+      expect(manager.persistableState().sessions).toEqual([]);
     });
 
     it('persistableState omits creating and archived sessions', async () => {
@@ -382,6 +391,7 @@ describe('SessionManager', () => {
             branch: 'codiva/feature',
             worktreePath: '/tmp/wt/feature',
             base: 'main',
+            sdkSessionId: 'sdk-1',
             status: 'completed',
             startedAt: 0,
             todos: [],
@@ -417,6 +427,7 @@ describe('SessionManager', () => {
             branch: 'codiva/s',
             worktreePath: '/tmp/wt/s',
             base: 'main',
+            sdkSessionId: 'sdk-1',
             status: 'completed',
             startedAt: 0,
             todos: [],

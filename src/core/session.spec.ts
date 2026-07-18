@@ -2,6 +2,7 @@ import type { Options, PermissionResult, Query, SDKMessage } from '@anthropic-ai
 import { describe, expect, it, vi } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
 import { type PermissionPolicy, type QueryFn, Session } from '@/core/session';
+import { initialState } from '@/core/status-reducer';
 import type { CreateSessionInput } from '@/core/types';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -263,5 +264,62 @@ describe('Session', () => {
     session.abort();
     await tick();
     expect(session.getState().status).toBe('completed');
+  });
+
+  it('stop() leaves an in-flight session unchanged (resumable, not failed)', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    expect(session.getState().status).toBe('running');
+    session.stop();
+    await tick();
+    // Unlike abort(), stop() must NOT flip the status to failed.
+    expect(session.getState().status).toBe('running');
+    expect(session.getState().error).toBeUndefined();
+  });
+
+  it('stop() denies a dangling permission prompt without changing status', async () => {
+    const policy: PermissionPolicy = (name) => (name === 'Bash' ? 'ask' : 'allow');
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1, policy });
+    session.start();
+    await tick();
+    const decision = fake.call('Bash', { command: 'ls' });
+    expect(session.getState().status).toBe('awaiting_permission');
+    session.stop();
+    // The pending canUseTool promise resolves with a deny so the resumed
+    // transcript doesn't end on an unanswered tool_use.
+    await expect(decision).resolves.toEqual({ behavior: 'deny', message: 'session stopped' });
+    // stop() is quiet: it doesn't run the reducer, so status is untouched.
+    expect(session.getState().status).toBe('awaiting_permission');
+  });
+
+  it('a restored session stays idle until send(), then resumes with the SDK session id', async () => {
+    let seen: Options | undefined;
+    const queryFn = (({ options }: { options: Options }) => {
+      seen = options;
+      const gen = (async function* () {})() as unknown as Query & {
+        interrupt: () => Promise<void>;
+      };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const restored = { ...initialState(INPUT), status: 'completed' as const };
+    const session = new Session({
+      queryFn,
+      input: INPUT,
+      now: () => 1,
+      resume: 'sdk-42',
+      restored,
+    });
+    // Restored sessions don't call start(); no query yet.
+    expect(seen).toBeUndefined();
+    expect(session.getState().status).toBe('completed');
+    session.send('continue please');
+    await tick();
+    expect(seen?.resume).toBe('sdk-42');
+    expect(session.getState().status).toBe('running');
   });
 });

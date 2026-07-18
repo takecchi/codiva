@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { emptyPersistedState, fromPersistedJson, type PersistedState } from '@/core';
@@ -25,6 +25,15 @@ export async function loadState(path: string): Promise<PersistedState> {
 export async function saveState(state: PersistedState, path: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * Synchronous save for exit/signal handlers (SIGTERM/SIGHUP), where the event
+ * loop won't run pending async writes before the process dies.
+ */
+export function saveStateSync(state: PersistedState, path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 }
 
 /**

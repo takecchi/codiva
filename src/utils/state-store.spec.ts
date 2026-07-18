@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { emptyPersistedState, type PersistedState } from '@/core';
-import { defaultStatePath, loadState, pruneMissingWorktrees, saveState } from '@/utils/state-store';
+import {
+  defaultStatePath,
+  loadState,
+  pruneMissingWorktrees,
+  saveState,
+  saveStateSync,
+} from '@/utils/state-store';
 
 let dir: string;
 
@@ -58,6 +64,13 @@ describe('saveState / loadState', () => {
     const path = join(dir, 'bad.json');
     await writeFile(path, '{ not json', 'utf8');
     expect(await loadState(path)).toEqual(emptyPersistedState());
+  });
+
+  it('saveStateSync writes synchronously and is readable back', async () => {
+    const path = defaultStatePath(dir);
+    const state = sampleState('/tmp/wt/task');
+    saveStateSync(state, path);
+    expect(await loadState(path)).toEqual(state);
   });
 });
 

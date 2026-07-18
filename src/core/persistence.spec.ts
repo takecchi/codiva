@@ -79,7 +79,12 @@ describe('toPersistedSession', () => {
   });
 
   it('drops sessions without a worktree path', () => {
-    const s = state({ status: 'completed', worktreePath: '' });
+    const s = state({ status: 'completed', worktreePath: '', sdkSessionId: 'sdk-1' });
+    expect(toPersistedSession(s, { slug: 'x', base: 'm' })).toBeUndefined();
+  });
+
+  it('drops sessions without an sdkSessionId (nothing to resume)', () => {
+    const s = state({ status: 'completed' }); // initialState leaves sdkSessionId undefined
     expect(toPersistedSession(s, { slug: 'x', base: 'm' })).toBeUndefined();
   });
 });
@@ -111,6 +116,25 @@ describe('restoredSessionState', () => {
     expect(s.progress).toEqual({ done: 1, total: 2 });
     expect(s.sdkSessionId).toBe('sdk-2');
     expect(s.totalCostUsd).toBe(0.02);
+    expect(s.finishedAt).toBe(9);
+  });
+
+  it('freezes elapsed time at startedAt when the session had no finishedAt', () => {
+    const p: PersistedSession = {
+      id: '3',
+      title: 'In-flight at quit',
+      prompt: 'p',
+      slug: 's',
+      branch: 'codiva/s',
+      worktreePath: '/tmp/wt/s',
+      base: 'main',
+      sdkSessionId: 'sdk-3',
+      status: 'completed',
+      startedAt: 42,
+      todos: [],
+    };
+    // Avoids an ever-growing timer for a restored, never-really-finished session.
+    expect(restoredSessionState(p).finishedAt).toBe(42);
   });
 });
 
@@ -132,13 +156,16 @@ describe('fromPersistedJson', () => {
   );
 
   it('drops individual malformed sessions but keeps valid ones', () => {
-    const valid = toPersistedSession(state({ status: 'completed' }), { slug: 's', base: 'main' });
+    const valid = toPersistedSession(state({ status: 'completed', sdkSessionId: 'sdk-1' }), {
+      slug: 's',
+      base: 'main',
+    });
     const parsed = fromPersistedJson({
       version: 1,
       sessions: [
         valid,
-        { id: '2' }, // missing worktreePath/status
-        { worktreePath: '/x', status: 'completed' }, // missing id
+        { id: '2', worktreePath: '/x', status: 'completed' }, // missing sdkSessionId
+        { worktreePath: '/x', status: 'completed', sdkSessionId: 'sdk-z' }, // missing id
         'garbage',
       ],
     });
@@ -148,7 +175,7 @@ describe('fromPersistedJson', () => {
 
   it('backfills sensible defaults for optional fields', () => {
     const parsed = fromPersistedJson({
-      sessions: [{ id: '7', worktreePath: '/tmp/w', status: 'failed' }],
+      sessions: [{ id: '7', worktreePath: '/tmp/w', status: 'failed', sdkSessionId: 'sdk-7' }],
     });
     expect(parsed.sessions[0]).toMatchObject({
       id: '7',
@@ -156,9 +183,17 @@ describe('fromPersistedJson', () => {
       slug: '7',
       branch: 'codiva/7',
       base: 'HEAD',
+      sdkSessionId: 'sdk-7',
       startedAt: 0,
       todos: [],
     });
+  });
+
+  it('drops a persisted session that lacks an sdkSessionId', () => {
+    const parsed = fromPersistedJson({
+      sessions: [{ id: '9', worktreePath: '/tmp/w', status: 'completed' }],
+    });
+    expect(parsed.sessions).toEqual([]);
   });
 
   it('filters malformed todos inside a session', () => {
@@ -168,6 +203,7 @@ describe('fromPersistedJson', () => {
           id: '1',
           worktreePath: '/w',
           status: 'completed',
+          sdkSessionId: 'sdk-1',
           todos: [{ id: '1', subject: 'ok', status: 'weird' }, { id: '2' }, 'x'],
         },
       ],
