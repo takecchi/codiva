@@ -1,5 +1,7 @@
 import type {
+  EffortLevel,
   Options,
+  PermissionMode,
   PermissionResult,
   Query,
   SDKMessage,
@@ -35,13 +37,25 @@ export type PermissionPolicy = (
 export const defaultPolicy: PermissionPolicy = (toolName) =>
   toolName === 'AskUserQuestion' ? 'ask' : 'allow';
 
+/** Per-session knobs forwarded to the SDK query (sourced from the config file). */
+export interface SessionOptions {
+  model?: string;
+  effort?: EffortLevel;
+  permissionMode?: PermissionMode;
+  maxBudgetUsd?: number;
+}
+
 export interface SessionDeps {
   queryFn: QueryFn;
   input: CreateSessionInput;
-  model?: string;
+  options?: SessionOptions;
   now?: () => number;
   policy?: PermissionPolicy;
   onChange?: (state: SessionState) => void;
+  /** SDK session id to resume (session restoration). Loads prior history. */
+  resume?: string;
+  /** Pre-built state to start from instead of a fresh `creating` (session restoration). */
+  restored?: SessionState;
 }
 
 function toUserMessage(text: string): SDKUserMessage {
@@ -78,7 +92,7 @@ export class Session {
   private started = false;
 
   constructor(private readonly deps: SessionDeps) {
-    this.state = initialState(deps.input);
+    this.state = deps.restored ?? initialState(deps.input);
     this.now = deps.now ?? Date.now;
     this.policy = deps.policy ?? defaultPolicy;
     this.onChange = deps.onChange;
@@ -88,20 +102,34 @@ export class Session {
     return this.state;
   }
 
-  /** Begin the session: enqueue the initial prompt and start consuming output. */
+  /**
+   * Begin a fresh session: enqueue the initial prompt and start consuming output.
+   * Restored sessions skip this — they stay idle until the first `send()`, which
+   * lazily starts the (resumed) query so we don't spawn a subprocess per restored
+   * session at launch.
+   */
   start(): void {
     if (this.started) {
       return;
     }
-    this.started = true;
     this.inputQueue.push(toUserMessage(this.state.prompt));
-    void this.consume();
+    this.ensureConsuming();
   }
 
-  /** Send an additional instruction into the live session. */
+  /** Send an additional instruction into the (possibly not-yet-started) session. */
   send(text: string): void {
     this.inputQueue.push(toUserMessage(text));
+    this.ensureConsuming();
     this.dispatch({ kind: 'user_input', text, at: this.now() });
+  }
+
+  /** Start the SDK query + consume loop if it isn't running yet. */
+  private ensureConsuming(): void {
+    if (this.started) {
+      return;
+    }
+    this.started = true;
+    void this.consume();
   }
 
   /** Answer a pending AskUserQuestion. `answers` maps question text → chosen label. */
@@ -134,6 +162,25 @@ export class Session {
     if (this.state.status !== 'completed' && this.state.status !== 'failed') {
       this.dispatch({ kind: 'aborted', at: this.now() });
     }
+  }
+
+  /**
+   * Quietly shut down the subprocess without changing state — used on app quit so
+   * an in-flight session persists as resumable (rather than being marked failed by
+   * abort()). Its SDK session lives on and can be resumed on next launch.
+   *
+   * If a permission prompt is still pending, deny it first so the transcript ends
+   * on a resolved tool_use (deny → tool_result) rather than a dangling tool_use,
+   * which can make a later `resume` error out. We resolve the promise directly
+   * (no dispatch) to keep stop() quiet — status must not change.
+   */
+  stop(): void {
+    if (this.pending) {
+      this.pending.resolve({ behavior: 'deny', message: 'session stopped' });
+      this.pending = undefined;
+    }
+    this.inputQueue.close();
+    this.abortController.abort();
   }
 
   /** Mark the session archived (after its branch is merged or discarded). */
@@ -176,15 +223,19 @@ export class Session {
 
   private async consume(): Promise<void> {
     try {
+      const opts = this.deps.options;
       this.handle = this.deps.queryFn({
         prompt: this.inputQueue,
         options: {
           cwd: this.state.worktreePath,
-          permissionMode: 'acceptEdits',
+          permissionMode: opts?.permissionMode ?? 'acceptEdits',
           canUseTool: this.canUseTool,
           abortController: this.abortController,
           settingSources: ['project'],
-          ...(this.deps.model ? { model: this.deps.model } : {}),
+          ...(opts?.model ? { model: opts.model } : {}),
+          ...(opts?.effort ? { effort: opts.effort } : {}),
+          ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
+          ...(this.deps.resume ? { resume: this.deps.resume } : {}),
         },
       });
       for await (const message of this.handle) {

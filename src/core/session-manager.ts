@@ -1,4 +1,10 @@
-import { type PermissionPolicy, type QueryFn, Session } from './session';
+import {
+  type PersistedSession,
+  type PersistedState,
+  restoredSessionState,
+  toPersistedSession,
+} from './persistence';
+import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
 import { initialState } from './status-reducer';
 import type { CreateSessionInput, SessionState } from './types';
@@ -24,6 +30,7 @@ export interface SessionHandle {
   denyPending(message: string): void;
   interrupt(): Promise<void>;
   abort(): void;
+  stop(): void;
   archive(): void;
 }
 
@@ -45,12 +52,18 @@ export interface SessionManagerDeps {
   worktrees: WorktreeService;
   queryFn: QueryFn;
   now?: () => number;
-  model?: string;
+  options?: SessionOptions;
   policy?: PermissionPolicy;
-  /** Factory for a session; defaults to constructing a real Session. */
+  /** Called on every session status transition (prev → next). Wired to desktop notifications. */
+  onTransition?: (prev: SessionState, next: SessionState) => void;
+  /** Called (as a dirty signal) whenever the persistable set changes; wired to a debounced save. */
+  onPersist?: () => void;
+  /** Factory for a session; defaults to constructing a real Session. `resume`/`restored` are set when rehydrating. */
   createSession?: (args: {
     input: CreateSessionInput;
     onChange: (state: SessionState) => void;
+    resume?: string;
+    restored?: SessionState;
   }) => SessionHandle;
 }
 
@@ -164,7 +177,7 @@ export class SessionManager {
         new Session({
           queryFn: this.deps.queryFn,
           input,
-          model: this.deps.model,
+          options: this.deps.options,
           now: this.now,
           policy: this.deps.policy ?? this.modePolicy,
           onChange: (s) => this.onSessionChange(id, s),
@@ -183,13 +196,80 @@ export class SessionManager {
   }
 
   private onSessionChange(id: string, state: SessionState): void {
+    const prev = this.states.get(id);
     this.states.set(id, state);
+    if (prev && prev.status !== state.status) {
+      this.deps.onTransition?.(prev, state);
+    }
     this.rebuild();
   }
 
   private rebuild(): void {
     this.snapshot = this.order.map((id) => this.states.get(id) as SessionState);
+    this.deps.onPersist?.();
     this.notify();
+  }
+
+  /**
+   * Rehydrate sessions from a persisted state. Call once at startup, before any
+   * create(). Restored sessions are NOT started — they sit idle (their worktree
+   * already exists on disk) and lazily resume their SDK conversation on the first
+   * follow-up. Ids/slugs are reserved so new sessions don't collide.
+   */
+  restore(persisted: PersistedState): void {
+    for (const p of persisted.sessions) {
+      if (this.states.has(p.id)) {
+        continue;
+      }
+      const restored = restoredSessionState(p);
+      const worktree: Worktree = { slug: p.slug, branch: p.branch, path: p.worktreePath };
+      this.worktreeMeta.set(p.id, { worktree, base: p.base });
+      this.usedSlugs.add(p.slug);
+      const input: CreateSessionInput = {
+        id: p.id,
+        title: p.title,
+        prompt: p.prompt,
+        branch: p.branch,
+        worktreePath: p.worktreePath,
+        startedAt: p.startedAt,
+      };
+      const onChange = (s: SessionState) => this.onSessionChange(p.id, s);
+      const session =
+        this.deps.createSession?.({ input, onChange, resume: p.sdkSessionId, restored }) ??
+        new Session({
+          queryFn: this.deps.queryFn,
+          input,
+          options: this.deps.options,
+          now: this.now,
+          policy: this.deps.policy ?? this.modePolicy,
+          onChange,
+          resume: p.sdkSessionId,
+          restored,
+        });
+      this.sessions.set(p.id, session);
+      this.states.set(p.id, session.getState());
+      this.order.push(p.id);
+      const n = Number(p.id);
+      if (Number.isInteger(n)) {
+        this.seq = Math.max(this.seq, n);
+      }
+    }
+    this.rebuild();
+  }
+
+  /** Build the on-disk snapshot of every restorable session (for state.json). */
+  persistableState(): PersistedState {
+    const sessions = this.order
+      .map((id) => {
+        const state = this.states.get(id);
+        const meta = this.worktreeMeta.get(id);
+        if (!state || !meta) {
+          return undefined;
+        }
+        return toPersistedSession(state, { slug: meta.worktree.slug, base: meta.base });
+      })
+      .filter((s): s is PersistedSession => s !== undefined);
+    return { version: 1, sessions };
   }
 
   private notify(): void {
@@ -257,10 +337,14 @@ export class SessionManager {
     }
   }
 
-  /** Abort every session (worktrees/branches are left intact) and clear listeners. */
+  /**
+   * Quietly stop every session (worktrees/branches left intact) and clear
+   * listeners. Uses stop() rather than abort() so in-flight sessions persist as
+   * resumable instead of being marked failed on quit.
+   */
   dispose(): void {
     for (const session of this.sessions.values()) {
-      session.abort();
+      session.stop();
     }
     this.listeners.clear();
   }

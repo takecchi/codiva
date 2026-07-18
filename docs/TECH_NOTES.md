@@ -46,15 +46,23 @@ const q = query({
 ```typescript
 const options = {
   cwd: worktreePath,             // ツールの作業ディレクトリ = セッションの worktree
-  permissionMode: 'acceptEdits', // ファイル編集系は自動許可。Bash等は canUseTool に落ちる
+  permissionMode: 'acceptEdits', // 既定。設定 permissionMode で上書き可
   canUseTool,                    // 下記参照
   abortController,               // セッション強制終了用
   maxTurns: 200,                 // 暴走防止の上限（要調整）
   settingSources: ['project'],   // 対象リポジトリの CLAUDE.md / settings を読ませる
-  // resume: sdkSessionId,       // Phase 6: アプリ再起動後の復元用
-  // maxBudgetUsd, model, effort — Backlog の設定ファイル対応で公開する
+  // Phase 6 で公開済み（設定ファイル ~/.codiva/config.json 由来、SessionOptions 経由で注入）:
+  model, effort, maxBudgetUsd,   // それぞれ存在時のみ付与
+  resume: sdkSessionId,          // 復元時のみ付与。前回セッションの履歴をロードして継続
 };
 ```
+
+**Phase 6 実装メモ（Options 関連）**:
+- `model` (`string`) / `effort` (`'low'|'medium'|'high'|'xhigh'|'max'`) / `permissionMode`
+  (`'default'|'acceptEdits'|'bypassPermissions'|'plan'|'dontAsk'|'auto'`) / `maxBudgetUsd` (`number>0`) は
+  `~/.codiva/config.json` から読み、`core/config.ts` の `toConfig()` で検証。`SessionOptions` に束ねて注入。
+- `resume` は復元セッションの最初の追加指示で付与（遅延 resume）。`sdkSessionId` は `system/init.session_id`。
+- 復元では会話ログを永続しない（resume が SDK 側で履歴を持つ）。詳細は ARCHITECTURE.md「Phase 6 機能」。
 
 `permissionMode` の全値: `'default' | 'dontAsk' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'auto'`。
 `'acceptEdits'` は Edit/Write + ファイル操作系 Bash（mkdir/touch/rm/mv/cp/sed）を自動許可する。

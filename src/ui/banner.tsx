@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { FC } from 'react';
+import { formatUsd } from '@/core';
 import { useMessages } from './i18n-context';
 import { glyph, theme } from './theme';
 
@@ -44,7 +45,11 @@ const LOGO_ROWS = LOGO.map((line, row) => ({
  * Borderless startup header echoing Claude Code's banner: the mascot on the left
  * and identity / subtitle / cwd on the right (vertically centered against it).
  */
-export const Banner: FC<{ cwd?: string; sessionCount: number }> = ({ cwd, sessionCount }) => {
+export const Banner: FC<{ cwd?: string; sessionCount: number; totalCostUsd?: number }> = ({
+  cwd,
+  sessionCount,
+  totalCostUsd = 0,
+}) => {
   const m = useMessages();
   return (
     <Box>
@@ -67,6 +72,7 @@ export const Banner: FC<{ cwd?: string; sessionCount: number }> = ({ cwd, sessio
           <Text dimColor>
             {'   '}
             {m.list.sessionCount(sessionCount)}
+            {totalCostUsd > 0 ? `   ${m.list.totalCost(formatUsd(totalCostUsd))}` : ''}
           </Text>
         </Text>
         <Text dimColor>{m.banner.subtitle}</Text>
