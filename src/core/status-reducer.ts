@@ -1,3 +1,4 @@
+import { makeTitle } from './slug';
 import type {
   CodivaEvent,
   CreateSessionInput,
@@ -302,6 +303,12 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         messages: withLog.messages,
         logSeq: withLog.logSeq,
       };
+    }
+
+    case 'title': {
+      const title = makeTitle(event.title);
+      // Ignore empty generations; keep the placeholder rather than blank it.
+      return title.length === 0 || title === state.title ? state : { ...state, title };
     }
 
     case 'aborted': {

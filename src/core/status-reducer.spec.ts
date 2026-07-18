@@ -157,6 +157,25 @@ describe('control events', () => {
     const s = reduce(initialState(BASE), { kind: 'aborted', at: 1 });
     expect(s.error).toBe('aborted');
   });
+
+  it('replaces the title from a generated title event (normalized)', () => {
+    const s = reduce(initialState(BASE), {
+      kind: 'title',
+      title: '  Add   OAuth login\nflow  ',
+      at: 1,
+    });
+    expect(s.title).toBe('Add OAuth login flow');
+  });
+
+  it('ignores an empty/whitespace generated title (keeps placeholder)', () => {
+    const s0 = initialState(BASE);
+    expect(reduce(s0, { kind: 'title', title: '   ', at: 1 })).toBe(s0);
+  });
+
+  it('is a no-op when the generated title equals the current one', () => {
+    const s0 = initialState(BASE);
+    expect(reduce(s0, { kind: 'title', title: s0.title, at: 1 })).toBe(s0);
+  });
 });
 
 /** Synthetic SDK messages to exercise edge paths not present in the fixtures. */

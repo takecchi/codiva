@@ -93,7 +93,7 @@ codiva/
 ```typescript
 interface SessionState {
   id: string;
-  title: string;              // 指示文由来のタスク名
+  title: string;              // タスク名。起動直後は指示文由来の暫定値、Haiku 要約が返り次第差し替え（title イベント）
   status: SessionStatus;
   prompt: string;             // 最初の指示文
   branch: string;             // codiva/<slug>
@@ -133,6 +133,7 @@ interface SessionState {
 ### SessionManager (`core/session-manager.ts`)
 
 - `create(prompt)`: slug生成 → WorktreeManager.add() → Session 起動。同期的に `creating` 状態のエントリを即時返す（UI を待たせない）。
+- **タイトル生成**: `generateTitle`（DI、`utils/title.ts` が Haiku で実装）を各 fresh セッションに渡す。`Session.start()` が指示文を要約させ、返り次第 `title` イベントで暫定タイトルを差し替える（restore 済みセッションは保存済みタイトルを維持し再生成しない）。I/O は注入なので reducer/session は純粋・テスト可能。
 - 全セッションの `Map<id, Session>` を保持し、`subscribe(listener)` / `getSnapshot(): SessionState[]` を提供（React の `useSyncExternalStore` にそのまま接続できる形）。
 - スナップショットは毎回新しい配列参照を返すが、**変更のあったセッション以外のオブジェクト参照は維持**する（不要な再描画防止）。
 - `dispose()`: 全セッションを **`stop()`（quiet）**（worktree は残す）。実行中でも resumable なまま。

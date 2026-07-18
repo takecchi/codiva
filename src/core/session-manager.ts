@@ -51,6 +51,8 @@ export type RunMode = 'auto' | 'confirm';
 export interface SessionManagerDeps {
   worktrees: WorktreeService;
   queryFn: QueryFn;
+  /** Optional Claude-backed title generator; forwarded to each fresh session. */
+  generateTitle?: (prompt: string) => Promise<string | null | undefined>;
   now?: () => number;
   options?: SessionOptions;
   policy?: PermissionPolicy;
@@ -181,6 +183,7 @@ export class SessionManager {
           now: this.now,
           policy: this.deps.policy ?? this.modePolicy,
           onChange: (s) => this.onSessionChange(id, s),
+          generateTitle: this.deps.generateTitle,
         });
       this.sessions.set(id, session);
       this.states.set(id, session.getState());
