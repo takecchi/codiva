@@ -68,6 +68,16 @@ export interface Messages {
   app: {
     remainingWorktrees: (n: number) => string;
   };
+  /** 起動バナー（banner.tsx） */
+  banner: {
+    subtitle: string;
+  };
+  /** 下部モード行（status-footer.tsx） */
+  footer: {
+    autoMode: string;
+    confirmMode: string;
+    cycleHint: string;
+  };
 }
 
 const ja: Messages = {
@@ -120,6 +130,14 @@ const ja: Messages = {
     remainingWorktrees: (n) =>
       `codiva: ${n} 個の worktree が残っています（作業内容は保持されます）:`,
   },
+  banner: {
+    subtitle: '並列 Claude Code セッションを git worktree 上で実行',
+  },
+  footer: {
+    autoMode: '自動モード',
+    confirmMode: '確認モード',
+    cycleHint: '(shift+tab で切替)',
+  },
 };
 
 const en: Messages = {
@@ -171,6 +189,14 @@ const en: Messages = {
   app: {
     remainingWorktrees: (n) =>
       `codiva: ${n} worktree${n === 1 ? '' : 's'} left in place (your work is preserved):`,
+  },
+  banner: {
+    subtitle: 'Parallel Claude Code sessions in git worktrees',
+  },
+  footer: {
+    autoMode: 'auto mode on',
+    confirmMode: 'confirm mode on',
+    cycleHint: '(shift+tab to cycle)',
   },
 };
 

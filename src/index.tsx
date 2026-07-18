@@ -29,7 +29,9 @@ async function main(): Promise<void> {
     queryFn: query,
   });
 
-  const { waitUntilExit } = render(<App manager={manager} messages={t} />, { exitOnCtrlC: false });
+  const { waitUntilExit } = render(<App manager={manager} cwd={repoRoot} messages={t} />, {
+    exitOnCtrlC: false,
+  });
   await waitUntilExit();
 
   // Sessions are aborted on quit but their worktrees are intentionally kept so

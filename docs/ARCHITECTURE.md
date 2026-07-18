@@ -42,9 +42,12 @@ codiva/
 │   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（reducer テスト用）
 │   ├── ui/                    # Ink コンポーネント（kebab-case, 識別子は PascalCase）
 │   │   ├── index.ts           # バレル
+│   │   ├── theme.ts           # アクセント色・グリフ（Claude Code 風の共通ビジュアル）
+│   │   ├── banner.tsx         # 起動時ヘッダ（✻ codiva + サブタイトル + cwd, 枠なし）
 │   │   ├── session-list.tsx
 │   │   ├── session-detail.tsx
-│   │   ├── prompt-input.tsx
+│   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
+│   │   ├── status-footer.tsx  # ⏵⏵ auto mode on (shift+tab...) のモード行
 │   │   ├── permission-dialog.tsx / permission-dialog.spec.tsx
 │   │   ├── progress-badge.tsx / progress-badge.spec.tsx
 │   │   ├── hooks.ts           # useSessions()（useSyncExternalStore）/ useClock()
@@ -135,10 +138,16 @@ interface SessionState {
 
 ### UI (ui/)
 
-- `App`: ビュー状態（`list` | `detail:<id>`）と全体キーバインドを管理。
-- `SessionList`: 一覧 + 選択カーソル。`PromptInput` を上部に常設し、いつでも新規投入できる。
-- `SessionDetail`: メッセージログ + 追加指示入力 + `PermissionDialog`。ログは Ink の `<Static>` で追記描画し再描画コストを抑える。
+Claude Code の実画面に寄せる: 下部に**上下の全幅横罫線だけ**の入力欄（`PromptInput`、角丸枠ではない）、その下にモード行（`StatusFooter` = `⏵⏵ auto mode on (shift+tab to cycle)` + 文脈ヒント）を常設。ヘッダは枠なしのワードマーク。色とグリフは `theme.ts` に集約。
+
+- `App`: ビュー状態（`list` | `detail:<id>`）と全体キーバインドを管理。`cwd` を受け取りバナーへ渡す。
+- `Banner`: 起動時ヘッダ（`✻ codiva` + サブタイトル + cwd）。枠なし3行、一覧上部に表示。
+- `SessionList`: `Banner` + 一覧 + 選択カーソル + 下部 `PromptInput`/`StatusFooter`。いつでも新規投入できる。
+- `SessionDetail`: `<Static>` メッセージログ（`⏺`/`⎿`/`>` のグリフで転記）+ ステータスヘッダ + `PromptInput` または操作パネル/`PermissionDialog` + `StatusFooter`。
+- `PromptInput` / `StatusFooter`: presentational。キー処理は各 view の単一 `useInput` に集約（ロジックは持たない）。
 - 再描画スロットリング: SessionManager の通知を UI 側で ~100ms にスロットルする。
+
+**ランモード（shift+tab トグル）**: `SessionManager.mode`（`auto` | `confirm`）を全セッション共通で保持し、`shift+tab` で `cycleMode()`。`modePolicy` は tool 実行時に `mode` を読むので、切替は稼働中セッションにも即反映される。`auto` = AskUserQuestion 以外を自動承認、`confirm` = 毎回 allow/deny を求める（→ `awaiting_permission`／一覧に「許可待ち」）。UI は `useRunMode()` で購読し、`StatusFooter` が `⏵⏵ auto mode on` / `⏸ confirm mode on` を表示。
 
 ## 多言語対応（i18n）
 
@@ -147,6 +156,7 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 - **カタログ**: 全 UI 文字列は `core/i18n.ts` の `messages`（`Record<Lang, Messages>`）に集約する（純粋）。
   UI にリテラルを直書きせず、`useMessages()`（`ui/i18n-context.tsx` の React コンテキスト）で引く。
   純関数（`badgeFor` 等）は `Messages` を引数で受ける。動的差し込み・複数形は型安全な文字列テンプレート関数で持つ。
+  （`banner` / `footer` グループもここに含む。）
 - **設定**: 表示言語は `~/.codiva/config.json`（`{ "language": "ja" | "en" | "auto" }`）に永続化する
   （Claude Code の `~/.claude/` と同じユーザーグローバルの流儀）。検証変換は `core/config.ts` の
   `toConfig()`、ファイル I/O は `utils/config.ts`（`loadConfig` / `saveConfig`）。

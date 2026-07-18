@@ -33,6 +33,14 @@ export interface ActionResult {
   error?: string;
 }
 
+/**
+ * Global tool-approval mode, toggled with shift+tab (à la Claude Code).
+ * - `auto`: run every tool automatically (only AskUserQuestion pauses).
+ * - `confirm`: pause on every tool for an explicit allow/deny.
+ * The mode is read at each tool call, so toggling affects live sessions too.
+ */
+export type RunMode = 'auto' | 'confirm';
+
 export interface SessionManagerDeps {
   worktrees: WorktreeService;
   queryFn: QueryFn;
@@ -64,6 +72,7 @@ export class SessionManager {
   private readonly usedSlugs = new Set<string>();
   private snapshot: SessionState[] = [];
   private seq = 0;
+  private mode: RunMode = 'auto';
   private readonly now: () => number;
 
   constructor(private readonly deps: SessionManagerDeps) {
@@ -76,6 +85,30 @@ export class SessionManager {
       this.listeners.delete(listener);
     };
   }
+
+  /** Current tool-approval mode (drives the shift+tab footer indicator). */
+  getMode(): RunMode {
+    return this.mode;
+  }
+
+  /** Flip auto ⇄ confirm and notify subscribers so the footer re-renders. */
+  cycleMode(): RunMode {
+    this.mode = this.mode === 'auto' ? 'confirm' : 'auto';
+    this.notify();
+    return this.mode;
+  }
+
+  /**
+   * Policy applied to sessions that don't get an explicit one. Reads `this.mode`
+   * at call time so a shift+tab toggle takes effect on already-running sessions.
+   * AskUserQuestion always escalates — it *is* the ask-the-user channel.
+   */
+  private readonly modePolicy: PermissionPolicy = (toolName) => {
+    if (toolName === 'AskUserQuestion') {
+      return 'ask';
+    }
+    return this.mode === 'auto' ? 'allow' : 'ask';
+  };
 
   getSnapshot(): SessionState[] {
     return this.snapshot;
@@ -133,7 +166,7 @@ export class SessionManager {
           input,
           model: this.deps.model,
           now: this.now,
-          policy: this.deps.policy,
+          policy: this.deps.policy ?? this.modePolicy,
           onChange: (s) => this.onSessionChange(id, s),
         });
       this.sessions.set(id, session);
@@ -156,6 +189,10 @@ export class SessionManager {
 
   private rebuild(): void {
     this.snapshot = this.order.map((id) => this.states.get(id) as SessionState);
+    this.notify();
+  }
+
+  private notify(): void {
     for (const listener of this.listeners) {
       listener();
     }

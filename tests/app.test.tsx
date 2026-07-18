@@ -1,4 +1,4 @@
-import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
@@ -137,6 +137,44 @@ describe('App end-to-end (real Session, driven query)', () => {
     out.push(asMsg({ type: 'result', subtype: 'success', result: 'all done' }));
     await flush();
     expect(lastFrame()).toContain('完了');
+  });
+
+  it('shift+tab switches to confirm mode so tools escalate to 許可待ち', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    let captured: Options | undefined;
+    const queryFn = ((params: { options: Options }) => {
+      captured = params.options;
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+
+    stdin.write('[Z'); // shift+tab → confirm mode
+    await flush();
+    expect(manager.getMode()).toBe('confirm');
+
+    stdin.write('run a tool');
+    await flush();
+    stdin.write('\r');
+    await flush(); // provision worktree + start session (captures options)
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-c' }));
+    await flush();
+
+    // Simulate the SDK asking to run a tool: in confirm mode the policy escalates.
+    // Session's canUseTool ignores the 3rd context arg, so a minimal cast suffices.
+    const ctx = { signal: new AbortController().signal } as unknown as Parameters<
+      NonNullable<Options['canUseTool']>
+    >[2];
+    const decision = captured?.canUseTool?.('Bash', { command: 'ls' }, ctx);
+    await flush();
+    expect(manager.getSnapshot()[0]?.status).toBe('awaiting_permission');
+    expect(lastFrame()).toContain('許可待ち');
+    void decision;
   });
 
   it('merges a completed session from the detail actions panel and archives it', async () => {

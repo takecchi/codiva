@@ -272,4 +272,30 @@ describe('SessionManager', () => {
       expect(manager.activeWorktreePaths()).toEqual([]);
     });
   });
+
+  describe('run mode (shift+tab toggle)', () => {
+    it('defaults to auto', () => {
+      const { manager } = makeManager();
+      expect(manager.getMode()).toBe('auto');
+    });
+
+    it('cycleMode toggles auto ⇄ confirm and returns the new mode', () => {
+      const { manager } = makeManager();
+      expect(manager.cycleMode()).toBe('confirm');
+      expect(manager.getMode()).toBe('confirm');
+      expect(manager.cycleMode()).toBe('auto');
+      expect(manager.getMode()).toBe('auto');
+    });
+
+    it('notifies subscribers without rebuilding the session snapshot', () => {
+      const { manager } = makeManager();
+      const listener = vi.fn();
+      manager.subscribe(listener);
+      const before = manager.getSnapshot();
+      manager.cycleMode();
+      expect(listener).toHaveBeenCalledTimes(1);
+      // Sessions did not change, so their snapshot array keeps identity.
+      expect(manager.getSnapshot()).toBe(before);
+    });
+  });
 });
