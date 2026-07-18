@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from 'ink';
 import { type FC, useState } from 'react';
-import type { SessionManager } from '@/core';
+import { type SessionManager, totalCostUsd } from '@/core';
 import { Banner } from './banner';
 import { useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
@@ -69,7 +69,7 @@ export const SessionList: FC<{
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Banner cwd={cwd} sessionCount={sessions.length} />
+      <Banner cwd={cwd} sessionCount={sessions.length} totalCostUsd={totalCostUsd(sessions)} />
 
       <Box flexDirection="column" marginY={1}>
         {sorted.length === 0 ? (

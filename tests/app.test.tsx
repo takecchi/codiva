@@ -37,6 +37,7 @@ function noopSession(input: CreateSessionInput) {
     denyPending() {},
     async interrupt() {},
     abort() {},
+    stop() {},
     archive() {},
   };
 }
@@ -213,5 +214,28 @@ describe('App end-to-end (real Session, driven query)', () => {
     await flush();
     expect(merge).toHaveBeenCalled();
     expect(manager.get('1')?.status).toBe('archived');
+  });
+
+  it('shows the accumulated cost in the banner after a result carries total_cost_usd', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('spend some money');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-cost' }));
+    out.push(asMsg({ type: 'result', subtype: 'success', result: 'done', total_cost_usd: 0.0123 }));
+    await flush();
+
+    expect(lastFrame()).toContain('合計 $0.0123');
   });
 });

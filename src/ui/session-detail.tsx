@@ -1,6 +1,6 @@
 import { Box, Static, Text, useInput } from 'ink';
 import { type FC, useEffect, useState } from 'react';
-import type { DiffStat, LogEntry, SessionManager } from '@/core';
+import { type DiffStat, formatUsd, type LogEntry, type SessionManager } from '@/core';
 import { useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { editBuffer } from './input';
@@ -185,6 +185,10 @@ export const SessionDetail: FC<{
           <Text dimColor>
             {m.detail.progress(session.progress.done, session.progress.total, activeForm)}
           </Text>
+        ) : null}
+
+        {session.totalCostUsd ? (
+          <Text dimColor>{m.detail.cost(formatUsd(session.totalCostUsd))}</Text>
         ) : null}
 
         {session.error ? (

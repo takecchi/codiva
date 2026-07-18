@@ -187,20 +187,52 @@ describe('Session', () => {
     expect(session.getState().error).toContain('stream boom');
   });
 
-  it('passes a model override into the query options', async () => {
-    let seenModel: string | undefined;
-    const queryFn = (({ options }: { options: { model?: string } }) => {
-      seenModel = options.model;
+  it('forwards model/effort/permissionMode/maxBudgetUsd into the query options', async () => {
+    let seen: Options | undefined;
+    const queryFn = (({ options }: { options: Options }) => {
+      seen = options;
       const gen = (async function* () {})() as unknown as Query & {
         interrupt: () => Promise<void>;
       };
       gen.interrupt = async () => {};
       return gen;
     }) as unknown as QueryFn;
-    const session = new Session({ queryFn, input: INPUT, now: () => 1, model: 'claude-opus-4-8' });
+    const session = new Session({
+      queryFn,
+      input: INPUT,
+      now: () => 1,
+      options: {
+        model: 'claude-opus-4-8',
+        effort: 'high',
+        permissionMode: 'plan',
+        maxBudgetUsd: 3,
+      },
+    });
     session.start();
     await tick();
-    expect(seenModel).toBe('claude-opus-4-8');
+    expect(seen?.model).toBe('claude-opus-4-8');
+    expect(seen?.effort).toBe('high');
+    expect(seen?.permissionMode).toBe('plan');
+    expect(seen?.maxBudgetUsd).toBe(3);
+  });
+
+  it('defaults permissionMode to acceptEdits and omits absent options', async () => {
+    let seen: Options | undefined;
+    const queryFn = (({ options }: { options: Options }) => {
+      seen = options;
+      const gen = (async function* () {})() as unknown as Query & {
+        interrupt: () => Promise<void>;
+      };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const session = new Session({ queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    await tick();
+    expect(seen?.permissionMode).toBe('acceptEdits');
+    expect(seen?.model).toBeUndefined();
+    expect(seen?.effort).toBeUndefined();
+    expect(seen?.maxBudgetUsd).toBeUndefined();
   });
 
   it('works with all optional deps defaulted (now/policy/onChange)', async () => {
