@@ -1,5 +1,8 @@
+import { EventEmitter } from 'node:events';
 import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { render as inkRender } from 'ink';
 import { render } from 'ink-testing-library';
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { AsyncQueue } from '@/core/async-queue';
@@ -52,6 +55,119 @@ function makeManager() {
     createSession: ({ input }) => noopSession(input),
   });
 }
+
+// ink-testing-library の fake stdout は rows を注入できない（実端末サイズに
+// フォールバックして非決定的になる）ため、全画面テストは Ink 本体の render に
+// 寸法固定のストリームを渡して検証する。
+class FakeStdout extends EventEmitter {
+  readonly columns = 80;
+  readonly rows: number;
+  readonly frames: string[] = [];
+  constructor(rows = 20) {
+    super();
+    this.rows = rows;
+  }
+  write = (frame: string) => {
+    this.frames.push(frame);
+    return true;
+  };
+}
+
+// ink-testing-library の Stdin と同じ挙動（write → 'readable'/'data' を emit）。
+class FakeStdin extends EventEmitter {
+  isTTY = true;
+  private data: string | null = null;
+  write = (data: string) => {
+    this.data = data;
+    this.emit('readable');
+    this.emit('data', data);
+  };
+  setEncoding() {}
+  setRawMode() {}
+  resume() {}
+  pause() {}
+  ref() {}
+  unref() {}
+  read = () => {
+    const { data } = this;
+    this.data = null;
+    return data;
+  };
+}
+
+function renderFullscreen(element: ReactElement, rows = 20) {
+  const stdout = new FakeStdout(rows);
+  const stdin = new FakeStdin();
+  const app = inkRender(element, {
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    exitOnCtrlC: false,
+    patchConsole: false,
+    // 非TTYでは debug なしだと途中フレームが書き出されない（ink-testing-library と同じ設定）。
+    debug: true,
+  });
+  return { app, stdin, lastFrame: () => stdout.frames.at(-1) ?? '' };
+}
+
+describe('App fullscreen layout', () => {
+  it('renders a frame exactly as tall as the terminal, footer pinned to the bottom', () => {
+    const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 20);
+    const lines = lastFrame().split('\n');
+    // フルスクリーン化していなければコンテンツ高さ（〜13行）しか出ない。
+    expect(lines).toHaveLength(20);
+    expect(lastFrame()).toContain('codiva');
+    // 入力欄+フッタが flexGrow スペーサで画面最下段（下パディングの上）に来る。
+    const lastContent = lines.filter((l) => l.trim() !== '').at(-1);
+    expect(lastContent).toContain('自動モード');
+    app.unmount();
+  });
+
+  it('falls back to inline rendering on very short terminals (footer stays visible)', () => {
+    const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 8);
+    // height 固定だと 8 行にクリップされ入力欄・フッタが消える。フォールバックでは
+    // コンテンツの高さぶん（8行超）描画され、フッタまで見える。
+    expect(lastFrame().split('\n').length).toBeGreaterThan(8);
+    expect(lastFrame()).toContain('自動モード');
+    app.unmount();
+  });
+
+  it('detail view clips old log lines to the terminal height, newest at the bottom', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20);
+    stdin.write('long task');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-t' }));
+    for (let i = 0; i < 40; i += 1) {
+      out.push(
+        asMsg({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `log line ${i}` }] },
+        }),
+      );
+    }
+    await flush();
+    stdin.write('[C'); // right arrow → detail
+    await flush();
+
+    const frame = lastFrame();
+    // フレームは端末高さに収まり、ログは末尾（新しい側）だけが見える。
+    expect(frame.split('\n').length).toBeLessThanOrEqual(20);
+    expect(frame).toContain('log line 39');
+    expect(frame).not.toContain('log line 0');
+    app.unmount();
+  });
+});
 
 describe('App (list view)', () => {
   it('renders the banner and empty-state hint', () => {

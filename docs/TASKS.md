@@ -115,13 +115,16 @@ UI なし。すべてユニットテストで駆動する。
 
 ## Phase 6: Backlog（MVP後、着手前にユーザーと相談）
 
+- [x] 全画面（100dvh 相当）レイアウト: root に端末 rows を指定、入力欄+フッタを下部固定、詳細ログは `<Static>` から末尾ビューポートへ置換
+- [ ] 詳細ビューのログスクロール（末尾ビューポートは最新行のみ表示。過去ログを遡る手段が未実装）
+- [ ] 入力欄の複数行化（Shift+Enter 改行、行数に応じて上に伸び、上限超過で内部スクロール — Claude Code 同等）
 - [x] アプリ再起動後のセッション復元（`.codiva/state.json` + SDK `resume`）
 - [x] 設定ファイル（model / effort / permissionMode / maxBudgetUsd）
 - [x] コスト表示（result の total_cost_usd 累計）
 - [ ] includePartialMessages によるストリーミング表示（今回は着手せず）
 - [x] デスクトップ通知（質問・完了時）
 
-> 実績メモ（Phase 6 / 4項目実装。ストリーミング表示のみ未着手）:
+> 実績メモ（Phase 6 / 設定・コスト・通知・復元の4項目。ストリーミング表示は未着手）:
 > - **設定拡張**: `core/config.ts` に `model`/`effort`/`permissionMode`/`maxBudgetUsd`/`notifications` を追加。
 >   検証は `toConfig()` に集約（不正値は既定へフォールバック）。`SessionOptions` に束ね、
 >   `SessionManager`→`Session`→SDK `Options` へ注入。`permissionMode` 未設定時は従来どおり `acceptEdits`。
@@ -133,8 +136,8 @@ UI なし。すべてユニットテストで駆動する。
 > - **復元**: 永続は純粋な `core/persistence.ts`（`toPersistedSession`/`restoredSessionState`/`fromPersistedJson`）、
 >   I/O は `utils/state-store.ts`（`<repo>/.codiva/state.json`、起動時に存在しない worktree を prune）。
 >   `Session` は `resume`/`restored` を受け、復元セッションは起動時にサブプロセスを立てず、
->   最初の追加指示で遅延 resume。終了時は `stop()`（quiet）で resumable のまま保存。
-> - 全234テスト緑 / coverage 95.5%/85%/89.6%/96.5% / lint・typecheck・build すべて緑。
+>   最初の追加指示で遅延 resume。終了時は `stop()`（quiet）で resumable のまま保存。sdkSessionId を持つ
+>   （＝真に resume 可能な）セッションのみ永続する。
 > - 手動受け入れ（実 Claude での resume 挙動）は TTY+認証が要るため未実施。統合テスト（tests/restore.test.tsx）で
 >   「run→persist→新 manager restore→追加指示で resume が query に載る」まで検証済み。
 

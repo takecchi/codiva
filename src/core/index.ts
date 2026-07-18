@@ -2,6 +2,7 @@ export * from './async-queue';
 export * from './config';
 export * from './cost';
 export * from './i18n';
+export * from './layout';
 export * from './notify';
 export * from './persistence';
 export * from './session';

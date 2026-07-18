@@ -151,12 +151,12 @@ interface SessionState {
 
 ### UI (ui/)
 
-Claude Code の実画面に寄せる: 下部に**上下の全幅横罫線だけ**の入力欄（`PromptInput`、角丸枠ではない）、その下にモード行（`StatusFooter` = `⏵⏵ auto mode on (shift+tab to cycle)` + 文脈ヒント）を常設。ヘッダは枠なしのワードマーク。色とグリフは `theme.ts` に集約。
+Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**（web の 100dvh 相当。`App` が root Box に `useWindowSize()` の rows を指定。極端に低い端末では `isFullscreenViewport` が false になりインライン描画へフォールバック）に描画し、下部に**上下の全幅横罫線だけ**の入力欄（`PromptInput`、角丸枠ではない）、その下にモード行（`StatusFooter` = `⏵⏵ auto mode on (shift+tab to cycle)` + 文脈ヒント）を flexGrow スペーサで**最下部に固定**。ヘッダは枠なしのワードマーク。色とグリフは `theme.ts` に集約。
 
 - `App`: ビュー状態（`list` | `detail:<id>`）と全体キーバインドを管理。`cwd` を受け取りバナーへ渡す。
 - `Banner`: 起動時ヘッダ（`✻ codiva` + サブタイトル + cwd）。枠なし3行、一覧上部に表示。
 - `SessionList`: `Banner` + 一覧 + 選択カーソル + 下部 `PromptInput`/`StatusFooter`。いつでも新規投入できる。
-- `SessionDetail`: `<Static>` メッセージログ（`⏺`/`⎿`/`>` のグリフで転記）+ ステータスヘッダ + `PromptInput` または操作パネル/`PermissionDialog` + `StatusFooter`。
+- `SessionDetail`: ステータスヘッダ（上部固定）+ メッセージログの**末尾ビューポート**（`⏺`/`⎿`/`>` のグリフで転記。flexGrow + `justifyContent="flex-end"` + `overflowY="hidden"` で最新行を下端に表示し、溢れた古い行は上へクリップ）+ `PromptInput` または操作パネル/`PermissionDialog` + `StatusFooter`（下部固定）。`<Static>` はスクロールバックに書くため全画面レイアウトと両立せず不使用。
 - `PromptInput` / `StatusFooter`: presentational。キー処理は各 view の単一 `useInput` に集約（ロジックは持たない）。
 - 再描画スロットリング: SessionManager の通知を UI 側で ~100ms にスロットルする。
 
@@ -221,7 +221,7 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 | リスク | 対応 |
 |--------|------|
 | SDK メッセージ形式の想定違い | Phase 1 のスパイクで実メッセージを JSONL 収集し、reducer のテストフィクスチャに使う（想定で書かない） |
-| 大量ストリームで Ink 再描画が重い | 詳細ビューは選択中セッションのみ描画 + `<Static>` + スロットリング |
+| 大量ストリームで Ink 再描画が重い | 詳細ビューは選択中セッションのみ描画 + ログは `slice(-rows)` で端末高さぶんに限定 + スロットリング |
 | 質問検出の誤判定 | MVP はヒューリスティック + 詳細ビューでいつでも追加入力可能なので誤判定の実害は小さい。スパイク結果で改善 |
 | 並列セッションのAPIコスト | Backlog でコスト表示を追加。MVP では result メッセージの usage をログに残すのみ |
 | ユーザーのメインworktreeが dirty | worktree は HEAD から切るため影響なし。起動時チェックで警告のみ表示 |
