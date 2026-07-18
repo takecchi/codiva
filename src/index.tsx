@@ -1,7 +1,13 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
-import { messages, resolveLang, SessionManager, WorktreeManager } from '@/core';
-import { loadConfig } from '@/utils';
+import {
+  isFullscreenViewport,
+  messages,
+  resolveLang,
+  SessionManager,
+  WorktreeManager,
+} from '@/core';
+import { enterAltScreen, loadConfig } from '@/utils';
 import { App } from './app';
 
 async function main(): Promise<void> {
@@ -29,10 +35,20 @@ async function main(): Promise<void> {
     queryFn: query,
   });
 
+  // 全画面レイアウトで描くときは alt screen に入り、スクロールバックを無効化する
+  // （上へのスクロールをロック）。低すぎる端末はインライン描画へフォールバックし
+  // 端末スクロールに頼るため、通常バッファのまま。判定は起動時の一度きり
+  // （途中のリサイズでバッファを切り替えると画面が壊れるため追従しない）。
+  const useAltScreen = process.stdout.isTTY && isFullscreenViewport(process.stdout.rows ?? 0);
+  const leaveAltScreen = useAltScreen ? enterAltScreen(process.stdout) : undefined;
+
   const { waitUntilExit } = render(<App manager={manager} cwd={repoRoot} messages={t} />, {
     exitOnCtrlC: false,
   });
   await waitUntilExit();
+
+  // 終了メッセージは alt screen を抜けてから書き、通常バッファ（シェルの履歴）に残す。
+  leaveAltScreen?.();
 
   // Sessions are aborted on quit but their worktrees are intentionally kept so
   // no work is lost. Tell the user where they are.
