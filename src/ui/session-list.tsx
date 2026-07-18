@@ -1,10 +1,10 @@
 import { Box, Text, useInput } from 'ink';
 import { type FC, useState } from 'react';
-import { type SessionManager, totalCostUsd } from '@/core';
+import { emptyBuffer, type SessionManager, type TextBuffer, totalCostUsd } from '@/core';
 import { Banner } from './banner';
 import { useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
-import { editBuffer, formatElapsed } from './input';
+import { editText, formatElapsed, resolveEnter } from './input';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
@@ -20,7 +20,7 @@ export const SessionList: FC<{
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
   const now = useClock(1000);
-  const [buffer, setBuffer] = useState('');
+  const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
   const [sel, setSel] = useState(0);
   // Archived sessions sink to the bottom; Array.sort is stable so the rest keep
   // their creation order.
@@ -46,7 +46,7 @@ export const SessionList: FC<{
       setSel((s) => Math.min(sorted.length - 1, s + 1));
       return;
     }
-    if (key.rightArrow || (key.return && buffer.trim() === '')) {
+    if (key.rightArrow) {
       const target = sorted[selected];
       if (target) {
         onOpen(target.id);
@@ -54,16 +54,27 @@ export const SessionList: FC<{
       return;
     }
     if (key.return) {
-      const prompt = buffer.trim();
-      if (prompt) {
-        manager.create(prompt);
-        setBuffer('');
+      const enter = resolveEnter(buffer, key);
+      if (enter.kind === 'newline') {
+        setBuffer(enter.buffer);
+        return;
       }
+      if (enter.text === '') {
+        // Empty prompt + Enter opens the selected session (like →).
+        const target = sorted[selected];
+        if (target) {
+          onOpen(target.id);
+        }
+        return;
+      }
+      manager.create(enter.text);
+      setBuffer(emptyBuffer());
       return;
     }
-    const edit = editBuffer(buffer, input, key);
+    // Arrows stay reserved for row navigation here, so the composer is edit-at-caret only.
+    const edit = editText(buffer, input, key);
     if (edit.changed) {
-      setBuffer(edit.value);
+      setBuffer(edit.buffer);
     }
   });
 
@@ -110,7 +121,7 @@ export const SessionList: FC<{
         )}
       </Box>
 
-      <PromptInput value={buffer} focused placeholder={m.list.promptPlaceholder} />
+      <PromptInput buffer={buffer} focused placeholder={m.list.promptPlaceholder} />
       <StatusFooter mode={mode} hint={m.list.help} />
     </Box>
   );

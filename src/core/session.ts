@@ -232,6 +232,9 @@ export class Session {
           canUseTool: this.canUseTool,
           abortController: this.abortController,
           settingSources: ['project'],
+          // Stream partial assistant text so the detail view shows a live preview
+          // (reduced into state.streamingText). See status-reducer reduceStreamEvent.
+          includePartialMessages: true,
           ...(opts?.model ? { model: opts.model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
           ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),

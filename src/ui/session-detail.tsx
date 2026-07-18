@@ -1,9 +1,21 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useState } from 'react';
-import { type DiffStat, formatUsd, type LogEntry, type SessionManager, tailMessages } from '@/core';
+import {
+  type DiffStat,
+  emptyBuffer,
+  formatUsd,
+  type LogEntry,
+  logViewportRows,
+  logWindow,
+  type ScrollAnchor,
+  type SessionManager,
+  scrollDown,
+  scrollUp,
+  type TextBuffer,
+} from '@/core';
 import { useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
-import { editBuffer } from './input';
+import { editText, resolveEnter } from './input';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
@@ -22,6 +34,18 @@ const LOG: Record<LogEntry['kind'], { prefix: string; color?: string; dim?: bool
 };
 
 const TERMINAL = new Set(['completed', 'failed', 'archived']);
+
+/** The live-typing preview: the last non-empty line of the streamed text so far. */
+function streamTail(text: string): string {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (line && line.length > 0) {
+      return line;
+    }
+  }
+  return '';
+}
 
 const LogLine: FC<{ entry: LogEntry }> = ({ entry }) => {
   const spec = LOG[entry.kind];
@@ -43,7 +67,9 @@ export const SessionDetail: FC<{
   const mode = useRunMode(manager);
   const { rows } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
-  const [buffer, setBuffer] = useState('');
+  const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
+  // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
+  const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
   const [diff, setDiff] = useState<DiffStat | undefined>(undefined);
@@ -111,6 +137,17 @@ export const SessionDetail: FC<{
     if (pending) {
       return; // PermissionDialog owns the keys
     }
+    // Log scroll (terminal scrollback is disabled under the alt screen). The
+    // step is derived from the *visible* log height, not the full terminal, so a
+    // page never jumps past unseen lines.
+    if (key.pageUp) {
+      setAnchor((a) => scrollUp(a, session?.messages.length ?? 0, logViewportRows(rows)));
+      return;
+    }
+    if (key.pageDown) {
+      setAnchor((a) => scrollDown(a, session?.messages.length ?? 0, logViewportRows(rows)));
+      return;
+    }
     if (confirm) {
       if (input === 'y' || input === 'Y') {
         run(confirm);
@@ -131,22 +168,23 @@ export const SessionDetail: FC<{
       }
       return;
     }
-    // input panel
-    if (key.leftArrow) {
-      onBack();
-      return;
-    }
+    // input panel (multi-line composer; ← now moves the caret, Esc goes back)
     if (key.return) {
-      const text = buffer.trim();
-      if (text && session) {
-        manager.send(session.id, text);
-        setBuffer('');
+      const enter = resolveEnter(buffer, key);
+      if (enter.kind === 'newline') {
+        setBuffer(enter.buffer);
+        return;
+      }
+      if (enter.text && session) {
+        manager.send(session.id, enter.text);
+        setBuffer(emptyBuffer());
+        setAnchor('bottom'); // jump back to the tail to watch the new turn
       }
       return;
     }
-    const edit = editBuffer(buffer, input, key);
+    const edit = editText(buffer, input, key, { arrows: true, vertical: true });
     if (edit.changed) {
-      setBuffer(edit.value);
+      setBuffer(edit.buffer);
     }
   });
 
@@ -164,6 +202,8 @@ export const SessionDetail: FC<{
     : panel === 'actions'
       ? m.detail.helpActions
       : m.detail.helpInput;
+  const win = logWindow(session.messages, rows, anchor);
+  const preview = session.streamingText ? streamTail(session.streamingText) : '';
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -209,10 +249,25 @@ export const SessionDetail: FC<{
         overflowY="hidden"
         justifyContent="flex-end"
       >
-        {tailMessages(session.messages, rows).map((entry) => (
+        {win.entries.map((entry) => (
           <LogLine key={entry.seq} entry={entry} />
         ))}
+        {/* Live streaming preview, only while following the tail. */}
+        {win.atBottom && preview ? (
+          <Text color={theme.accent} dimColor wrap="truncate-end">
+            {preview}
+          </Text>
+        ) : null}
       </Box>
+
+      {/* Scrollback indicator: shown only when the view is lifted off the tail. */}
+      {!win.atBottom ? (
+        <Box flexShrink={0}>
+          <Text color="yellow" dimColor>
+            {m.detail.scrollHint(win.hiddenBelow)}
+          </Text>
+        </Box>
+      ) : null}
 
       <Box flexDirection="column" marginTop={1} flexShrink={0}>
         {isTerminal && diff ? (
@@ -262,7 +317,7 @@ export const SessionDetail: FC<{
             )}
           </Box>
         ) : (
-          <PromptInput value={buffer} focused placeholder={m.detail.followupPlaceholder} />
+          <PromptInput buffer={buffer} focused placeholder={m.detail.followupPlaceholder} />
         )}
 
         <StatusFooter mode={mode} hint={footerHint} />

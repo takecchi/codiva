@@ -117,12 +117,12 @@ UI なし。すべてユニットテストで駆動する。
 
 - [x] 全画面（100dvh 相当）レイアウト: root に端末 rows を指定、入力欄+フッタを下部固定、詳細ログは `<Static>` から末尾ビューポートへ置換
 - [x] alt screen（`\x1b[?1049h`/`\x1b[?1049l`）でスクロールバックを無効化し、上へのスクロールをロック（`utils/alt-screen.ts`）
-- [ ] 詳細ビューのログスクロール（末尾ビューポートは最新行のみ表示。過去ログを遡る手段が未実装）
-- [ ] 入力欄の複数行化（Shift+Enter 改行、行数に応じて上に伸び、上限超過で内部スクロール — Claude Code 同等）
+- [x] 詳細ビューのログスクロール（`core/scroll.ts` の `logWindow`/`scrollUp`/`scrollDown`、PgUp/PgDn。alt screen 下でも過去ログを遡れる）
+- [x] 入力欄の複数行化（`core/text-buffer.ts` + `ui/input.ts`。Shift+Enter/末尾`\`+Enter で改行、`INPUT_MAX_ROWS` まで伸び超過は内部スクロール）
 - [x] アプリ再起動後のセッション復元（`.codiva/state.json` + SDK `resume`）
 - [x] 設定ファイル（model / effort / permissionMode / maxBudgetUsd）
 - [x] コスト表示（result の total_cost_usd 累計）
-- [ ] includePartialMessages によるストリーミング表示（今回は着手せず）
+- [x] includePartialMessages によるストリーミング表示（`stream_event` の text_delta を `streamingText` に連結し詳細ビューにプレビュー）
 - [x] デスクトップ通知（質問・完了時）
 
 > 実績メモ（Phase 6 / 設定・コスト・通知・復元の4項目。ストリーミング表示は未着手）:
@@ -141,6 +141,26 @@ UI なし。すべてユニットテストで駆動する。
 >   （＝真に resume 可能な）セッションのみ永続する。
 > - 手動受け入れ（実 Claude での resume 挙動）は TTY+認証が要るため未実施。統合テスト（tests/restore.test.tsx）で
 >   「run→persist→新 manager restore→追加指示で resume が query に載る」まで検証済み。
+
+> 実績メモ（Phase 6 残 3項目 / ログスクロール・複数行入力・ストリーミング表示。これで Phase 6 全項目 完了）:
+> - **ログスクロール**: 純粋な `core/scroll.ts`（`logWindow`/`scrollUp`/`scrollDown`/`pageStep`）。`anchor` は
+>   `'bottom'`（末尾追従）か絶対 end index（**上スクロール中は固定**なので新着ログで view がぶれない＝top-anchored）。
+>   `end` は anchor で厳密に、`start` は「埋まるぶん」だけ（rows 上限）取り、flex-end ビューポートがクリップ。
+>   詳細ビューに PgUp/PgDn を配線、追加指示送信時は `'bottom'` へ戻す。alt screen（#5）で端末スクロールバックを
+>   無効化したため、過去ログはこのアプリ内スクロールが唯一の手段。
+> - **複数行入力**: 純粋モデル `core/text-buffer.ts`（value+cursor、insert/backspace/move*/`visibleLineRange`）、
+>   キー→操作の対応のみ `ui/input.ts`（`editText`/`resolveEnter`）に置き、UI からロジックを排除。Shift/Meta+Enter か
+>   末尾バックスラッシュ+Enter で改行（後者は Shift+Enter を送れない端末向けの堅牢なフォールバック）、他は送信。
+>   一覧は矢印を行選択に温存（末尾編集のみ）、詳細は矢印でフルにカーソル移動。`PromptInput` は `INPUT_MAX_ROWS`
+>   まで縦に伸び、超過分はカーソル付近を内部スクロール（空/1行時は 1行高を維持＝全画面テストの高さ不変）。
+> - **ストリーミング表示**: `session.ts` に `includePartialMessages: true`。reducer は `stream_event` の
+>   `content_block_delta`/`text_delta` のみ `state.streamingText` に連結し、確定 `assistant`/`result`/追加入力で
+>   クリア（確定ログが正）。`streamingText` は transient で永続しない。SDK 型（`SDKPartialAssistantMessage` /
+>   `BetaRawContentBlockDeltaEvent`）から形を確認して実装（想定書きしない規約）。詳細ビューは末尾にタイピング風プレビュー。
+> - テスト: `core/scroll.spec.ts`・`core/text-buffer.spec.ts`・`status-reducer.spec.ts`（stream_event）をテーブル駆動で追加、
+>   `tests/app.test.tsx` に統合3本（PgUp/PgDn スクロール・ストリーミングプレビュー+`includePartialMessages` 検証・
+>   バックスラッシュ改行）。全 292 テスト緑、lint/typecheck/build 緑。手動受け入れ（実端末での改行/スクロール体感）は
+>   TTY 環境が要るため未実施だが、ink-testing の統合テストで配線を検証済み。
 
 ---
 

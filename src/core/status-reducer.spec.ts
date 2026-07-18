@@ -275,3 +275,85 @@ describe('reduce over synthetic SDK messages', () => {
     expect(sdk(s0, { type: 'rate_limit_event' })).toBe(s0);
   });
 });
+
+/** A partial-assistant stream_event (from includePartialMessages). */
+function streamText(text: string) {
+  return {
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+  };
+}
+
+describe('reduce over streaming partial messages', () => {
+  it('accumulates text_delta into streamingText and flips to running', () => {
+    let state = sdk(initialState(BASE), streamText('Hel'));
+    expect(state.status).toBe('running');
+    expect(state.streamingText).toBe('Hel');
+    state = sdk(state, streamText('lo'));
+    expect(state.streamingText).toBe('Hello');
+  });
+
+  it('message_start resets the streaming preview', () => {
+    const running = sdk(initialState(BASE), streamText('stale'));
+    const reset = sdk(running, { type: 'stream_event', event: { type: 'message_start' } });
+    expect(reset.streamingText).toBeUndefined();
+  });
+
+  it('the full assistant message clears the streaming preview and logs the text', () => {
+    const streaming = sdk(initialState(BASE), streamText('partial answer'));
+    const final = sdk(streaming, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'partial answer done' }] },
+    });
+    expect(final.streamingText).toBeUndefined();
+    expect(final.messages.at(-1)).toMatchObject({
+      kind: 'assistant_text',
+      text: 'partial answer done',
+    });
+  });
+
+  it('a result clears any dangling streaming preview', () => {
+    const streaming = sdk({ ...initialState(BASE), status: 'running' }, streamText('half'));
+    const done = sdk(streaming, { type: 'result', subtype: 'success', result: 'ok' });
+    expect(done.status).toBe('completed');
+    expect(done.streamingText).toBeUndefined();
+  });
+
+  it('non-text and empty-text deltas are no-ops (same reference)', () => {
+    const s0: SessionState = { ...initialState(BASE), status: 'running' };
+    expect(
+      sdk(s0, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{}' },
+        },
+      }),
+    ).toBe(s0);
+    // An empty text_delta changes nothing observable → must keep the same reference.
+    expect(
+      sdk(s0, {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '' } },
+      }),
+    ).toBe(s0);
+    expect(sdk(s0, { type: 'stream_event' })).toBe(s0);
+    expect(sdk(s0, { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } })).toBe(
+      s0,
+    );
+  });
+
+  it('clears the streaming preview when aborted or archived mid-stream', () => {
+    const streaming = sdk({ ...initialState(BASE), status: 'running' }, streamText('half'));
+    expect(streaming.streamingText).toBe('half');
+
+    const aborted = reduce(streaming, { kind: 'aborted', at: 9 });
+    expect(aborted.status).toBe('failed');
+    expect(aborted.streamingText).toBeUndefined();
+
+    const archived = reduce(streaming, { kind: 'archived', at: 9 });
+    expect(archived.status).toBe('archived');
+    expect(archived.streamingText).toBeUndefined();
+  });
+});
