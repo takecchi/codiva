@@ -88,6 +88,9 @@ export type CodivaEvent =
   | { kind: 'permission_request'; request: PermissionRequest; at: number }
   | { kind: 'permission_resolved'; at: number }
   | { kind: 'user_input'; text: string; at: number }
+  // A Claude-generated title (from the content of the task), replacing the
+  // input-derived placeholder. Fired once, asynchronously, after a fresh start.
+  | { kind: 'title'; title: string; at: number }
   | { kind: 'aborted'; error?: string; at: number }
   | { kind: 'archived'; at: number };
 

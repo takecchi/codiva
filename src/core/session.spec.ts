@@ -322,4 +322,64 @@ describe('Session', () => {
     expect(seen?.resume).toBe('sdk-42');
     expect(session.getState().status).toBe('running');
   });
+
+  it('swaps in a generated title on a fresh start', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      generateTitle: async () => 'Generated title',
+    });
+    expect(session.getState().title).toBe('t'); // placeholder before generation
+    session.start();
+    await tick();
+    expect(session.getState().title).toBe('Generated title');
+  });
+
+  it('keeps the placeholder title when generation returns nothing', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      generateTitle: async () => null,
+    });
+    session.start();
+    await tick();
+    expect(session.getState().title).toBe('t');
+  });
+
+  it('does not throw or change the title when generation rejects', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      generateTitle: async () => {
+        throw new Error('boom');
+      },
+    });
+    session.start();
+    await tick();
+    expect(session.getState().title).toBe('t');
+  });
+
+  it('does not generate a title for restored sessions', async () => {
+    const fake = makeFakeQuery();
+    const generateTitle = vi.fn(async () => 'Should not run');
+    const restored = { ...initialState(INPUT), status: 'completed' as const };
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      generateTitle,
+      restored,
+    });
+    // Restored sessions don't call start(); the first send() resumes without title gen.
+    session.send('continue');
+    await tick();
+    expect(generateTitle).not.toHaveBeenCalled();
+    expect(session.getState().title).toBe('t');
+  });
 });
