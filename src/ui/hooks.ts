@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import type { DOMElement } from 'ink';
+import { type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import type { RunMode, SessionManager, SessionState } from '@/core';
 
 /**
@@ -36,6 +37,45 @@ export function useRunMode(manager: SessionManager): RunMode {
     () => manager.getMode(),
     () => manager.getMode(),
   );
+}
+
+/** Position of a box relative to the Ink output origin (terminal cells). */
+export interface AbsolutePosition {
+  left: number;
+  top: number;
+}
+
+/**
+ * Absolute (output-origin) position of an Ink box. `useCursor` expects
+ * output-origin coordinates but `useBoxMetrics` is parent-relative, so this
+ * walks up the node tree summing each ancestor's computed offset. Measured
+ * after every render (same cadence as Ink's own `useBoxMetrics`); re-renders
+ * only when the position actually changes.
+ */
+export function useAbsolutePosition(
+  ref: RefObject<DOMElement | null>,
+): AbsolutePosition | undefined {
+  const [pos, setPos] = useState<AbsolutePosition | undefined>(undefined);
+  useEffect(() => {
+    if (!ref.current) {
+      setPos(undefined);
+      return;
+    }
+    let left = 0;
+    let top = 0;
+    for (let node: DOMElement | undefined = ref.current; node; node = node.parentNode) {
+      const layout = node.yogaNode?.getComputedLayout();
+      if (!layout) {
+        // Detached from the tree mid-walk — treat as unmeasured.
+        setPos(undefined);
+        return;
+      }
+      left += layout.left;
+      top += layout.top;
+    }
+    setPos((prev) => (prev && prev.left === left && prev.top === top ? prev : { left, top }));
+  });
+  return pos;
 }
 
 /** A clock that ticks every `ms` so elapsed-time displays stay current. */

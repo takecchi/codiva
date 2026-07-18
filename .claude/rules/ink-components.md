@@ -39,6 +39,20 @@
   改行、他は送信。一覧は矢印を行選択に温存（カーソル移動なし）、詳細は矢印でカーソル移動。`PromptInput` は
   `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` でカーソル付近を内部スクロール。
 
+## IME（日本語入力）対応
+
+- IME の未確定文字列（変換中のプレビュー）は**端末が実カーソル位置に描画する**。
+  Ink はカーソルを隠したまま描画するため、何もしないと変換中の文字がどこにも
+  見えず「日本語が打てない」ように見える（Ghostty 等で顕著）。
+- 対策: フォーカス中の `PromptInput` は Ink の `useCursor` で実端末カーソルを
+  キャレットのセルに置く。座標は出力原点からの絶対位置が必要だが、
+  `useBoxMetrics` は**親相対**なので `useAbsolutePosition`（`ui/hooks.ts`、
+  yoga ツリーを遡って合算）を使う。
+- キャレット列は表示幅で数える（`promptCaretColumn`、CJK/絵文字は2セル）。
+  `.length` で数えるとカーソルと preedit の位置が日本語でズレる。
+- フォーカスが外れたら（モーダル表示・アンマウント時）`setCursorPosition(undefined)`
+  で必ず隠す。`useCursor` を同時に呼ぶコンポーネントは**1画面に1つ**まで。
+
 ## 描画パフォーマンス
 
 - ストア購読（`useSessions`）は ~100ms スロットル。`useSyncExternalStore` の getSnapshot が同一参照を返せば再描画されない性質を使う。

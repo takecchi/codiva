@@ -124,6 +124,9 @@ UI なし。すべてユニットテストで駆動する。
 - [x] コスト表示（result の total_cost_usd 累計）
 - [x] includePartialMessages によるストリーミング表示（`stream_event` の text_delta を `streamingText` に連結し詳細ビューにプレビュー）
 - [x] デスクトップ通知（質問・完了時）
+- [x] IME（日本語入力）対応: `PromptInput` が `useCursor` で実端末カーソルをキャレット位置
+      （表示幅ベース、CJK 2セル）に置き、端末が変換中の未確定文字列を入力欄に描画できるようにする。
+      backspace はコードポイント単位に修正（絵文字が半分残るバグも解消）
 
 > 実績メモ（Phase 6 / 設定・コスト・通知・復元の4項目。ストリーミング表示は未着手）:
 > - **設定拡張**: `core/config.ts` に `model`/`effort`/`permissionMode`/`maxBudgetUsd`/`notifications` を追加。

@@ -1,4 +1,5 @@
 import type { Key } from 'ink';
+import stringWidth from 'string-width';
 import {
   backspace,
   insert,
@@ -9,6 +10,7 @@ import {
   newline,
   type TextBuffer,
 } from '@/core';
+import { glyph } from './theme';
 
 export interface EditResult {
   buffer: TextBuffer;
@@ -91,6 +93,16 @@ export function resolveEnter(buffer: TextBuffer, key: Key): EnterAction {
     return { kind: 'newline', buffer: newline(backspace(buffer)) };
   }
   return { kind: 'submit', text: buffer.value.trim() };
+}
+
+/**
+ * Column (0-based, in terminal cells) of the caret within a PromptInput row:
+ * the 2-cell `❯ `／`  ` prefix plus the text before the caret on that line.
+ * CJK/絵文字は2セル幅なので string-width で数える（.length だと日本語入力で
+ * カーソルと IME preedit の位置がズレる）。
+ */
+export function promptCaretColumn(textBeforeCaret: string): number {
+  return stringWidth(`${glyph.caret} ${textBeforeCaret}`);
 }
 
 /** Format elapsed time between startedAt and end (finishedAt or now). */
