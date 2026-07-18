@@ -1,4 +1,6 @@
 import type { Key } from 'ink';
+import stringWidth from 'string-width';
+import { glyph } from './theme';
 
 /**
  * Apply a keypress to a single-line text buffer. Returns the (possibly) updated
@@ -11,9 +13,13 @@ export function editBuffer(
   key: Key,
 ): { value: string; changed: boolean } {
   if (key.backspace || key.delete) {
-    return value.length > 0
-      ? { value: value.slice(0, -1), changed: true }
-      : { value, changed: false };
+    if (value.length === 0) {
+      return { value, changed: false };
+    }
+    // コードポイント単位で1文字消す。code unit の slice(0, -1) だと
+    // サロゲートペア（絵文字等）が半分だけ残って壊れる。
+    const chars = [...value];
+    return { value: chars.slice(0, -1).join(''), changed: true };
   }
   if (
     key.return ||
@@ -34,6 +40,15 @@ export function editBuffer(
     return { value: value + input, changed: true };
   }
   return { value, changed: false };
+}
+
+/**
+ * Column (0-based, in terminal cells) of the caret inside PromptInput's content
+ * line: the `❯ ` prefix plus the buffer. CJK/絵文字は2セル幅なので string-width
+ * で数える（.length だと日本語入力でカーソルがズレる）。
+ */
+export function promptCaretColumn(value: string): number {
+  return stringWidth(`${glyph.caret} ${value}`);
 }
 
 /** Format elapsed time between startedAt and end (finishedAt or now). */
