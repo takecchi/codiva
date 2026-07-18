@@ -115,6 +115,9 @@ UI なし。すべてユニットテストで駆動する。
 
 ## Phase 6: Backlog（MVP後、着手前にユーザーと相談）
 
+- [x] 全画面（100dvh 相当）レイアウト: root に端末 rows を指定、入力欄+フッタを下部固定、詳細ログは `<Static>` から末尾ビューポートへ置換
+- [ ] 詳細ビューのログスクロール（末尾ビューポートは最新行のみ表示。過去ログを遡る手段が未実装）
+- [ ] 入力欄の複数行化（Shift+Enter 改行、行数に応じて上に伸び、上限超過で内部スクロール — Claude Code 同等）
 - [ ] アプリ再起動後のセッション復元（`.codiva/state.json` + SDK `resume`）
 - [ ] 設定ファイル（model / effort / permissionMode / maxBudgetUsd）
 - [ ] コスト表示（result の total_cost_usd 累計）
