@@ -3,11 +3,22 @@ import { render } from 'ink';
 import {
   isFullscreenViewport,
   messages,
+  notificationFor,
   resolveLang,
   SessionManager,
+  type SessionState,
   WorktreeManager,
 } from '@/core';
-import { enterAltScreen, loadConfig } from '@/utils';
+import {
+  defaultStatePath,
+  enterAltScreen,
+  loadConfig,
+  loadState,
+  notify,
+  pruneMissingWorktrees,
+  saveState,
+  saveStateSync,
+} from '@/utils';
 import { App } from './app';
 
 async function main(): Promise<void> {
@@ -30,10 +41,59 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Notifications default on; disable with `"notifications": false` in config.
+  const notifyOnTransition =
+    config.notifications === false
+      ? undefined
+      : (prev: SessionState, next: SessionState) => {
+          const spec = notificationFor(prev, next, t);
+          if (spec) {
+            notify(spec);
+          }
+        };
+
+  // Persist the restore state to <repo>/.codiva/state.json, debounced so a burst
+  // of streaming updates writes at most once per window.
+  const statePath = defaultStatePath(repoRoot);
+  let persistTimer: ReturnType<typeof setTimeout> | undefined;
+  const schedulePersist = () => {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+    }
+    persistTimer = setTimeout(() => {
+      void saveState(manager.persistableState(), statePath).catch(() => undefined);
+    }, 500);
+  };
+
   const manager = new SessionManager({
     worktrees,
     queryFn: query,
+    options: {
+      model: config.model,
+      effort: config.effort,
+      permissionMode: config.permissionMode,
+      maxBudgetUsd: config.maxBudgetUsd,
+    },
+    onTransition: notifyOnTransition,
+    onPersist: schedulePersist,
   });
+
+  // Restore sessions from a previous run (worktrees that still exist on disk).
+  manager.restore(pruneMissingWorktrees(await loadState(statePath)));
+
+  // Flush synchronously on hard termination (kill / terminal close), where the
+  // debounced async save wouldn't run before the process dies. Ctrl+C is handled
+  // by the App (dispose → exit → final flush below), so we only cover SIGTERM/SIGHUP.
+  const flushSyncAndExit = (code: number) => () => {
+    try {
+      saveStateSync(manager.persistableState(), statePath);
+    } catch {
+      // best-effort — never block shutdown on a failed save
+    }
+    process.exit(code);
+  };
+  process.once('SIGTERM', flushSyncAndExit(143));
+  process.once('SIGHUP', flushSyncAndExit(129));
 
   // 全画面レイアウトで描くときは alt screen に入り、スクロールバックを無効化する
   // （上へのスクロールをロック）。低すぎる端末はインライン描画へフォールバックし
@@ -46,6 +106,13 @@ async function main(): Promise<void> {
     exitOnCtrlC: false,
   });
   await waitUntilExit();
+
+  // Flush the final state on quit. dispose() used stop() (not abort()), so
+  // in-flight sessions are still recorded as resumable here.
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+  }
+  await saveState(manager.persistableState(), statePath).catch(() => undefined);
 
   // 終了メッセージは alt screen を抜けてから書き、通常バッファ（シェルの履歴）に残す。
   leaveAltScreen?.();

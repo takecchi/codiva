@@ -20,11 +20,13 @@ class FakeSession implements SessionHandle {
   state: SessionState;
   started = false;
   aborted = false;
+  stopped = false;
   constructor(
     input: CreateSessionInput,
     private readonly onChange: (s: SessionState) => void,
+    restored?: SessionState,
   ) {
-    this.state = initialState(input);
+    this.state = restored ?? initialState(input);
   }
   calls: string[] = [];
   getState() {
@@ -51,13 +53,16 @@ class FakeSession implements SessionHandle {
   abort() {
     this.aborted = true;
   }
+  stop() {
+    this.stopped = true;
+  }
   archive() {
     this.calls.push('archive');
     this.state = { ...this.state, status: 'archived' };
     this.onChange(this.state);
   }
-  drive(status: SessionState['status']) {
-    this.state = { ...this.state, status };
+  drive(status: SessionState['status'], sdkSessionId?: string) {
+    this.state = { ...this.state, status, sdkSessionId: sdkSessionId ?? this.state.sdkSessionId };
     this.onChange(this.state);
   }
 }
@@ -70,8 +75,8 @@ function makeManager() {
       throw new Error('should not be called with a fake factory');
     }) as never,
     now: () => 100,
-    createSession: ({ input, onChange }) => {
-      const s = new FakeSession(input, onChange);
+    createSession: ({ input, onChange, restored }) => {
+      const s = new FakeSession(input, onChange, restored);
       created.push(s);
       return s;
     },
@@ -149,13 +154,14 @@ describe('SessionManager', () => {
     expect(after[1]).not.toBe(before[1]); // changed row is a new object
   });
 
-  it('dispose() aborts every session', async () => {
+  it('dispose() quietly stops every session (resumable, not marked failed)', async () => {
     const { manager, created } = makeManager();
     manager.create('a');
     manager.create('b');
     await flush();
     manager.dispose();
-    expect(created.every((s) => s.aborted)).toBe(true);
+    expect(created.every((s) => s.stopped)).toBe(true);
+    expect(created.some((s) => s.aborted)).toBe(false);
   });
 
   it('exposes get() and forwards UI actions to the right session', async () => {
@@ -270,6 +276,217 @@ describe('SessionManager', () => {
       expect(manager.activeWorktreePaths()).toEqual(['/tmp/wt/feature']);
       await manager.discard(id);
       expect(manager.activeWorktreePaths()).toEqual([]);
+    });
+  });
+
+  describe('persistence (restore / persistableState)', () => {
+    it('persistableState captures restorable sessions with slug + base', async () => {
+      const { manager, created } = makeManager();
+      manager.create('add login');
+      await flush();
+      created[0]?.drive('completed', 'sdk-1');
+      const persisted = manager.persistableState();
+      expect(persisted.version).toBe(1);
+      expect(persisted.sessions).toHaveLength(1);
+      expect(persisted.sessions[0]).toMatchObject({
+        title: 'add login',
+        slug: 'add-login',
+        branch: 'codiva/add-login',
+        base: 'main',
+        sdkSessionId: 'sdk-1',
+        status: 'completed',
+      });
+    });
+
+    it('persistableState omits sessions that never got an sdkSessionId', async () => {
+      const { manager, created } = makeManager();
+      manager.create('no session id');
+      await flush();
+      created[0]?.drive('completed'); // no sdkSessionId → not resumable
+      expect(manager.persistableState().sessions).toEqual([]);
+    });
+
+    it('persistableState omits creating and archived sessions', async () => {
+      const { manager, created } = makeManager();
+      manager.create('still creating'); // stays 'creating' (fake never drives it)
+      const id2 = manager.create('to archive');
+      await flush();
+      created[1]?.drive('completed');
+      await manager.merge(id2); // → archived
+      expect(manager.persistableState().sessions).toEqual([]);
+    });
+
+    it('restore rehydrates idle sessions without starting them', () => {
+      const { manager, created } = makeManager();
+      manager.restore({
+        version: 1,
+        sessions: [
+          {
+            id: '1',
+            title: 'Restored task',
+            prompt: 'do it',
+            slug: 'restored',
+            branch: 'codiva/restored',
+            worktreePath: '/tmp/wt/restored',
+            base: 'main',
+            sdkSessionId: 'sdk-old',
+            status: 'completed',
+            startedAt: 3,
+            todos: [],
+          },
+        ],
+      });
+      const snap = manager.getSnapshot();
+      expect(snap).toHaveLength(1);
+      expect(snap[0]).toMatchObject({ id: '1', title: 'Restored task', status: 'completed' });
+      // Not started: it resumes lazily on the first follow-up.
+      expect(created[0]?.started).toBe(false);
+    });
+
+    it('restore forwards resume + restored state to the session factory', () => {
+      let seen: { resume?: string; restored?: SessionState } | undefined;
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        createSession: ({ input, onChange, resume, restored }) => {
+          seen = { resume, restored };
+          return new FakeSession(input, onChange, restored);
+        },
+      });
+      manager.restore({
+        version: 1,
+        sessions: [
+          {
+            id: '4',
+            title: 't',
+            prompt: 'p',
+            slug: 's',
+            branch: 'codiva/s',
+            worktreePath: '/tmp/wt/s',
+            base: 'main',
+            sdkSessionId: 'sdk-4',
+            status: 'completed',
+            startedAt: 0,
+            todos: [],
+          },
+        ],
+      });
+      expect(seen?.resume).toBe('sdk-4');
+      expect(seen?.restored?.status).toBe('completed');
+    });
+
+    it('reserves restored ids/slugs so new sessions do not collide', async () => {
+      const { manager } = makeManager();
+      manager.restore({
+        version: 1,
+        sessions: [
+          {
+            id: '1',
+            title: 't',
+            prompt: 'p',
+            slug: 'feature',
+            branch: 'codiva/feature',
+            worktreePath: '/tmp/wt/feature',
+            base: 'main',
+            sdkSessionId: 'sdk-1',
+            status: 'completed',
+            startedAt: 0,
+            todos: [],
+          },
+        ],
+      });
+      const newId = manager.create('feature');
+      await flush();
+      expect(newId).toBe('2'); // seq advanced past restored id '1'
+      const branches = manager.getSnapshot().map((s) => s.branch);
+      expect(new Set(branches).size).toBe(2); // no slug collision
+    });
+
+    it('restore wires worktree meta so discard works', async () => {
+      const remove = vi.fn(async () => {});
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({ remove }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        createSession: ({ input, onChange, restored }) =>
+          new FakeSession(input, onChange, restored),
+      });
+      manager.restore({
+        version: 1,
+        sessions: [
+          {
+            id: '1',
+            title: 't',
+            prompt: 'p',
+            slug: 's',
+            branch: 'codiva/s',
+            worktreePath: '/tmp/wt/s',
+            base: 'main',
+            sdkSessionId: 'sdk-1',
+            status: 'completed',
+            startedAt: 0,
+            todos: [],
+          },
+        ],
+      });
+      const result = await manager.discard('1', { force: true });
+      expect(result.ok).toBe(true);
+      expect(remove).toHaveBeenCalled();
+    });
+
+    it('onPersist fires when sessions change', () => {
+      const onPersist = vi.fn();
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        onPersist,
+        createSession: ({ input, onChange, restored }) =>
+          new FakeSession(input, onChange, restored),
+      });
+      manager.create('a');
+      expect(onPersist).toHaveBeenCalled();
+    });
+  });
+
+  describe('onTransition (desktop notifications)', () => {
+    it('fires with (prev, next) only when the status changes', async () => {
+      const transitions: [string, string][] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        onTransition: (prev, next) => transitions.push([prev.status, next.status]),
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      const id = manager.create('feature');
+      await flush();
+      const session = (manager as unknown as { sessions: Map<string, FakeSession> }).sessions.get(
+        id,
+      );
+      session?.drive('running'); // creating → running
+      session?.drive('running'); // no-op: same status, no transition
+      session?.drive('completed'); // running → completed
+      expect(transitions).toEqual([
+        ['creating', 'running'],
+        ['running', 'completed'],
+      ]);
+    });
+
+    it('is optional — omitting it does not throw on status changes', async () => {
+      const { manager, created } = makeManager();
+      manager.create('feature');
+      await flush();
+      expect(() => created[0]?.drive('running')).not.toThrow();
     });
   });
 

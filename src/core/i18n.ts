@@ -19,6 +19,7 @@ export interface Messages {
   /** 一覧ビュー（session-list.tsx） */
   list: {
     sessionCount: (n: number) => string;
+    totalCost: (usd: string) => string;
     emptyHint: string;
     promptPlaceholder: string;
     help: string;
@@ -27,6 +28,7 @@ export interface Messages {
   detail: {
     notFound: string;
     progress: (done: number, total: number, active: string | undefined) => string;
+    cost: (usd: string) => string;
     errorLabel: string;
     changesTitle: (branch: string) => string;
     noCommittedChanges: string;
@@ -68,6 +70,13 @@ export interface Messages {
   app: {
     remainingWorktrees: (n: number) => string;
   };
+  /** デスクトップ通知（notify.ts） */
+  notify: {
+    needsInput: string;
+    needsPermission: string;
+    completed: string;
+    failed: string;
+  };
   /** 起動バナー（banner.tsx） */
   banner: {
     subtitle: string;
@@ -83,6 +92,7 @@ export interface Messages {
 const ja: Messages = {
   list: {
     sessionCount: (n) => `${n} セッション`,
+    totalCost: (usd) => `合計 ${usd}`,
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
     help: 'Enter: 投入 ・ ↑↓: 選択 ・ →: 詳細 ・ Ctrl+C: 終了',
@@ -90,6 +100,7 @@ const ja: Messages = {
   detail: {
     notFound: 'セッションが見つかりません。Esc で戻ります。',
     progress: (done, total, active) => `進捗 ${done}/${total}${active ? ` — ${active}` : ''}`,
+    cost: (usd) => `コスト ${usd}`,
     errorLabel: 'エラー',
     changesTitle: (branch) => `変更（${branch} vs ベース）:`,
     noCommittedChanges: '（コミット済みの変更なし）',
@@ -130,6 +141,12 @@ const ja: Messages = {
     remainingWorktrees: (n) =>
       `codiva: ${n} 個の worktree が残っています（作業内容は保持されます）:`,
   },
+  notify: {
+    needsInput: '質問があります',
+    needsPermission: '許可を待っています',
+    completed: '完了しました',
+    failed: '失敗しました',
+  },
   banner: {
     subtitle: '並列 Claude Code セッションを git worktree 上で実行',
   },
@@ -143,6 +160,7 @@ const ja: Messages = {
 const en: Messages = {
   list: {
     sessionCount: (n) => `${n} session${n === 1 ? '' : 's'}`,
+    totalCost: (usd) => `total ${usd}`,
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
     help: 'Enter: submit · ↑↓: select · →: detail · Ctrl+C: quit',
@@ -150,6 +168,7 @@ const en: Messages = {
   detail: {
     notFound: 'Session not found. Press Esc to go back.',
     progress: (done, total, active) => `Progress ${done}/${total}${active ? ` — ${active}` : ''}`,
+    cost: (usd) => `Cost ${usd}`,
     errorLabel: 'error',
     changesTitle: (branch) => `Changes (${branch} vs base):`,
     noCommittedChanges: '(no committed changes)',
@@ -189,6 +208,12 @@ const en: Messages = {
   app: {
     remainingWorktrees: (n) =>
       `codiva: ${n} worktree${n === 1 ? '' : 's'} left in place (your work is preserved):`,
+  },
+  notify: {
+    needsInput: 'Needs your input',
+    needsPermission: 'Awaiting permission',
+    completed: 'Completed',
+    failed: 'Failed',
   },
   banner: {
     subtitle: 'Parallel Claude Code sessions in git worktrees',

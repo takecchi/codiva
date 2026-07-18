@@ -35,10 +35,14 @@ codiva/
 │   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（純関数）
 │   │   ├── status-reducer.spec.ts   # 単体テストは実装の隣に co-located
 │   │   ├── session.ts / session.spec.ts
-│   │   ├── session-manager.ts / session-manager.spec.ts  # Store + ライフサイクル
+│   │   ├── session-manager.ts / session-manager.spec.ts  # Store + ライフサイクル + 復元
 │   │   ├── worktree.ts / worktree.spec.ts                # WorktreeManager
 │   │   ├── async-queue.ts / async-queue.spec.ts
 │   │   ├── slug.ts / slug.spec.ts
+│   │   ├── config.ts / config.spec.ts     # 設定ドメイン型 + toConfig()（言語/model/effort/…）
+│   │   ├── cost.ts / cost.spec.ts         # totalCostUsd() / formatUsd()（純粋・導出）
+│   │   ├── notify.ts / notify.spec.ts     # notificationFor()（通知の発火判定・純粋）
+│   │   ├── persistence.ts / persistence.spec.ts   # 復元用スナップショットの変換・検証（純粋）
 │   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（reducer テスト用）
 │   ├── ui/                    # Ink コンポーネント（kebab-case, 識別子は PascalCase）
 │   │   ├── index.ts           # バレル
@@ -54,7 +58,10 @@ codiva/
 │   │   └── input.ts           # テキストバッファ編集 + 経過時間フォーマット
 │   └── utils/
 │       ├── index.ts           # バレル
-│       └── git.ts / git.spec.ts   # execFile ベースの git 実行ヘルパ
+│       ├── git.ts / git.spec.ts             # execFile ベースの git 実行ヘルパ
+│       ├── config.ts / config.spec.ts       # ~/.codiva/config.json の読み書き
+│       ├── notify.ts / notify.spec.ts       # OS デスクトップ通知（osascript / notify-send）
+│       └── state-store.ts / state-store.spec.ts  # <repo>/.codiva/state.json の読み書き + prune
 ├── scripts/
 │   └── spike.ts               # Phase 1: SDK 挙動検証スクリプト
 ├── tests/                     # App 全体を通す機能/統合テスト（*.test.tsx）
@@ -119,13 +126,19 @@ interface SessionState {
 - 受信ループ: `for await (const msg of query)` で `reduceStatus()` に畳み込み、変更のたびに `onChange` を発火。
 - `respondToPermission(result)`: 保留中の canUseTool Promise を resolve。
 - `interrupt()` / `abort()`: SDK の interrupt / AbortController。
+- `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
+- **復元対応**: `resume`（SDK セッションID）と `restored`（復元済み `SessionState`）を DI で受けられる。復元セッションは `start()` せず、最初の `send()` で遅延的に query を開始（`resume` 付き）。これで起動時にサブプロセスを乱立させない。
+- `stop()`: 状態を変えずにサブプロセスだけ落とす quiet 停止。アプリ終了時はこれを使い、実行中セッションを resumable のまま保存する（`abort()` は failed にする点が違い）。保留中の許可要求があれば deny で解決してから停止する（未応答の `tool_use` で resume が壊れるのを防ぐ）。
 
 ### SessionManager (`core/session-manager.ts`)
 
 - `create(prompt)`: slug生成 → WorktreeManager.add() → Session 起動。同期的に `creating` 状態のエントリを即時返す（UI を待たせない）。
 - 全セッションの `Map<id, Session>` を保持し、`subscribe(listener)` / `getSnapshot(): SessionState[]` を提供（React の `useSyncExternalStore` にそのまま接続できる形）。
 - スナップショットは毎回新しい配列参照を返すが、**変更のあったセッション以外のオブジェクト参照は維持**する（不要な再描画防止）。
-- `dispose()`: 全セッション abort（worktree は残す）。
+- `dispose()`: 全セッションを **`stop()`（quiet）**（worktree は残す）。実行中でも resumable なまま。
+- `onTransition(prev,next)`: ステータス遷移ごとに発火（デスクトップ通知に配線）。
+- `onPersist()`: 永続対象が変わった合図（合成ルートで debounce 保存に配線）。`persistableState()` が state.json 用スナップショットを組み立てる。
+- `restore(persisted)`: 起動時に前回セッションを再構築（worktree meta を再配線し、`Session` に `resume`/`restored` を渡す。id/slug を予約して衝突回避）。
 
 ### WorktreeManager (`core/worktree.ts`)
 
@@ -165,10 +178,40 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   配線は合成ルート `index.tsx` で行い、解決済みカタログを `App` の `messages` prop に注入する。
 - **番人**: `Messages` 型がキー欠落を型で捕え、`i18n.spec.ts` が ja/en のキー集合一致を実行時にも検証する。
 
+## Phase 6 機能（設定 / コスト / 通知 / 復元）
+
+純粋ロジックは core、副作用は utils／合成ルートという分離をそのまま踏襲する。
+
+- **設定ファイル拡張**: `~/.codiva/config.json` に `model` / `effort` / `permissionMode` / `maxBudgetUsd` /
+  `notifications` を追加。検証変換は `core/config.ts` の `toConfig()` に集約し、不正値は静かに既定へ落とす。
+  合成ルート（`index.tsx`）が `SessionOptions` に束ねて `SessionManager` へ注入する。
+- **コスト表示**: reducer は `result.total_cost_usd` を `state.totalCostUsd` として既に保持。UI 用の導出だけ
+  `core/cost.ts`（`totalCostUsd()` 合計 / `formatUsd()` 整形）に純粋関数で追加。一覧はバナーに合計、詳細は各行。
+- **デスクトップ通知**: 発火判定は純粋な `core/notify.ts` の `notificationFor(prev,next,messages)`
+  （**状態遷移時のみ**返す＝連続更新で鳴り続けない）。実 I/O は `utils/notify.ts`（darwin=`osascript`,
+  linux=`notify-send`。文字列は **argv 渡し**で注入防止。missing binary 等は握り潰す best-effort）。
+  `SessionManager.onTransition` に配線し、`config.notifications:false` で合成ルートが無効化。
+- **セッション復元**: 永続スナップショットの型・変換・検証は純粋な `core/persistence.ts`
+  （`toPersistedSession` / `restoredSessionState` / `fromPersistedJson`）。ファイル I/O は
+  `utils/state-store.ts`（`<repo>/.codiva/state.json`。破損時は空へフォールバック、起動時に存在しない
+  worktree を prune）。永続対象は `completed`/`failed` かつ **`sdkSessionId` を持つ**もののみ（実行中は
+  `completed`＝resumable に丸める。`archived`/`creating`、および init 前に落ちて resume 不能なものは除外）。
+  メッセージログは永続しない（resume が SDK 側で履歴を復元し、以降のターンで再ストリームされる）。
+  復元セッションは遅延 resume（最初の追加指示まで query を立てない）。復元時は `finishedAt` を
+  `startedAt` にフォールバックし、経過時間が復元後に伸び続けないようにする。
+  保存は `onPersist` → debounce（合成ルート）＋終了時の最終フラッシュ＋ SIGTERM/SIGHUP 時の
+  同期フラッシュ（`saveStateSync`）。`stop()` は保留中の許可要求を deny で解決してから停止し、
+  resume 先のトランスクリプトが未応答の `tool_use` で終わらないようにする（best-effort）。
+
 ## 設計上の決定と理由
 
 | 決定 | 理由 |
 |------|------|
+| 復元は「メタ + SDK resume」で、ログは永続しない | state.json を小さく保つ。会話履歴は SDK の resume が持つので二重管理しない。復元直後はアイドル表示、追加指示で継続 |
+| 復元セッションは遅延 resume（起動時に起こさない） | セッション毎に ~1GiB のサブプロセスを起動時に乱立させない。触られたものだけ起こす |
+| 終了は `abort()` ではなく `stop()`（quiet） | 実行中セッションを failed にせず resumable のまま保存するため（quit と「1件破棄」を区別） |
+| 通知の発火判定は純粋関数・遷移時のみ | テスト可能にし、ストリーミングの連続更新で鳴り続けるのを防ぐ。OS I/O は utils に隔離し best-effort |
+| 設定検証は `toConfig()` に集約・不正値は既定へ | 設定ミスで TUI をクラッシュさせない。SDK union は実行時リテラルで検証（型が変われば型エラー） |
 | 分離手段は git worktree | 同一リポジトリの並列作業では最軽量。ブランチがそのまま成果物になる。Docker 等はMVPではオーバーキル |
 | UI 文字列はカタログ集約 + 設定で言語切替 | 日本語/英語の利用者が混在する。ハードコードを排し、追加言語も `Lang`/`messages` 拡張だけで済む |
 | セッション = SDK `query()` 1本（サブプロセス1本） | SDK の設計単位に素直。プロセス分離により1セッションのクラッシュが他に波及しない |

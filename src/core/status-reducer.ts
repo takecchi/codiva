@@ -41,7 +41,8 @@ export function initialState(input: CreateSessionInput): SessionState {
   };
 }
 
-function progressOf(todos: TodoItem[]): { done: number; total: number } | undefined {
+/** Derive Step n/m progress from a todo list. Exported for session restoration. */
+export function progressOf(todos: TodoItem[]): { done: number; total: number } | undefined {
   const active = todos.filter((t) => t.status !== 'deleted');
   if (active.length === 0) {
     return undefined;
