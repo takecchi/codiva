@@ -170,8 +170,12 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
     }
   }
 
+  // The full assistant message is authoritative — drop the streamed preview.
   if (messages === state.messages && todos === state.todos) {
-    return state.status === 'running' ? state : { ...state, status: 'running' };
+    if (state.status === 'running' && state.streamingText === undefined) {
+      return state;
+    }
+    return { ...state, status: 'running', streamingText: undefined };
   }
   return {
     ...state,
@@ -180,7 +184,38 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
     progress: progressOf(todos),
     messages,
     logSeq,
+    streamingText: undefined,
   };
+}
+
+/**
+ * A partial (streaming) assistant message from `includePartialMessages`. We only
+ * surface incremental text so the detail view can show a live "typing" preview;
+ * the full `assistant` message that follows replaces it. Non-text deltas
+ * (tool-input JSON, thinking, etc.) don't change UI state.
+ */
+function reduceStreamEvent(state: SessionState, message: Record<string, unknown>): SessionState {
+  const event = message.event;
+  if (!event || typeof event !== 'object') {
+    return state;
+  }
+  const ev = event as { type?: string; delta?: unknown };
+  if (ev.type === 'message_start') {
+    // A new assistant message begins — start its preview fresh.
+    return state.streamingText === undefined ? state : { ...state, streamingText: undefined };
+  }
+  if (ev.type === 'content_block_delta') {
+    const delta = ev.delta as { type?: string; text?: string } | undefined;
+    // Guard non-empty text so an empty delta stays a no-op (same reference).
+    if (delta?.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
+      return {
+        ...state,
+        status: state.status === 'running' ? state.status : 'running',
+        streamingText: (state.streamingText ?? '') + delta.text,
+      };
+    }
+  }
+  return state;
 }
 
 function reduceUser(state: SessionState, message: Record<string, unknown>): SessionState {
@@ -228,6 +263,10 @@ function reduceSdk(
     return reduceUser(state, message);
   }
 
+  if (type === 'stream_event') {
+    return reduceStreamEvent(state, message);
+  }
+
   if (type === 'result') {
     const cost =
       typeof message.total_cost_usd === 'number' ? message.total_cost_usd : state.totalCostUsd;
@@ -242,6 +281,7 @@ function reduceSdk(
         status: 'completed',
         finishedAt: at,
         totalCostUsd: cost,
+        streamingText: undefined,
         messages: withLog.messages,
         logSeq: withLog.logSeq,
       };
@@ -254,6 +294,7 @@ function reduceSdk(
       finishedAt: at,
       totalCostUsd: cost,
       error,
+      streamingText: undefined,
       messages: withLog.messages,
       logSeq: withLog.logSeq,
     };
@@ -300,6 +341,7 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         ...state,
         status: 'running',
         finishedAt: undefined,
+        streamingText: undefined,
         messages: withLog.messages,
         logSeq: withLog.logSeq,
       };
@@ -319,13 +361,16 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         status: 'failed',
         finishedAt: event.at,
         error,
+        streamingText: undefined,
         messages: withLog.messages,
         logSeq: withLog.logSeq,
       };
     }
 
     case 'archived':
-      return state.status === 'archived' ? state : { ...state, status: 'archived' };
+      return state.status === 'archived'
+        ? state
+        : { ...state, status: 'archived', streamingText: undefined };
 
     default:
       return state;

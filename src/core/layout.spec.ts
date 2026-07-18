@@ -1,14 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isFullscreenViewport, MIN_FULLSCREEN_ROWS, tailMessages } from './layout';
-import type { LogEntry } from './types';
-
-function entries(n: number): LogEntry[] {
-  return Array.from({ length: n }, (_, i) => ({
-    seq: i,
-    kind: 'assistant_text',
-    text: `line ${i}`,
-  }));
-}
+import {
+  DETAIL_CHROME_ROWS,
+  isFullscreenViewport,
+  logViewportRows,
+  MIN_FULLSCREEN_ROWS,
+} from './layout';
 
 describe('isFullscreenViewport', () => {
   it.each([
@@ -22,25 +18,13 @@ describe('isFullscreenViewport', () => {
   });
 });
 
-describe('tailMessages', () => {
-  it('returns everything when messages fit within rows', () => {
-    const all = entries(3);
-    expect(tailMessages(all, 10)).toEqual(all);
+describe('logViewportRows', () => {
+  it('subtracts the fixed chrome from the terminal height', () => {
+    expect(logViewportRows(30)).toBe(30 - DETAIL_CHROME_ROWS);
   });
 
-  it('keeps only the newest rows entries when overflowing', () => {
-    const tail = tailMessages(entries(30), 5);
-    expect(tail).toHaveLength(5);
-    expect(tail[0]?.seq).toBe(25);
-    expect(tail[4]?.seq).toBe(29);
-  });
-
-  it('returns the newest entry even when rows is 0 or negative', () => {
-    expect(tailMessages(entries(4), 0).map((e) => e.seq)).toEqual([3]);
-    expect(tailMessages(entries(4), -2).map((e) => e.seq)).toEqual([3]);
-  });
-
-  it('returns an empty array for an empty log', () => {
-    expect(tailMessages([], 10)).toEqual([]);
+  it('never returns less than 1, even on tiny terminals', () => {
+    expect(logViewportRows(DETAIL_CHROME_ROWS)).toBe(1);
+    expect(logViewportRows(0)).toBe(1);
   });
 });

@@ -75,6 +75,12 @@ export interface SessionState {
   finishedAt?: number;
   totalCostUsd?: number;
   error?: string;
+  /**
+   * The assistant text streamed so far for the in-flight message (from
+   * `includePartialMessages` stream events). Transient live-typing preview —
+   * cleared when the full message/result arrives; never persisted.
+   */
+  streamingText?: string;
   /** Internal monotonic counter for LogEntry.seq; keeps the reducer pure. */
   logSeq: number;
 }
