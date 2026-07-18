@@ -1,4 +1,6 @@
 export * from './async-queue';
+export * from './config';
+export * from './i18n';
 export * from './session';
 export * from './session-manager';
 export * from './slug';

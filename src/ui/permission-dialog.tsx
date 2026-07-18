@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from 'ink';
 import { type FC, useState } from 'react';
 import type { PermissionRequest } from '@/core';
+import { useMessages } from './i18n-context';
 
 /**
  * Renders the pending decision a session is blocked on and captures the user's
@@ -26,11 +27,12 @@ const ToolDialog: FC<{
   onAllow: () => void;
   onDeny: (message: string) => void;
 }> = ({ request, onAllow, onDeny }) => {
+  const m = useMessages();
   useInput((input) => {
     if (input === 'y' || input === 'Y') {
       onAllow();
     } else if (input === 'n' || input === 'N') {
-      onDeny('ユーザーが拒否しました');
+      onDeny(m.permission.denied);
     }
   });
 
@@ -38,13 +40,14 @@ const ToolDialog: FC<{
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
       <Text color="yellow" bold>
-        ツール実行の許可: {request.toolName}
+        {m.permission.toolTitle(request.toolName)}
       </Text>
       <Text dimColor wrap="truncate-end">
         {summary}
       </Text>
       <Text>
-        <Text color="green">y</Text>: 許可 ・ <Text color="red">n</Text>: 拒否
+        <Text color="green">y</Text>: {m.permission.allow} ・ <Text color="red">n</Text>:{' '}
+        {m.permission.deny}
       </Text>
     </Box>
   );
@@ -54,6 +57,7 @@ const QuestionDialog: FC<{
   request: PermissionRequest;
   onAnswer: (answers: Record<string, string>) => void;
 }> = ({ request, onAnswer }) => {
+  const m = useMessages();
   const questions = request.questions ?? [];
   const [qIndex, setQIndex] = useState(0);
   const [cursor, setCursor] = useState(0);
@@ -112,7 +116,7 @@ const QuestionDialog: FC<{
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
       <Text color="magenta" bold>
-        質問 ({qIndex + 1}/{questions.length}) {current.header}
+        {m.permission.questionTitle(qIndex + 1, questions.length, current.header)}
       </Text>
       <Text>{current.question}</Text>
       <Box flexDirection="column" marginTop={1}>
@@ -130,9 +134,7 @@ const QuestionDialog: FC<{
         })}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>
-          ↑↓: 選択 ・ {current.multiSelect ? 'Space: トグル ・ ' : ''}Enter: 決定
-        </Text>
+        <Text dimColor>{m.permission.questionHelp(current.multiSelect ?? false)}</Text>
       </Box>
     </Box>
   );

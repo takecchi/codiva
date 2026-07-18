@@ -2,6 +2,7 @@ import { Box, Static, Text, useInput } from 'ink';
 import { type FC, useEffect, useState } from 'react';
 import type { DiffStat, LogEntry, SessionManager } from '@/core';
 import { useSessions } from './hooks';
+import { useMessages } from './i18n-context';
 import { editBuffer } from './input';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
@@ -41,6 +42,7 @@ export const SessionDetail: FC<{
   id: string;
   onBack: () => void;
 }> = ({ manager, id, onBack }) => {
+  const m = useMessages();
   const sessions = useSessions(manager);
   const session = sessions.find((s) => s.id === id);
   const [buffer, setBuffer] = useState('');
@@ -149,14 +151,16 @@ export const SessionDetail: FC<{
   if (!session) {
     return (
       <Box padding={1}>
-        <Text dimColor>セッションが見つかりません。Esc で戻ります。</Text>
+        <Text dimColor>{m.detail.notFound}</Text>
       </Box>
     );
   }
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Static items={session.messages}>{(m) => <LogLine key={m.seq} entry={m} />}</Static>
+      <Static items={session.messages}>
+        {(entry) => <LogLine key={entry.seq} entry={entry} />}
+      </Static>
 
       <Box marginTop={1}>
         <Text bold>{session.title} </Text>
@@ -166,30 +170,39 @@ export const SessionDetail: FC<{
 
       {session.progress ? (
         <Text dimColor>
-          進捗 {session.progress.done}/{session.progress.total}
-          {session.todos.find((t) => t.status === 'in_progress')?.activeForm
-            ? ` — ${session.todos.find((t) => t.status === 'in_progress')?.activeForm}`
-            : ''}
+          {m.detail.progress(
+            session.progress.done,
+            session.progress.total,
+            session.todos.find((t) => t.status === 'in_progress')?.activeForm,
+          )}
         </Text>
       ) : null}
 
-      {session.error ? <Text color="red">error: {session.error}</Text> : null}
+      {session.error ? (
+        <Text color="red">
+          {m.detail.errorLabel}: {session.error}
+        </Text>
+      ) : null}
 
       {isTerminal && diff ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text dimColor>変更（{session.branch} vs ベース）:</Text>
+          <Text dimColor>{m.detail.changesTitle(session.branch)}</Text>
           {diff.committed ? (
             <Text>{diff.committed}</Text>
           ) : (
-            <Text dimColor>（コミット済みの変更なし）</Text>
+            <Text dimColor>{m.detail.noCommittedChanges}</Text>
           )}
           {diff.uncommitted.length > 0 ? (
-            <Text color="yellow">未コミット {diff.uncommitted.length} 件</Text>
+            <Text color="yellow">{m.detail.uncommitted(diff.uncommitted.length)}</Text>
           ) : null}
         </Box>
       ) : null}
 
-      {actionError ? <Text color="red">操作エラー: {actionError}</Text> : null}
+      {actionError ? (
+        <Text color="red">
+          {m.detail.actionErrorLabel}: {actionError}
+        </Text>
+      ) : null}
 
       {pending ? (
         <Box marginTop={1}>
@@ -210,35 +223,35 @@ export const SessionDetail: FC<{
         >
           {confirm ? (
             <Text>
-              {confirm === 'merge' ? 'ベースへマージします。' : 'worktree とブランチを破棄します。'}
-              実行しますか？ <Text color="green">y</Text> / <Text color="red">n</Text>
-              {busy ? <Text dimColor> …実行中</Text> : null}
+              {confirm === 'merge' ? m.detail.mergePrompt : m.detail.discardPrompt}{' '}
+              {m.detail.confirmRun} <Text color="green">y</Text> / <Text color="red">n</Text>
+              {busy ? <Text dimColor> {m.detail.busySuffix}</Text> : null}
             </Text>
           ) : (
             <>
               <Text color="blue" bold>
-                操作
+                {m.detail.actionsTitle}
               </Text>
               <Text>
-                <Text color="green">m</Text>: マージ（--no-ff） ・ <Text color="red">d</Text>:
-                破棄（worktree削除）
+                <Text color="green">m</Text>: {m.detail.mergeAction} ・ <Text color="red">d</Text>:{' '}
+                {m.detail.discardAction}
               </Text>
             </>
           )}
         </Box>
       ) : (
         <Box marginTop={1}>
-          <PromptInput value={buffer} focused placeholder="追加の指示を入力…" />
+          <PromptInput value={buffer} focused placeholder={m.detail.followupPlaceholder} />
         </Box>
       )}
 
       <Box marginTop={1}>
         <Text dimColor>
           {pending
-            ? 'Esc: 一覧へ戻る'
+            ? m.detail.helpPending
             : panel === 'actions'
-              ? 'm/d: 操作 ・ Tab: 入力へ ・ Esc: 戻る'
-              : 'Enter: 送信 ・ Tab: 操作 ・ Esc/←: 一覧へ戻る'}
+              ? m.detail.helpActions
+              : m.detail.helpInput}
         </Text>
       </Box>
     </Box>
