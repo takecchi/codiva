@@ -198,6 +198,37 @@ describe('App fullscreen layout', () => {
     app.unmount();
   });
 
+  it('keeps sessions in creation order even when one is archived (does not sink)', async () => {
+    // archived になったセッションでも作成順（上が古い・下が新しい）の位置を保つ。
+    const manager = new SessionManager({
+      worktrees,
+      queryFn: (() => {
+        throw new Error('unused');
+      }) as never,
+      now: () => 0,
+      createSession: ({ input }) => {
+        const session = noopSession(input);
+        // 中央の task-1 を archived 状態にして、末尾へ沈まないことを検証する。
+        if (input.title === 'task-1') {
+          session.state = { ...session.state, status: 'archived' };
+        }
+        return session;
+      },
+    });
+    for (let i = 0; i < 3; i++) {
+      manager.create(`task-${i}`);
+    }
+    await flush();
+    const { app, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 120);
+    const lines = lastFrame().split('\n');
+    const rowOf = (title: string) => lines.findIndex((l) => l.includes(title));
+    // archived の task-1 は依然として task-0 と task-2 の間にある。
+    expect(rowOf('task-0')).toBeGreaterThanOrEqual(0);
+    expect(rowOf('task-0')).toBeLessThan(rowOf('task-1'));
+    expect(rowOf('task-1')).toBeLessThan(rowOf('task-2'));
+    app.unmount();
+  });
+
   it('falls back to inline rendering on very short terminals (footer stays visible)', () => {
     const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 8);
     // height 固定だと 8 行にクリップされ入力欄・フッタが消える。フォールバックでは

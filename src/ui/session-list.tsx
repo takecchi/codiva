@@ -141,13 +141,9 @@ export const SessionList: FC<{
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
 
-  // Archived sessions sink to the bottom; Array.sort is stable so the rest keep
-  // their creation order.
-  const sorted = [...sessions].sort(
-    (a, b) => (a.status === 'archived' ? 1 : 0) - (b.status === 'archived' ? 1 : 0),
-  );
-  const selected = Math.min(sel, Math.max(0, sorted.length - 1));
-  const target = sorted[selected];
+  // 一覧は常に作成順（上が古い・下が新しい）。archived になっても位置は動かさない。
+  const selected = Math.min(sel, Math.max(0, sessions.length - 1));
+  const target = sessions[selected];
   // 表示状態（クランプ後の選択行 + フォーカス）を親へ報告し、ビュー切替で
   // アンマウントされても復元できるようにする。ref 書き込みなので再描画は起きない。
   useEffect(() => {
@@ -166,11 +162,11 @@ export const SessionList: FC<{
   const listHeight = useBoxHeight(rowsRef);
   const listCap = fullscreen
     ? Math.max(1, listHeight ?? Math.max(1, termRows - 15))
-    : Math.max(1, sorted.length);
-  const view = listView(sorted.length, selected, listCap);
+    : Math.max(1, sessions.length);
+  const view = listView(sessions.length, selected, listCap);
 
   const moveSel = (delta: number) => {
-    setSel((s) => Math.min(Math.max(0, s + delta), Math.max(0, sorted.length - 1)));
+    setSel((s) => Math.min(Math.max(0, s + delta), Math.max(0, sessions.length - 1)));
   };
 
   const openDetail = () => {
@@ -254,7 +250,7 @@ export const SessionList: FC<{
         // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
         // browser. The cell is right-anchored, so derive its x-range from the terminal
         // width (outer padding is symmetric, so the right pad equals rowsBox.left).
-        const s = sorted[idx];
+        const s = sessions[idx];
         if (s?.pr && onOpenPr) {
           const cellLeft = columns - rowsBox.left - PR_CELL_WIDTH;
           if (x >= cellLeft && x < cellLeft + PR_CELL_WIDTH) {
@@ -415,12 +411,12 @@ export const SessionList: FC<{
       {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる。
           高さを実測し、その行数に収まるぶんだけ内部スクロールして描画する。 */}
       <Box ref={rowsRef} flexDirection="column" marginY={1} flexGrow={1} overflowY="hidden">
-        {sorted.length === 0 ? (
+        {sessions.length === 0 ? (
           <Text dimColor>{m.list.emptyHint}</Text>
         ) : (
           <>
             {view.showAbove ? <Text dimColor>{m.list.moreAbove(view.hiddenAbove)}</Text> : null}
-            {sorted.slice(view.start, view.end).map((s, i) => {
+            {sessions.slice(view.start, view.end).map((s, i) => {
               const idx = view.start + i;
               const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
               const archived = s.status === 'archived';
