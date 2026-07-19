@@ -7,6 +7,12 @@
 - コンポーネントは**表示に徹する**。状態の導出は `core`（`status-reducer` 等の純関数）に委譲し、UI では計算しない。
 - データ購読はそれを必要とするコンポーネント内で行う（`useSessions()` 等）。共有が必要なときだけ親に持ち上げる。「全 hook を親に集めて props で配る」ことはしない。
 - 純粋な描画と副作用（`manager.send()` 等）を混ぜない。
+- **一覧/詳細で重複する状態ロジックは共有フックへ**（`ui/hooks.ts`）: コンポーザのバッファ管理は
+  `useTextBufferRef()`、`/command` の解決・実行は `useCommandRunner(handlers, onError, unknownLabel)`、
+  マージ/破棄の確認→実行フローは `useLifecycleAction(manager, id, onDone?)`。`useInput` 本体はフックに移さず
+  view に置いたまま、これらから state とハンドラを受け取る（1画面1 useInput は維持）。
+- **共有 presentational**: 角丸ダイアログ枠は `<DialogBox>`、y/n 確認行は `<ConfirmPrompt>`。両 view で使う。
+  色は必ず `theme.ts`（`theme`/`statusColor`/`logColor`）経由で引き、`.tsx` に生 ANSI 名（`color="red"` 等）を書かない。
 
 ## 入力ハンドリング
 
