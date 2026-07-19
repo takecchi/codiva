@@ -14,6 +14,7 @@ export * from './scroll';
 export * from './session';
 export * from './session-manager';
 export * from './slug';
+export * from './status-meta';
 export * from './status-reducer';
 export * from './text-buffer';
 export * from './transcript';

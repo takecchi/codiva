@@ -6,6 +6,7 @@ import {
   type DisplayLine,
   emptyBuffer,
   isCommandInput,
+  isTerminalStatus,
   type LogEntry,
   logLines,
   logViewportRows,
@@ -40,15 +41,6 @@ const LOG: Record<LogEntry['kind'], { prefix: string; color?: string; dim?: bool
   system: { prefix: '', color: 'yellow' },
   error: { prefix: '✗ ', color: 'red' },
 };
-
-const TERMINAL = new Set([
-  'completed',
-  'interrupted',
-  'rate_limited',
-  'failed',
-  'conflict',
-  'archived',
-]);
 
 /** The live-typing preview: the last non-empty line of the streamed text so far. */
 function streamTail(text: string): string {
@@ -117,7 +109,7 @@ export const SessionDetail: FC<{
 
   const pending = session?.pendingPermission;
   const status = session?.status;
-  const isTerminal = status !== undefined && TERMINAL.has(status);
+  const isTerminal = status !== undefined && isTerminalStatus(status);
 
   // Fetch the diff summary once the session reaches a terminal state.
   useEffect(() => {

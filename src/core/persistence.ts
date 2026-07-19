@@ -1,3 +1,4 @@
+import { STATUS_META } from './status-meta';
 import { progressOf } from './status-reducer';
 import type { LogEntry, SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
 
@@ -51,24 +52,8 @@ export function emptyPersistedState(): PersistedState {
 export function restorableStatus(
   status: SessionStatus,
 ): 'completed' | 'interrupted' | 'failed' | undefined {
-  switch (status) {
-    case 'running':
-    case 'awaiting_permission':
-    case 'awaiting_input':
-      return 'interrupted';
-    case 'completed':
-      return 'completed';
-    case 'interrupted':
-      return 'interrupted';
-    // A rate limit is transient — by the time the app restarts the limit may
-    // have reset, so restore it as a plain resumable (idle) session.
-    case 'rate_limited':
-      return 'interrupted';
-    case 'failed':
-      return 'failed';
-    default:
-      return undefined; // creating, archived
-  }
+  // 復元先は状態の性質なので core/status-meta.ts の表から引く（分類の単一の出所）。
+  return STATUS_META[status].restoreAs;
 }
 
 /**

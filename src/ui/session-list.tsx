@@ -13,6 +13,7 @@ import {
   isFullscreenViewport,
   listView,
   matchCommands,
+  needsAttention,
   type PrMergeStatus,
   parseSgrMouse,
   runCommand,
@@ -423,7 +424,7 @@ export const SessionList: FC<{
             {view.showAbove ? <Text dimColor>{m.list.moreAbove(view.hiddenAbove)}</Text> : null}
             {sessions.slice(view.start, view.end).map((s, i) => {
               const idx = view.start + i;
-              const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
+              const attention = needsAttention(s.status);
               const archived = s.status === 'archived';
               const isSel = idx === selected;
               return (

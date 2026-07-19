@@ -1,4 +1,5 @@
 import type { Messages } from './i18n';
+import { STATUS_META } from './status-meta';
 import type { SessionState, SessionStatus } from './types';
 
 /** A desktop notification to show (title = what happened, body = which session). */
@@ -8,20 +9,8 @@ export interface NotificationSpec {
 }
 
 function labelFor(status: SessionStatus, m: Messages): string | undefined {
-  switch (status) {
-    case 'awaiting_input':
-      return m.notify.needsInput;
-    case 'awaiting_permission':
-      return m.notify.needsPermission;
-    case 'completed':
-      return m.notify.completed;
-    case 'rate_limited':
-      return m.notify.rateLimited;
-    case 'failed':
-      return m.notify.failed;
-    default:
-      return undefined;
-  }
+  const key = STATUS_META[status].notifyKey;
+  return key ? m.notify[key] : undefined;
 }
 
 /**
