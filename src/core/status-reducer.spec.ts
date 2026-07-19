@@ -393,18 +393,39 @@ describe('reduce over streaming partial messages', () => {
     const s0 = initialState(BASE);
     expect(s0.pr).toBeUndefined();
 
-    const withPr = reduce(s0, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 1 });
-    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12' });
+    const withPr = reduce(s0, {
+      kind: 'pr',
+      pr: { number: 12, url: 'https://x/12', mergeStatus: 'unknown' },
+      at: 1,
+    });
+    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12', mergeStatus: 'unknown' });
 
     // Same PR again → same reference (no re-render on every poll).
-    expect(reduce(withPr, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 2 })).toBe(
-      withPr,
-    );
+    expect(
+      reduce(withPr, {
+        kind: 'pr',
+        pr: { number: 12, url: 'https://x/12', mergeStatus: 'unknown' },
+        at: 2,
+      }),
+    ).toBe(withPr);
+
+    // mergeStatus flipping on the same PR is a change → repaints the glyph.
+    expect(
+      reduce(withPr, {
+        kind: 'pr',
+        pr: { number: 12, url: 'https://x/12', mergeStatus: 'merged' },
+        at: 2,
+      }).pr?.mergeStatus,
+    ).toBe('merged');
 
     // A different PR replaces it; undefined clears it.
     expect(
-      reduce(withPr, { kind: 'pr', pr: { number: 13, url: 'https://x/13' }, at: 3 }).pr,
-    ).toEqual({ number: 13, url: 'https://x/13' });
+      reduce(withPr, {
+        kind: 'pr',
+        pr: { number: 13, url: 'https://x/13', mergeStatus: 'mergeable' },
+        at: 3,
+      }).pr,
+    ).toEqual({ number: 13, url: 'https://x/13', mergeStatus: 'mergeable' });
     expect(reduce(withPr, { kind: 'pr', pr: undefined, at: 4 }).pr).toBeUndefined();
     // Already undefined → same reference.
     expect(reduce(s0, { kind: 'pr', pr: undefined, at: 5 })).toBe(s0);

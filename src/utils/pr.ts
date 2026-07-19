@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { PrInfo } from '@/core';
+import type { PrInfo, PrMergeStatus } from '@/core';
 
 const execFileAsync = promisify(execFile);
 
@@ -11,17 +11,40 @@ export type ExecLike = (
   opts: { cwd: string },
 ) => Promise<{ stdout: string }>;
 
-/** Shape of the `gh pr view --json number,url` payload we care about. */
+/** Shape of the `gh pr view --json number,url,state,mergeable` payload we care about. */
 interface PrViewJson {
   number?: unknown;
   url?: unknown;
+  /** `OPEN` | `MERGED` | `CLOSED`. */
+  state?: unknown;
+  /** `MERGEABLE` | `CONFLICTING` | `UNKNOWN`. */
+  mergeable?: unknown;
+}
+
+/**
+ * Map GitHub's `state` / `mergeable` into our glyph-driving status. `state`
+ * wins: a merged PR is `merged` regardless of the (stale) mergeable value.
+ */
+function toMergeStatus(state: unknown, mergeable: unknown): PrMergeStatus {
+  if (state === 'MERGED') {
+    return 'merged';
+  }
+  if (mergeable === 'MERGEABLE') {
+    return 'mergeable';
+  }
+  if (mergeable === 'CONFLICTING') {
+    return 'conflicting';
+  }
+  return 'unknown';
 }
 
 function toPrInfo(stdout: string): PrInfo | undefined {
   const json = JSON.parse(stdout) as PrViewJson;
   const number = typeof json.number === 'number' ? json.number : undefined;
   const url = typeof json.url === 'string' ? json.url : undefined;
-  return number === undefined || url === undefined ? undefined : { number, url };
+  return number === undefined || url === undefined
+    ? undefined
+    : { number, url, mergeStatus: toMergeStatus(json.state, json.mergeable) };
 }
 
 /**
@@ -37,7 +60,11 @@ export async function lookupPr(
   exec: ExecLike = execFileAsync,
 ): Promise<PrInfo | undefined> {
   try {
-    const { stdout } = await exec('gh', ['pr', 'view', branch, '--json', 'number,url'], { cwd });
+    const { stdout } = await exec(
+      'gh',
+      ['pr', 'view', branch, '--json', 'number,url,state,mergeable'],
+      { cwd },
+    );
     return toPrInfo(stdout);
   } catch {
     return undefined;

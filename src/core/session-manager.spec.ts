@@ -498,7 +498,9 @@ describe('SessionManager', () => {
   describe('refreshPrs (gh PR detection)', () => {
     it('looks up each live session by worktree path + branch and feeds setPr', async () => {
       const lookupPr = vi.fn(async (_cwd: string, branch: string) =>
-        branch === 'codiva/feature' ? { number: 42, url: 'https://x/pr/42' } : undefined,
+        branch === 'codiva/feature'
+          ? { number: 42, url: 'https://x/pr/42', mergeStatus: 'mergeable' as const }
+          : undefined,
       );
       const created: FakeSession[] = [];
       const manager = new SessionManager({
@@ -518,7 +520,11 @@ describe('SessionManager', () => {
       await flush();
       await manager.refreshPrs();
       expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
-      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 42, url: 'https://x/pr/42' });
+      expect(manager.getSnapshot()[0]?.pr).toEqual({
+        number: 42,
+        url: 'https://x/pr/42',
+        mergeStatus: 'mergeable',
+      });
       expect(created[0]?.calls).toContain('setPr:#42');
     });
 
