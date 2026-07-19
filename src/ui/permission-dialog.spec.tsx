@@ -48,6 +48,73 @@ describe('PermissionDialog — question', () => {
     expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'Japanese' });
   });
 
+  it('always offers a free-text and a skip-to-chat option after the real ones', () => {
+    const { lastFrame } = render(
+      <PermissionDialog request={question()} onAnswer={noop} onAllow={noop} onDeny={noop} />,
+    );
+    // ja catalog strings (the test env resolves to Japanese).
+    expect(lastFrame()).toContain('自分で入力する');
+    expect(lastFrame()).toContain('これについて相談する');
+  });
+
+  it('"Chat about this" skips the question and denies the tool (returns to chat)', async () => {
+    const onAnswer = vi.fn();
+    const onDeny = vi.fn();
+    const { stdin } = render(
+      <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={onDeny} />,
+    );
+    // English → Japanese → 自分で入力する → これについて相談する
+    stdin.write('\x1B[B');
+    await flush();
+    stdin.write('\x1B[B');
+    await flush();
+    stdin.write('\x1B[B');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(onDeny).toHaveBeenCalledWith(expect.stringContaining('相談'));
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('"Type something." lets the user answer with free-form text', async () => {
+    const onAnswer = vi.fn();
+    const { stdin } = render(
+      <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+    );
+    stdin.write('\x1B[B'); // Japanese
+    await flush();
+    stdin.write('\x1B[B'); // 自分で入力する
+    await flush();
+    stdin.write('\r'); // enter typing mode
+    await flush();
+    stdin.write('my own answer');
+    await flush();
+    stdin.write('\r'); // submit
+    await flush();
+    expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'my own answer' });
+  });
+
+  it('returns from free-text back to the choices on Backspace when empty', async () => {
+    const onAnswer = vi.fn();
+    const { stdin } = render(
+      <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+    );
+    stdin.write('\x1B[B'); // Japanese
+    await flush();
+    stdin.write('\x1B[B'); // 自分で入力する
+    await flush();
+    stdin.write('\r'); // enter typing mode
+    await flush();
+    stdin.write('\x7f'); // Backspace on empty buffer → back to choices
+    await flush();
+    // Back in select mode: up moves to Japanese and Enter picks it (not free-text).
+    stdin.write('\x1B[A'); // up → Japanese
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'Japanese' });
+  });
+
   it('toggles options with space in multi-select mode', async () => {
     const onAnswer = vi.fn();
     const { stdin } = render(

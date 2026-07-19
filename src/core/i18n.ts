@@ -86,6 +86,16 @@ export interface Messages {
     deny: string;
     questionTitle: (index: number, total: number, header: string) => string;
     questionHelp: (multiSelect: boolean) => string;
+    /** 「自分で入力する」選択肢（自由記述へ切り替える。Claude Code の Type something.） */
+    typeSomething: string;
+    /** 自由記述モードの入力欄プレースホルダ */
+    typePlaceholder: string;
+    /** 自由記述モードの操作ヒント */
+    typingHelp: string;
+    /** 質問をスキップして会話に戻る選択肢（Chat about this） */
+    chatAboutThis: string;
+    /** 「相談する」を選んだときにツールへ返す拒否理由（モデルに伝わる） */
+    chatMessage: string;
   };
   /** モデル選択ダイアログ（model-select.tsx。/model コマンドで開く） */
   model: {
@@ -203,6 +213,11 @@ const ja: Messages = {
     questionTitle: (index, total, header) => `質問 (${index}/${total}) ${header}`,
     questionHelp: (multiSelect) =>
       `↑↓: 選択 ・ ${multiSelect ? 'Space: トグル ・ ' : ''}Enter: 決定`,
+    typeSomething: '自分で入力する',
+    typePlaceholder: '回答を入力…',
+    typingHelp: 'Enter: 送信 ・ 空欄で Backspace: 選択に戻る',
+    chatAboutThis: 'これについて相談する',
+    chatMessage: 'ユーザーは選択肢を選ばず、この件について会話で相談することを選びました。',
   },
   model: {
     title: 'モデルを選択',
@@ -311,6 +326,11 @@ const en: Messages = {
     questionTitle: (index, total, header) => `Question (${index}/${total}) ${header}`,
     questionHelp: (multiSelect) =>
       `↑↓: select · ${multiSelect ? 'Space: toggle · ' : ''}Enter: confirm`,
+    typeSomething: 'Type something.',
+    typePlaceholder: 'Type your answer…',
+    typingHelp: 'Enter: submit · Backspace on empty: back to choices',
+    chatAboutThis: 'Chat about this',
+    chatMessage: 'The user chose to chat about this instead of picking an option.',
   },
   model: {
     title: 'Select model',
