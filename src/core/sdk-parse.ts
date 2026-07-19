@@ -241,7 +241,15 @@ function reduceSdk(
       const sid = typeof message.session_id === 'string' ? message.session_id : state.sdkSessionId;
       // init carries the *resolved* model even when config left it unset.
       const model = typeof message.model === 'string' ? message.model : state.model;
-      return { ...state, status: 'running', sdkSessionId: sid ?? state.sdkSessionId, model };
+      return {
+        ...state,
+        // pendingPermission がある間は awaiting_* を維持する（#37 と同じ不変条件）。
+        // 通常の初回 init は pending 無し（creating → running）で通り、保留中に
+        // 別の init が来ても質問ダイアログの裏で "Running" に戻さない。
+        status: state.pendingPermission ? state.status : 'running',
+        sdkSessionId: sid ?? state.sdkSessionId,
+        model,
+      };
     }
     return state;
   }

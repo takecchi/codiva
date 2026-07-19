@@ -76,6 +76,31 @@ describe('control events', () => {
     expect(state.messages.at(-1)?.text).toBe('do more');
   });
 
+  it('user_input keeps a pending question in awaiting_input (does not flip to Running)', () => {
+    // Regression: sending a follow-up while an AskUserQuestion is pending must not
+    // downgrade the session to running — the dialog stays up, so the badge must
+    // remain "Question", not "Running" (pendingPermission is untouched).
+    const req: PermissionRequest = {
+      id: 'q1',
+      toolName: 'AskUserQuestion',
+      input: {},
+      kind: 'question',
+      questions: [{ question: 'Which one?', header: 'x', multiSelect: false, options: [] }],
+    };
+    let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
+    state = reduce(state, { kind: 'user_input', text: 'also do X', at: 2500 });
+    expect(state.status).toBe('awaiting_input');
+    expect(state.pendingPermission?.kind).toBe('question');
+  });
+
+  it('user_input keeps a pending tool prompt in awaiting_permission', () => {
+    const req: PermissionRequest = { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' };
+    let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
+    state = reduce(state, { kind: 'user_input', text: 'note', at: 2500 });
+    expect(state.status).toBe('awaiting_permission');
+    expect(state.pendingPermission?.toolName).toBe('Bash');
+  });
+
   it('aborted → failed with an error', () => {
     const state = reduce(initialState(BASE), { kind: 'aborted', error: 'killed', at: 7000 });
     expect(state.status).toBe('failed');
