@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
 import {
@@ -29,6 +30,11 @@ import {
   saveStateSync,
 } from '@/utils';
 import { App } from './app';
+
+// バージョンは package.json を唯一の出所にする。エントリ（src/index.tsx / dist/index.js）
+// から見た相対位置は dev/ビルド後どちらも `../package.json` なので createRequire で読む。
+const pkg = createRequire(import.meta.url)('../package.json') as { version?: string };
+const appVersion = pkg.version;
 
 async function main(): Promise<void> {
   // 表示言語を決定: CODIVA_LANG > 設定ファイル(~/.codiva/config.json) > OS ロケール。
@@ -153,7 +159,14 @@ async function main(): Promise<void> {
   const disableMouse = useMouse ? enableMouse(process.stdout) : undefined;
 
   const { waitUntilExit } = render(
-    <App manager={manager} cwd={repoRoot} model={config.model} messages={t} onOpenPr={openUrl} />,
+    <App
+      manager={manager}
+      cwd={repoRoot}
+      model={config.model}
+      version={appVersion}
+      messages={t}
+      onOpenPr={openUrl}
+    />,
     { exitOnCtrlC: false },
   );
   await waitUntilExit();

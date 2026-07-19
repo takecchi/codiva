@@ -84,7 +84,8 @@ export const SessionList: FC<{
   onQuit: () => void;
   cwd?: string;
   model?: string;
-}> = ({ manager, onOpen, onOpenPr, onQuit, cwd, model }) => {
+  version?: string;
+}> = ({ manager, onOpen, onOpenPr, onQuit, cwd, model, version }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -379,6 +380,7 @@ export const SessionList: FC<{
       <Banner
         cwd={cwd}
         model={model}
+        version={version}
         sessionCount={sessions.length}
         totalCostUsd={totalCostUsd(sessions)}
       />

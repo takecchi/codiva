@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import type { FC } from 'react';
 import { formatUsd } from '@/core';
 import { useMessages } from './i18n-context';
-import { glyph, palette, theme } from './theme';
+import { palette } from './theme';
 
 // codiva mascot. Each glyph is rendered in its own <Text>, so you can paint it
 // one character at a time via paint() below.
@@ -52,9 +52,11 @@ const LOGO_ROWS = LOGO.map((line, row) => ({
 export const Banner: FC<{
   cwd?: string;
   model?: string;
+  /** アプリのバージョン（package.json 由来）。ワードマークの右に `vX.Y.Z` で表示。 */
+  version?: string;
   sessionCount: number;
   totalCostUsd?: number;
-}> = ({ cwd, model, sessionCount, totalCostUsd = 0 }) => {
+}> = ({ cwd, model, version, sessionCount, totalCostUsd = 0 }) => {
   const m = useMessages();
   return (
     <Box>
@@ -71,9 +73,10 @@ export const Banner: FC<{
       </Box>
       <Box flexDirection="column" justifyContent="center">
         <Text>
-          <Text color={theme.accent} bold>
-            {glyph.star} codiva
-          </Text>
+          {/* ワードマークは通常色（セッション一覧のタイトルと同じ）+ Bold。
+              すぐ右に model 行と同じ dim 色でバージョンを添える。 */}
+          <Text bold>Codiva</Text>
+          {version ? <Text dimColor>{` v${version}`}</Text> : null}
           <Text dimColor>
             {'   '}
             {m.list.sessionCount(sessionCount)}

@@ -120,7 +120,7 @@ describe('App fullscreen layout', () => {
     const lines = lastFrame().split('\n');
     // フルスクリーン化していなければコンテンツ高さ（〜13行）しか出ない。
     expect(lines).toHaveLength(20);
-    expect(lastFrame()).toContain('codiva');
+    expect(lastFrame()).toContain('Codiva');
     // 入力欄+フッタが flexGrow スペーサで画面最下段（下パディングの上）に来る。
     const lastContent = lines.filter((l) => l.trim() !== '').at(-1);
     expect(lastContent).toContain('自動モード');
@@ -266,7 +266,7 @@ describe('App fullscreen layout', () => {
 describe('App (list view)', () => {
   it('renders the banner and empty-state hint', () => {
     const { lastFrame } = render(<App manager={makeManager()} />);
-    expect(lastFrame()).toContain('codiva');
+    expect(lastFrame()).toContain('Codiva');
     expect(lastFrame()).toContain('最初のセッション');
   });
 
