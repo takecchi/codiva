@@ -43,6 +43,7 @@ function noopSession(input: CreateSessionInput) {
     stop() {},
     detach() {},
     archive() {},
+    setPr() {},
   };
 }
 

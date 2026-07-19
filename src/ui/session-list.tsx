@@ -26,6 +26,18 @@ import { glyph, theme } from './theme';
 /** Launch the selected session in the claude CLI; resolves when the user returns. */
 export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string }>;
 
+/** Open a PR web URL in the browser (fire-and-forget). */
+export type OpenPr = (url: string) => void;
+
+/**
+ * Fixed display widths of each session-row column, shared by rendering and mouse
+ * hit-testing so a click on the `#<n>` PR cell maps back to the right x-range.
+ */
+const ROW_COL = { caret: 2, attention: 2, title: 30, badge: 12, branch: 22, pr: 8 } as const;
+/** x offset (from the row's left) where the PR cell starts. */
+const PR_COL_LEFT =
+  ROW_COL.caret + ROW_COL.attention + ROW_COL.title + ROW_COL.badge + ROW_COL.branch;
+
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
  * zones — 'composer' (default: typing + full caret movement) and 'list'
@@ -36,9 +48,10 @@ export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string
 export const SessionList: FC<{
   manager: SessionManager;
   onOpenExternal?: OpenExternal;
+  onOpenPr?: OpenPr;
   onQuit: () => void;
   cwd?: string;
-}> = ({ manager, onOpenExternal, onQuit, cwd }) => {
+}> = ({ manager, onOpenExternal, onOpenPr, onQuit, cwd }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -92,6 +105,13 @@ export const SessionList: FC<{
     });
   };
 
+  /** Open the selected session's PR in the browser, if it has one. */
+  const openPr = () => {
+    if (target?.pr && onOpenPr) {
+      onOpenPr(target.pr.url);
+    }
+  };
+
   const runAction = (action: 'merge' | 'discard') => {
     if (!target) {
       return;
@@ -126,8 +146,18 @@ export const SessionList: FC<{
       }
     }
     if (rowsBox && y >= rowsBox.top && y < rowsBox.top + sorted.length) {
-      setSel(y - rowsBox.top);
+      const idx = y - rowsBox.top;
+      setSel(idx);
       setFocus('list');
+      // A click inside the `#<n>` cell of a row with a PR opens it in the browser.
+      const s = sorted[idx];
+      if (s?.pr && onOpenPr) {
+        const relX = x - rowsBox.left;
+        const label = `#${s.pr.number}`;
+        if (relX >= PR_COL_LEFT && relX < PR_COL_LEFT + label.length) {
+          onOpenPr(s.pr.url);
+        }
+      }
     }
   };
 
@@ -191,6 +221,10 @@ export const SessionList: FC<{
       }
       if (key.return || key.rightArrow) {
         openInClaude();
+        return;
+      }
+      if (input === 'p' || input === 'P') {
+        openPr();
         return;
       }
       if (input === 'm' || input === 'M') {
@@ -262,23 +296,30 @@ export const SessionList: FC<{
                 <Text color={focus === 'list' ? theme.accent : theme.dim}>
                   {isSel ? `${glyph.caret} ` : '  '}
                 </Text>
-                <Box width={2}>
+                <Box width={ROW_COL.attention}>
                   <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
                     {attention ? glyph.attention : ' '}
                   </Text>
                 </Box>
-                <Box width={30}>
+                <Box width={ROW_COL.title}>
                   <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
                     {s.title}
                   </Text>
                 </Box>
-                <Box width={12}>
+                <Box width={ROW_COL.badge}>
                   <ProgressBadge state={s} />
                 </Box>
-                <Box width={22}>
+                <Box width={ROW_COL.branch}>
                   <Text dimColor wrap="truncate-end">
                     {s.branch}
                   </Text>
+                </Box>
+                <Box width={ROW_COL.pr}>
+                  {s.pr ? (
+                    <Text color={theme.accent} underline>
+                      #{s.pr.number}
+                    </Text>
+                  ) : null}
                 </Box>
                 <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
               </Box>

@@ -87,7 +87,8 @@ const ja: Messages = {
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
     helpComposer: 'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ Ctrl+C: 終了',
-    helpList: '↑↓: 選択 ・ Enter: claudeで開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
+    helpList:
+      '↑↓: 選択 ・ Enter: claudeで開く ・ p: PRを開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
     actionErrorLabel: '操作エラー',
     mergePrompt: 'ベースへマージします。',
@@ -143,7 +144,8 @@ const en: Messages = {
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
     helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · Ctrl+C: quit',
-    helpList: '↑↓: select · Enter: open in claude · m: merge · d: discard · Tab/Esc: input',
+    helpList:
+      '↑↓: select · Enter: open in claude · p: open PR · m: merge · d: discard · Tab/Esc: input',
     helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
     actionErrorLabel: 'Action error',
     mergePrompt: 'Merge into the base branch.',
