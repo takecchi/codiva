@@ -10,6 +10,8 @@ import {
   INPUT_MAX_ROWS,
   indexAtRowCol,
   isCommandInput,
+  isFullscreenViewport,
+  listView,
   matchCommands,
   parseSgrMouse,
   runCommand,
@@ -20,7 +22,7 @@ import {
 } from '@/core';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
-import { useAbsolutePosition, useClock, useRunMode, useSessions } from './hooks';
+import { useAbsolutePosition, useBoxHeight, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
 import { PermissionDialog } from './permission-dialog';
@@ -61,8 +63,9 @@ export const SessionList: FC<{
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
   const now = useClock(1000);
-  // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に使う。リサイズ追従。
-  const { columns } = useWindowSize();
+  // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
+  // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
+  const { columns, rows: termRows } = useWindowSize();
   const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
   // 同一チャンクで複数キーイベントが連続すると（連打・エスケープ列のまとめ読み）、
   // React の state はイベント間で更新されず stale closure になる。編集は必ず
@@ -93,6 +96,16 @@ export const SessionList: FC<{
   // The dialog owns the keys only while the list side has focus, so the
   // composer is never hijacked mid-typing by a session that starts asking.
   const pending = focus === 'list' ? target?.pendingPermission : undefined;
+
+  // 一覧の内部スクロール: rows ボックスは flexGrow で残り高さを占めるので、その
+  // 実測高さぶんだけ項目を描画し、選択が常に見えるようウィンドウを動かす。全画面
+  // でないインライン描画時はクリップされないため全件描画（端末側スクロールに任せる）。
+  const fullscreen = isFullscreenViewport(termRows);
+  const listHeight = useBoxHeight(rowsRef);
+  const listCap = fullscreen
+    ? Math.max(1, listHeight ?? Math.max(1, termRows - 15))
+    : Math.max(1, sorted.length);
+  const view = listView(sorted.length, selected, listCap);
 
   const moveSel = (delta: number) => {
     setSel((s) => Math.min(Math.max(0, s + delta), Math.max(0, sorted.length - 1)));
@@ -171,18 +184,24 @@ export const SessionList: FC<{
         return;
       }
     }
-    if (rowsBox && y >= rowsBox.top && y < rowsBox.top + sorted.length) {
-      const idx = y - rowsBox.top;
-      setSel(idx);
-      setFocus('list');
-      // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
-      // browser. The cell is right-anchored, so derive its x-range from the terminal
-      // width (outer padding is symmetric, so the right pad equals rowsBox.left).
-      const s = sorted[idx];
-      if (s?.pr && onOpenPr) {
-        const cellLeft = columns - rowsBox.left - PR_CELL_WIDTH;
-        if (x >= cellLeft && x < cellLeft + PR_CELL_WIDTH) {
-          onOpenPr(s.pr.url);
+    if (rowsBox) {
+      // rows ボックス内の行 → セッションインデックス。上インジケータ行があれば
+      // その 1 行ぶんずらし、可視ウィンドウ（view.start..end）へ写像する。
+      const rowLine = y - rowsBox.top - (view.showAbove ? 1 : 0);
+      const visibleCount = view.end - view.start;
+      if (rowLine >= 0 && rowLine < visibleCount) {
+        const idx = view.start + rowLine;
+        setSel(idx);
+        setFocus('list');
+        // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
+        // browser. The cell is right-anchored, so derive its x-range from the terminal
+        // width (outer padding is symmetric, so the right pad equals rowsBox.left).
+        const s = sorted[idx];
+        if (s?.pr && onOpenPr) {
+          const cellLeft = columns - rowsBox.left - PR_CELL_WIDTH;
+          if (x >= cellLeft && x < cellLeft + PR_CELL_WIDTH) {
+            onOpenPr(s.pr.url);
+          }
         }
       }
     }
@@ -343,53 +362,59 @@ export const SessionList: FC<{
         totalCostUsd={totalCostUsd(sessions)}
       />
 
-      {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる */}
+      {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる。
+          高さを実測し、その行数に収まるぶんだけ内部スクロールして描画する。 */}
       <Box ref={rowsRef} flexDirection="column" marginY={1} flexGrow={1} overflowY="hidden">
         {sorted.length === 0 ? (
           <Text dimColor>{m.list.emptyHint}</Text>
         ) : (
-          sorted.map((s, i) => {
-            const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
-            const archived = s.status === 'archived';
-            const isSel = i === selected;
-            return (
-              <Box key={s.id}>
-                <Text color={focus === 'list' ? theme.accent : theme.dim}>
-                  {isSel ? `${glyph.caret} ` : '  '}
-                </Text>
-                <Box width={2}>
-                  <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
-                    {attention ? glyph.attention : ' '}
+          <>
+            {view.showAbove ? <Text dimColor>{m.list.moreAbove(view.hiddenAbove)}</Text> : null}
+            {sorted.slice(view.start, view.end).map((s, i) => {
+              const idx = view.start + i;
+              const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
+              const archived = s.status === 'archived';
+              const isSel = idx === selected;
+              return (
+                <Box key={s.id}>
+                  <Text color={focus === 'list' ? theme.accent : theme.dim}>
+                    {isSel ? `${glyph.caret} ` : '  '}
                   </Text>
-                </Box>
-                {/* title/branch は固定幅だと広い端末でも切り詰められる。flexGrow で
-                    残り幅を title:branch = 3:2 で分配し、狭いときは minWidth まで縮む。 */}
-                <Box flexGrow={3} flexBasis={0} minWidth={20} marginRight={1}>
-                  <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
-                    {s.title}
-                  </Text>
-                </Box>
-                <Box width={12}>
-                  <ProgressBadge state={s} />
-                </Box>
-                <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
-                  <Text dimColor wrap="truncate-end">
-                    {s.branch}
-                  </Text>
-                </Box>
-                <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
-                {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
-                    左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
-                <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
-                  {s.pr ? (
-                    <Text color={theme.accent} underline>
-                      #{s.pr.number}
+                  <Box width={2}>
+                    <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
+                      {attention ? glyph.attention : ' '}
                     </Text>
-                  ) : null}
+                  </Box>
+                  {/* title/branch は固定幅だと広い端末でも切り詰められる。flexGrow で
+                      残り幅を title:branch = 3:2 で分配し、狭いときは minWidth まで縮む。 */}
+                  <Box flexGrow={3} flexBasis={0} minWidth={20} marginRight={1}>
+                    <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
+                      {s.title}
+                    </Text>
+                  </Box>
+                  <Box width={12}>
+                    <ProgressBadge state={s} />
+                  </Box>
+                  <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
+                    <Text dimColor wrap="truncate-end">
+                      {s.branch}
+                    </Text>
+                  </Box>
+                  <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
+                  {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
+                      左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
+                  <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
+                    {s.pr ? (
+                      <Text color={theme.accent} underline>
+                        #{s.pr.number}
+                      </Text>
+                    ) : null}
+                  </Box>
                 </Box>
-              </Box>
-            );
-          })
+              );
+            })}
+            {view.showBelow ? <Text dimColor>{m.list.moreBelow(view.hiddenBelow)}</Text> : null}
+          </>
         )}
       </Box>
 

@@ -125,6 +125,57 @@ describe('App fullscreen layout', () => {
     app.unmount();
   });
 
+  it('scrolls the session list internally, keeping the frame height and footer fixed', async () => {
+    const manager = makeManager();
+    // 幅は広め（経過時間表示で行が折り返さないように）。
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 120);
+    // 一覧領域（〜6行）に収まりきらない数のセッションを作る。
+    for (let i = 0; i < 12; i++) {
+      stdin.write(`task-${String(i).padStart(2, '0')}`);
+      await flush();
+      stdin.write('\r');
+      await flush();
+    }
+
+    const initial = lastFrame();
+    // フレーム高さは端末ぴったり、フッタは最下段に固定されたまま。
+    expect(initial.split('\n')).toHaveLength(20);
+    expect(
+      initial
+        .split('\n')
+        .filter((l) => l.trim() !== '')
+        .at(-1),
+    ).toContain('自動モード');
+    // 先頭は見え、末尾は隠れ、下に「さらに N 件」インジケータが出る。
+    expect(initial).toContain('task-00');
+    expect(initial).not.toContain('task-11');
+    expect(initial).toContain('↓');
+
+    // 一覧へフォーカスし、末尾まで選択を下げるとウィンドウがスクロールする。
+    stdin.write('\t');
+    await flush();
+    for (let i = 0; i < 11; i++) {
+      stdin.write('\x1b[B'); // ↓
+      await flush();
+    }
+
+    const scrolled = lastFrame();
+    expect(scrolled.split('\n')).toHaveLength(20);
+    // 入力欄+フッタは最下部に残る（list フォーカスの長いヒントが折り返しても
+    // クリップされない）。最下段はセッション行ではなくフッタ＝一覧が押し下げていない。
+    expect(scrolled).toContain(messages.ja.list.promptPlaceholder);
+    expect(
+      scrolled
+        .split('\n')
+        .filter((l) => l.trim() !== '')
+        .at(-1),
+    ).not.toContain('task-');
+    expect(scrolled).toContain('task-11'); // 末尾が見えるようになった
+    expect(scrolled).not.toContain('task-00'); // 先頭は隠れた
+    expect(scrolled).toContain('↑'); // 上に隠れた件数のインジケータ
+    app.unmount();
+  }, 20000);
+
   it('falls back to inline rendering on very short terminals (footer stays visible)', () => {
     const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 8);
     // height 固定だと 8 行にクリップされ入力欄・フッタが消える。フォールバックでは
