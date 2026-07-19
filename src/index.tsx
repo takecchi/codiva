@@ -129,7 +129,13 @@ async function main(): Promise<void> {
   };
 
   const { waitUntilExit } = render(
-    <App manager={manager} cwd={repoRoot} messages={t} runExternal={runExternal} />,
+    <App
+      manager={manager}
+      cwd={repoRoot}
+      model={config.model}
+      messages={t}
+      runExternal={runExternal}
+    />,
     { exitOnCtrlC: false },
   );
   await waitUntilExit();

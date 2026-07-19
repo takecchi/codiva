@@ -71,6 +71,10 @@ export interface Messages {
   /** 起動バナー（banner.tsx） */
   banner: {
     subtitle: string;
+    /** 使用中モデルの表示（設定 model。未設定は CLI 既定）。 */
+    model: (name: string) => string;
+    /** model 未設定時に表示するプレースホルダ（CLI 既定）。 */
+    defaultModel: string;
   };
   /** 下部モード行（status-footer.tsx） */
   footer: {
@@ -128,6 +132,8 @@ const ja: Messages = {
   },
   banner: {
     subtitle: '並列 Claude Code セッションを git worktree 上で実行',
+    model: (name) => `モデル: ${name}`,
+    defaultModel: 'CLI 既定',
   },
   footer: {
     autoMode: '自動モード',
@@ -184,6 +190,8 @@ const en: Messages = {
   },
   banner: {
     subtitle: 'Parallel Claude Code sessions in git worktrees',
+    model: (name) => `model: ${name}`,
+    defaultModel: 'CLI default',
   },
   footer: {
     autoMode: 'auto mode on',
