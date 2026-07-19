@@ -8,7 +8,7 @@ import type { CreateSessionInput } from '@/core/types';
 
 // Feature test for slash commands driven through the whole App. Pure parsing is
 // unit-tested in src/core/commands.spec.ts; this checks the UI wiring: the
-// palette, /help overlay, /quit, and the unknown-command error.
+// palette, /help overlay, /exit, and the unknown-command error.
 
 const flush = () => new Promise((r) => setTimeout(r, 150));
 
@@ -64,15 +64,15 @@ describe('slash commands', () => {
     const frame = lastFrame() ?? '';
     expect(frame).toContain(messages.ja.command.paletteTitle);
     expect(frame).toContain('/help');
-    expect(frame).toContain('/quit');
+    expect(frame).toContain('/exit');
   });
 
   it('filters the palette by the typed prefix', async () => {
     const { stdin, lastFrame } = render(<App manager={makeManager()} />);
-    stdin.write('/q');
+    stdin.write('/ex');
     await flush();
     const frame = lastFrame() ?? '';
-    expect(frame).toContain('/quit');
+    expect(frame).toContain('/exit');
     expect(frame).not.toContain('/help');
   });
 
@@ -95,14 +95,14 @@ describe('slash commands', () => {
     const frame = lastFrame() ?? '';
     expect(frame).toContain(messages.ja.command.helpTitle);
     expect(frame).toContain(messages.ja.command.help); // /help description
-    expect(frame).toContain(messages.ja.command.quit); // /quit description
+    expect(frame).toContain(messages.ja.command.exit); // /exit description
   });
 
-  it('/quit tears down the manager and exits', async () => {
+  it('/exit tears down the manager and exits', async () => {
     const manager = makeManager();
     const dispose = vi.spyOn(manager, 'dispose');
     const { stdin } = render(<App manager={manager} />);
-    stdin.write('/quit');
+    stdin.write('/exit');
     await flush();
     stdin.write('\r');
     await flush();

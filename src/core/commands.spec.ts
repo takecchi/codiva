@@ -28,7 +28,7 @@ describe('parseCommand', () => {
   });
   it.each([
     ['/help', { name: 'help', args: '' }],
-    ['/QUIT', { name: 'quit', args: '' }], // name is lowercased
+    ['/EXIT', { name: 'exit', args: '' }], // name is lowercased
     ['/help me now', { name: 'help', args: 'me now' }],
     ['/help   trimmed  ', { name: 'help', args: 'trimmed' }],
     ['/', { name: '', args: '' }],
@@ -40,12 +40,14 @@ describe('parseCommand', () => {
 
 describe('findCommand', () => {
   it('resolves by canonical name', () => {
-    expect(findCommand('quit')?.name).toBe('quit');
+    expect(findCommand('exit')?.name).toBe('exit');
   });
   it('resolves by alias', () => {
-    expect(findCommand('exit')?.name).toBe('quit');
-    expect(findCommand('q')?.name).toBe('quit');
     expect(findCommand('?')?.name).toBe('help');
+  });
+  it('no longer resolves the retired /quit alias', () => {
+    expect(findCommand('quit')).toBeUndefined();
+    expect(findCommand('q')).toBeUndefined();
   });
   it('returns undefined for unknown names', () => {
     expect(findCommand('nope')).toBeUndefined();
@@ -60,12 +62,12 @@ describe('matchCommands', () => {
     expect(matchCommands('/')).toEqual([...COMMANDS]);
   });
   it('prefix-matches the typed name', () => {
-    expect(matchCommands('/q').map((c) => c.name)).toEqual(['quit']);
+    expect(matchCommands('/ex').map((c) => c.name)).toEqual(['exit']);
     expect(matchCommands('/h').map((c) => c.name)).toEqual(['help']);
     expect(matchCommands('/mo').map((c) => c.name)).toEqual(['model']);
   });
-  it('matches on aliases too', () => {
-    expect(matchCommands('/ex').map((c) => c.name)).toEqual(['quit']);
+  it('does not match the retired /quit alias', () => {
+    expect(matchCommands('/q').map((c) => c.name)).toEqual([]);
   });
   it('returns [] when nothing matches', () => {
     expect(matchCommands('/zzz')).toEqual([]);
@@ -74,11 +76,11 @@ describe('matchCommands', () => {
 
 describe('runCommand', () => {
   it('resolves a known command to a run result', () => {
-    const result = runCommand('/quit');
-    expect(result).toEqual({ kind: 'run', command: findCommand('quit') });
+    const result = runCommand('/exit');
+    expect(result).toEqual({ kind: 'run', command: findCommand('exit') });
   });
-  it('resolves aliases', () => {
-    expect(runCommand('/exit')).toEqual({ kind: 'run', command: findCommand('quit') });
+  it('reports the retired /quit as unknown', () => {
+    expect(runCommand('/quit')).toEqual({ kind: 'unknown', name: 'quit' });
   });
   it('resolves /model to the model command', () => {
     expect(runCommand('/model')).toEqual({ kind: 'run', command: findCommand('model') });

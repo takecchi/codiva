@@ -149,8 +149,9 @@ async function main(): Promise<void> {
   prTimer.unref?.();
 
   // Flush synchronously on hard termination (kill / terminal close), where the
-  // debounced async save wouldn't run before the process dies. Ctrl+C is handled
-  // by the App (dispose → exit → final flush below), so we only cover SIGTERM/SIGHUP.
+  // debounced async save wouldn't run before the process dies. Normal exit goes
+  // through the `/exit` command (App: dispose → exit → final flush below); Ctrl+C
+  // is ignored (exitOnCtrlC: false, no handler), so we only cover SIGTERM/SIGHUP.
   const flushSyncAndExit = (code: number) => () => {
     try {
       saveStateSync(manager.persistableState(), statePath);

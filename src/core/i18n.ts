@@ -135,8 +135,8 @@ export interface Messages {
     unknown: (name: string) => string;
     /** /help の説明 */
     help: string;
-    /** /quit の説明 */
-    quit: string;
+    /** /exit の説明 */
+    exit: string;
     /** /model の説明 */
     model: string;
     /** /diff の説明 */
@@ -150,7 +150,7 @@ const ja: Messages = {
     totalCost: (usd) => `合計 ${usd}`,
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
-    helpComposer: 'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ Ctrl+C: 終了',
+    helpComposer: 'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ /exit: 終了',
     helpList:
       '↑↓: 選択 ・ Enter/→: 詳細を開く ・ p: PRを開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
@@ -249,7 +249,7 @@ const ja: Messages = {
     helpTitle: '利用可能なコマンド',
     unknown: (name) => (name ? `不明なコマンド: /${name}` : '不明なコマンドです'),
     help: 'コマンド一覧を表示',
-    quit: 'codiva を終了',
+    exit: 'codiva を終了',
     model: 'モデルを切り替え',
     diff: '変更差分サマリの表示を切り替え',
   },
@@ -261,7 +261,7 @@ const en: Messages = {
     totalCost: (usd) => `total ${usd}`,
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
-    helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · Ctrl+C: quit',
+    helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · /exit: quit',
     helpList:
       '↑↓: select · Enter/→: open detail · p: open PR · m: merge · d: discard · Tab/Esc: input',
     helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
@@ -360,7 +360,7 @@ const en: Messages = {
     helpTitle: 'Available commands',
     unknown: (name) => (name ? `Unknown command: /${name}` : 'Unknown command'),
     help: 'Show available commands',
-    quit: 'Quit codiva',
+    exit: 'Quit codiva',
     model: 'Switch the model',
     diff: 'Toggle the changes summary',
   },
