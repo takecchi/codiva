@@ -21,6 +21,8 @@ const worktrees: WorktreeService = {
   baseBranch: async () => 'main',
   takenSlugs: async () => new Set(),
   add: async (slug) => ({ slug, branch: `codiva/${slug}`, path: `/tmp/${slug}` }),
+  syncedStartPoint: async () => undefined,
+  pushBranch: async () => {},
   diffStat: async () => ({ committed: '', uncommitted: [] }),
   merge: async () => {},
   remove: async () => {},
@@ -43,6 +45,7 @@ function noopSession(input: CreateSessionInput) {
     stop() {},
     archive() {},
     setPr() {},
+    markConflict() {},
   };
 }
 

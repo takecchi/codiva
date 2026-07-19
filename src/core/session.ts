@@ -224,6 +224,15 @@ export class Session {
     this.dispatch({ kind: 'pr', pr, at: this.now() });
   }
 
+  /**
+   * Flag the session as blocked on a merge conflict (its branch couldn't merge
+   * into base). Driven by the manager's merge action; we surface the conflicted
+   * files but never auto-resolve.
+   */
+  markConflict(files: string[]): void {
+    this.dispatch({ kind: 'conflict', files, at: this.now() });
+  }
+
   private resolvePending(result: PermissionResult): void {
     const pending = this.pending;
     if (!pending) {

@@ -73,6 +73,7 @@ export interface Messages {
     completed: string;
     interrupted: string;
     failed: string;
+    conflict: string;
     archived: string;
   };
   /** 許可・質問ダイアログ（permission-dialog.tsx） */
@@ -192,6 +193,7 @@ const ja: Messages = {
     completed: '完了',
     interrupted: '中断',
     failed: '失敗',
+    conflict: 'コンフリクト',
     archived: '保管済み',
   },
   permission: {
@@ -303,6 +305,7 @@ const en: Messages = {
     completed: 'Completed',
     interrupted: 'Interrupted',
     failed: 'Failed',
+    conflict: 'Conflict',
     archived: 'Archived',
   },
   permission: {

@@ -1,27 +1,33 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { PrInfo } from '@/core';
+import type { PrChecksState, PrInfo } from '@/core';
 
 const execFileAsync = promisify(execFile);
 
-/** execFile-shaped runner, injectable so lookupPr can be unit-tested without `gh`/`git`. */
+/** execFile-shaped runner, injectable so PR helpers can be unit-tested without `gh`/`git`. */
 export type ExecLike = (
   file: string,
   args: string[],
   opts: { cwd: string },
 ) => Promise<{ stdout: string }>;
 
-/** Shape of the `gh pr view --json number,url` payload we care about. */
+/** Shape of the `gh pr view --json number,url,isDraft` payload we care about. */
 interface PrViewJson {
   number?: unknown;
   url?: unknown;
+  isDraft?: unknown;
 }
 
 function toPrInfo(stdout: string): PrInfo | undefined {
   const json = JSON.parse(stdout) as PrViewJson;
   const number = typeof json.number === 'number' ? json.number : undefined;
   const url = typeof json.url === 'string' ? json.url : undefined;
-  return number === undefined || url === undefined ? undefined : { number, url };
+  if (number === undefined || url === undefined) {
+    return undefined;
+  }
+  return typeof json.isDraft === 'boolean'
+    ? { number, url, isDraft: json.isDraft }
+    : { number, url };
 }
 
 /**
@@ -47,7 +53,9 @@ async function currentBranch(cwd: string, exec: ExecLike): Promise<string | unde
 
 async function viewPr(cwd: string, branch: string, exec: ExecLike): Promise<PrInfo | undefined> {
   try {
-    const { stdout } = await exec('gh', ['pr', 'view', branch, '--json', 'number,url'], { cwd });
+    const { stdout } = await exec('gh', ['pr', 'view', branch, '--json', 'number,url,isDraft'], {
+      cwd,
+    });
     return toPrInfo(stdout);
   } catch {
     return undefined;
@@ -81,4 +89,101 @@ export async function lookupPr(
     }
   }
   return undefined;
+}
+
+/**
+ * Open a draft PR for `branch` (title/body auto-filled from commits) and return
+ * it. The branch must already be pushed to origin. If a PR already exists the
+ * create step fails harmlessly and we still return the existing PR via lookup.
+ * Best-effort: resolves undefined when no PR can be found/created.
+ */
+export async function createPr(
+  cwd: string,
+  branch: string,
+  exec: ExecLike = execFileAsync,
+): Promise<PrInfo | undefined> {
+  try {
+    await exec('gh', ['pr', 'create', '--draft', '--fill', '--head', branch], { cwd });
+  } catch {
+    // PR may already exist, or `gh` is unavailable — fall through to lookup.
+  }
+  return lookupPr(cwd, branch, exec);
+}
+
+/** One entry of `gh`'s statusCheckRollup (check-run or legacy status-context). */
+interface RollupCheck {
+  /** Check-run lifecycle: QUEUED | IN_PROGRESS | COMPLETED. */
+  status?: unknown;
+  /** Check-run result once COMPLETED: SUCCESS | FAILURE | ... . */
+  conclusion?: unknown;
+  /** Legacy commit-status state: SUCCESS | PENDING | FAILURE | ERROR. */
+  state?: unknown;
+}
+
+const FAILING = new Set([
+  'FAILURE',
+  'ERROR',
+  'CANCELLED',
+  'TIMED_OUT',
+  'ACTION_REQUIRED',
+  'STARTUP_FAILURE',
+]);
+
+function isFailing(c: RollupCheck): boolean {
+  return FAILING.has(String(c.conclusion ?? '')) || FAILING.has(String(c.state ?? ''));
+}
+
+function isPending(c: RollupCheck): boolean {
+  // A check-run that hasn't COMPLETED, or a status-context still PENDING/EXPECTED.
+  const s = String(c.status ?? '');
+  if (s.length > 0 && s !== 'COMPLETED') {
+    return true;
+  }
+  const state = String(c.state ?? '');
+  return state === 'PENDING' || state === 'EXPECTED';
+}
+
+function toChecksState(stdout: string): PrChecksState {
+  const json = JSON.parse(stdout) as { statusCheckRollup?: unknown };
+  const rollup = Array.isArray(json.statusCheckRollup)
+    ? (json.statusCheckRollup as RollupCheck[])
+    : [];
+  if (rollup.length === 0) {
+    return 'none';
+  }
+  if (rollup.some(isFailing)) {
+    return 'failing';
+  }
+  if (rollup.some(isPending)) {
+    return 'pending';
+  }
+  return 'passing';
+}
+
+/**
+ * Aggregate CI state of `branch`'s PR from `gh pr view --json statusCheckRollup`.
+ * Best-effort: any failure resolves to `none` (treated as "nothing to ready on").
+ */
+export async function prChecks(
+  cwd: string,
+  branch: string,
+  exec: ExecLike = execFileAsync,
+): Promise<PrChecksState> {
+  try {
+    const { stdout } = await exec('gh', ['pr', 'view', branch, '--json', 'statusCheckRollup'], {
+      cwd,
+    });
+    return toChecksState(stdout);
+  } catch {
+    return 'none';
+  }
+}
+
+/** Mark a draft PR ready for review (`gh pr ready`). Throws on failure. */
+export async function markPrReady(
+  cwd: string,
+  branch: string,
+  exec: ExecLike = execFileAsync,
+): Promise<void> {
+  await exec('gh', ['pr', 'ready', branch], { cwd });
 }

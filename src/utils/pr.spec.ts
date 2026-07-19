@@ -1,11 +1,44 @@
 import { describe, expect, it, vi } from 'vitest';
-import { type ExecLike, lookupPr } from './pr';
+import { createPr, type ExecLike, lookupPr, markPrReady, prChecks } from './pr';
 
 /** stdout for the `gh pr view --json number,url` call. */
 const ghPr = (number: number) =>
   JSON.stringify({ number, url: `https://github.com/o/r/pull/${number}` });
 
 describe('lookupPr', () => {
+  it('parses isDraft from `gh pr view --json number,url,isDraft`', async () => {
+    const exec = vi.fn<ExecLike>(async (file) =>
+      file === 'git'
+        ? { stdout: 'codiva/feature\n' }
+        : {
+            stdout: JSON.stringify({
+              number: 7,
+              url: 'https://github.com/o/r/pull/7',
+              isDraft: true,
+            }),
+          },
+    );
+    const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
+    expect(pr).toEqual({ number: 7, url: 'https://github.com/o/r/pull/7', isDraft: true });
+    expect(exec).toHaveBeenCalledWith(
+      'gh',
+      ['pr', 'view', 'codiva/feature', '--json', 'number,url,isDraft'],
+      { cwd: '/wt/a' },
+    );
+  });
+
+  it('omits isDraft when the field is absent', async () => {
+    const exec = vi.fn<ExecLike>(async (file) =>
+      file === 'git'
+        ? { stdout: 'codiva/x\n' }
+        : { stdout: JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7' }) },
+    );
+    await expect(lookupPr('/wt/a', 'codiva/x', exec)).resolves.toEqual({
+      number: 7,
+      url: 'https://github.com/o/r/pull/7',
+    });
+  });
+
   it('looks the PR up by the worktree HEAD branch, not the recorded branch', async () => {
     // HEAD has moved to a fresh feat/ branch (git rules cut one before the PR),
     // so the PR lives there — not on the original codiva/<slug> worktree branch.
@@ -19,7 +52,7 @@ describe('lookupPr', () => {
     });
     expect(exec).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'view', 'feat/new-thing', '--json', 'number,url'],
+      ['pr', 'view', 'feat/new-thing', '--json', 'number,url,isDraft'],
       { cwd: '/wt/a' },
     );
   });
@@ -34,7 +67,7 @@ describe('lookupPr', () => {
     expect(pr).toEqual({ number: 5, url: 'https://github.com/o/r/pull/5' });
     expect(exec).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url'],
+      ['pr', 'view', 'codiva/feature', '--json', 'number,url,isDraft'],
       { cwd: '/wt' },
     );
   });
@@ -58,7 +91,7 @@ describe('lookupPr', () => {
     expect(pr).toEqual({ number: 7, url: 'https://github.com/o/r/pull/7' });
     expect(exec).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url'],
+      ['pr', 'view', 'codiva/feature', '--json', 'number,url,isDraft'],
       { cwd: '/wt/a' },
     );
   });
@@ -69,9 +102,11 @@ describe('lookupPr', () => {
     );
     const pr = await lookupPr('/wt', 'codiva/x', exec);
     expect(pr).toEqual({ number: 9, url: 'https://github.com/o/r/pull/9' });
-    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/x', '--json', 'number,url'], {
-      cwd: '/wt',
-    });
+    expect(exec).toHaveBeenCalledWith(
+      'gh',
+      ['pr', 'view', 'codiva/x', '--json', 'number,url,isDraft'],
+      { cwd: '/wt' },
+    );
   });
 
   it('resolves undefined when no candidate branch has a PR', async () => {
@@ -92,5 +127,82 @@ describe('lookupPr', () => {
       file === 'git' ? { stdout: 'codiva/x\n' } : { stdout: JSON.stringify({ number: 3 }) },
     );
     await expect(lookupPr('/wt', 'codiva/x', partial)).resolves.toBeUndefined();
+  });
+});
+
+describe('createPr', () => {
+  it('opens a draft PR then returns the looked-up PR', async () => {
+    const calls: string[][] = [];
+    const exec = vi.fn<ExecLike>(async (_file, args) => {
+      calls.push(args);
+      if (args[1] === 'create') {
+        return { stdout: 'https://github.com/o/r/pull/9\n' };
+      }
+      return {
+        stdout: JSON.stringify({ number: 9, url: 'https://github.com/o/r/pull/9', isDraft: true }),
+      };
+    });
+    const pr = await createPr('/wt/a', 'codiva/feature', exec);
+    expect(pr).toEqual({ number: 9, url: 'https://github.com/o/r/pull/9', isDraft: true });
+    expect(calls[0]).toEqual(['pr', 'create', '--draft', '--fill', '--head', 'codiva/feature']);
+  });
+
+  it('still returns the existing PR when create fails (already exists)', async () => {
+    const exec = vi.fn<ExecLike>(async (_file, args) => {
+      if (args[1] === 'create') {
+        throw new Error('a pull request already exists');
+      }
+      return { stdout: JSON.stringify({ number: 4, url: 'u', isDraft: false }) };
+    });
+    await expect(createPr('/wt', 'codiva/x', exec)).resolves.toEqual({
+      number: 4,
+      url: 'u',
+      isDraft: false,
+    });
+  });
+});
+
+describe('prChecks', () => {
+  const rollup = (checks: unknown[]) =>
+    vi.fn<ExecLike>(async () => ({ stdout: JSON.stringify({ statusCheckRollup: checks }) }));
+
+  it('returns none when there are no checks', async () => {
+    await expect(prChecks('/wt', 'b', rollup([]))).resolves.toBe('none');
+  });
+
+  it('returns passing when every check-run succeeded', async () => {
+    const exec = rollup([{ status: 'COMPLETED', conclusion: 'SUCCESS' }, { state: 'SUCCESS' }]);
+    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('passing');
+  });
+
+  it('returns pending when a check is still running', async () => {
+    const exec = rollup([
+      { status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { status: 'IN_PROGRESS' },
+    ]);
+    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('pending');
+  });
+
+  it('returns failing when any check failed (even if others pass/pend)', async () => {
+    const exec = rollup([
+      { status: 'IN_PROGRESS' },
+      { status: 'COMPLETED', conclusion: 'FAILURE' },
+    ]);
+    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('failing');
+  });
+
+  it('returns none on error rather than throwing', async () => {
+    const exec = vi.fn<ExecLike>(async () => {
+      throw new Error('no pr');
+    });
+    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('none');
+  });
+});
+
+describe('markPrReady', () => {
+  it('runs `gh pr ready <branch>`', async () => {
+    const exec = vi.fn<ExecLike>(async () => ({ stdout: '' }));
+    await markPrReady('/wt', 'codiva/feature', exec);
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'ready', 'codiva/feature'], { cwd: '/wt' });
   });
 });

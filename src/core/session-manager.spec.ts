@@ -1,13 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { type SessionHandle, SessionManager, type WorktreeService } from '@/core/session-manager';
+import {
+  type PrAutomation,
+  type SessionHandle,
+  SessionManager,
+  type WorktreeService,
+} from '@/core/session-manager';
 import { initialState } from '@/core/status-reducer';
 import type { CreateSessionInput, PrInfo, SessionState } from '@/core/types';
+import { MergeConflictError } from '@/core/worktree';
 
 function fakeWorktrees(overrides: Partial<WorktreeService> = {}): WorktreeService {
   return {
     baseBranch: async () => 'main',
     takenSlugs: async () => new Set<string>(),
     add: async (slug) => ({ slug, branch: `codiva/${slug}`, path: `/tmp/wt/${slug}` }),
+    syncedStartPoint: async () => undefined,
+    pushBranch: async () => {},
     diffStat: async () => ({ committed: '', uncommitted: [] }),
     merge: async () => {},
     remove: async () => {},
@@ -62,8 +70,13 @@ class FakeSession implements SessionHandle {
     this.onChange(this.state);
   }
   setPr(pr: PrInfo | undefined) {
-    this.calls.push(`setPr:${pr ? `#${pr.number}` : 'none'}`);
+    this.calls.push(`setPr:${pr ? `#${pr.number}${pr.isDraft ? ':draft' : ''}` : 'none'}`);
     this.state = { ...this.state, pr };
+    this.onChange(this.state);
+  }
+  markConflict(files: string[]) {
+    this.calls.push(`conflict:${files.join(',')}`);
+    this.state = { ...this.state, status: 'conflict', conflictFiles: files };
     this.onChange(this.state);
   }
   drive(status: SessionState['status'], sdkSessionId?: string) {
@@ -554,6 +567,233 @@ describe('SessionManager', () => {
       await expect(manager.refreshPrs()).resolves.toBeUndefined();
       // Archived rows are skipped entirely, so lookup is never attempted.
       expect(lookupPr).not.toHaveBeenCalled();
+    });
+
+    it('readies a draft PR once its checks pass (auto-ready)', async () => {
+      const lookupPr = vi.fn(async () => ({ number: 5, url: 'u', isDraft: true }));
+      const prAutomation: PrAutomation = {
+        createPr: vi.fn(async () => undefined),
+        checks: vi.fn(async () => 'passing' as const),
+        markReady: vi.fn(async () => {}),
+      };
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        lookupPr,
+        autoPr: true,
+        prAutomation,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      manager.create('feature');
+      await flush();
+      await manager.refreshPrs();
+      expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
+      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 5, url: 'u', isDraft: false });
+    });
+
+    it('does not ready a draft PR while checks are pending', async () => {
+      const lookupPr = vi.fn(async () => ({ number: 5, url: 'u', isDraft: true }));
+      const prAutomation: PrAutomation = {
+        createPr: vi.fn(async () => undefined),
+        checks: vi.fn(async () => 'pending' as const),
+        markReady: vi.fn(async () => {}),
+      };
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        lookupPr,
+        autoPr: true,
+        prAutomation,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      manager.create('feature');
+      await flush();
+      await manager.refreshPrs();
+      expect(prAutomation.markReady).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('followOrigin (origin auto-follow)', () => {
+    it('branches from origin/<base> when enabled and available', async () => {
+      const add = vi.fn(async (slug: string) => ({
+        slug,
+        branch: `codiva/${slug}`,
+        path: `/tmp/wt/${slug}`,
+      }));
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({ add, syncedStartPoint: async () => 'origin/main' }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        followOrigin: true,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      manager.create('feature');
+      await flush();
+      expect(add).toHaveBeenCalledWith('feature', 'origin/main');
+    });
+
+    it('branches from local HEAD when followOrigin is off', async () => {
+      const add = vi.fn(async (slug: string) => ({
+        slug,
+        branch: `codiva/${slug}`,
+        path: `/tmp/wt/${slug}`,
+      }));
+      const syncedStartPoint = vi.fn(async () => 'origin/main');
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({ add, syncedStartPoint }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        followOrigin: false,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      manager.create('feature');
+      await flush();
+      expect(syncedStartPoint).not.toHaveBeenCalled();
+      expect(add).toHaveBeenCalledWith('feature', undefined);
+    });
+  });
+
+  describe('autoPr (draft PR on completion)', () => {
+    function autoPrManager(over: Partial<WorktreeService> = {}) {
+      const pushBranch = vi.fn(async () => {});
+      const createPr = vi.fn(async () => ({ number: 8, url: 'u', isDraft: true }));
+      const prAutomation: PrAutomation = {
+        createPr,
+        checks: async () => 'none',
+        markReady: async () => {},
+      };
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({
+          pushBranch,
+          diffStat: async () => ({ committed: ' file.ts | 1 +', uncommitted: [] }),
+          ...over,
+        }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        autoPr: true,
+        prAutomation,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      return { manager, created, pushBranch, createPr };
+    }
+
+    it('pushes and opens a draft PR when a session completes with committed work', async () => {
+      const { manager, created, pushBranch, createPr } = autoPrManager();
+      manager.create('feature');
+      await flush();
+      created[0]?.drive('completed');
+      await flush();
+      expect(pushBranch).toHaveBeenCalledTimes(1);
+      expect(createPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
+      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 8, url: 'u', isDraft: true });
+    });
+
+    it('skips PR creation when there are no committed changes', async () => {
+      const { manager, created, pushBranch, createPr } = autoPrManager({
+        diffStat: async () => ({ committed: '', uncommitted: ['wip.ts'] }),
+      });
+      manager.create('feature');
+      await flush();
+      created[0]?.drive('completed');
+      await flush();
+      expect(pushBranch).not.toHaveBeenCalled();
+      expect(createPr).not.toHaveBeenCalled();
+    });
+
+    it('opens a PR at most once across repeated completions', async () => {
+      const { manager, created, createPr } = autoPrManager();
+      manager.create('feature');
+      await flush();
+      created[0]?.drive('completed');
+      await flush();
+      created[0]?.drive('running');
+      created[0]?.drive('completed');
+      await flush();
+      expect(createPr).toHaveBeenCalledTimes(1);
+    });
+
+    it('is inert when autoPr is off', async () => {
+      const { manager, created, pushBranch } = (() => {
+        const pushBranch = vi.fn(async () => {});
+        const created: FakeSession[] = [];
+        const manager = new SessionManager({
+          worktrees: fakeWorktrees({
+            pushBranch,
+            diffStat: async () => ({ committed: ' f | 1 +', uncommitted: [] }),
+          }),
+          queryFn: (() => {
+            throw new Error('unused');
+          }) as never,
+          now: () => 1,
+          autoPr: false,
+          prAutomation: {
+            createPr: async () => undefined,
+            checks: async () => 'none',
+            markReady: async () => {},
+          },
+          createSession: ({ input, onChange }) => {
+            const s = new FakeSession(input, onChange);
+            created.push(s);
+            return s;
+          },
+        });
+        return { manager, created, pushBranch };
+      })();
+      manager.create('feature');
+      await flush();
+      created[0]?.drive('completed');
+      await flush();
+      expect(pushBranch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('merge conflict detection', () => {
+    it('flags the session as conflict (never auto-resolves) on a MergeConflictError', async () => {
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({
+          merge: async () => {
+            throw new MergeConflictError('codiva/feature', 'main', ['README.md']);
+          },
+        }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      const id = manager.create('feature');
+      await flush();
+      const result = await manager.merge(id);
+      expect(result.ok).toBe(false);
+      expect(created[0]?.calls).toContain('conflict:README.md');
+      expect(manager.getSnapshot()[0]?.status).toBe('conflict');
     });
   });
 

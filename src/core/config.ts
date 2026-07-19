@@ -25,6 +25,17 @@ export interface CodivaConfig {
    */
   mouse?: boolean;
   /**
+   * セッション作成時に origin を自動追従する。`git fetch origin <base>` して
+   * 最新の `origin/<base>` から worktree を切る（origin が無ければローカル HEAD）。
+   * 未設定は有効（true）。
+   */
+  followOrigin?: boolean;
+  /**
+   * PR 自動化。セッション完了時に branch を push→ draft PR を作成し、以降の
+   * ポーリングでチェックが緑になったら ready 化する。未設定は有効（true）。
+   */
+  autoPr?: boolean;
+  /**
    * セッション用 worktree 作成時に `.gitignore` された未追跡ファイル
    * （`node_modules/`・`.env` など）をリポジトリルートから複製するか。未設定は有効（true）。
    * git worktree は追跡対象しか引き継がないため、無効化すると依存や環境変数を
@@ -53,6 +64,8 @@ interface CodivaConfigJson {
   maxBudgetUsd?: unknown;
   notifications?: unknown;
   mouse?: unknown;
+  followOrigin?: unknown;
+  autoPr?: unknown;
   copyIgnored?: unknown;
 }
 
@@ -118,6 +131,14 @@ export function toConfig(json: unknown): CodivaConfig {
   const mouse = toBoolean(raw.mouse);
   if (mouse !== undefined) {
     config.mouse = mouse;
+  }
+  const followOrigin = toBoolean(raw.followOrigin);
+  if (followOrigin !== undefined) {
+    config.followOrigin = followOrigin;
+  }
+  const autoPr = toBoolean(raw.autoPr);
+  if (autoPr !== undefined) {
+    config.autoPr = autoPr;
   }
   const copyIgnored = toBoolean(raw.copyIgnored);
   if (copyIgnored !== undefined) {
