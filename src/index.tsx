@@ -11,6 +11,7 @@ import {
   WorktreeManager,
 } from '@/core';
 import {
+  createPr,
   createTitleGenerator,
   defaultStatePath,
   enableMouse,
@@ -18,8 +19,10 @@ import {
   loadConfig,
   loadState,
   lookupPr,
+  markPrReady,
   notify,
   openUrl,
+  prChecks,
   pruneMissingWorktrees,
   saveConfig,
   saveState,
@@ -99,6 +102,14 @@ async function main(): Promise<void> {
     onPersist: schedulePersist,
     onModelChange: persistModel,
     lookupPr,
+    // origin 追従 / PR 自動化は既定 on。`"followOrigin": false` / `"autoPr": false` で無効化。
+    followOrigin: config.followOrigin !== false,
+    autoPr: config.autoPr !== false,
+    prAutomation: {
+      createPr: (cwd, branch) => createPr(cwd, branch),
+      checks: (cwd, branch) => prChecks(cwd, branch),
+      markReady: (cwd, branch) => markPrReady(cwd, branch),
+    },
   });
 
   // Restore sessions from a previous run (worktrees that still exist on disk).

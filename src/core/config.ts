@@ -24,6 +24,17 @@ export interface CodivaConfig {
    * 有効中は端末のテキスト選択が通常ドラッグでできない（Shift+ドラッグは可）。
    */
   mouse?: boolean;
+  /**
+   * セッション作成時に origin を自動追従する。`git fetch origin <base>` して
+   * 最新の `origin/<base>` から worktree を切る（origin が無ければローカル HEAD）。
+   * 未設定は有効（true）。
+   */
+  followOrigin?: boolean;
+  /**
+   * PR 自動化。セッション完了時に branch を push→ draft PR を作成し、以降の
+   * ポーリングでチェックが緑になったら ready 化する。未設定は有効（true）。
+   */
+  autoPr?: boolean;
 }
 
 /** SDK 由来 union の実行時検証用リテラル。型が変われば型エラーで気付ける。 */
@@ -46,6 +57,8 @@ interface CodivaConfigJson {
   maxBudgetUsd?: unknown;
   notifications?: unknown;
   mouse?: unknown;
+  followOrigin?: unknown;
+  autoPr?: unknown;
 }
 
 function toLangSetting(value: unknown): Lang | 'auto' | undefined {
@@ -110,6 +123,14 @@ export function toConfig(json: unknown): CodivaConfig {
   const mouse = toBoolean(raw.mouse);
   if (mouse !== undefined) {
     config.mouse = mouse;
+  }
+  const followOrigin = toBoolean(raw.followOrigin);
+  if (followOrigin !== undefined) {
+    config.followOrigin = followOrigin;
+  }
+  const autoPr = toBoolean(raw.autoPr);
+  if (autoPr !== undefined) {
+    config.autoPr = autoPr;
   }
   return config;
 }

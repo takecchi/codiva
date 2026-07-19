@@ -423,3 +423,43 @@ describe('reduce over streaming partial messages', () => {
     expect(archived.streamingText).toBeUndefined();
   });
 });
+
+describe('conflict event', () => {
+  it('sets status to conflict, records files, and logs a summary', () => {
+    const completed: SessionState = { ...initialState(BASE), status: 'completed' };
+    const next = reduce(completed, { kind: 'conflict', files: ['a.ts', 'b.ts'], at: 5 });
+    expect(next.status).toBe('conflict');
+    expect(next.conflictFiles).toEqual(['a.ts', 'b.ts']);
+    expect(next.messages.at(-1)).toMatchObject({
+      kind: 'error',
+      text: 'merge conflict in a.ts, b.ts',
+    });
+  });
+
+  it('handles an empty file list', () => {
+    const next = reduce(initialState(BASE), { kind: 'conflict', files: [], at: 5 });
+    expect(next.status).toBe('conflict');
+    expect(next.messages.at(-1)?.text).toBe('merge conflict');
+  });
+});
+
+describe('pr event with isDraft', () => {
+  it('re-renders when only the draft flag changes', () => {
+    const draft: SessionState = {
+      ...initialState(BASE),
+      pr: { number: 3, url: 'u', isDraft: true },
+    };
+    const next = reduce(draft, { kind: 'pr', pr: { number: 3, url: 'u', isDraft: false }, at: 1 });
+    expect(next).not.toBe(draft);
+    expect(next.pr?.isDraft).toBe(false);
+  });
+
+  it('no-ops when number, url and draft flag are unchanged', () => {
+    const draft: SessionState = {
+      ...initialState(BASE),
+      pr: { number: 3, url: 'u', isDraft: true },
+    };
+    const next = reduce(draft, { kind: 'pr', pr: { number: 3, url: 'u', isDraft: true }, at: 1 });
+    expect(next).toBe(draft);
+  });
+});

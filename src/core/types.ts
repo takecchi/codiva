@@ -8,6 +8,7 @@ export type SessionStatus =
   | 'awaiting_input' // Claude asked the user a question (AskUserQuestion)
   | 'completed' // a turn finished successfully (idle, can receive more input)
   | 'failed' // query errored or was aborted
+  | 'conflict' // a merge into base hit conflicts; needs manual resolution
   | 'archived'; // merged or discarded; kept for reference
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
@@ -43,7 +44,15 @@ export interface PrInfo {
   number: number;
   /** Web URL, opened in the browser on click / `p`. */
   url: string;
+  /** True while the PR is still a draft (auto-PR opens drafts, then readies on green checks). */
+  isDraft?: boolean;
 }
+
+/**
+ * Aggregate CI state of a PR's checks (from `gh pr view --json statusCheckRollup`).
+ * `none` = no checks or the query failed. Drives auto-ready (only `passing` readies).
+ */
+export type PrChecksState = 'passing' | 'pending' | 'failing' | 'none';
 
 /** One question surfaced by the AskUserQuestion tool. */
 export interface QuestionSpec {
@@ -90,6 +99,8 @@ export interface SessionState {
   model?: string;
   /** Pull request opened for `branch`, if any (detected asynchronously via `gh`). */
   pr?: PrInfo;
+  /** Files left conflicted by a failed merge into base (set with `status: 'conflict'`). */
+  conflictFiles?: string[];
   startedAt: number;
   finishedAt?: number;
   totalCostUsd?: number;
@@ -119,6 +130,9 @@ export type CodivaEvent =
   // A pull request was detected (or cleared) for this session's branch, out of
   // band via `gh`. Carries the info; the reducer only swaps it into state.
   | { kind: 'pr'; pr: PrInfo | undefined; at: number }
+  // A merge of this session's branch into base hit conflicts (detected out of
+  // band during the merge action). Carries the conflicted file paths.
+  | { kind: 'conflict'; files: string[]; at: number }
   | { kind: 'aborted'; error?: string; at: number }
   | { kind: 'archived'; at: number };
 

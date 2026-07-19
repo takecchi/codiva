@@ -35,6 +35,7 @@ export const statusColor = {
   awaitingInput: '#e12885', // pink — needs your answer (matches brand pop)
   completed: '#35c46b', // green — success
   failed: '#f0524b', // red — error
+  conflict: '#d9663d', // burnt orange — merge conflict, needs manual resolution
   external: '#a878f0', // violet — handed off to the claude CLI
   archived: '#6b7280', // muted gray — done / inactive
 } as const;

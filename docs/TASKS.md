@@ -223,6 +223,30 @@ UI なし。すべてユニットテストで駆動する。
 > 実績メモ: 全358テスト緑・lint/typecheck 緑。1 SDK セッション 1 ライターは維持（詳細ビューでも
 > codiva が唯一のライター、外部 CLI との二重接続なし）。
 
+## Phase 10: origin 追従 / PR 自動化 / 競合検知
+
+> 「検知・追従・PR 足場作りは自動化、破壊的な確定操作（競合の無言解消・PR ready 化）は
+> 人手/緑判定を挟む」方針。設定はすべて `~/.codiva/config.json` の真偽値で、既定 on。
+
+- [x] **origin 自動追従（`followOrigin`, 既定 on）**: `WorktreeManager.syncedStartPoint(base)`
+      （`git fetch origin <base>` → `origin/<base>` を返す。無ければ `undefined`）+ `add(slug, startPoint?)`。
+      `SessionManager.provision` が作成時のみ最新から切る（稼働中 worktree には pull しない）
+- [x] **PR 自動化（`autoPr`, 既定 on）**: `utils/pr.ts` に `createPr`（`gh pr create --draft --fill`）/
+      `prChecks`（`statusCheckRollup` 集約）/ `markPrReady`（`gh pr ready`）+ `lookupPr` に `isDraft` を追加。
+      `WorktreeManager.pushBranch`。`SessionManager` は `completed` 遷移でコミット差分があれば push→draft PR
+      作成（`autoPrAttempted` で 1 回）、`refreshPrs` で緑になったら ready 化。`gh` は `PrAutomation` で DI
+- [x] **競合検知（自動解消しない）**: `WorktreeManager.merge` が競合ファイルを収集して abort し
+      `MergeConflictError` を投げる。`SessionManager.merge` が捕えて `session.markConflict(files)` →
+      reducer が `status: 'conflict'` + `conflictFiles`。UI はバッジ表示のみ（`badge.conflict` を ja/en 追加、
+      `statusColor.conflict`）、詳細ビューは `conflict` を終端扱い
+- [x] 設定: `core/config.ts` に `followOrigin` / `autoPr`（真偽値・不正値は既定へ）。合成ルートで既定 on 配線
+- [x] テスト: worktree（syncedStartPoint/pushBranch/startPoint/MergeConflictError.files）・pr（createPr/
+      prChecks/markPrReady/isDraft）・reducer（conflict/pr isDraft）・config・session-manager（followOrigin/
+      autoPr/auto-ready/conflict）を追加
+
+> 実績メモ: 全500テスト緑・lint/typecheck/build 緑。core/utils カバレッジは 80% 要件を満たす。
+> 手動受け入れ（実 `gh` + リモート）は未実施 — CI/認証環境での確認は別途必要。
+
 ---
 
 ## 各 Phase 共通の完了チェック

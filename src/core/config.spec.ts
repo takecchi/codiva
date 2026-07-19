@@ -80,6 +80,24 @@ describe('toConfig', () => {
     expect(toConfig({ notifications })).toEqual({});
   });
 
+  it.each([
+    [true, true],
+    [false, false],
+  ])('keeps boolean followOrigin %o', (input, expected) => {
+    expect(toConfig({ followOrigin: input })).toEqual({ followOrigin: expected });
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+  ])('keeps boolean autoPr %o', (input, expected) => {
+    expect(toConfig({ autoPr: input })).toEqual({ autoPr: expected });
+  });
+
+  it.each([['yes'], [0], [null]])('drops invalid followOrigin/autoPr: %o', (value) => {
+    expect(toConfig({ followOrigin: value, autoPr: value })).toEqual({});
+  });
+
   it('collects all valid keys together', () => {
     expect(
       toConfig({
@@ -89,6 +107,8 @@ describe('toConfig', () => {
         permissionMode: 'acceptEdits',
         maxBudgetUsd: 2.5,
         notifications: false,
+        followOrigin: false,
+        autoPr: true,
       }),
     ).toEqual({
       language: 'en',
@@ -97,6 +117,8 @@ describe('toConfig', () => {
       permissionMode: 'acceptEdits',
       maxBudgetUsd: 2.5,
       notifications: false,
+      followOrigin: false,
+      autoPr: true,
     });
   });
 });

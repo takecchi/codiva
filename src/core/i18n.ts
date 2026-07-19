@@ -72,6 +72,7 @@ export interface Messages {
     awaitingInput: string;
     completed: string;
     failed: string;
+    conflict: string;
     archived: string;
   };
   /** 許可・質問ダイアログ（permission-dialog.tsx） */
@@ -190,6 +191,7 @@ const ja: Messages = {
     awaitingInput: '質問あり',
     completed: '完了',
     failed: '失敗',
+    conflict: 'コンフリクト',
     archived: '保管済み',
   },
   permission: {
@@ -300,6 +302,7 @@ const en: Messages = {
     awaitingInput: 'Question',
     completed: 'Completed',
     failed: 'Failed',
+    conflict: 'Conflict',
     archived: 'Archived',
   },
   permission: {
