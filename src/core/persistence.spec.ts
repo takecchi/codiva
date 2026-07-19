@@ -32,7 +32,6 @@ describe('restorableStatus', () => {
     ['awaiting_input', 'completed'],
     ['completed', 'completed'],
     ['failed', 'failed'],
-    ['external', 'completed'],
     ['archived', undefined],
   ])('maps %s → %s', (status, expected) => {
     expect(restorableStatus(status)).toBe(expected);
@@ -63,6 +62,16 @@ describe('toPersistedSession', () => {
       totalCostUsd: 0.05,
       todos: [{ id: '1', subject: 'step', status: 'completed' }],
     });
+  });
+
+  it('round-trips the resolved model through persist → restore', () => {
+    const s = state({ status: 'completed', sdkSessionId: 'sdk-1', model: 'claude-opus-4-8' });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' });
+    expect(persisted?.model).toBe('claude-opus-4-8');
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
+    expect(restoredSessionState(persisted!).model).toBe('claude-opus-4-8');
+    // and the JSON validator preserves it from untrusted input
+    expect(fromPersistedJson({ sessions: [persisted] }).sessions[0]?.model).toBe('claude-opus-4-8');
   });
 
   it('maps an in-flight status to completed (resumable)', () => {

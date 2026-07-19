@@ -13,6 +13,7 @@ import type {
   CodivaEvent,
   CreateSessionInput,
   PermissionRequest,
+  PrInfo,
   QuestionSpec,
   SessionState,
 } from './types';
@@ -210,19 +211,17 @@ export class Session {
     this.abortController.abort();
   }
 
-  /**
-   * Hand the session off to the claude CLI: shut the codiva-side query down
-   * quietly (same as stop() — the SDK session stays resumable) and mark the
-   * state 'external' so the list shows where the work continues.
-   */
-  detach(): void {
-    this.stop();
-    this.dispatch({ kind: 'detached', at: this.now() });
-  }
-
   /** Mark the session archived (after its branch is merged or discarded). */
   archive(): void {
     this.dispatch({ kind: 'archived', at: this.now() });
+  }
+
+  /**
+   * Record (or clear) the pull request detected for this branch. Driven by the
+   * manager's out-of-band `gh` poll; a no-op event doesn't change state.
+   */
+  setPr(pr: PrInfo | undefined): void {
+    this.dispatch({ kind: 'pr', pr, at: this.now() });
   }
 
   private resolvePending(result: PermissionResult): void {

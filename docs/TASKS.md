@@ -186,6 +186,43 @@ UI なし。すべてユニットテストで駆動する。
 > 復元。1 SDK セッション 1 ライターを守るため、claude で開く際は必ず codiva 側 query を停止してから spawn。
 > claude CLI 実機での resume 挙動（認証必要）は手動確認が必要。
 
+## Phase 8: スラッシュコマンド
+
+- [x] 入力欄の先頭が `/` のとき通常の指示ではなくコマンドとして扱う土台を用意
+- [x] コマンドは `core/commands.ts` の `COMMANDS` レジストリに 1 エントリ足すだけで増やせる設計
+      （`CommandAction` に動作を追加 → UI が switch で受ける）。解析・照合は純粋関数（`parseCommand` /
+      `matchCommands` / `runCommand`）に閉じ込め、副作用は UI 層が `CommandAction` を解釈して実行
+- [x] 入力中は前方一致するコマンドをパレット表示（`ui/command-palette.tsx`）。`/help` は全コマンドの
+      ヘルプ一覧をオーバーレイ表示（任意キーで閉じる）
+- [x] 初期コマンド: `/help`（別名 `?`）・`/quit`（別名 `exit` / `q`）。未知コマンドは操作エラー表示
+- [x] i18n: `command` グループを ja/en 両カタログに追加（説明文はカタログに集約）
+
+> 実績メモ: `commands.ts` は 100% カバレッジ（`commands.spec.ts` でテーブル駆動）。UI 配線は
+> `tests/commands.test.tsx`（パレット表示・前方一致・/help オーバーレイ・/quit で dispose・未知エラー）で検証。
+> 単一 useInput の原則は維持（コマンドは composer の Enter 分岐で処理、/help オーバーレイは任意キーで閉じる）。
+> 全 383 テスト緑・lint / typecheck / build 緑。
+
+## Phase 9: 内蔵詳細ビューへ復帰（claude CLI 連携の廃止）
+
+> codiva 側の機能（ログ描画・追加指示・スクロール・マージ/破棄）が揃ったため、Phase 7 の
+> claude CLI 連携をやめ、一覧で Enter/→ したら **codiva 内蔵の詳細ビュー**で稼働中の SDK
+> セッションに直結する方式へ戻す。
+
+- [x] `ui/session-detail.tsx` を新規に書き直し: SDK セッション直結。ヘッダ（タイトル/バッジ/進捗/コスト/エラー）
+      + 末尾ビューポートのログ（`core/scroll.ts` で PgUp/PgDn）+ `streamingText` プレビュー + 追加指示
+      コンポーザ（`manager.send`）。Tab で入力↔操作、操作パネルで m/d。バッファ編集は ref 経由で逐次適用
+- [x] `core/scroll.ts` + spec、`layout.ts` の `logViewportRows`/`DETAIL_CHROME_ROWS` を復元（純粋・テスト付き）
+- [x] `app.tsx` に `View`（list ⇔ detail）状態機械を再導入。`SessionList` は `onOpen(id)` でナビゲート
+- [x] claude CLI 連携を**完全削除**: `utils/claude-cli.ts`（+spec）・`ExternalRunner`/`runExternal`/`openExternal`・
+      `Session.detach()`・`detached` イベント・`external` ステータス（types/reducer/persistence/badge/i18n）を撤去
+- [x] i18n: `detail` グループを復活（ja/en 対）、`list.helpList` を「詳細を開く」へ、`list.openNotReady` と
+      `badge.external` を削除
+- [x] 統合テスト追加（`tests/app.test.tsx`）: Enter で詳細を開き Esc で戻る / 詳細から追加指示を送る /
+      詳細の操作パネルからマージ
+
+> 実績メモ: 全358テスト緑・lint/typecheck 緑。1 SDK セッション 1 ライターは維持（詳細ビューでも
+> codiva が唯一のライター、外部 CLI との二重接続なし）。
+
 ---
 
 ## 各 Phase 共通の完了チェック

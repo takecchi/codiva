@@ -7,7 +7,7 @@ import {
 import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
 import { initialState } from './status-reducer';
-import type { CreateSessionInput, SessionState } from './types';
+import type { CreateSessionInput, PrInfo, SessionState } from './types';
 import type { DiffStat, Worktree } from './worktree';
 
 /** The subset of WorktreeManager the SessionManager needs (for DI in tests). */
@@ -31,9 +31,12 @@ export interface SessionHandle {
   interrupt(): Promise<void>;
   abort(): void;
   stop(): void;
-  detach(): void;
   archive(): void;
+  setPr(pr: PrInfo | undefined): void;
 }
+
+/** Look up the open PR for a branch (via `gh`), or undefined if there is none. */
+export type PrLookup = (cwd: string, branch: string) => Promise<PrInfo | undefined>;
 
 /** Result of a lifecycle action (merge/discard) surfaced to the UI. */
 export interface ActionResult {
@@ -63,6 +66,8 @@ export interface SessionManagerDeps {
   onPersist?: () => void;
   /** Called when the default model for new sessions changes (via /model); wired to persist the config file. */
   onModelChange?: (model: string | undefined) => void;
+  /** Optional PR lookup (via `gh`); when set, refreshPrs() polls each live session's branch. */
+  lookupPr?: PrLookup;
   /** Factory for a session; defaults to constructing a real Session. `resume`/`restored` are set when rehydrating. */
   createSession?: (args: {
     input: CreateSessionInput;
@@ -321,10 +326,6 @@ export class SessionManager {
   deny(id: string, message: string): void {
     this.sessions.get(id)?.denyPending(message);
   }
-  /** claude CLI へ引き渡す前に codiva 側の query を静かに止め、external にする。 */
-  detach(id: string): void {
-    this.sessions.get(id)?.detach();
-  }
   async interrupt(id: string): Promise<void> {
     await this.sessions.get(id)?.interrupt();
   }
@@ -386,5 +387,35 @@ export class SessionManager {
   /** Paths of worktrees still on disk (shown to the user on exit). */
   activeWorktreePaths(): string[] {
     return [...this.worktreeMeta.values()].map((m) => m.worktree.path);
+  }
+
+  /**
+   * Poll every live session's branch for an open PR and feed the result back in
+   * via session.setPr (the reducer no-ops when unchanged). Best-effort: a lookup
+   * failure for one session never rejects or affects the others. No-op when no
+   * `lookupPr` is wired (e.g. in tests). Wired to a periodic timer in index.tsx.
+   */
+  async refreshPrs(): Promise<void> {
+    const lookup = this.deps.lookupPr;
+    if (!lookup) {
+      return;
+    }
+    await Promise.all(
+      this.order.map(async (id) => {
+        const state = this.states.get(id);
+        const meta = this.worktreeMeta.get(id);
+        const session = this.sessions.get(id);
+        // Skip rows with no worktree yet (creating) or already archived — nothing
+        // to look up, and no branch that could have a PR.
+        if (!state || !meta || !session || state.status === 'archived') {
+          return;
+        }
+        try {
+          session.setPr(await lookup(meta.worktree.path, state.branch));
+        } catch {
+          // best-effort — a missing `gh`, network hiccup, or auth issue is ignored
+        }
+      }),
+    );
   }
 }

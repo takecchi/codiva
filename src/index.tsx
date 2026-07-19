@@ -15,16 +15,17 @@ import {
   defaultStatePath,
   enableMouse,
   enterAltScreen,
-  launchClaudeSession,
   loadConfig,
   loadState,
+  lookupPr,
   notify,
+  openUrl,
   pruneMissingWorktrees,
   saveConfig,
   saveState,
   saveStateSync,
 } from '@/utils';
-import { App, type ExternalRunner } from './app';
+import { App } from './app';
 
 async function main(): Promise<void> {
   // 表示言語を決定: CODIVA_LANG > 設定ファイル(~/.codiva/config.json) > OS ロケール。
@@ -97,10 +98,20 @@ async function main(): Promise<void> {
     onTransition: notifyOnTransition,
     onPersist: schedulePersist,
     onModelChange: persistModel,
+    lookupPr,
   });
 
   // Restore sessions from a previous run (worktrees that still exist on disk).
   manager.restore(pruneMissingWorktrees(await loadState(statePath)));
+
+  // Poll each live session's branch for an open PR so the list can show `#<n>`
+  // (and let the user open it). Runs once now, then on an interval; unref'd so a
+  // pending timer never keeps the process alive at shutdown.
+  void manager.refreshPrs();
+  const prTimer = setInterval(() => {
+    void manager.refreshPrs();
+  }, 20_000);
+  prTimer.unref?.();
 
   // Flush synchronously on hard termination (kill / terminal close), where the
   // debounced async save wouldn't run before the process dies. Ctrl+C is handled
@@ -121,35 +132,19 @@ async function main(): Promise<void> {
   // 端末スクロールに頼るため、通常バッファのまま。判定は起動時の一度きり
   // （途中のリサイズでバッファを切り替えると画面が壊れるため追従しない）。
   const useAltScreen = process.stdout.isTTY && isFullscreenViewport(process.stdout.rows ?? 0);
-  let leaveAltScreen = useAltScreen ? enterAltScreen(process.stdout) : undefined;
+  const leaveAltScreen = useAltScreen ? enterAltScreen(process.stdout) : undefined;
 
   // マウス（クリックでキャレット移動・行選択）は全画面時のみ。座標を出力原点と
   // 同一視できるのが alt screen 全画面のときだけのため。`"mouse": false` で無効化。
   const useMouse = useAltScreen && config.mouse !== false;
-  let disableMouse = useMouse ? enableMouse(process.stdout) : undefined;
-
-  // claude CLI へ端末を明け渡す間だけ、マウスレポートと alt screen を解除する
-  // （Ink 側の suspend は App の suspendTerminal が行う）。復帰時に張り直す。
-  const runExternal: ExternalRunner = async (args) => {
-    disableMouse?.();
-    leaveAltScreen?.();
-    try {
-      return await launchClaudeSession(args);
-    } finally {
-      if (useAltScreen) {
-        leaveAltScreen = enterAltScreen(process.stdout);
-      }
-      if (useMouse) {
-        disableMouse = enableMouse(process.stdout);
-      }
-    }
-  };
+  const disableMouse = useMouse ? enableMouse(process.stdout) : undefined;
 
   const { waitUntilExit } = render(
-    <App manager={manager} cwd={repoRoot} messages={t} runExternal={runExternal} />,
+    <App manager={manager} cwd={repoRoot} model={config.model} messages={t} onOpenPr={openUrl} />,
     { exitOnCtrlC: false },
   );
   await waitUntilExit();
+  clearInterval(prTimer);
 
   // Flush the final state on quit. dispose() used stop() (not abort()), so
   // in-flight sessions are still recorded as resumable here.

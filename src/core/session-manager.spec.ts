@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { type SessionHandle, SessionManager, type WorktreeService } from '@/core/session-manager';
 import { initialState } from '@/core/status-reducer';
-import type { CreateSessionInput, SessionState } from '@/core/types';
+import type { CreateSessionInput, PrInfo, SessionState } from '@/core/types';
 
 function fakeWorktrees(overrides: Partial<WorktreeService> = {}): WorktreeService {
   return {
@@ -56,14 +56,14 @@ class FakeSession implements SessionHandle {
   stop() {
     this.stopped = true;
   }
-  detach() {
-    this.calls.push('detach');
-    this.state = { ...this.state, status: 'external' };
-    this.onChange(this.state);
-  }
   archive() {
     this.calls.push('archive');
     this.state = { ...this.state, status: 'archived' };
+    this.onChange(this.state);
+  }
+  setPr(pr: PrInfo | undefined) {
+    this.calls.push(`setPr:${pr ? `#${pr.number}` : 'none'}`);
+    this.state = { ...this.state, pr };
     this.onChange(this.state);
   }
   drive(status: SessionState['status'], sdkSessionId?: string) {
@@ -492,6 +492,68 @@ describe('SessionManager', () => {
       manager.create('feature');
       await flush();
       expect(() => created[0]?.drive('running')).not.toThrow();
+    });
+  });
+
+  describe('refreshPrs (gh PR detection)', () => {
+    it('looks up each live session by worktree path + branch and feeds setPr', async () => {
+      const lookupPr = vi.fn(async (_cwd: string, branch: string) =>
+        branch === 'codiva/feature' ? { number: 42, url: 'https://x/pr/42' } : undefined,
+      );
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        lookupPr,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      manager.create('feature');
+      await flush();
+      await manager.refreshPrs();
+      expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
+      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 42, url: 'https://x/pr/42' });
+      expect(created[0]?.calls).toContain('setPr:#42');
+    });
+
+    it('is a no-op when no lookupPr is wired', async () => {
+      const { manager, created } = makeManager();
+      manager.create('feature');
+      await flush();
+      await expect(manager.refreshPrs()).resolves.toBeUndefined();
+      expect(created[0]?.calls.some((c) => c.startsWith('setPr'))).toBe(false);
+    });
+
+    it('skips archived sessions and survives a lookup that throws', async () => {
+      const lookupPr = vi.fn(async () => {
+        throw new Error('gh not installed');
+      });
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        lookupPr,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      const id = manager.create('feature');
+      await flush();
+      await manager.merge(id); // → archived
+      await expect(manager.refreshPrs()).resolves.toBeUndefined();
+      // Archived rows are skipped entirely, so lookup is never attempted.
+      expect(lookupPr).not.toHaveBeenCalled();
     });
   });
 
