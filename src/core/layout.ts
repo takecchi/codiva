@@ -17,6 +17,21 @@ export function isFullscreenViewport(rows: number): boolean {
 }
 
 /**
+ * 一覧の行に worktree（ブランチ）名の列を出すのに必要な最小の端末桁数。これ未満だと
+ * caret/attention/title/badge/model/elapsed/PR の固定・準固定列だけで幅が埋まり、
+ * ブランチ列を出すと title が過度に切り詰められる。狭い端末ではブランチ列ごと省く。
+ */
+export const MIN_BRANCH_COLUMN_COLUMNS = 80;
+
+/**
+ * 端末の桁数で一覧に worktree（ブランチ）名の列を表示するか判定する純関数。
+ * 閾値未満ではブランチ列を省き、title に幅を譲る。
+ */
+export function showsBranchColumn(columns: number): boolean {
+  return columns >= MIN_BRANCH_COLUMN_COLUMNS;
+}
+
+/**
  * 詳細ビューでログ以外に消費される固定の縦幅（余白 + スクロールヒント + 入力欄 +
  * フッタ）のおおよその見積り。ステータスヘッダを廃したぶん従来より小さい。
  * 実測値の下限をやや大きめに取る（過小評価するとスクロール1回の移動量が実際の
