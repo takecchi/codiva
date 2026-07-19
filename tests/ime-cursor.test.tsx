@@ -3,7 +3,8 @@ import { render as inkRender } from 'ink';
 import type { ReactElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { App } from '@/app';
-import { SessionManager, type WorktreeService } from '@/core/session-manager';
+import { SessionManager } from '@/core/session-manager';
+import type { WorktreeService } from '@/core/session-ports';
 import { initialState } from '@/core/status-reducer';
 import type { CreateSessionInput } from '@/core/types';
 

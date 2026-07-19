@@ -8,7 +8,8 @@ import { App } from '@/app';
 import { AsyncQueue } from '@/core/async-queue';
 import { messages } from '@/core/i18n';
 import type { QueryFn } from '@/core/session';
-import { SessionManager, type WorktreeService } from '@/core/session-manager';
+import { SessionManager } from '@/core/session-manager';
+import type { WorktreeService } from '@/core/session-ports';
 import { initialState } from '@/core/status-reducer';
 import type { CreateSessionInput } from '@/core/types';
 

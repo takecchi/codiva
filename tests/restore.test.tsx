@@ -2,7 +2,8 @@ import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/session';
-import { SessionManager, type WorktreeService } from '@/core/session-manager';
+import { SessionManager } from '@/core/session-manager';
+import type { WorktreeService } from '@/core/session-ports';
 
 // Integration test for Phase 6 session restoration: run → persist → new manager
 // restore → resume on follow-up. Uses a real Session (driven queryFn), not a fake.

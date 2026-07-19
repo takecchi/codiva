@@ -2,7 +2,8 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { messages } from '@/core/i18n';
-import { SessionManager, type WorktreeService } from '@/core/session-manager';
+import { SessionManager } from '@/core/session-manager';
+import type { WorktreeService } from '@/core/session-ports';
 import { initialState } from '@/core/status-reducer';
 import type { CreateSessionInput } from '@/core/types';
 

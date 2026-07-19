@@ -1,3 +1,4 @@
+import type { WorktreeMeta } from './session-ports';
 import { STATUS_META } from './status-meta';
 import { progressOf } from './status-reducer';
 import type { LogEntry, SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
@@ -118,6 +119,30 @@ export function restoredSessionState(p: PersistedSession, history: LogEntry[] = 
     // Continue numbering after the restored history so new turns append cleanly.
     logSeq: history.at(-1)?.seq ?? 0,
   };
+}
+
+/**
+ * Build the on-disk snapshot of every restorable session (for state.json) from
+ * the manager's session order + per-session state/worktree accessors. Sessions
+ * that can't be restored (no sdkSessionId, creating/archived, missing meta) are
+ * dropped by toPersistedSession.
+ */
+export function assemblePersistedState(
+  ids: readonly string[],
+  getState: (id: string) => SessionState | undefined,
+  getMeta: (id: string) => WorktreeMeta | undefined,
+): PersistedState {
+  const sessions = ids
+    .map((id) => {
+      const state = getState(id);
+      const meta = getMeta(id);
+      if (!state || !meta) {
+        return undefined;
+      }
+      return toPersistedSession(state, { slug: meta.worktree.slug, base: meta.base });
+    })
+    .filter((s): s is PersistedSession => s !== undefined);
+  return { version: 1, sessions };
 }
 
 // ── Validation of untrusted JSON (state.json can be hand-edited or stale) ──────
