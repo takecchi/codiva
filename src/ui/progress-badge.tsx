@@ -22,8 +22,6 @@ export function badgeFor(state: SessionState, m: Messages): { label: string; col
       return { label: b.completed, color: statusColor.completed };
     case 'failed':
       return { label: b.failed, color: statusColor.failed };
-    case 'external':
-      return { label: b.external, color: statusColor.external };
     case 'archived':
       return { label: b.archived, color: statusColor.archived };
     default:

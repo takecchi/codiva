@@ -41,7 +41,6 @@ function noopSession(input: CreateSessionInput) {
     async interrupt() {},
     abort() {},
     stop() {},
-    detach() {},
     archive() {},
     setPr() {},
   };
@@ -206,7 +205,7 @@ describe('App fullscreen layout', () => {
     stdin.write(`\x1b[<0;5;${rowIndex + 1}M`); // SGR press (1-based row)
     await flush();
     // 一覧フォーカスのフッタヒントに切り替わる。
-    expect(lastFrame()).toContain('claudeで開く');
+    expect(lastFrame()).toContain('詳細を開く');
 
     // 印字キーで自動的にコンポーザへ戻り、そのまま入力できる。
     stdin.write('hello world');
@@ -483,5 +482,97 @@ describe('App end-to-end (real Session, driven query)', () => {
     await flush();
 
     expect(lastFrame()).toContain('合計 $0.0123');
+  });
+});
+
+describe('App detail view (in-app connection)', () => {
+  function drivenManager(extra?: Partial<WorktreeService>) {
+    const out = new AsyncQueue<SDKMessage>();
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const manager = new SessionManager({
+      worktrees: { ...worktrees, ...extra },
+      queryFn,
+      now: () => 0,
+    });
+    return { manager, out };
+  }
+
+  it('Enter opens the in-app detail view and Esc returns to the list', async () => {
+    const { manager, out } = drivenManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('open me');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-d' }));
+    await flush();
+
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // Enter → open detail in-app (no external CLI)
+    await flush();
+    // Detail chrome: the follow-up composer placeholder + the session title header.
+    expect(lastFrame()).toContain('追加の指示を入力');
+    expect(lastFrame()).toContain('open me');
+
+    stdin.write('\x1b'); // Esc → back to the list
+    await flush();
+    expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
+  });
+
+  it('sends a follow-up from the detail composer to the live session', async () => {
+    const { manager, out } = drivenManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('keep going');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-f' }));
+    await flush();
+
+    stdin.write('\t');
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    stdin.write('one more thing');
+    await flush();
+    stdin.write('\r'); // submit follow-up → manager.send → 'user' log entry
+    await flush();
+    expect(lastFrame()).toContain('one more thing');
+  });
+
+  it('merges from the detail actions panel (Tab → m → y)', async () => {
+    const merge = vi.fn(async () => {});
+    const { manager, out } = drivenManager({ merge });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('finish up');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-m' }));
+    out.push(asMsg({ type: 'result', subtype: 'success', result: 'done' }));
+    await flush();
+
+    stdin.write('\t'); // focus list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+    stdin.write('\t'); // input panel → actions panel
+    await flush();
+    expect(lastFrame()).toContain('操作');
+    stdin.write('m'); // merge → confirm
+    await flush();
+    expect(lastFrame()).toContain('マージします');
+    stdin.write('y'); // confirm
+    await flush();
+    expect(merge).toHaveBeenCalled();
+    expect(manager.get('1')?.status).toBe('archived');
   });
 });

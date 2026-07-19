@@ -49,8 +49,6 @@ export function restorableStatus(status: SessionStatus): 'completed' | 'failed' 
     case 'awaiting_permission':
     case 'awaiting_input':
     case 'completed':
-    // claude CLI へ渡したセッションも「再開できる idle」として戻す。
-    case 'external':
       return 'completed';
     case 'failed':
       return 'failed';

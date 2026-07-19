@@ -382,18 +382,6 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       };
     }
 
-    case 'detached':
-      return state.status === 'external'
-        ? state
-        : {
-            ...state,
-            status: 'external',
-            // claude CLI 側で続きが進むため、codiva 側の保留・経過時間はここで閉じる。
-            pendingPermission: undefined,
-            streamingText: undefined,
-            finishedAt: event.at,
-          };
-
     case 'archived':
       return state.status === 'archived'
         ? state

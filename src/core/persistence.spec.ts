@@ -32,7 +32,6 @@ describe('restorableStatus', () => {
     ['awaiting_input', 'completed'],
     ['completed', 'completed'],
     ['failed', 'failed'],
-    ['external', 'completed'],
     ['archived', undefined],
   ])('maps %s → %s', (status, expected) => {
     expect(restorableStatus(status)).toBe(expected);

@@ -32,9 +32,6 @@ import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
 import { glyph, statusColor, theme } from './theme';
 
-/** Launch the selected session in the claude CLI; resolves when the user returns. */
-export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string }>;
-
 /** Open a PR web URL in the browser (fire-and-forget). */
 export type OpenPr = (url: string) => void;
 
@@ -48,18 +45,19 @@ const PR_CELL_WIDTH = 8;
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
  * zones — 'composer' (default: typing + full caret movement) and 'list'
- * (↑↓ selection, Enter → open in claude, m/d → merge/discard). Tab toggles.
- * When the selected session is blocked on a permission/question, the dialog
- * takes the composer's place and owns the keys while the list is focused.
+ * (↑↓ selection, Enter/→ → open the in-app detail view, m/d → merge/discard).
+ * Tab toggles. When the selected session is blocked on a permission/question,
+ * the dialog takes the composer's place and owns the keys while the list is
+ * focused.
  */
 export const SessionList: FC<{
   manager: SessionManager;
-  onOpenExternal?: OpenExternal;
+  onOpen: (id: string) => void;
   onOpenPr?: OpenPr;
   onQuit: () => void;
   cwd?: string;
   model?: string;
-}> = ({ manager, onOpenExternal, onOpenPr, onQuit, cwd, model }) => {
+}> = ({ manager, onOpen, onOpenPr, onQuit, cwd, model }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -112,19 +110,11 @@ export const SessionList: FC<{
     setSel((s) => Math.min(Math.max(0, s + delta), Math.max(0, sorted.length - 1)));
   };
 
-  const openInClaude = () => {
+  const openDetail = () => {
     if (!target || busy) {
       return;
     }
-    if (target.status === 'archived' || !target.sdkSessionId) {
-      setActionError(m.list.openNotReady);
-      return;
-    }
-    setBusy(true);
-    onOpenExternal?.(target.id).then((result) => {
-      setBusy(false);
-      setActionError(result.ok ? undefined : result.error);
-    });
+    onOpen(target.id);
   };
 
   /** Open the selected session's PR in the browser, if it has one. */
@@ -290,7 +280,7 @@ export const SessionList: FC<{
         return;
       }
       if (key.return || key.rightArrow) {
-        openInClaude();
+        openDetail();
         return;
       }
       if (input === 'p' || input === 'P') {
@@ -328,7 +318,7 @@ export const SessionList: FC<{
         return;
       }
       if (enter.text === '') {
-        // 空 Enter は一覧へフォーカス（誤爆で claude を開かない）。
+        // 空 Enter は一覧へフォーカス（誤爆で詳細ビューを開かない）。
         setFocus('list');
         return;
       }
