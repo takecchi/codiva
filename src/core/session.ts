@@ -98,6 +98,16 @@ export class Session {
   private pending?: { request: PermissionRequest; resolve: (r: PermissionResult) => void };
   private reqSeq = 0;
   private started = false;
+  /**
+   * Per-session model override set via setModel() (the detail view's /model).
+   * `deps.options` is readonly, so we track the chosen model here and prefer it
+   * in consume() when the query (re)starts. `overridden` distinguishes "no
+   * override" from "override to undefined" (= reset to the CLI default).
+   */
+  private modelOverride: { overridden: boolean; model: string | undefined } = {
+    overridden: false,
+    model: undefined,
+  };
 
   constructor(private readonly deps: SessionDeps) {
     this.state = deps.restored ?? initialState(deps.input);
@@ -181,6 +191,19 @@ export class Session {
   /** Interrupt the current turn (ends it with an error result); session stays alive. */
   async interrupt(): Promise<void> {
     await this.handle?.interrupt?.();
+  }
+
+  /**
+   * Switch the model for THIS session only (the detail view's /model). Applies to
+   * the live query immediately via the SDK's setModel (streaming-input only) and
+   * to any later (re)start of the query. `model` undefined resets to the CLI
+   * default. state.model updates optimistically now; the SDK-reported resolved
+   * model on the next assistant turn confirms it (and the list row repaints).
+   */
+  setModel(model: string | undefined): void {
+    this.modelOverride = { overridden: true, model };
+    void this.handle?.setModel?.(model);
+    this.dispatch({ kind: 'model', model, at: this.now() });
   }
 
   /** Permanently stop the session. The worktree and branch are left intact. */
@@ -269,6 +292,8 @@ export class Session {
   private async consume(): Promise<void> {
     try {
       const opts = this.deps.options;
+      // A per-session /model override wins over the configured default.
+      const model = this.modelOverride.overridden ? this.modelOverride.model : opts?.model;
       this.handle = this.deps.queryFn({
         prompt: this.inputQueue,
         options: {
@@ -280,7 +305,7 @@ export class Session {
           // Stream partial assistant text so the detail view shows a live preview
           // (reduced into state.streamingText). See status-reducer reduceStreamEvent.
           includePartialMessages: true,
-          ...(opts?.model ? { model: opts.model } : {}),
+          ...(model ? { model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
           ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
           ...(this.deps.resume ? { resume: this.deps.resume } : {}),

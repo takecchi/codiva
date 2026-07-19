@@ -41,6 +41,7 @@ function noopSession(input: CreateSessionInput) {
     allowPending() {},
     denyPending() {},
     async interrupt() {},
+    setModel() {},
     abort() {},
     stop() {},
     archive() {},
@@ -577,6 +578,48 @@ describe('App detail view (in-app connection)', () => {
     stdin.write('\r'); // submit follow-up → manager.send → 'user' log entry
     await flush();
     expect(lastFrame()).toContain('one more thing');
+  });
+
+  it('/model in the detail view switches the model for that session only', async () => {
+    const { manager, out } = drivenManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('switch my model');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    // Session starts resolved to Opus (from system/init).
+    out.push(
+      asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-model', model: 'claude-opus-4-8' }),
+    );
+    await flush();
+    expect(lastFrame()).toContain('Opus 4.8');
+
+    stdin.write('\t'); // focus list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    // Type /model → the command palette hints it, Enter opens the picker.
+    stdin.write('/model');
+    await flush();
+    expect(lastFrame()).toContain('/model');
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain(messages.ja.model.title); // model picker open
+
+    // Cursor starts on the current model (Opus); ↓ moves to Fable, Enter applies.
+    stdin.write('\x1b[B'); // ↓ → Fable
+    await flush();
+    stdin.write('\r'); // confirm
+    await flush();
+
+    // Back to the list: the row now shows the switched model.
+    stdin.write('\x1b'); // Esc → list
+    await flush();
+    expect(lastFrame()).toContain('Fable 5');
+    expect(lastFrame()).not.toContain('Opus 4.8');
+    // The global default for new sessions is untouched.
+    expect(manager.getModel()).toBeUndefined();
   });
 
   it('merges from the detail actions panel (Tab → m → y)', async () => {

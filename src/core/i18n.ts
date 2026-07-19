@@ -364,7 +364,7 @@ const en: Messages = {
     unknown: (name) => (name ? `Unknown command: /${name}` : 'Unknown command'),
     help: 'Show available commands',
     quit: 'Quit codiva',
-    model: 'Switch the default model',
+    model: 'Switch the model',
   },
 };
 

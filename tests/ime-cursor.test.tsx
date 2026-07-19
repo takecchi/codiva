@@ -37,6 +37,7 @@ function noopSession(input: CreateSessionInput) {
     allowPending() {},
     denyPending() {},
     async interrupt() {},
+    setModel() {},
     abort() {},
     stop() {},
     archive() {},

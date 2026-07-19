@@ -21,16 +21,25 @@ type CanUseTool = (toolName: string, input: Record<string, unknown>) => Promise<
 /** A controllable fake of the SDK's query(): drive output + inspect canUseTool. */
 function makeFakeQuery() {
   const out = new AsyncQueue<SDKMessage>();
-  const captured: { canUseTool?: CanUseTool } = {};
+  const captured: { canUseTool?: CanUseTool; options?: Options } = {};
   let interrupted = false;
+
+  const modelCalls: (string | undefined)[] = [];
 
   const queryFn = ({ options }: { prompt: AsyncIterable<unknown>; options: Options }): Query => {
     captured.canUseTool = options.canUseTool as unknown as CanUseTool;
+    captured.options = options;
     const gen = (async function* () {
       yield* out;
-    })() as unknown as Query & { interrupt: () => Promise<void> };
+    })() as unknown as Query & {
+      interrupt: () => Promise<void>;
+      setModel: (model?: string) => Promise<void>;
+    };
     gen.interrupt = async () => {
       interrupted = true;
+    };
+    gen.setModel = async (model?: string) => {
+      modelCalls.push(model);
     };
     return gen;
   };
@@ -41,6 +50,8 @@ function makeFakeQuery() {
     end: () => out.close(),
     call: (name: string, input: Record<string, unknown>) => captured.canUseTool?.(name, input),
     wasInterrupted: () => interrupted,
+    modelCalls,
+    seenOptions: () => captured.options,
   };
 }
 
@@ -145,6 +156,53 @@ describe('Session', () => {
     session.send('now do more');
     expect(session.getState().status).toBe('running');
     expect(session.getState().messages.at(-1)?.text).toBe('now do more');
+  });
+
+  it('setModel() switches the live query and reflects it optimistically in state', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    session.setModel('claude-fable-5');
+    // The SDK's setModel is called so the running turn switches models…
+    expect(fake.modelCalls).toEqual(['claude-fable-5']);
+    // …and state.model updates at once so the list row repaints (before the SDK
+    // reports the resolved model on the next turn).
+    expect(session.getState().model).toBe('claude-fable-5');
+  });
+
+  it('setModel(undefined) resets to the CLI default', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      options: { model: 'claude-opus-4-8' },
+    });
+    session.start();
+    await tick();
+    session.setModel(undefined);
+    expect(fake.modelCalls).toEqual([undefined]);
+    expect(session.getState().model).toBeUndefined();
+  });
+
+  it('a per-session model override wins over the configured default on (re)start', async () => {
+    // Restored session: not started yet, so setModel only records the override;
+    // consume() must use it (not deps.options.model) when the query starts.
+    const fake = makeFakeQuery();
+    const restored = { ...initialState(INPUT), status: 'completed' as const };
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      options: { model: 'claude-opus-4-8' },
+      restored,
+    });
+    session.setModel('claude-haiku-4-5');
+    session.send('go');
+    await tick();
+    expect(fake.seenOptions()?.model).toBe('claude-haiku-4-5');
   });
 
   it('interrupt() calls through to the query handle', async () => {

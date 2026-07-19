@@ -44,6 +44,7 @@ export interface SessionHandle {
   allowPending(): void;
   denyPending(message: string): void;
   interrupt(): Promise<void>;
+  setModel(model: string | undefined): void;
   abort(): void;
   stop(): void;
   archive(): void;
@@ -402,6 +403,15 @@ export class SessionManager {
   }
   async interrupt(id: string): Promise<void> {
     await this.sessions.get(id)?.interrupt();
+  }
+  /**
+   * Switch the model for a single running session (the detail view's /model).
+   * Only that session is affected — the global default (getModel/setModel) and
+   * other sessions are untouched, so newly created sessions keep the configured
+   * default. The switch is not persisted (it's a live, per-session override).
+   */
+  setSessionModel(id: string, model: string | undefined): void {
+    this.sessions.get(id)?.setModel(model);
   }
 
   // ── Lifecycle (merge / discard) ────────────────────────────────────

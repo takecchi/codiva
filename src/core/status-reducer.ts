@@ -354,6 +354,10 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       };
     }
 
+    case 'model':
+      // No-op when unchanged so subscribers don't re-render needlessly.
+      return state.model === event.model ? state : { ...state, model: event.model };
+
     case 'title': {
       const title = makeTitle(event.title);
       // Ignore empty generations; keep the placeholder rather than blank it.
