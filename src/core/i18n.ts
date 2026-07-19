@@ -82,6 +82,21 @@ export interface Messages {
     confirmMode: string;
     cycleHint: string;
   };
+  /** スラッシュコマンド（commands.ts / command-palette.tsx） */
+  command: {
+    /** 入力中に出るコマンドパレットの見出し */
+    paletteTitle: string;
+    /** 前方一致するコマンドが無いときの表示 */
+    paletteEmpty: string;
+    /** /help のヘルプ一覧の見出し */
+    helpTitle: string;
+    /** 未知のコマンドを打ったときのエラー */
+    unknown: (name: string) => string;
+    /** /help の説明 */
+    help: string;
+    /** /quit の説明 */
+    quit: string;
+  };
 }
 
 const ja: Messages = {
@@ -140,6 +155,14 @@ const ja: Messages = {
     confirmMode: '確認モード',
     cycleHint: '(shift+tab で切替)',
   },
+  command: {
+    paletteTitle: 'コマンド',
+    paletteEmpty: '一致するコマンドがありません',
+    helpTitle: '利用可能なコマンド',
+    unknown: (name) => (name ? `不明なコマンド: /${name}` : '不明なコマンドです'),
+    help: 'コマンド一覧を表示',
+    quit: 'codiva を終了',
+  },
 };
 
 const en: Messages = {
@@ -197,6 +220,14 @@ const en: Messages = {
     autoMode: 'auto mode on',
     confirmMode: 'confirm mode on',
     cycleHint: '(shift+tab to cycle)',
+  },
+  command: {
+    paletteTitle: 'Commands',
+    paletteEmpty: 'No matching command',
+    helpTitle: 'Available commands',
+    unknown: (name) => (name ? `Unknown command: /${name}` : 'Unknown command'),
+    help: 'Show available commands',
+    quit: 'Quit codiva',
   },
 };
 

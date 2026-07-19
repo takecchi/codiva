@@ -3,17 +3,22 @@ import { type FC, useRef, useState } from 'react';
 import {
   bufferLines,
   bufferOf,
+  COMMANDS,
   cursorRowCol,
   emptyBuffer,
   INPUT_MAX_ROWS,
   indexAtRowCol,
+  isCommandInput,
+  matchCommands,
   parseSgrMouse,
+  runCommand,
   type SessionManager,
   type TextBuffer,
   totalCostUsd,
   visibleLineRange,
 } from '@/core';
 import { Banner } from './banner';
+import { CommandPalette } from './command-palette';
 import { useAbsolutePosition, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
@@ -56,6 +61,7 @@ export const SessionList: FC<{
   const [focus, setFocus] = useState<'composer' | 'list'>('composer');
   const [sel, setSel] = useState(0);
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const rowsRef = useRef<DOMElement>(null);
@@ -91,6 +97,24 @@ export const SessionList: FC<{
       setBusy(false);
       setActionError(result.ok ? undefined : result.error);
     });
+  };
+
+  /** Resolve a `/command` and perform its effect. Unknown names surface as errors. */
+  const runCommandInput = (text: string) => {
+    const result = runCommand(text);
+    if (result.kind === 'unknown') {
+      setActionError(m.command.unknown(result.name));
+      return;
+    }
+    setActionError(undefined);
+    switch (result.command.action) {
+      case 'quit':
+        onQuit();
+        return;
+      case 'help':
+        setShowHelp(true);
+        return;
+    }
   };
 
   const runAction = (action: 'merge' | 'discard') => {
@@ -147,6 +171,12 @@ export const SessionList: FC<{
     }
     if (key.tab && key.shift) {
       manager.cycleMode();
+      return;
+    }
+    // The /help overlay is modal-lite: any key dismisses it (and is swallowed so
+    // it doesn't also edit/navigate underneath).
+    if (showHelp) {
+      setShowHelp(false);
       return;
     }
     if (busy) {
@@ -227,6 +257,12 @@ export const SessionList: FC<{
       if (enter.text === '') {
         // 空 Enter は一覧へフォーカス（誤爆で claude を開かない）。
         setFocus('list');
+        return;
+      }
+      // 先頭が `/` はコマンド。通常の指示（manager.create）と分岐する。
+      if (isCommandInput(enter.text)) {
+        runCommandInput(enter.text);
+        updateBuffer(emptyBuffer());
         return;
       }
       manager.create(enter.text);
@@ -310,6 +346,10 @@ export const SessionList: FC<{
         </Box>
       ) : null}
 
+      {showHelp && !pending ? (
+        <CommandPalette title={m.command.helpTitle} commands={COMMANDS} />
+      ) : null}
+
       {pending && target ? (
         <PermissionDialog
           request={pending}
@@ -319,6 +359,9 @@ export const SessionList: FC<{
         />
       ) : (
         <Box ref={composerRef} flexDirection="column">
+          {focus === 'composer' && isCommandInput(buffer.value) ? (
+            <CommandPalette title={m.command.paletteTitle} commands={matchCommands(buffer.value)} />
+          ) : null}
           <PromptInput
             buffer={buffer}
             focused={focus === 'composer'}
