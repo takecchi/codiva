@@ -1,3 +1,4 @@
+import { errorMessage } from './errors';
 import type { ActionResult, SessionHandle, WorktreeMeta, WorktreeService } from './session-ports';
 import { type DiffStat, MergeConflictError } from './worktree';
 
@@ -24,7 +25,7 @@ export async function mergeSession(
     if (err instanceof MergeConflictError) {
       session?.markConflict(err.files);
     }
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: errorMessage(err) };
   }
 }
 
@@ -44,6 +45,6 @@ export async function discardSession(
     session?.archive();
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: errorMessage(err) };
   }
 }

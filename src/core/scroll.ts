@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { clamp } from './math';
 import type { LogEntry, LogKind } from './types';
 
 /**
@@ -21,10 +22,6 @@ export interface LogWindow<T = LogEntry> {
   hiddenBelow: number;
   /** True when anchored to the newest line (tail-follow). */
   atBottom: boolean;
-}
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
 }
 
 /**

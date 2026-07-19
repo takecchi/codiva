@@ -3,23 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/session';
 import { SessionManager } from '@/core/session-manager';
-import type { WorktreeService } from '@/core/session-ports';
+import { flush, fakeWorktrees as worktrees } from './helpers';
 
 // Integration test for Phase 6 session restoration: run → persist → new manager
 // restore → resume on follow-up. Uses a real Session (driven queryFn), not a fake.
-
-const flush = () => new Promise((r) => setTimeout(r, 20));
-
-const worktrees: WorktreeService = {
-  baseBranch: async () => 'main',
-  takenSlugs: async () => new Set(),
-  add: async (slug) => ({ slug, branch: `codiva/${slug}`, path: `/tmp/${slug}` }),
-  syncedStartPoint: async () => undefined,
-  pushBranch: async () => {},
-  diffStat: async () => ({ committed: '', uncommitted: [] }),
-  merge: async () => {},
-  remove: async () => {},
-};
+// A shorter flush window is fine here (a driven query settles fast).
 
 function drivenQuery(onStart?: (options: Options) => void) {
   const out = new AsyncQueue<SDKMessage>();

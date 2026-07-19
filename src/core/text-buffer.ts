@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { clamp } from './math';
 
 /**
  * A pure multi-line text buffer (value + caret index). All editing/movement is
@@ -17,10 +18,6 @@ export interface TextBuffer {
  * (Claude-Code-style: the composer grows upward, then keeps the caret in view).
  */
 export const INPUT_MAX_ROWS = 8;
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
-}
 
 export function emptyBuffer(): TextBuffer {
   return { value: '', cursor: 0 };

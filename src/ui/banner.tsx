@@ -27,7 +27,7 @@ const LOGO = [
 // rather than expanding the brand palette.
 const GLINT = '#c3e5e7';
 
-function paint(ch: string, row: number, col: number): string | undefined {
+function paint(row: number, col: number): string | undefined {
   if (col === 0 || col === 1 || col === 13 || col === 14) return palette.aqua;
   if (row === 1 && (col === 5 || col === 7)) return GLINT;
   if (row === 0 && (col === 2 || col === 12)) return palette.ink;
@@ -64,7 +64,7 @@ export const Banner: FC<{
         {LOGO_ROWS.map((r) => (
           <Text key={r.key}>
             {r.cells.map((c) => (
-              <Text key={c.key} color={paint(c.ch, c.row, c.col)}>
+              <Text key={c.key} color={paint(c.row, c.col)}>
                 {c.ch}
               </Text>
             ))}

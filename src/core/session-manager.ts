@@ -1,3 +1,4 @@
+import { errorMessage } from './errors';
 import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
 import { PrCoordinator } from './pr-coordinator';
 import { createModePolicy, type RunMode } from './run-mode';
@@ -236,7 +237,7 @@ export class SessionManager {
       if (current) {
         this.store.set(
           id,
-          reduce(current, { kind: 'aborted', error: String(err), at: this.now() }),
+          reduce(current, { kind: 'aborted', error: errorMessage(err), at: this.now() }),
         );
         this.deps.onPersist?.();
       }

@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { render } from 'ink';
-import { messages, resolveLang, type SessionManager } from '@/core';
+import { errorMessage, messages, resolveLang, type SessionManager } from '@/core';
 import { defaultStatePath, loadConfig, openUrl, WorktreeManager } from '@/utils';
 import { App } from './app';
 import {
@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   try {
     await worktrees.preflight();
   } catch (err) {
-    process.stderr.write(`codiva: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`codiva: ${errorMessage(err)}\n`);
     process.exit(1);
   }
 

@@ -1,6 +1,6 @@
-import { execFile } from 'node:child_process';
 import { platform as osPlatform } from 'node:os';
 import type { NotificationSpec } from '@/core';
+import { fireAndForget } from './exec';
 
 /**
  * Build the OS command that shows a desktop notification, or undefined if the
@@ -45,14 +45,7 @@ export function notifyCommand(
  */
 export function notify(spec: NotificationSpec): void {
   const cmd = notifyCommand(spec, osPlatform());
-  if (!cmd) {
-    return;
-  }
-  try {
-    execFile(cmd.file, cmd.args, () => {
-      // Ignore all errors and output — notifications must never be load-bearing.
-    });
-  } catch {
-    // execFile can throw synchronously on some argument errors; stay silent.
+  if (cmd) {
+    fireAndForget(cmd.file, cmd.args);
   }
 }

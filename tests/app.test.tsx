@@ -1,8 +1,5 @@
-import { EventEmitter } from 'node:events';
 import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { render as inkRender } from 'ink';
 import { render } from 'ink-testing-library';
-import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { AsyncQueue } from '@/core/async-queue';
@@ -10,111 +7,17 @@ import { messages } from '@/core/i18n';
 import type { QueryFn } from '@/core/session';
 import { SessionManager } from '@/core/session-manager';
 import type { WorktreeService } from '@/core/session-ports';
-import { initialState } from '@/core/status-reducer';
-import type { CreateSessionInput } from '@/core/types';
+import {
+  flush,
+  makeManager,
+  noopSession,
+  renderFullscreen,
+  fakeWorktrees as worktrees,
+} from './helpers';
 
 // Feature/integration tests: drive the whole App (list ⇄ detail) through a real
 // SessionManager. Unit tests for individual modules live next to them as *.spec.ts.
-
-const flush = () => new Promise((r) => setTimeout(r, 150));
-
-const worktrees: WorktreeService = {
-  baseBranch: async () => 'main',
-  takenSlugs: async () => new Set(),
-  add: async (slug) => ({ slug, branch: `codiva/${slug}`, path: `/tmp/${slug}` }),
-  syncedStartPoint: async () => undefined,
-  pushBranch: async () => {},
-  diffStat: async () => ({ committed: '', uncommitted: [] }),
-  merge: async () => {},
-  remove: async () => {},
-};
-
-/** Session that stays in 'creating' — enough to smoke-test rendering. */
-function noopSession(input: CreateSessionInput) {
-  return {
-    state: initialState(input),
-    getState() {
-      return this.state;
-    },
-    start() {},
-    send() {},
-    answerPending() {},
-    allowPending() {},
-    denyPending() {},
-    async interrupt() {},
-    setModel() {},
-    abort() {},
-    stop() {},
-    archive() {},
-    setPr() {},
-    markConflict() {},
-  };
-}
-
-function makeManager() {
-  return new SessionManager({
-    worktrees,
-    queryFn: (() => {
-      throw new Error('unused');
-    }) as never,
-    now: () => 0,
-    createSession: ({ input }) => noopSession(input),
-  });
-}
-
-// ink-testing-library の fake stdout は rows を注入できない（実端末サイズに
-// フォールバックして非決定的になる）ため、全画面テストは Ink 本体の render に
-// 寸法固定のストリームを渡して検証する。
-class FakeStdout extends EventEmitter {
-  readonly columns: number;
-  readonly rows: number;
-  readonly frames: string[] = [];
-  constructor(rows = 20, columns = 80) {
-    super();
-    this.rows = rows;
-    this.columns = columns;
-  }
-  write = (frame: string) => {
-    this.frames.push(frame);
-    return true;
-  };
-}
-
-// ink-testing-library の Stdin と同じ挙動（write → 'readable'/'data' を emit）。
-class FakeStdin extends EventEmitter {
-  isTTY = true;
-  private data: string | null = null;
-  write = (data: string) => {
-    this.data = data;
-    this.emit('readable');
-    this.emit('data', data);
-  };
-  setEncoding() {}
-  setRawMode() {}
-  resume() {}
-  pause() {}
-  ref() {}
-  unref() {}
-  read = () => {
-    const { data } = this;
-    this.data = null;
-    return data;
-  };
-}
-
-function renderFullscreen(element: ReactElement, rows = 20, columns = 80) {
-  const stdout = new FakeStdout(rows, columns);
-  const stdin = new FakeStdin();
-  const app = inkRender(element, {
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    exitOnCtrlC: false,
-    patchConsole: false,
-    // 非TTYでは debug なしだと途中フレームが書き出されない（ink-testing-library と同じ設定）。
-    debug: true,
-  });
-  return { app, stdin, lastFrame: () => stdout.frames.at(-1) ?? '' };
-}
+// Shared fakes (worktrees, sessions, fullscreen renderer) live in ./helpers.
 
 describe('App fullscreen layout', () => {
   it('renders a frame exactly as tall as the terminal, footer pinned to the bottom', () => {

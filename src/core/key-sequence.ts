@@ -16,6 +16,8 @@
  * 27 = Esc, 8/127 = Backspace, otherwise a printable char). `<mod>` is
  * `1 + bitmask` where bit 0 = Shift, bit 1 = Alt, bit 2 = Ctrl.
  */
+import { stripLeadingEscape } from './ansi';
+
 export interface DecodedKey {
   kind: 'return' | 'tab' | 'escape' | 'backspace' | 'text';
   /** The printable character for `kind: 'text'`; '' for the special keys. */
@@ -60,7 +62,7 @@ function fromCode(code: number, modifier: number): DecodedKey {
  * strips at most one leading ESC, so we accept both with and without it.
  */
 export function decodeKeySequence(input: string): DecodedKey | undefined {
-  const s = input.charCodeAt(0) === 27 ? input.slice(1) : input;
+  const s = stripLeadingEscape(input);
   const other = MODIFY_OTHER_KEYS.exec(s);
   if (other) {
     return fromCode(Number(other[2]), Number(other[1]));

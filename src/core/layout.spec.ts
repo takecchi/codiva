@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DETAIL_CHROME_ROWS,
   isFullscreenViewport,
+  LIST_CHROME_ROWS,
   listView,
   listViewportRows,
   logViewportRows,
@@ -138,6 +139,7 @@ describe('listView', () => {
 
 describe('listViewportRows', () => {
   it('subtracts the fixed list chrome from the terminal rows', () => {
+    expect(listViewportRows(40)).toBe(40 - LIST_CHROME_ROWS);
     expect(listViewportRows(40)).toBe(25);
   });
 

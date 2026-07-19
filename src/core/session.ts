@@ -8,6 +8,7 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncQueue } from './async-queue';
+import { errorMessage } from './errors';
 import { applySdkMessage } from './sdk-parse';
 import { initialState, reduce } from './status-reducer';
 import type {
@@ -36,7 +37,7 @@ export type PermissionPolicy = (
  * (Phase 1 showed even Write reaches canUseTool under acceptEdits, so relying on
  * permissionMode alone would stall autonomy; we auto-allow here instead.)
  */
-export const defaultPolicy: PermissionPolicy = (toolName) =>
+const defaultPolicy: PermissionPolicy = (toolName) =>
   toolName === 'AskUserQuestion' ? 'ask' : 'allow';
 
 /** Per-session knobs forwarded to the SDK query (sourced from the config file). */
@@ -319,7 +320,7 @@ export class Session {
       }
     } catch (err) {
       if (!this.abortController.signal.aborted) {
-        this.dispatch({ kind: 'aborted', error: String(err), at: this.now() });
+        this.dispatch({ kind: 'aborted', error: errorMessage(err), at: this.now() });
       }
     }
   }
