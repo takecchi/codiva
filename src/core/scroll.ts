@@ -26,6 +26,24 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/**
+ * Collapse a log entry's text into a single physical line.
+ *
+ * The detail-view scroll model is *entry-based*: {@link logWindow} slices the
+ * message array and the flex-end viewport assumes one entry ≈ one terminal row.
+ * But `assistant_text` / `result` / `user` entries can carry embedded newlines,
+ * and Ink's `wrap="truncate-end"` does NOT flatten them — `cli-truncate` returns
+ * multi-line text unchanged when its (newline-ignoring) display width fits, so a
+ * single entry would render as many rows. That breaks the invariant: a few long
+ * messages fill the viewport and the entry-based scroll math skips/overshoots.
+ *
+ * Flattening every vertical break (LF/CR/VT/FF) to a single space restores
+ * "one entry, one row" so both the visible count and PageUp/wheel scrolling work.
+ */
+export function logLineText(text: string): string {
+  return text.replace(/\s*[\r\n\v\f]+\s*/g, ' ').trim();
+}
+
 /** How many entries a PageUp/PageDown moves — a comfortable half-viewport chunk. */
 export function pageStep(rows: number): number {
   return Math.max(1, Math.floor(Math.max(1, rows) / 2));
