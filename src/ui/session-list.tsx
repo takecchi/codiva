@@ -8,6 +8,7 @@ import {
   INPUT_MAX_ROWS,
   indexAtRowCol,
   parseSgrMouse,
+  parseSlashCommand,
   type SessionManager,
   type TextBuffer,
   totalCostUsd,
@@ -17,6 +18,7 @@ import { Banner } from './banner';
 import { useAbsolutePosition, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
+import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
@@ -55,6 +57,8 @@ export const SessionList: FC<{
   const [focus, setFocus] = useState<'composer' | 'list'>('composer');
   const [sel, setSel] = useState(0);
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
+  // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
+  const [modelSelect, setModelSelect] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const rowsRef = useRef<DOMElement>(null);
@@ -144,6 +148,11 @@ export const SessionList: FC<{
       onQuit();
       return;
     }
+    // The model picker is modal: it owns the keys (its own useInput handles
+    // arrows/Enter/Esc). Ignore everything else here so nothing leaks through.
+    if (modelSelect) {
+      return;
+    }
     if (key.tab && key.shift) {
       manager.cycleMode();
       return;
@@ -228,6 +237,12 @@ export const SessionList: FC<{
         setFocus('list');
         return;
       }
+      // `/model` はセッションを作らずモデル選択ダイアログを開く。
+      if (parseSlashCommand(enter.text) === 'model') {
+        setModelSelect(true);
+        updateBuffer(emptyBuffer());
+        return;
+      }
       manager.create(enter.text);
       updateBuffer(emptyBuffer());
       return;
@@ -238,11 +253,13 @@ export const SessionList: FC<{
     }
   });
 
-  const footerHint = pending
-    ? m.list.helpPending
-    : focus === 'list'
-      ? m.list.helpList
-      : m.list.helpComposer;
+  const footerHint = modelSelect
+    ? m.model.help
+    : pending
+      ? m.list.helpPending
+      : focus === 'list'
+        ? m.list.helpList
+        : m.list.helpComposer;
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -302,7 +319,16 @@ export const SessionList: FC<{
         </Box>
       ) : null}
 
-      {pending && target ? (
+      {modelSelect ? (
+        <ModelSelect
+          current={manager.getModel()}
+          onSelect={(model) => {
+            manager.setModel(model);
+            setModelSelect(false);
+          }}
+          onCancel={() => setModelSelect(false)}
+        />
+      ) : pending && target ? (
         <PermissionDialog
           request={pending}
           onAnswer={(answers) => manager.answer(target.id, answers)}

@@ -6,6 +6,8 @@
  * 複数形などは、型安全に保つため文字列テンプレート関数として持つ。
  */
 
+import type { ModelId } from './models';
+
 export type Lang = 'ja' | 'en';
 
 /** サポート言語の一覧（順序は UI での並びに使える）。 */
@@ -56,6 +58,21 @@ export interface Messages {
     deny: string;
     questionTitle: (index: number, total: number, header: string) => string;
     questionHelp: (multiSelect: boolean) => string;
+  };
+  /** モデル選択ダイアログ（model-select.tsx。/model コマンドで開く） */
+  model: {
+    /** ダイアログ見出し */
+    title: string;
+    /** ダイアログ下部の操作ヒント */
+    help: string;
+    /** 既定モデルに付ける「推奨」ラベル */
+    recommended: string;
+    /** 選択確定後のフッタ通知（name は選んだモデルの表示名） */
+    saved: (name: string) => string;
+    /** 選択肢の表示名（ブランド名。default のみ翻訳語） */
+    names: Record<ModelId, string>;
+    /** 選択肢の説明文 */
+    descriptions: Record<ModelId, string>;
   };
   /** アプリ全体（index.tsx） */
   app: {
@@ -116,6 +133,26 @@ const ja: Messages = {
     questionHelp: (multiSelect) =>
       `↑↓: 選択 ・ ${multiSelect ? 'Space: トグル ・ ' : ''}Enter: 決定`,
   },
+  model: {
+    title: 'モデルを選択',
+    help: '↑↓: 選択 ・ Enter: 決定 ・ Esc: キャンセル',
+    recommended: '推奨',
+    saved: (name) => `モデルを ${name} に変更しました（以降の新規セッションに適用）`,
+    names: {
+      default: 'デフォルト',
+      opus: 'Opus',
+      fable: 'Fable',
+      sonnet: 'Sonnet',
+      haiku: 'Haiku',
+    },
+    descriptions: {
+      default: 'CLI 既定のモデルを使用',
+      opus: 'Opus 4.8 ・ 日常的で複雑なタスクに最適',
+      fable: 'Fable 5 ・ 最難関・長時間タスク向けの最上位',
+      sonnet: 'Sonnet 5 ・ 日常タスクを効率的に',
+      haiku: 'Haiku 4.5 ・ 手早い回答に最速',
+    },
+  },
   app: {
     remainingWorktrees: (n) =>
       `codiva: ${n} 個の worktree が残っています（作業内容は保持されます）:`,
@@ -171,6 +208,26 @@ const en: Messages = {
     questionTitle: (index, total, header) => `Question (${index}/${total}) ${header}`,
     questionHelp: (multiSelect) =>
       `↑↓: select · ${multiSelect ? 'Space: toggle · ' : ''}Enter: confirm`,
+  },
+  model: {
+    title: 'Select model',
+    help: '↑↓: select · Enter: confirm · Esc: cancel',
+    recommended: 'recommended',
+    saved: (name) => `Model set to ${name} (applies to new sessions)`,
+    names: {
+      default: 'Default',
+      opus: 'Opus',
+      fable: 'Fable',
+      sonnet: 'Sonnet',
+      haiku: 'Haiku',
+    },
+    descriptions: {
+      default: 'Use the CLI default model',
+      opus: 'Opus 4.8 · Best for everyday, complex tasks',
+      fable: 'Fable 5 · Most capable for your hardest, longest tasks',
+      sonnet: 'Sonnet 5 · Efficient for routine tasks',
+      haiku: 'Haiku 4.5 · Fastest for quick answers',
+    },
   },
   app: {
     remainingWorktrees: (n) =>

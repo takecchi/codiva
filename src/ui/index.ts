@@ -2,6 +2,7 @@ export * from './banner';
 export * from './hooks';
 export * from './i18n-context';
 export * from './input';
+export * from './model-select';
 export * from './permission-dialog';
 export * from './progress-badge';
 export * from './prompt-input';

@@ -144,6 +144,7 @@ interface SessionState {
 - `dispose()`: 全セッションを **`stop()`（quiet）**（worktree は残す）。実行中でも resumable なまま。
 - `onTransition(prev,next)`: ステータス遷移ごとに発火（デスクトップ通知に配線）。
 - `onPersist()`: 永続対象が変わった合図（合成ルートで debounce 保存に配線）。`persistableState()` が state.json 用スナップショットを組み立てる。
+- **モデル切替（`/model`）**: `SessionOptions` を可変フィールドとして保持し、`getModel()` / `setModel(model)` で公開。`setModel` は**以降の新規セッション**に適用（実行中セッションは起動時のモデルを維持）し、`onModelChange(model)` で合成ルートに通知 → `~/.codiva/config.json` の `model` にマージ保存される。選択肢は `core/models.ts`（`MODELS`）、コマンド解析は `core/commands.ts`（`parseSlashCommand`）。
 - `restore(persisted)`: 起動時に前回セッションを再構築（worktree meta を再配線し、`Session` に `resume`/`restored` を渡す。id/slug を予約して衝突回避）。
 
 ### WorktreeManager (`core/worktree.ts`)
