@@ -2,6 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import { type FC, useState } from 'react';
 import type { PermissionRequest } from '@/core';
 import { useMessages } from './i18n-context';
+import { statusColor, theme } from './theme';
 
 /**
  * Renders the pending decision a session is blocked on and captures the user's
@@ -38,15 +39,20 @@ const ToolDialog: FC<{
 
   const summary = JSON.stringify(request.input).slice(0, 200);
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-      <Text color="yellow" bold>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={statusColor.awaitingPermission}
+      paddingX={1}
+    >
+      <Text color={statusColor.awaitingPermission} bold>
         {m.permission.toolTitle(request.toolName)}
       </Text>
       <Text dimColor wrap="truncate-end">
         {summary}
       </Text>
       <Text>
-        <Text color="green">y</Text>: {m.permission.allow} ・ <Text color="red">n</Text>:{' '}
+        <Text color={theme.yes}>y</Text>: {m.permission.allow} ・ <Text color={theme.no}>n</Text>:{' '}
         {m.permission.deny}
       </Text>
     </Box>
@@ -114,8 +120,13 @@ const QuestionDialog: FC<{
   }
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
-      <Text color="magenta" bold>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={statusColor.awaitingInput}
+      paddingX={1}
+    >
+      <Text color={statusColor.awaitingInput} bold>
         {m.permission.questionTitle(qIndex + 1, questions.length, current.header)}
       </Text>
       <Text>{current.question}</Text>
@@ -125,7 +136,7 @@ const QuestionDialog: FC<{
           const marker = current.multiSelect ? (checked ? '[x]' : '[ ]') : i === cursor ? '❯' : ' ';
           return (
             <Box key={opt.label}>
-              <Text color={i === cursor ? 'cyan' : undefined}>
+              <Text color={i === cursor ? theme.accent : undefined}>
                 {marker} {opt.label}
               </Text>
               {opt.description ? <Text dimColor> — {opt.description}</Text> : null}

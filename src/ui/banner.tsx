@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import type { FC } from 'react';
 import { formatUsd } from '@/core';
 import { useMessages } from './i18n-context';
-import { glyph, theme } from './theme';
+import { glyph, palette, theme } from './theme';
 
 // codiva mascot. Each glyph is rendered in its own <Text>, so you can paint it
 // one character at a time via paint() below.
@@ -23,16 +23,20 @@ const LOGO = [
  *   - by glyph/shade: switch on `ch` ('█' darkest → '▒' lightest)
  *   - by line: switch on `row`
  */
+// One-off eye glint — a lighter aqua tint used nowhere else, so it stays local
+// rather than expanding the brand palette.
+const GLINT = '#c3e5e7';
+
 function paint(ch: string, row: number, col: number): string | undefined {
-  if (col === 0 || col === 1 || col === 13 || col === 14) return '#86cecb';
-  if (row === 1 && (col === 5 || col === 7)) return '#c3e5e7';
-  if (row === 0 && (col === 2 || col === 12)) return '#373b3e';
-  if (row === 1 && (col === 2 || col === 12)) return '#e12885';
-  if (row === 2 && (col === 2 || col === 12)) return '#373b3e';
-  if (row === 3 && (col === 5 || col === 9)) return '#137a7f';
-  if (row === 4 && (col === 3 || col === 11)) return '#137a7f';
-  if (row === 5 && 4 <= col && col <= 10) return '#137a7f';
-  return '#86cecb';
+  if (col === 0 || col === 1 || col === 13 || col === 14) return palette.aqua;
+  if (row === 1 && (col === 5 || col === 7)) return GLINT;
+  if (row === 0 && (col === 2 || col === 12)) return palette.ink;
+  if (row === 1 && (col === 2 || col === 12)) return palette.pink;
+  if (row === 2 && (col === 2 || col === 12)) return palette.ink;
+  if (row === 3 && (col === 5 || col === 9)) return palette.teal;
+  if (row === 4 && (col === 3 || col === 11)) return palette.teal;
+  if (row === 5 && 4 <= col && col <= 10) return palette.teal;
+  return palette.aqua;
 }
 
 // Precompute cells with stable keys (so JSX keys aren't raw array indices).
