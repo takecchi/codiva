@@ -1,7 +1,7 @@
 import type { Key } from 'ink';
 import { describe, expect, it } from 'vitest';
 import { bufferOf, emptyBuffer } from '@/core';
-import { caretIndexForColumn, editText, promptCaretColumn } from './input';
+import { caretIndexForColumn, editText, normalizeChord, promptCaretColumn } from './input';
 
 const key = (overrides: Partial<Key> = {}): Key =>
   ({
@@ -82,6 +82,52 @@ describe('editText input sanitization', () => {
   ])('%s', (_desc, input, expected) => {
     const edit = editText(emptyBuffer(), input, key());
     expect(edit.buffer.value).toBe(expected);
+  });
+});
+
+// 修飾キーエスケープ（modifyOtherKeys / CSI-u）を実キーへ復号する共通処理。
+// 一覧・詳細の両コンポーザが同じ Enter/改行挙動になることを保証する。
+describe('normalizeChord', () => {
+  it('decodes Shift+Enter (modifyOtherKeys) into a return chord with shift', () => {
+    const { input, key: out } = normalizeChord('[27;2;13~', key());
+    expect(out.return).toBe(true);
+    expect(out.shift).toBe(true);
+    expect(input).toBe('');
+  });
+
+  it('decodes Shift+Enter (CSI-u) into a return chord with shift', () => {
+    const { input, key: out } = normalizeChord('[13;2u', key());
+    expect(out.return).toBe(true);
+    expect(out.shift).toBe(true);
+    expect(input).toBe('');
+  });
+
+  it('decodes a leading-ESC escape (Ink strips at most one ESC)', () => {
+    const { key: out } = normalizeChord(`${String.fromCharCode(27)}[27;2;13~`, key());
+    expect(out.return).toBe(true);
+    expect(out.shift).toBe(true);
+  });
+
+  it('surfaces a modified printable code point as text', () => {
+    const { input, key: out } = normalizeChord('[97;2u', key()); // Shift+a
+    expect(input).toBe('a');
+    expect(out.shift).toBe(true);
+    expect(out.return).toBe(false);
+  });
+
+  it('passes ordinary text through untouched', () => {
+    const original = key();
+    const { input, key: out } = normalizeChord('あ', original);
+    expect(input).toBe('あ');
+    expect(out).toBe(original);
+  });
+
+  it('passes a plain return key through untouched', () => {
+    const original = key({ return: true });
+    const { input, key: out } = normalizeChord('', original);
+    expect(input).toBe('');
+    expect(out).toBe(original);
+    expect(out.return).toBe(true);
   });
 });
 

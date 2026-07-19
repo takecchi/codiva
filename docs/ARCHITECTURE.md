@@ -158,6 +158,7 @@ interface SessionState {
 - 前提チェック: Gitリポジトリか、HEAD が存在するか（コミット0のリポジトリでは worktree を作れない）。
 - `add(slug)`: `git worktree add .codiva/worktrees/<slug> -b codiva/<slug>` を現在の HEAD から作成。slug 衝突時は `-2`, `-3` を付与。
 - `.git/info/exclude` に `.codiva/` を自動追記（初回のみ）。
+- ignore 済みファイルの複製: `copyIgnored`（既定 true）が有効なら、`git ls-files --others --ignored --exclude-standard --directory` で列挙した `.gitignore` 対象（`node_modules/`・`.env` など）をリポジトリルートから worktree へ `fs.cp` で複製する。git worktree は追跡対象しか引き継がないため、これで依存の再インストールや環境変数の再設定なしにセッションが即実行できる。列挙結果のフィルタは純関数 `ignoredCopyEntries()` に切り出し（`.codiva/`・`.git` は再帰・内部状態破壊を避けるため必ず除外）、コピー自体はエントリ単位のベストエフォート（1件の失敗で worktree 作成を止めない）。
 - `diffStat(session)`: `git -C <worktree> diff <base>...HEAD --stat` 相当。未コミット変更がある場合はその旨も返す。
 - `merge(session)`: セッションブランチをベースブランチへマージ（squash はしない。コンフリクト時はエラーを返し、手動解決を促すメッセージを表示するのみ）。
 - `remove(session, { force })`: `git worktree remove` + `git branch -D`。
@@ -207,8 +208,9 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 純粋ロジックは core、副作用は utils／合成ルートという分離をそのまま踏襲する。
 
 - **設定ファイル拡張**: `~/.codiva/config.json` に `model` / `effort` / `permissionMode` / `maxBudgetUsd` /
-  `notifications` を追加。検証変換は `core/config.ts` の `toConfig()` に集約し、不正値は静かに既定へ落とす。
-  合成ルート（`index.tsx`）が `SessionOptions` に束ねて `SessionManager` へ注入する。
+  `notifications` / `mouse` / `followOrigin` / `autoPr` を追加。検証変換は `core/config.ts` の `toConfig()` に
+  集約し、不正値は静かに既定へ落とす。合成ルート（`index.tsx`）が `SessionOptions` に束ねて `SessionManager`
+  へ注入する。`followOrigin` / `autoPr` は真偽値（既定 on。`false` 明示で無効）。
 - **コスト表示**: reducer は `result.total_cost_usd` を `state.totalCostUsd` として既に保持。UI 用の導出だけ
   `core/cost.ts`（`totalCostUsd()` 合計 / `formatUsd()` 整形）に純粋関数で追加。一覧はバナーに合計、詳細は各行。
 - **デスクトップ通知**: 発火判定は純粋な `core/notify.ts` の `notificationFor(prev,next,messages)`
@@ -228,16 +230,37 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   同期フラッシュ（`saveStateSync`）。`stop()` は保留中の許可要求を deny で解決してから停止し、
   resume 先のトランスクリプトが未応答の `tool_use` で終わらないようにする（best-effort）。
 
-## 設計上の決定と理由
+## Phase 10 機能（origin 追従 / PR 自動化 / 競合検知）
 
-| 決定 | 理由 |
-|------|------|
+同じく「純粋ロジック=core、副作用=utils／合成ルート」を踏襲。破壊的な確定操作（競合の解消・
+マージの確定）は自動化せず、検知・足場作りだけを自動化する方針。
+
+- **origin 自動追従（`followOrigin`, 既定 on）**: `WorktreeManager.syncedStartPoint(base)` が
+  `git fetch origin <base>` して `origin/<base>` を start point として返す（origin 無し/オフライン/
+  ブランチ不在なら `undefined` → ローカル HEAD にフォールバック）。`SessionManager.provision` が
+  `worktrees.add(slug, startPoint)` に渡し、**作成時のみ**最新から切る（稼働中 worktree へは pull しない
+  ＝未コミット変更との競合を避ける）。
+- **PR 自動化（`autoPr`, 既定 on）**: セッションが `completed` へ遷移し、かつ base より先に
+  **コミット済み差分がある**ときだけ、`worktrees.pushBranch` で push → `PrAutomation.createPr`（`gh pr create
+  --draft --fill`）で **draft PR** を作成（1 セッション 1 回。`autoPrAttempted` で多重発火を防ぐ）。以降
+  `refreshPrs` の 20 秒ポーリングで、draft PR のチェックが緑（`PrAutomation.checks` = `passing`）になったら
+  `markReady`（`gh pr ready`）で ready 化する。`gh` 依存はすべて `utils/pr.ts` に隔離し、`PrAutomation` として
+  DI（失敗は best-effort でセッションに波及させない）。
+- **競合検知（自動解消しない）**: `WorktreeManager.merge` は競合時に競合ファイルを収集して
+  `merge --abort` した上で `MergeConflictError` を投げる（base ツリーは汚さない）。`SessionManager.merge` は
+  これを捕えて `session.markConflict(files)` → reducer が `status: 'conflict'` + `conflictFiles` を立てる。
+  **自動解消はしない**（`-X ours/theirs` 等でコードを無言に捨てない）。UI はバッジ表示のみで、解消は人手。
+  `conflict` は詳細ビューでも終端状態扱い（差分・操作を表示）で、破棄や再マージは一覧/詳細から可能。
 | 復元は「メタ + SDK resume」で、ログは永続しない | state.json を小さく保つ。会話履歴は SDK の resume が持つので二重管理しない。復元直後はアイドル表示、追加指示で継続 |
 | 復元セッションは遅延 resume（起動時に起こさない） | セッション毎に ~1GiB のサブプロセスを起動時に乱立させない。触られたものだけ起こす |
 | 終了は `abort()` ではなく `stop()`（quiet） | 実行中セッションを failed にせず resumable のまま保存するため（quit と「1件破棄」を区別） |
 | 通知の発火判定は純粋関数・遷移時のみ | テスト可能にし、ストリーミングの連続更新で鳴り続けるのを防ぐ。OS I/O は utils に隔離し best-effort |
 | 設定検証は `toConfig()` に集約・不正値は既定へ | 設定ミスで TUI をクラッシュさせない。SDK union は実行時リテラルで検証（型が変われば型エラー） |
 | 分離手段は git worktree | 同一リポジトリの並列作業では最軽量。ブランチがそのまま成果物になる。Docker 等はMVPではオーバーキル |
+| 競合は「検知のみ」で自動解消しない | 汎用的に安全なマージ競合の自動解消は存在しない（`-X ours/theirs` はコードを無言に捨てる）。可視化（`conflict` バッジ）に留め、解消は人手に委ねる |
+| PR は draft で作り、緑になってから ready 化 | チェックは PR が無いと走らない（鶏卵）。完成前に push→draft で足場を作り、`gh pr checks` が緑になった時点で ready へ。確定操作は自動でも“レビュー可能”状態までに留める |
+| origin 追従は作成時のみ（稼働中は pull しない） | 稼働中 worktree へ取り込むと未コミット変更と競合し得る。作成時に `origin/<base>` から切る安全な部分集合に限定 |
+| PR 自動化は `PrAutomation` として DI・best-effort | `gh` 未導入/未認証/オフラインでもセッションを壊さない。core は `gh` を直接知らず、`utils/pr.ts` に隔離 |
 | UI 文字列はカタログ集約 + 設定で言語切替 | 日本語/英語の利用者が混在する。ハードコードを排し、追加言語も `Lang`/`messages` 拡張だけで済む |
 | セッション = SDK `query()` 1本（サブプロセス1本） | SDK の設計単位に素直。プロセス分離により1セッションのクラッシュが他に波及しない |
 | streaming input を常用（単発 prompt を使わない） | 追加指示（F-6）と質問への回答（F-7）を同一機構で実現でき、セッションを開いたまま維持できる |

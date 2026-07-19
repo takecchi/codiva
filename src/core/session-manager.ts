@@ -7,17 +7,32 @@ import {
 import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
 import { initialState } from './status-reducer';
-import type { CreateSessionInput, PrInfo, SessionState } from './types';
-import type { DiffStat, Worktree } from './worktree';
+import type { CreateSessionInput, PrChecksState, PrInfo, SessionState } from './types';
+import { type DiffStat, MergeConflictError, type Worktree } from './worktree';
 
 /** The subset of WorktreeManager the SessionManager needs (for DI in tests). */
 export interface WorktreeService {
   baseBranch(): Promise<string>;
   takenSlugs(): Promise<Set<string>>;
-  add(slug: string): Promise<Worktree>;
+  add(slug: string, startPoint?: string): Promise<Worktree>;
+  syncedStartPoint(base: string): Promise<string | undefined>;
+  pushBranch(wt: Worktree): Promise<void>;
   diffStat(wt: Worktree, base: string): Promise<DiffStat>;
   merge(wt: Worktree, base: string): Promise<void>;
   remove(wt: Worktree, opts?: { force?: boolean }): Promise<void>;
+}
+
+/**
+ * GitHub PR automation seam (via `gh`), injected so the manager stays testable.
+ * All calls are best-effort at the call site; failures never break a session.
+ */
+export interface PrAutomation {
+  /** Open a draft PR for a pushed branch (or return the existing one). */
+  createPr(cwd: string, branch: string): Promise<PrInfo | undefined>;
+  /** Aggregate CI state of the PR's checks. */
+  checks(cwd: string, branch: string): Promise<PrChecksState>;
+  /** Flip a draft PR to ready-for-review. */
+  markReady(cwd: string, branch: string): Promise<void>;
 }
 
 /** The subset of Session the manager drives (for DI in tests). */
@@ -33,6 +48,7 @@ export interface SessionHandle {
   stop(): void;
   archive(): void;
   setPr(pr: PrInfo | undefined): void;
+  markConflict(files: string[]): void;
 }
 
 /** Look up the open PR for a branch (via `gh`), or undefined if there is none. */
@@ -68,6 +84,20 @@ export interface SessionManagerDeps {
   onModelChange?: (model: string | undefined) => void;
   /** Optional PR lookup (via `gh`); when set, refreshPrs() polls each live session's branch. */
   lookupPr?: PrLookup;
+  /**
+   * When true, sessions are created from the latest `origin/<base>` (fetched
+   * first) instead of the local HEAD. Falls back to local HEAD when there is no
+   * usable upstream. Default off unless wired (index.tsx defaults it on).
+   */
+  followOrigin?: boolean;
+  /**
+   * When true (and `prAutomation` is wired), a session that completes with
+   * committed changes is pushed and gets a draft PR; refreshPrs() then readies it
+   * once checks pass. Default off unless wired.
+   */
+  autoPr?: boolean;
+  /** PR automation seam (create/checks/ready via `gh`); required for autoPr. */
+  prAutomation?: PrAutomation;
   /** Factory for a session; defaults to constructing a real Session. `resume`/`restored` are set when rehydrating. */
   createSession?: (args: {
     input: CreateSessionInput;
@@ -93,6 +123,8 @@ export class SessionManager {
   private readonly sessions = new Map<string, SessionHandle>();
   private readonly worktreeMeta = new Map<string, { worktree: Worktree; base: string }>();
   private readonly usedSlugs = new Set<string>();
+  /** Sessions we've already attempted an auto-PR for (avoids repeat push/create). */
+  private readonly autoPrAttempted = new Set<string>();
   private snapshot: SessionState[] = [];
   private seq = 0;
   private mode: RunMode = 'auto';
@@ -196,7 +228,12 @@ export class SessionManager {
       const slug = uniqueSlug(makeSlug(prompt), taken);
       this.usedSlugs.add(slug);
       const base = await this.deps.worktrees.baseBranch();
-      const wt = await this.deps.worktrees.add(slug);
+      // Origin-follow: branch from the latest origin/<base> when enabled and
+      // available; syncedStartPoint returns undefined (→ local HEAD) otherwise.
+      const startPoint = this.deps.followOrigin
+        ? await this.deps.worktrees.syncedStartPoint(base).catch(() => undefined)
+        : undefined;
+      const wt = await this.deps.worktrees.add(slug, startPoint);
       this.worktreeMeta.set(id, { worktree: wt, base });
       const input: CreateSessionInput = {
         id,
@@ -235,8 +272,45 @@ export class SessionManager {
     this.states.set(id, state);
     if (prev && prev.status !== state.status) {
       this.deps.onTransition?.(prev, state);
+      // A turn finished — open a draft PR for the branch if auto-PR is on.
+      if (prev.status !== 'completed' && state.status === 'completed') {
+        void this.maybeAutoPr(id);
+      }
     }
     this.rebuild();
+  }
+
+  /**
+   * Best-effort auto-PR for a just-completed session: push the branch and open a
+   * draft PR (once per session). No-op unless autoPr + prAutomation are wired,
+   * the session already has a PR, or the branch has no committed changes to PR.
+   * refreshPrs() later flips the draft to ready when checks pass.
+   */
+  private async maybeAutoPr(id: string): Promise<void> {
+    if (!this.deps.autoPr || !this.deps.prAutomation || this.autoPrAttempted.has(id)) {
+      return;
+    }
+    const meta = this.worktreeMeta.get(id);
+    const state = this.states.get(id);
+    const session = this.sessions.get(id);
+    if (!meta || !state || !session || state.pr) {
+      return;
+    }
+    this.autoPrAttempted.add(id);
+    try {
+      const stat = await this.deps.worktrees.diffStat(meta.worktree, meta.base);
+      if (stat.committed.trim().length === 0) {
+        // Nothing committed ahead of base — there's nothing to open a PR for.
+        return;
+      }
+      await this.deps.worktrees.pushBranch(meta.worktree);
+      const pr = await this.deps.prAutomation.createPr(meta.worktree.path, state.branch);
+      if (pr) {
+        session.setPr(pr);
+      }
+    } catch {
+      // best-effort — a missing remote / `gh` / network issue must not disrupt the session
+    }
   }
 
   private rebuild(): void {
@@ -351,6 +425,11 @@ export class SessionManager {
       this.sessions.get(id)?.archive();
       return { ok: true };
     } catch (err) {
+      // A conflict is detected (not auto-resolved): flag the session so the list
+      // shows a `conflict` badge instead of only a transient error toast.
+      if (err instanceof MergeConflictError) {
+        this.sessions.get(id)?.markConflict(err.files);
+      }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
@@ -411,7 +490,16 @@ export class SessionManager {
           return;
         }
         try {
-          session.setPr(await lookup(meta.worktree.path, state.branch));
+          const pr = await lookup(meta.worktree.path, state.branch);
+          session.setPr(pr);
+          // Auto-ready: once a draft PR's checks pass, flip it to ready-for-review.
+          if (this.deps.autoPr && this.deps.prAutomation && pr?.isDraft) {
+            const checks = await this.deps.prAutomation.checks(meta.worktree.path, state.branch);
+            if (checks === 'passing') {
+              await this.deps.prAutomation.markReady(meta.worktree.path, state.branch);
+              session.setPr({ ...pr, isDraft: false });
+            }
+          }
         } catch {
           // best-effort — a missing `gh`, network hiccup, or auth issue is ignored
         }

@@ -364,14 +364,30 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       // No-op when unchanged so subscribers don't re-render on every poll.
       // mergeStatus is part of the identity: it flips (unknown → mergeable →
       // merged, or → conflicting) on the same PR and must repaint the glyph.
+      // isDraft likewise flips (draft → ready) and must repaint.
       if (
         state.pr?.number === event.pr?.number &&
         state.pr?.url === event.pr?.url &&
-        state.pr?.mergeStatus === event.pr?.mergeStatus
+        state.pr?.mergeStatus === event.pr?.mergeStatus &&
+        state.pr?.isDraft === event.pr?.isDraft
       ) {
         return state;
       }
       return { ...state, pr: event.pr };
+    }
+
+    case 'conflict': {
+      const summary =
+        event.files.length > 0 ? `merge conflict in ${event.files.join(', ')}` : 'merge conflict';
+      const withLog = appendLog(state, 'error', summary);
+      return {
+        ...state,
+        status: 'conflict',
+        conflictFiles: event.files,
+        streamingText: undefined,
+        messages: withLog.messages,
+        logSeq: withLog.logSeq,
+      };
     }
 
     case 'aborted': {

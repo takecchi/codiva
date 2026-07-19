@@ -11,6 +11,7 @@ import {
   WorktreeManager,
 } from '@/core';
 import {
+  createPr,
   createTitleGenerator,
   defaultStatePath,
   enableMouse,
@@ -18,8 +19,10 @@ import {
   loadConfig,
   loadState,
   lookupPr,
+  markPrReady,
   notify,
   openUrl,
+  prChecks,
   pruneMissingWorktrees,
   saveConfig,
   saveState,
@@ -38,7 +41,9 @@ async function main(): Promise<void> {
   const t = messages[lang];
 
   const repoRoot = process.cwd();
-  const worktrees = new WorktreeManager(repoRoot);
+  // `.gitignore` された node_modules/.env 等は git worktree に引き継がれないため、
+  // 既定でリポジトリルートから複製する（`"copyIgnored": false` で無効化）。
+  const worktrees = new WorktreeManager(repoRoot, { copyIgnored: config.copyIgnored !== false });
 
   try {
     await worktrees.preflight();
@@ -99,6 +104,14 @@ async function main(): Promise<void> {
     onPersist: schedulePersist,
     onModelChange: persistModel,
     lookupPr,
+    // origin 追従 / PR 自動化は既定 on。`"followOrigin": false` / `"autoPr": false` で無効化。
+    followOrigin: config.followOrigin !== false,
+    autoPr: config.autoPr !== false,
+    prAutomation: {
+      createPr: (cwd, branch) => createPr(cwd, branch),
+      checks: (cwd, branch) => prChecks(cwd, branch),
+      markReady: (cwd, branch) => markPrReady(cwd, branch),
+    },
   });
 
   // Restore sessions from a previous run (worktrees that still exist on disk).
