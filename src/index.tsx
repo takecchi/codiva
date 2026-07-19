@@ -4,11 +4,13 @@ import { render } from 'ink';
 import {
   type CodivaConfig,
   isFullscreenViewport,
+  type LogEntry,
   messages,
   notificationFor,
   resolveLang,
   SessionManager,
   type SessionState,
+  transcriptLogEntries,
   WorktreeManager,
 } from '@/core';
 import {
@@ -19,6 +21,7 @@ import {
   enterAltScreen,
   loadConfig,
   loadState,
+  loadTranscriptText,
   lookupPr,
   markPrReady,
   notify,
@@ -121,7 +124,20 @@ async function main(): Promise<void> {
   });
 
   // Restore sessions from a previous run (worktrees that still exist on disk).
-  manager.restore(pruneMissingWorktrees(await loadState(statePath)));
+  // The conversation log is rebuilt from each session's SDK transcript
+  // (~/.claude/projects/…): `resume` restores the model-side context only and
+  // never re-emits past messages, so without this the detail view starts empty.
+  const persisted = pruneMissingWorktrees(await loadState(statePath));
+  const histories = new Map<string, LogEntry[]>();
+  await Promise.all(
+    persisted.sessions.map(async (p) => {
+      const text = await loadTranscriptText(p.worktreePath, p.sdkSessionId);
+      if (text !== undefined) {
+        histories.set(p.id, transcriptLogEntries(text));
+      }
+    }),
+  );
+  manager.restore(persisted, histories);
 
   // Poll each live session's branch for an open PR so the list can show `#<n>`
   // (and let the user open it). Runs once now, then on an interval; unref'd so a

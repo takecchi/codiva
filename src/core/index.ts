@@ -16,5 +16,6 @@ export * from './session-manager';
 export * from './slug';
 export * from './status-reducer';
 export * from './text-buffer';
+export * from './transcript';
 export * from './types';
 export * from './worktree';

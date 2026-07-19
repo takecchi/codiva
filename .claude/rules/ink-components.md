@@ -62,7 +62,9 @@
 - 詳細ビューは**ステータスヘッダを持たない**。コンテンツ（ログ）+ フッタ（コンポーザ）だけにし、
   ログ用の縦幅を最大化する（一覧はヘッダ=Banner + コンテンツ + フッタだが、詳細はヘッダ抜き）。
 - ログは末尾ビューポート（`justifyContent="flex-end"` + `overflowY="hidden"`）に描き、`<Static>` は使わない
-  （全画面では画面外へ消えるため）。PgUp/PgDn とマウスホイールのスクロールは純関数 `core/scroll.ts`
+  （全画面では画面外へ消えるため）。スクロールの単位は**物理行**: エントリは `core/scroll.ts` の
+  `logLines`（CJK 幅対応の折返し）で `DisplayLine[]` へ展開してから window する。PgUp/PgDn と
+  マウスホイールのスクロールは純関数 `core/scroll.ts`
   （`logWindow`/`scrollUp`/`scrollDown`）に委譲し、移動量は可視ログ高さ（`logViewportRows`）／ホイールは
   `WHEEL_SCROLL_ROWS` から導く。**マウスホイールのレポート列は `parseSgrMouse` で useInput 先頭で先取り解釈**
   する（一覧と同じ）。これをしないとホイールのエスケープ列が生テキストとしてコンポーザへ入力されてしまう。
