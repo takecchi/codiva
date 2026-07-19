@@ -7,6 +7,7 @@ import {
   cursorRowCol,
   decodeKeySequence,
   emptyBuffer,
+  formatModel,
   INPUT_MAX_ROWS,
   indexAtRowCol,
   isCommandInput,
@@ -394,6 +395,13 @@ export const SessionList: FC<{
                   </Box>
                   <Box width={12}>
                     <ProgressBadge state={s} />
+                  </Box>
+                  {/* 各セッションが実際に走っているモデル（SDK 由来の解決済み値）。
+                      バナーの設定モデルと異なりうる。未取得なら空欄。 */}
+                  <Box width={11} marginRight={1}>
+                    <Text dimColor wrap="truncate-end">
+                      {formatModel(s.model) ?? ''}
+                    </Text>
                   </Box>
                   <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
                     <Text dimColor wrap="truncate-end">
