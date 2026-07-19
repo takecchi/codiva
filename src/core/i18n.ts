@@ -35,6 +35,10 @@ export interface Messages {
     busySuffix: string;
     /** session_id 未確定（creating 直後など）でまだ claude で開けない */
     openNotReady: string;
+    /** 一覧スクロール時、上に隠れている件数のインジケータ */
+    moreAbove: (n: number) => string;
+    /** 一覧スクロール時、下に隠れている件数のインジケータ */
+    moreBelow: (n: number) => string;
   };
   /** ステータスバッジ（progress-badge.tsx） */
   badge: {
@@ -71,12 +75,31 @@ export interface Messages {
   /** 起動バナー（banner.tsx） */
   banner: {
     subtitle: string;
+    /** 使用中モデルの表示（設定 model。未設定は CLI 既定）。 */
+    model: (name: string) => string;
+    /** model 未設定時に表示するプレースホルダ（CLI 既定）。 */
+    defaultModel: string;
   };
   /** 下部モード行（status-footer.tsx） */
   footer: {
     autoMode: string;
     confirmMode: string;
     cycleHint: string;
+  };
+  /** スラッシュコマンド（commands.ts / command-palette.tsx） */
+  command: {
+    /** 入力中に出るコマンドパレットの見出し */
+    paletteTitle: string;
+    /** 前方一致するコマンドが無いときの表示 */
+    paletteEmpty: string;
+    /** /help のヘルプ一覧の見出し */
+    helpTitle: string;
+    /** 未知のコマンドを打ったときのエラー */
+    unknown: (name: string) => string;
+    /** /help の説明 */
+    help: string;
+    /** /quit の説明 */
+    quit: string;
   };
 }
 
@@ -87,7 +110,8 @@ const ja: Messages = {
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
     helpComposer: 'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ Ctrl+C: 終了',
-    helpList: '↑↓: 選択 ・ Enter: claudeで開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
+    helpList:
+      '↑↓: 選択 ・ Enter: claudeで開く ・ p: PRを開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
     actionErrorLabel: '操作エラー',
     mergePrompt: 'ベースへマージします。',
@@ -95,6 +119,8 @@ const ja: Messages = {
     confirmRun: '実行しますか？',
     busySuffix: '…実行中',
     openNotReady: 'このセッションはまだ claude で開けません（セッションID未取得）',
+    moreAbove: (n) => `↑ 他 ${n} 件`,
+    moreBelow: (n) => `↓ 他 ${n} 件`,
   },
   badge: {
     creating: '準備中',
@@ -128,11 +154,21 @@ const ja: Messages = {
   },
   banner: {
     subtitle: '並列 Claude Code セッションを git worktree 上で実行',
+    model: (name) => `モデル: ${name}`,
+    defaultModel: 'CLI 既定',
   },
   footer: {
     autoMode: '自動モード',
     confirmMode: '確認モード',
     cycleHint: '(shift+tab で切替)',
+  },
+  command: {
+    paletteTitle: 'コマンド',
+    paletteEmpty: '一致するコマンドがありません',
+    helpTitle: '利用可能なコマンド',
+    unknown: (name) => (name ? `不明なコマンド: /${name}` : '不明なコマンドです'),
+    help: 'コマンド一覧を表示',
+    quit: 'codiva を終了',
   },
 };
 
@@ -143,7 +179,8 @@ const en: Messages = {
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
     helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · Ctrl+C: quit',
-    helpList: '↑↓: select · Enter: open in claude · m: merge · d: discard · Tab/Esc: input',
+    helpList:
+      '↑↓: select · Enter: open in claude · p: open PR · m: merge · d: discard · Tab/Esc: input',
     helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
     actionErrorLabel: 'Action error',
     mergePrompt: 'Merge into the base branch.',
@@ -151,6 +188,8 @@ const en: Messages = {
     confirmRun: 'Proceed?',
     busySuffix: '…running',
     openNotReady: 'This session cannot be opened in claude yet (no session id).',
+    moreAbove: (n) => `↑ ${n} more`,
+    moreBelow: (n) => `↓ ${n} more`,
   },
   badge: {
     creating: 'Preparing',
@@ -184,11 +223,21 @@ const en: Messages = {
   },
   banner: {
     subtitle: 'Parallel Claude Code sessions in git worktrees',
+    model: (name) => `model: ${name}`,
+    defaultModel: 'CLI default',
   },
   footer: {
     autoMode: 'auto mode on',
     confirmMode: 'confirm mode on',
     cycleHint: '(shift+tab to cycle)',
+  },
+  command: {
+    paletteTitle: 'Commands',
+    paletteEmpty: 'No matching command',
+    helpTitle: 'Available commands',
+    unknown: (name) => (name ? `Unknown command: /${name}` : 'Unknown command'),
+    help: 'Show available commands',
+    quit: 'Quit codiva',
   },
 };
 

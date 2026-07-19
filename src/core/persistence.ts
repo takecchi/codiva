@@ -22,6 +22,8 @@ export interface PersistedSession {
   startedAt: number;
   finishedAt?: number;
   totalCostUsd?: number;
+  /** Resolved model the session last ran on, so a restored row shows it before it resumes. */
+  model?: string;
   todos: TodoItem[];
 }
 
@@ -85,6 +87,7 @@ export function toPersistedSession(
     startedAt: state.startedAt,
     finishedAt: state.finishedAt,
     totalCostUsd: state.totalCostUsd,
+    model: state.model,
     todos: state.todos,
   };
 }
@@ -108,6 +111,7 @@ export function restoredSessionState(p: PersistedSession): SessionState {
     // ever-growing timer computed from an old startedAt.
     finishedAt: p.finishedAt ?? p.startedAt,
     totalCostUsd: p.totalCostUsd,
+    model: p.model,
     logSeq: 0,
   };
 }
@@ -182,6 +186,7 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
     startedAt: startedAt ?? 0,
     finishedAt: num(o.finishedAt),
     totalCostUsd: num(o.totalCostUsd),
+    model: str(o.model),
     todos,
   };
 }

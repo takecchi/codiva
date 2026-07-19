@@ -49,11 +49,12 @@ const LOGO_ROWS = LOGO.map((line, row) => ({
  * Borderless startup header echoing Claude Code's banner: the mascot on the left
  * and identity / subtitle / cwd on the right (vertically centered against it).
  */
-export const Banner: FC<{ cwd?: string; sessionCount: number; totalCostUsd?: number }> = ({
-  cwd,
-  sessionCount,
-  totalCostUsd = 0,
-}) => {
+export const Banner: FC<{
+  cwd?: string;
+  model?: string;
+  sessionCount: number;
+  totalCostUsd?: number;
+}> = ({ cwd, model, sessionCount, totalCostUsd = 0 }) => {
   const m = useMessages();
   return (
     <Box>
@@ -80,6 +81,7 @@ export const Banner: FC<{ cwd?: string; sessionCount: number; totalCostUsd?: num
           </Text>
         </Text>
         <Text dimColor>{m.banner.subtitle}</Text>
+        <Text dimColor>{m.banner.model(model ?? m.banner.defaultModel)}</Text>
         {cwd ? <Text dimColor>{cwd}</Text> : null}
       </Box>
     </Box>

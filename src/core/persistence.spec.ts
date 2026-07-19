@@ -65,6 +65,16 @@ describe('toPersistedSession', () => {
     });
   });
 
+  it('round-trips the resolved model through persist → restore', () => {
+    const s = state({ status: 'completed', sdkSessionId: 'sdk-1', model: 'claude-opus-4-8' });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' });
+    expect(persisted?.model).toBe('claude-opus-4-8');
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
+    expect(restoredSessionState(persisted!).model).toBe('claude-opus-4-8');
+    // and the JSON validator preserves it from untrusted input
+    expect(fromPersistedJson({ sessions: [persisted] }).sessions[0]?.model).toBe('claude-opus-4-8');
+  });
+
   it('maps an in-flight status to completed (resumable)', () => {
     const s = state({ status: 'running', sdkSessionId: 'sdk-9' });
     expect(toPersistedSession(s, { slug: 'x', base: 'main' })?.status).toBe('completed');

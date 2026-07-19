@@ -4,5 +4,7 @@ export * from './config';
 export * from './git';
 export * from './mouse';
 export * from './notify';
+export * from './open-url';
+export * from './pr';
 export * from './state-store';
 export * from './title';
