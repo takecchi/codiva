@@ -39,12 +39,23 @@ export interface LogEntry {
   timestamp?: number;
 }
 
+/**
+ * Merge state of a PR, shown as a glyph next to `#<number>`:
+ *  - `merged`      — already merged (fork mark)
+ *  - `mergeable`   — can be merged cleanly (check)
+ *  - `conflicting` — has conflicts, cannot merge (cross)
+ *  - `unknown`     — GitHub hasn't computed mergeability yet (no glyph)
+ */
+export type PrMergeStatus = 'merged' | 'mergeable' | 'conflicting' | 'unknown';
+
 /** A pull request opened for a session's branch (detected via `gh`). */
 export interface PrInfo {
   /** PR number, shown as `#<number>` in the list. */
   number: number;
   /** Web URL, opened in the browser on click / `p`. */
   url: string;
+  /** Whether the PR is merged / mergeable / conflicting; drives the status glyph. */
+  mergeStatus: PrMergeStatus;
   /** True while the PR is still a draft (auto-PR opens drafts, then readies on green checks). */
   isDraft?: boolean;
 }

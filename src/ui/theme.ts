@@ -63,4 +63,7 @@ export const glyph = {
   bullet: '⏺', // tool-use log line
   branch: '⎿', // tool-result continuation
   attention: '●', // session needs the user
+  merged: '⑂', // PR already merged (fork mark)
+  mergeable: '✓', // PR can be merged cleanly
+  conflicting: '✗', // PR has conflicts, cannot merge
 } as const;

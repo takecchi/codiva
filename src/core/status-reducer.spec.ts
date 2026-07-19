@@ -393,18 +393,39 @@ describe('reduce over streaming partial messages', () => {
     const s0 = initialState(BASE);
     expect(s0.pr).toBeUndefined();
 
-    const withPr = reduce(s0, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 1 });
-    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12' });
+    const withPr = reduce(s0, {
+      kind: 'pr',
+      pr: { number: 12, url: 'https://x/12', mergeStatus: 'unknown' },
+      at: 1,
+    });
+    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12', mergeStatus: 'unknown' });
 
     // Same PR again → same reference (no re-render on every poll).
-    expect(reduce(withPr, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 2 })).toBe(
-      withPr,
-    );
+    expect(
+      reduce(withPr, {
+        kind: 'pr',
+        pr: { number: 12, url: 'https://x/12', mergeStatus: 'unknown' },
+        at: 2,
+      }),
+    ).toBe(withPr);
+
+    // mergeStatus flipping on the same PR is a change → repaints the glyph.
+    expect(
+      reduce(withPr, {
+        kind: 'pr',
+        pr: { number: 12, url: 'https://x/12', mergeStatus: 'merged' },
+        at: 2,
+      }).pr?.mergeStatus,
+    ).toBe('merged');
 
     // A different PR replaces it; undefined clears it.
     expect(
-      reduce(withPr, { kind: 'pr', pr: { number: 13, url: 'https://x/13' }, at: 3 }).pr,
-    ).toEqual({ number: 13, url: 'https://x/13' });
+      reduce(withPr, {
+        kind: 'pr',
+        pr: { number: 13, url: 'https://x/13', mergeStatus: 'mergeable' },
+        at: 3,
+      }).pr,
+    ).toEqual({ number: 13, url: 'https://x/13', mergeStatus: 'mergeable' });
     expect(reduce(withPr, { kind: 'pr', pr: undefined, at: 4 }).pr).toBeUndefined();
     // Already undefined → same reference.
     expect(reduce(s0, { kind: 'pr', pr: undefined, at: 5 })).toBe(s0);
@@ -447,9 +468,13 @@ describe('pr event with isDraft', () => {
   it('re-renders when only the draft flag changes', () => {
     const draft: SessionState = {
       ...initialState(BASE),
-      pr: { number: 3, url: 'u', isDraft: true },
+      pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: true },
     };
-    const next = reduce(draft, { kind: 'pr', pr: { number: 3, url: 'u', isDraft: false }, at: 1 });
+    const next = reduce(draft, {
+      kind: 'pr',
+      pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: false },
+      at: 1,
+    });
     expect(next).not.toBe(draft);
     expect(next.pr?.isDraft).toBe(false);
   });
@@ -457,9 +482,13 @@ describe('pr event with isDraft', () => {
   it('no-ops when number, url and draft flag are unchanged', () => {
     const draft: SessionState = {
       ...initialState(BASE),
-      pr: { number: 3, url: 'u', isDraft: true },
+      pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: true },
     };
-    const next = reduce(draft, { kind: 'pr', pr: { number: 3, url: 'u', isDraft: true }, at: 1 });
+    const next = reduce(draft, {
+      kind: 'pr',
+      pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: true },
+      at: 1,
+    });
     expect(next).toBe(draft);
   });
 });

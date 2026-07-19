@@ -13,6 +13,7 @@ import {
   isFullscreenViewport,
   listView,
   matchCommands,
+  type PrMergeStatus,
   parseSgrMouse,
   runCommand,
   type SessionManager,
@@ -47,7 +48,26 @@ export type OpenPr = (url: string) => void;
  * sits flush at the right edge regardless of the responsive title/branch widths —
  * which lets mouse hit-testing locate it from the terminal width alone.
  */
-const PR_CELL_WIDTH = 8;
+const PR_CELL_WIDTH = 10;
+
+/**
+ * Glyph + color shown before `#<number>` for a PR's merge state (⑂ = merged,
+ * check = mergeable, cross = conflicting). GitHub-conventional colors: merged is
+ * violet, clean is green, conflicting is red. `unknown` (GitHub still computing)
+ * shows no glyph so the row stays quiet until the state is real.
+ */
+function prStatusBadge(status: PrMergeStatus): { char: string; color: string } | undefined {
+  switch (status) {
+    case 'merged':
+      return { char: glyph.merged, color: statusColor.external };
+    case 'mergeable':
+      return { char: glyph.mergeable, color: statusColor.completed };
+    case 'conflicting':
+      return { char: glyph.conflicting, color: statusColor.failed };
+    default:
+      return undefined;
+  }
+}
 
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
@@ -421,8 +441,14 @@ export const SessionList: FC<{
                       左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
                   <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
                     {s.pr ? (
-                      <Text color={theme.accent} underline>
-                        #{s.pr.number}
+                      <Text>
+                        {(() => {
+                          const badge = prStatusBadge(s.pr.mergeStatus);
+                          return badge ? <Text color={badge.color}>{badge.char} </Text> : null;
+                        })()}
+                        <Text color={theme.accent} underline>
+                          #{s.pr.number}
+                        </Text>
                       </Text>
                     ) : null}
                   </Box>

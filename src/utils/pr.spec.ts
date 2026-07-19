@@ -1,12 +1,38 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createPr, type ExecLike, lookupPr, markPrReady, prChecks } from './pr';
 
-/** stdout for the `gh pr view --json number,url` call. */
+/** stdout for a minimal `gh pr view` payload (number,url only → mergeStatus 'unknown'). */
 const ghPr = (number: number) =>
   JSON.stringify({ number, url: `https://github.com/o/r/pull/${number}` });
 
 describe('lookupPr', () => {
-  it('parses isDraft from `gh pr view --json number,url,isDraft`', async () => {
+  it('runs `gh pr view <branch> --json number,url,state,mergeable,isDraft` and parses it', async () => {
+    const exec = vi.fn<ExecLike>(async (file) =>
+      file === 'git'
+        ? { stdout: 'codiva/feature\n' }
+        : {
+            stdout: JSON.stringify({
+              number: 7,
+              url: 'https://github.com/o/r/pull/7',
+              state: 'OPEN',
+              mergeable: 'MERGEABLE',
+            }),
+          },
+    );
+    const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
+    expect(pr).toEqual({
+      number: 7,
+      url: 'https://github.com/o/r/pull/7',
+      mergeStatus: 'mergeable',
+    });
+    expect(exec).toHaveBeenCalledWith(
+      'gh',
+      ['pr', 'view', 'codiva/feature', '--json', 'number,url,state,mergeable,isDraft'],
+      { cwd: '/wt/a' },
+    );
+  });
+
+  it('parses isDraft from the pr view payload', async () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git'
         ? { stdout: 'codiva/feature\n' }
@@ -19,12 +45,36 @@ describe('lookupPr', () => {
           },
     );
     const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({ number: 7, url: 'https://github.com/o/r/pull/7', isDraft: true });
-    expect(exec).toHaveBeenCalledWith(
-      'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url,isDraft'],
-      { cwd: '/wt/a' },
+    expect(pr).toEqual({
+      number: 7,
+      url: 'https://github.com/o/r/pull/7',
+      mergeStatus: 'unknown',
+      isDraft: true,
+    });
+  });
+
+  it.each([
+    { state: 'MERGED', mergeable: 'UNKNOWN', expected: 'merged' },
+    { state: 'MERGED', mergeable: 'CONFLICTING', expected: 'merged' }, // state wins over stale mergeable
+    { state: 'OPEN', mergeable: 'MERGEABLE', expected: 'mergeable' },
+    { state: 'OPEN', mergeable: 'CONFLICTING', expected: 'conflicting' },
+    { state: 'OPEN', mergeable: 'UNKNOWN', expected: 'unknown' },
+    { state: 'CLOSED', mergeable: 'UNKNOWN', expected: 'unknown' },
+  ] as const)('maps state=$state mergeable=$mergeable → $expected', async (c) => {
+    const exec = vi.fn<ExecLike>(async (file) =>
+      file === 'git'
+        ? { stdout: 'codiva/x\n' }
+        : {
+            stdout: JSON.stringify({
+              number: 1,
+              url: 'https://x/1',
+              state: c.state,
+              mergeable: c.mergeable,
+            }),
+          },
     );
+    const pr = await lookupPr('/wt', 'codiva/x', exec);
+    expect(pr?.mergeStatus).toBe(c.expected);
   });
 
   it('omits isDraft when the field is absent', async () => {
@@ -36,6 +86,7 @@ describe('lookupPr', () => {
     await expect(lookupPr('/wt/a', 'codiva/x', exec)).resolves.toEqual({
       number: 7,
       url: 'https://github.com/o/r/pull/7',
+      mergeStatus: 'unknown',
     });
   });
 
@@ -46,13 +97,17 @@ describe('lookupPr', () => {
       file === 'git' ? { stdout: 'feat/new-thing\n' } : { stdout: ghPr(7) },
     );
     const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({ number: 7, url: 'https://github.com/o/r/pull/7' });
+    expect(pr).toEqual({
+      number: 7,
+      url: 'https://github.com/o/r/pull/7',
+      mergeStatus: 'unknown',
+    });
     expect(exec).toHaveBeenCalledWith('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: '/wt/a',
     });
     expect(exec).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'view', 'feat/new-thing', '--json', 'number,url,isDraft'],
+      ['pr', 'view', 'feat/new-thing', '--json', 'number,url,state,mergeable,isDraft'],
       { cwd: '/wt/a' },
     );
   });
@@ -64,10 +119,14 @@ describe('lookupPr', () => {
       return { stdout: ghPr(5) };
     });
     const pr = await lookupPr('/wt', 'codiva/feature', exec);
-    expect(pr).toEqual({ number: 5, url: 'https://github.com/o/r/pull/5' });
+    expect(pr).toEqual({
+      number: 5,
+      url: 'https://github.com/o/r/pull/5',
+      mergeStatus: 'unknown',
+    });
     expect(exec).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url,isDraft'],
+      ['pr', 'view', 'codiva/feature', '--json', 'number,url,state,mergeable,isDraft'],
       { cwd: '/wt' },
     );
   });
@@ -77,7 +136,11 @@ describe('lookupPr', () => {
       file === 'git' ? { stdout: 'codiva/feature\n' } : { stdout: ghPr(3) },
     );
     const pr = await lookupPr('/wt', 'codiva/feature', exec);
-    expect(pr).toEqual({ number: 3, url: 'https://github.com/o/r/pull/3' });
+    expect(pr).toEqual({
+      number: 3,
+      url: 'https://github.com/o/r/pull/3',
+      mergeStatus: 'unknown',
+    });
     const ghCalls = exec.mock.calls.filter(([file]) => file === 'gh');
     expect(ghCalls).toHaveLength(1);
   });
@@ -88,10 +151,14 @@ describe('lookupPr', () => {
       return { stdout: ghPr(7) };
     });
     const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({ number: 7, url: 'https://github.com/o/r/pull/7' });
+    expect(pr).toEqual({
+      number: 7,
+      url: 'https://github.com/o/r/pull/7',
+      mergeStatus: 'unknown',
+    });
     expect(exec).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url,isDraft'],
+      ['pr', 'view', 'codiva/feature', '--json', 'number,url,state,mergeable,isDraft'],
       { cwd: '/wt/a' },
     );
   });
@@ -101,10 +168,14 @@ describe('lookupPr', () => {
       file === 'git' ? { stdout: 'HEAD\n' } : { stdout: ghPr(9) },
     );
     const pr = await lookupPr('/wt', 'codiva/x', exec);
-    expect(pr).toEqual({ number: 9, url: 'https://github.com/o/r/pull/9' });
+    expect(pr).toEqual({
+      number: 9,
+      url: 'https://github.com/o/r/pull/9',
+      mergeStatus: 'unknown',
+    });
     expect(exec).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'view', 'codiva/x', '--json', 'number,url,isDraft'],
+      ['pr', 'view', 'codiva/x', '--json', 'number,url,state,mergeable,isDraft'],
       { cwd: '/wt' },
     );
   });
@@ -143,7 +214,12 @@ describe('createPr', () => {
       };
     });
     const pr = await createPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({ number: 9, url: 'https://github.com/o/r/pull/9', isDraft: true });
+    expect(pr).toEqual({
+      number: 9,
+      url: 'https://github.com/o/r/pull/9',
+      mergeStatus: 'unknown',
+      isDraft: true,
+    });
     expect(calls[0]).toEqual(['pr', 'create', '--draft', '--fill', '--head', 'codiva/feature']);
   });
 
@@ -157,6 +233,7 @@ describe('createPr', () => {
     await expect(createPr('/wt', 'codiva/x', exec)).resolves.toEqual({
       number: 4,
       url: 'u',
+      mergeStatus: 'unknown',
       isDraft: false,
     });
   });

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { PrChecksState, PrInfo } from '@/core';
+import type { PrChecksState, PrInfo, PrMergeStatus } from '@/core';
 
 const execFileAsync = promisify(execFile);
 
@@ -11,11 +11,32 @@ export type ExecLike = (
   opts: { cwd: string },
 ) => Promise<{ stdout: string }>;
 
-/** Shape of the `gh pr view --json number,url,isDraft` payload we care about. */
+/** Shape of the `gh pr view --json number,url,state,mergeable,isDraft` payload we care about. */
 interface PrViewJson {
   number?: unknown;
   url?: unknown;
+  /** `OPEN` | `MERGED` | `CLOSED`. */
+  state?: unknown;
+  /** `MERGEABLE` | `CONFLICTING` | `UNKNOWN`. */
+  mergeable?: unknown;
   isDraft?: unknown;
+}
+
+/**
+ * Map GitHub's `state` / `mergeable` into our glyph-driving status. `state`
+ * wins: a merged PR is `merged` regardless of the (stale) mergeable value.
+ */
+function toMergeStatus(state: unknown, mergeable: unknown): PrMergeStatus {
+  if (state === 'MERGED') {
+    return 'merged';
+  }
+  if (mergeable === 'MERGEABLE') {
+    return 'mergeable';
+  }
+  if (mergeable === 'CONFLICTING') {
+    return 'conflicting';
+  }
+  return 'unknown';
 }
 
 function toPrInfo(stdout: string): PrInfo | undefined {
@@ -25,9 +46,10 @@ function toPrInfo(stdout: string): PrInfo | undefined {
   if (number === undefined || url === undefined) {
     return undefined;
   }
+  const mergeStatus = toMergeStatus(json.state, json.mergeable);
   return typeof json.isDraft === 'boolean'
-    ? { number, url, isDraft: json.isDraft }
-    : { number, url };
+    ? { number, url, mergeStatus, isDraft: json.isDraft }
+    : { number, url, mergeStatus };
 }
 
 /**
@@ -53,9 +75,11 @@ async function currentBranch(cwd: string, exec: ExecLike): Promise<string | unde
 
 async function viewPr(cwd: string, branch: string, exec: ExecLike): Promise<PrInfo | undefined> {
   try {
-    const { stdout } = await exec('gh', ['pr', 'view', branch, '--json', 'number,url,isDraft'], {
-      cwd,
-    });
+    const { stdout } = await exec(
+      'gh',
+      ['pr', 'view', branch, '--json', 'number,url,state,mergeable,isDraft'],
+      { cwd },
+    );
     return toPrInfo(stdout);
   } catch {
     return undefined;

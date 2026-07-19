@@ -362,9 +362,13 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
 
     case 'pr': {
       // No-op when unchanged so subscribers don't re-render on every poll.
+      // mergeStatus is part of the identity: it flips (unknown → mergeable →
+      // merged, or → conflicting) on the same PR and must repaint the glyph.
+      // isDraft likewise flips (draft → ready) and must repaint.
       if (
         state.pr?.number === event.pr?.number &&
         state.pr?.url === event.pr?.url &&
+        state.pr?.mergeStatus === event.pr?.mergeStatus &&
         state.pr?.isDraft === event.pr?.isDraft
       ) {
         return state;

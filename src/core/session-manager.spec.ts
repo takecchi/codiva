@@ -511,7 +511,9 @@ describe('SessionManager', () => {
   describe('refreshPrs (gh PR detection)', () => {
     it('looks up each live session by worktree path + branch and feeds setPr', async () => {
       const lookupPr = vi.fn(async (_cwd: string, branch: string) =>
-        branch === 'codiva/feature' ? { number: 42, url: 'https://x/pr/42' } : undefined,
+        branch === 'codiva/feature'
+          ? { number: 42, url: 'https://x/pr/42', mergeStatus: 'mergeable' as const }
+          : undefined,
       );
       const created: FakeSession[] = [];
       const manager = new SessionManager({
@@ -531,7 +533,11 @@ describe('SessionManager', () => {
       await flush();
       await manager.refreshPrs();
       expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
-      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 42, url: 'https://x/pr/42' });
+      expect(manager.getSnapshot()[0]?.pr).toEqual({
+        number: 42,
+        url: 'https://x/pr/42',
+        mergeStatus: 'mergeable',
+      });
       expect(created[0]?.calls).toContain('setPr:#42');
     });
 
@@ -570,7 +576,12 @@ describe('SessionManager', () => {
     });
 
     it('readies a draft PR once its checks pass (auto-ready)', async () => {
-      const lookupPr = vi.fn(async () => ({ number: 5, url: 'u', isDraft: true }));
+      const lookupPr = vi.fn(async () => ({
+        number: 5,
+        url: 'u',
+        mergeStatus: 'unknown' as const,
+        isDraft: true,
+      }));
       const prAutomation: PrAutomation = {
         createPr: vi.fn(async () => undefined),
         checks: vi.fn(async () => 'passing' as const),
@@ -596,11 +607,21 @@ describe('SessionManager', () => {
       await flush();
       await manager.refreshPrs();
       expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
-      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 5, url: 'u', isDraft: false });
+      expect(manager.getSnapshot()[0]?.pr).toEqual({
+        number: 5,
+        url: 'u',
+        mergeStatus: 'unknown',
+        isDraft: false,
+      });
     });
 
     it('does not ready a draft PR while checks are pending', async () => {
-      const lookupPr = vi.fn(async () => ({ number: 5, url: 'u', isDraft: true }));
+      const lookupPr = vi.fn(async () => ({
+        number: 5,
+        url: 'u',
+        mergeStatus: 'unknown' as const,
+        isDraft: true,
+      }));
       const prAutomation: PrAutomation = {
         createPr: vi.fn(async () => undefined),
         checks: vi.fn(async () => 'pending' as const),
@@ -671,7 +692,12 @@ describe('SessionManager', () => {
   describe('autoPr (draft PR on completion)', () => {
     function autoPrManager(over: Partial<WorktreeService> = {}) {
       const pushBranch = vi.fn(async () => {});
-      const createPr = vi.fn(async () => ({ number: 8, url: 'u', isDraft: true }));
+      const createPr = vi.fn(async () => ({
+        number: 8,
+        url: 'u',
+        mergeStatus: 'unknown' as const,
+        isDraft: true,
+      }));
       const prAutomation: PrAutomation = {
         createPr,
         checks: async () => 'none',
@@ -707,7 +733,12 @@ describe('SessionManager', () => {
       await flush();
       expect(pushBranch).toHaveBeenCalledTimes(1);
       expect(createPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
-      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 8, url: 'u', isDraft: true });
+      expect(manager.getSnapshot()[0]?.pr).toEqual({
+        number: 8,
+        url: 'u',
+        mergeStatus: 'unknown',
+        isDraft: true,
+      });
     });
 
     it('skips PR creation when there are no committed changes', async () => {
