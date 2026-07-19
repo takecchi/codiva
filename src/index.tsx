@@ -195,19 +195,9 @@ async function main(): Promise<void> {
   }
   await saveState(manager.persistableState(), statePath).catch(() => undefined);
 
-  // 終了メッセージは alt screen を抜けてから書き、通常バッファ（シェルの履歴）に残す。
+  // alt screen を抜けて通常バッファ（シェルの履歴）へ戻す。
   disableMouse?.();
   leaveAltScreen?.();
-
-  // Sessions are aborted on quit but their worktrees are intentionally kept so
-  // no work is lost. Tell the user where they are.
-  const remaining = manager.activeWorktreePaths();
-  if (remaining.length > 0) {
-    process.stdout.write(`\n${t.app.remainingWorktrees(remaining.length)}\n`);
-    for (const path of remaining) {
-      process.stdout.write(`  ${path}\n`);
-    }
-  }
 }
 
 await main();

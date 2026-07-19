@@ -87,6 +87,5 @@ describe('message catalogs', () => {
     expect(m.permission.toolTitle('Bash')).toContain('Bash');
     expect(m.permission.questionHelp(true)).toContain('Space');
     expect(m.permission.questionHelp(false)).not.toContain('Space');
-    expect(m.app.remainingWorktrees(2)).toContain('2');
   });
 });
