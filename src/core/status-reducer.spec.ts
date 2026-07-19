@@ -331,6 +331,65 @@ describe('reduce over synthetic SDK messages', () => {
   });
 });
 
+describe('reduce over rate-limit signals', () => {
+  const running: SessionState = { ...initialState(BASE), status: 'running' };
+
+  it('a rejected rate_limit_event stops the session as rate_limited with its reset time', () => {
+    const state = sdk(running, {
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 4242, rateLimitType: 'five_hour' },
+    });
+    expect(state.status).toBe('rate_limited');
+    expect(state.rateLimitResetsAt).toBe(4242);
+    expect(state.finishedAt).toBeGreaterThan(0);
+    expect(state.streamingText).toBeUndefined();
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'system' });
+  });
+
+  it('an allowed / warning rate_limit_event leaves state untouched', () => {
+    expect(sdk(running, { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } })).toBe(
+      running,
+    );
+    expect(
+      sdk(running, { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning' } }),
+    ).toBe(running);
+  });
+
+  it("an assistant message with error 'rate_limit' flips to rate_limited", () => {
+    const state = sdk(running, {
+      type: 'assistant',
+      error: 'rate_limit',
+      message: { content: [] },
+    });
+    expect(state.status).toBe('rate_limited');
+  });
+
+  it('a usage-limit result is rate_limited, not failed', () => {
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      result: "You've reached your usage limit. Try again later.",
+      total_cost_usd: 0.5,
+    });
+    expect(state.status).toBe('rate_limited');
+    expect(state.totalCostUsd).toBe(0.5);
+  });
+
+  it('an aborted event carrying a rate-limit error is rate_limited, not failed', () => {
+    const state = reduce(running, {
+      kind: 'aborted',
+      error: "Error: You've hit your limit",
+      at: 5000,
+    });
+    expect(state.status).toBe('rate_limited');
+  });
+
+  it('a genuine (non-limit) error still fails', () => {
+    const state = reduce(running, { kind: 'aborted', error: 'connection reset', at: 5000 });
+    expect(state.status).toBe('failed');
+  });
+});
+
 /** A partial-assistant stream_event (from includePartialMessages). */
 function streamText(text: string) {
   return {

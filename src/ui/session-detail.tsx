@@ -41,7 +41,14 @@ const LOG: Record<LogEntry['kind'], { prefix: string; color?: string; dim?: bool
   error: { prefix: '✗ ', color: 'red' },
 };
 
-const TERMINAL = new Set(['completed', 'interrupted', 'failed', 'conflict', 'archived']);
+const TERMINAL = new Set([
+  'completed',
+  'interrupted',
+  'rate_limited',
+  'failed',
+  'conflict',
+  'archived',
+]);
 
 /** The live-typing preview: the last non-empty line of the streamed text so far. */
 function streamTail(text: string): string {

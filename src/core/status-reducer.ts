@@ -1,3 +1,4 @@
+import { USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
 import { makeTitle } from './slug';
 import type {
   CodivaEvent,
@@ -8,6 +9,19 @@ import type {
   TaskStatus,
   TodoItem,
 } from './types';
+
+/**
+ * True when an error/result string signals a genuine usage- or rate-limit stop
+ * (rather than an ordinary failure). We match the SDK's own `getLimitReachedText`
+ * prefixes so we stay in sync with the CLI wording, plus a loose "rate limit" /
+ * "usage limit" fallback for messages that arrive wrapped (e.g. `Error: …`).
+ */
+export function isRateLimitError(text: string): boolean {
+  return (
+    USAGE_LIMIT_ERROR_PREFIXES.some((p) => text.includes(p)) ||
+    /rate.?limit|usage limit/i.test(text)
+  );
+}
 
 /** Minimal shapes we read out of the (loosely-typed) SDK content blocks. */
 interface TextBlock {
@@ -60,6 +74,30 @@ function appendLog(
   const seq = state.logSeq + 1;
   const entry: LogEntry = { seq, kind, text, timestamp };
   return { messages: [...state.messages, entry], logSeq: seq };
+}
+
+/**
+ * Transition into the `rate_limited` state: the session stopped because a usage/
+ * rate limit was hit. Idle & resumable once the limit resets (like a completed
+ * turn, it can receive more input) — but flagged distinctly so the user sees it
+ * wasn't a clean finish and can wait for the reset. Records the reason in the log.
+ */
+function toRateLimited(
+  state: SessionState,
+  at: number,
+  detail: string,
+  resetsAt?: number,
+): SessionState {
+  const withLog = appendLog(state, 'system', detail);
+  return {
+    ...state,
+    status: 'rate_limited',
+    finishedAt: at,
+    rateLimitResetsAt: resetsAt,
+    streamingText: undefined,
+    messages: withLog.messages,
+    logSeq: withLog.logSeq,
+  };
 }
 
 function asString(v: unknown): string {
@@ -271,7 +309,22 @@ function reduceSdk(
     return state;
   }
 
+  if (type === 'rate_limit_event') {
+    // Structured signal: `rejected` means requests are being turned away — the
+    // session is blocked. `allowed` / `allowed_warning` are informational (still
+    // serving), so they leave state untouched.
+    const info = message.rate_limit_info as { status?: string; resetsAt?: number } | undefined;
+    if (info?.status === 'rejected') {
+      return toRateLimited(state, at, 'rate limit reached', info.resetsAt);
+    }
+    return state;
+  }
+
   if (type === 'assistant') {
+    // The turn was rejected by a rate/usage limit (top-level SDK error field).
+    if (message.error === 'rate_limit') {
+      return toRateLimited(state, at, 'rate limit reached');
+    }
     return reduceAssistant(state, message);
   }
 
@@ -303,6 +356,12 @@ function reduceSdk(
       };
     }
     const error = String(message.subtype ?? 'error');
+    const resultText = asString(message.result);
+    // A usage/rate-limit stop is not a real failure — surface it distinctly so
+    // the user can wait for the reset and resume rather than treating it as an error.
+    if (isRateLimitError(error) || isRateLimitError(resultText)) {
+      return { ...toRateLimited(state, at, resultText || error), totalCostUsd: cost };
+    }
     const withLog = appendLog(state, 'error', error);
     return {
       ...state,
@@ -405,6 +464,11 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
 
     case 'aborted': {
       const error = event.error ?? 'aborted';
+      // A rate/usage limit can surface as a thrown error (caught in consume) —
+      // classify it as rate_limited rather than a generic failure.
+      if (isRateLimitError(error)) {
+        return toRateLimited(state, event.at, error);
+      }
       const withLog = appendLog(state, 'error', error);
       return {
         ...state,

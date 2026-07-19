@@ -86,11 +86,13 @@ codiva/
  running ──(result 受信 & 質問で終了)────────▶ awaiting_input
  running ──(result 受信 & 正常終了)──────────▶ completed
  running ──(result subtype がエラー系)───────▶ failed
+ running ──(レート制限に到達)─────────────────▶ rate_limited # rate_limit_event(rejected) / error='rate_limit' / usage-limit result・throw
  awaiting_input ──(追加指示送信)─────────────▶ running
  completed ──(追加指示送信)─────────────────▶ running   # 完了後の追加作業も許す
  * ──(query の throw / abort)──────────────▶ failed
  completed ──(マージ or 破棄)────────────────▶ archived
  running/awaiting_* ──(アプリ終了 → 保存)────▶ interrupted # メモリ上は状態不変。保存時に丸める（restorableStatus）
+ rate_limited ──(アプリ終了 → 保存)──────────▶ interrupted # 制限は一時的。復元時は resumable な interrupted に丸める
  interrupted ──(追加指示送信で resume)───────▶ running
 ```
 
@@ -98,6 +100,12 @@ codiva/
 はメモリ上の状態を変えないが、保存時に `restorableStatus` が `running`/`awaiting_*` を
 `interrupted` に丸める（正常終了した `completed` とは区別する）。復元後は `completed` と同じく
 idle で resumable、追加指示で resume できる。
+
+`rate_limited` は「使用量／レート制限に達して止まった」セッションを表す。`completed`/`failed` と同じく
+idle だが、エラー扱い（`failed`）にはせず「制限が解けるのを待って再開できる」状態として区別する。
+検知元は SDK の `rate_limit_event`（`rate_limit_info.status === 'rejected'`）、assistant メッセージの
+`error === 'rate_limit'`、および usage-limit を示す `result`／throw されたエラー文言（`isRateLimitError`。
+SDK の `USAGE_LIMIT_ERROR_PREFIXES` に追従）。制限は一時的なので保存時は `interrupted` に丸める。
 
 `SessionState`（UI が購読する不変スナップショット）:
 

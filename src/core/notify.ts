@@ -15,6 +15,8 @@ function labelFor(status: SessionStatus, m: Messages): string | undefined {
       return m.notify.needsPermission;
     case 'completed':
       return m.notify.completed;
+    case 'rate_limited':
+      return m.notify.rateLimited;
     case 'failed':
       return m.notify.failed;
     default:

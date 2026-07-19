@@ -72,6 +72,7 @@ export interface Messages {
     awaitingInput: string;
     completed: string;
     interrupted: string;
+    rateLimited: string;
     failed: string;
     conflict: string;
     archived: string;
@@ -105,6 +106,7 @@ export interface Messages {
     needsInput: string;
     needsPermission: string;
     completed: string;
+    rateLimited: string;
     failed: string;
   };
   /** 起動バナー（banner.tsx） */
@@ -188,6 +190,7 @@ const ja: Messages = {
     awaitingInput: '質問あり',
     completed: '完了',
     interrupted: '中断',
+    rateLimited: 'レート制限',
     failed: '失敗',
     conflict: 'コンフリクト',
     archived: '保管済み',
@@ -225,6 +228,7 @@ const ja: Messages = {
     needsInput: '質問があります',
     needsPermission: '許可を待っています',
     completed: '完了しました',
+    rateLimited: 'レート制限に達しました',
     failed: '失敗しました',
   },
   banner: {
@@ -296,6 +300,7 @@ const en: Messages = {
     awaitingInput: 'Question',
     completed: 'Completed',
     interrupted: 'Interrupted',
+    rateLimited: 'Rate limited',
     failed: 'Failed',
     conflict: 'Conflict',
     archived: 'Archived',
@@ -333,6 +338,7 @@ const en: Messages = {
     needsInput: 'Needs your input',
     needsPermission: 'Awaiting permission',
     completed: 'Completed',
+    rateLimited: 'Rate limit reached',
     failed: 'Failed',
   },
   banner: {

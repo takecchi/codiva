@@ -60,6 +60,10 @@ export function restorableStatus(
       return 'completed';
     case 'interrupted':
       return 'interrupted';
+    // A rate limit is transient — by the time the app restarts the limit may
+    // have reset, so restore it as a plain resumable (idle) session.
+    case 'rate_limited':
+      return 'interrupted';
     case 'failed':
       return 'failed';
     default:

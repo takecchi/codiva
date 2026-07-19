@@ -25,6 +25,7 @@ describe('notificationFor', () => {
     ['awaiting_input', '質問があります'],
     ['awaiting_permission', '許可を待っています'],
     ['completed', '完了しました'],
+    ['rate_limited', 'レート制限に達しました'],
     ['failed', '失敗しました'],
   ])('notifies on transition into %s', (status, label) => {
     const spec = notificationFor(withStatus('running'), withStatus(status), m);
