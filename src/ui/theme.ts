@@ -34,6 +34,7 @@ export const statusColor = {
   awaitingPermission: '#e0a13c', // amber — needs a decision (allow/deny)
   awaitingInput: '#e12885', // pink — needs your answer (matches brand pop)
   completed: '#35c46b', // green — success
+  interrupted: '#c9a227', // muted gold — stopped mid-run, resumable (not a clean finish)
   failed: '#f0524b', // red — error
   external: '#a878f0', // violet — handed off to the claude CLI
   archived: '#6b7280', // muted gray — done / inactive

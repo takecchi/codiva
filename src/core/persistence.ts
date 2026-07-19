@@ -18,7 +18,7 @@ export interface PersistedSession {
   /** SDK session id for `resume`. Always present — only sessions that reached init (and are thus truly resumable) are persisted. */
   sdkSessionId: string;
   /** Only idle/terminal states are restorable (see restorableStatus). */
-  status: 'completed' | 'failed';
+  status: 'completed' | 'interrupted' | 'failed';
   startedAt: number;
   finishedAt?: number;
   totalCostUsd?: number;
@@ -40,16 +40,24 @@ export function emptyPersistedState(): PersistedState {
 /**
  * Map a live status to what it should be restored as, or undefined if the session
  * shouldn't be persisted at all. In-flight states (running / awaiting_*) come back
- * as `completed` — an idle, resumable session the user can send a follow-up to.
- * `archived` (merged/discarded) and `creating` (no worktree yet) are dropped.
+ * as `interrupted` — an idle, resumable session the user can send a follow-up to,
+ * but flagged so it's distinguishable from a turn that actually ran to completion
+ * (closing the app mid-run is not the same as a finished result). A genuine
+ * `completed` stays `completed`. `archived` (merged/discarded) and `creating` (no
+ * worktree yet) are dropped.
  */
-export function restorableStatus(status: SessionStatus): 'completed' | 'failed' | undefined {
+export function restorableStatus(
+  status: SessionStatus,
+): 'completed' | 'interrupted' | 'failed' | undefined {
   switch (status) {
     case 'running':
     case 'awaiting_permission':
     case 'awaiting_input':
+      return 'interrupted';
     case 'completed':
       return 'completed';
+    case 'interrupted':
+      return 'interrupted';
     case 'failed':
       return 'failed';
     default:
@@ -104,7 +112,7 @@ export function restoredSessionState(p: PersistedSession): SessionState {
     messages: [],
     sdkSessionId: p.sdkSessionId,
     startedAt: p.startedAt,
-    // In-flight sessions persisted as `completed` have no finishedAt; freeze the
+    // In-flight sessions persisted as `interrupted` have no finishedAt; freeze the
     // elapsed clock at startedAt so a restored (idle) row doesn't show an
     // ever-growing timer computed from an old startedAt.
     finishedAt: p.finishedAt ?? p.startedAt,
@@ -156,7 +164,10 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
   const worktreePath = str(o.worktreePath);
   const base = str(o.base);
   const sdkSessionId = str(o.sdkSessionId);
-  const status = o.status === 'completed' || o.status === 'failed' ? o.status : undefined;
+  const status =
+    o.status === 'completed' || o.status === 'interrupted' || o.status === 'failed'
+      ? o.status
+      : undefined;
   const startedAt = num(o.startedAt);
   // These are the minimum needed to rebuild + resume a session. sdkSessionId is
   // required — a persisted session without it can't be resumed (see toPersistedSession).
