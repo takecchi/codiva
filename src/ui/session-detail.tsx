@@ -16,7 +16,7 @@ import {
 } from '@/core';
 import { useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
-import { editText, resolveEnter } from './input';
+import { editText, normalizeChord, resolveEnter } from './input';
 import { PermissionDialog } from './permission-dialog';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
@@ -132,11 +132,11 @@ export const SessionDetail: FC<{
 
   const total = session?.messages.length ?? 0;
 
-  useInput((input, key) => {
+  useInput((rawInput, rawKey) => {
     // SGR マウスレポートはキー入力より先に解釈する。これをしないと（マウス有効時に）
     // ホイールスクロールのエスケープ列が生テキストとして editText に流れ込み、
     // 「スクロールしようとすると文字が入力される」バグになる（一覧の useInput と同じ対策）。
-    const mouse = parseSgrMouse(input);
+    const mouse = parseSgrMouse(rawInput);
     if (mouse) {
       if (mouse.kind === 'wheel') {
         setAnchor((a) =>
@@ -147,6 +147,10 @@ export const SessionDetail: FC<{
       }
       return; // press/release はログビューでは無視（クリック操作はない）
     }
+    // Shift+Enter 等の修飾キーは modifyOtherKeys / CSI-u エスケープで届き、Ink は
+    // 生テキストとして渡す。一覧と同じ共通ヘルパーで実キーへ復号し、Enter/改行/
+    // Tab/Esc の挙動を両画面で揃える（詳細で Shift+Enter が改行にならない不具合対策）。
+    const { input, key } = normalizeChord(rawInput, rawKey);
     if (key.escape) {
       if (confirm) {
         setConfirm(null);

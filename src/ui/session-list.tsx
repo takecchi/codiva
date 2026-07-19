@@ -1,11 +1,10 @@
-import { Box, type DOMElement, type Key, Text, useInput, useWindowSize } from 'ink';
+import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   bufferLines,
   bufferOf,
   COMMANDS,
   cursorRowCol,
-  decodeKeySequence,
   emptyBuffer,
   formatModel,
   INPUT_MAX_ROWS,
@@ -26,7 +25,13 @@ import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
 import { useAbsolutePosition, useBoxHeight, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
-import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
+import {
+  caretIndexForColumn,
+  editText,
+  formatElapsed,
+  normalizeChord,
+  resolveEnter,
+} from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
@@ -218,22 +223,9 @@ export const SessionList: FC<{
       return;
     }
     // Shift+Enter 等の修飾キーは modifyOtherKeys / CSI-u エスケープ（`[27;2;13~`）
-    // で届く。Ink はこれを解釈できず生テキストとして渡すため、ここで実キーへ
-    // 復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
-    const chord = decodeKeySequence(rawInput);
-    const key: Key = chord
-      ? {
-          ...rawKey,
-          shift: chord.shift,
-          ctrl: chord.ctrl,
-          meta: chord.meta,
-          return: chord.kind === 'return',
-          tab: chord.kind === 'tab',
-          escape: chord.kind === 'escape',
-          backspace: chord.kind === 'backspace',
-        }
-      : rawKey;
-    const input = chord ? (chord.kind === 'text' ? chord.text : '') : rawInput;
+    // で届く。Ink はこれを解釈できず生テキストとして渡すため、共通ヘルパーで
+    // 実キーへ復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
+    const { input, key } = normalizeChord(rawInput, rawKey);
     if (key.ctrl && input === 'c') {
       onQuit();
       return;
