@@ -30,7 +30,7 @@ import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
-import { glyph, theme } from './theme';
+import { glyph, statusColor, theme } from './theme';
 
 /** Launch the selected session in the claude CLI; resolves when the user returns. */
 export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -382,7 +382,13 @@ export const SessionList: FC<{
                     {isSel ? `${glyph.caret} ` : '  '}
                   </Text>
                   <Box width={2}>
-                    <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
+                    <Text
+                      color={
+                        s.status === 'awaiting_input'
+                          ? statusColor.awaitingInput
+                          : statusColor.awaitingPermission
+                      }
+                    >
                       {attention ? glyph.attention : ' '}
                     </Text>
                   </Box>
@@ -427,15 +433,15 @@ export const SessionList: FC<{
       </Box>
 
       {actionError ? (
-        <Text color="red">
+        <Text color={statusColor.failed}>
           {m.list.actionErrorLabel}: {actionError}
         </Text>
       ) : null}
       {confirm ? (
-        <Box borderStyle="round" borderColor="blue" paddingX={1}>
+        <Box borderStyle="round" borderColor={theme.accent} paddingX={1}>
           <Text>
             {confirm === 'merge' ? m.list.mergePrompt : m.list.discardPrompt} {m.list.confirmRun}{' '}
-            <Text color="green">y</Text> / <Text color="red">n</Text>
+            <Text color={theme.yes}>y</Text> / <Text color={theme.no}>n</Text>
             {busy ? <Text dimColor> {m.list.busySuffix}</Text> : null}
           </Text>
         </Box>
