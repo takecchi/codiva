@@ -2,6 +2,7 @@ export * from './async-queue';
 export * from './config';
 export * from './cost';
 export * from './i18n';
+export * from './key-sequence';
 export * from './layout';
 export * from './mouse';
 export * from './notify';

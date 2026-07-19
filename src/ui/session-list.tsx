@@ -1,9 +1,10 @@
-import { Box, type DOMElement, Text, useInput } from 'ink';
+import { Box, type DOMElement, type Key, Text, useInput } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   bufferLines,
   bufferOf,
   cursorRowCol,
+  decodeKeySequence,
   emptyBuffer,
   INPUT_MAX_ROWS,
   indexAtRowCol,
@@ -131,15 +132,32 @@ export const SessionList: FC<{
     }
   };
 
-  useInput((input, key) => {
+  useInput((rawInput, rawKey) => {
     // SGR マウスレポートはキー入力より先に解釈する（バッファへ混入させない）。
-    const mouse = parseSgrMouse(input);
+    const mouse = parseSgrMouse(rawInput);
     if (mouse) {
       if (mouse.kind === 'press') {
         handlePress(mouse.x, mouse.y);
       }
       return;
     }
+    // Shift+Enter 等の修飾キーは modifyOtherKeys / CSI-u エスケープ（`[27;2;13~`）
+    // で届く。Ink はこれを解釈できず生テキストとして渡すため、ここで実キーへ
+    // 復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
+    const chord = decodeKeySequence(rawInput);
+    const key: Key = chord
+      ? {
+          ...rawKey,
+          shift: chord.shift,
+          ctrl: chord.ctrl,
+          meta: chord.meta,
+          return: chord.kind === 'return',
+          tab: chord.kind === 'tab',
+          escape: chord.kind === 'escape',
+          backspace: chord.kind === 'backspace',
+        }
+      : rawKey;
+    const input = chord ? (chord.kind === 'text' ? chord.text : '') : rawInput;
     if (key.ctrl && input === 'c') {
       onQuit();
       return;
