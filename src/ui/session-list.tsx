@@ -1,4 +1,4 @@
-import { Box, type DOMElement, Text, useInput } from 'ink';
+import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   bufferLines,
@@ -7,6 +7,8 @@ import {
   emptyBuffer,
   INPUT_MAX_ROWS,
   indexAtRowCol,
+  isFullscreenViewport,
+  listView,
   parseSgrMouse,
   type SessionManager,
   type TextBuffer,
@@ -14,7 +16,7 @@ import {
   visibleLineRange,
 } from '@/core';
 import { Banner } from './banner';
-import { useAbsolutePosition, useClock, useRunMode, useSessions } from './hooks';
+import { useAbsolutePosition, useBoxHeight, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
 import { PermissionDialog } from './permission-dialog';
@@ -73,6 +75,17 @@ export const SessionList: FC<{
   // composer is never hijacked mid-typing by a session that starts asking.
   const pending = focus === 'list' ? target?.pendingPermission : undefined;
 
+  // 一覧の内部スクロール: rows ボックスは flexGrow で残り高さを占めるので、その
+  // 実測高さぶんだけ項目を描画し、選択が常に見えるようウィンドウを動かす。全画面
+  // でないインライン描画時はクリップされないため全件描画（端末側スクロールに任せる）。
+  const { rows: termRows } = useWindowSize();
+  const fullscreen = isFullscreenViewport(termRows);
+  const listHeight = useBoxHeight(rowsRef);
+  const listCap = fullscreen
+    ? Math.max(1, listHeight ?? Math.max(1, termRows - 15))
+    : Math.max(1, sorted.length);
+  const view = listView(sorted.length, selected, listCap);
+
   const moveSel = (delta: number) => {
     setSel((s) => Math.min(Math.max(0, s + delta), Math.max(0, sorted.length - 1)));
   };
@@ -125,9 +138,15 @@ export const SessionList: FC<{
         return;
       }
     }
-    if (rowsBox && y >= rowsBox.top && y < rowsBox.top + sorted.length) {
-      setSel(y - rowsBox.top);
-      setFocus('list');
+    if (rowsBox) {
+      // rows ボックス内の行 → セッションインデックス。上インジケータ行があれば
+      // その 1 行ぶんずらし、可視ウィンドウ（view.start..end）へ写像する。
+      const rowLine = y - rowsBox.top - (view.showAbove ? 1 : 0);
+      const visibleCount = view.end - view.start;
+      if (rowLine >= 0 && rowLine < visibleCount) {
+        setSel(view.start + rowLine);
+        setFocus('list');
+      }
     }
   };
 
@@ -248,42 +267,48 @@ export const SessionList: FC<{
     <Box flexDirection="column" flexGrow={1} padding={1}>
       <Banner cwd={cwd} sessionCount={sessions.length} totalCostUsd={totalCostUsd(sessions)} />
 
-      {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる */}
+      {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる。
+          高さを実測し、その行数に収まるぶんだけ内部スクロールして描画する。 */}
       <Box ref={rowsRef} flexDirection="column" marginY={1} flexGrow={1} overflowY="hidden">
         {sorted.length === 0 ? (
           <Text dimColor>{m.list.emptyHint}</Text>
         ) : (
-          sorted.map((s, i) => {
-            const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
-            const archived = s.status === 'archived';
-            const isSel = i === selected;
-            return (
-              <Box key={s.id}>
-                <Text color={focus === 'list' ? theme.accent : theme.dim}>
-                  {isSel ? `${glyph.caret} ` : '  '}
-                </Text>
-                <Box width={2}>
-                  <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
-                    {attention ? glyph.attention : ' '}
+          <>
+            {view.showAbove ? <Text dimColor>{m.list.moreAbove(view.hiddenAbove)}</Text> : null}
+            {sorted.slice(view.start, view.end).map((s, i) => {
+              const idx = view.start + i;
+              const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
+              const archived = s.status === 'archived';
+              const isSel = idx === selected;
+              return (
+                <Box key={s.id}>
+                  <Text color={focus === 'list' ? theme.accent : theme.dim}>
+                    {isSel ? `${glyph.caret} ` : '  '}
                   </Text>
+                  <Box width={2}>
+                    <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
+                      {attention ? glyph.attention : ' '}
+                    </Text>
+                  </Box>
+                  <Box width={30}>
+                    <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
+                      {s.title}
+                    </Text>
+                  </Box>
+                  <Box width={12}>
+                    <ProgressBadge state={s} />
+                  </Box>
+                  <Box width={22}>
+                    <Text dimColor wrap="truncate-end">
+                      {s.branch}
+                    </Text>
+                  </Box>
+                  <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
                 </Box>
-                <Box width={30}>
-                  <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
-                    {s.title}
-                  </Text>
-                </Box>
-                <Box width={12}>
-                  <ProgressBadge state={s} />
-                </Box>
-                <Box width={22}>
-                  <Text dimColor wrap="truncate-end">
-                    {s.branch}
-                  </Text>
-                </Box>
-                <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
-              </Box>
-            );
-          })
+              );
+            })}
+            {view.showBelow ? <Text dimColor>{m.list.moreBelow(view.hiddenBelow)}</Text> : null}
+          </>
         )}
       </Box>
 

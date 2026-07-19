@@ -35,6 +35,10 @@ export interface Messages {
     busySuffix: string;
     /** session_id 未確定（creating 直後など）でまだ claude で開けない */
     openNotReady: string;
+    /** 一覧スクロール時、上に隠れている件数のインジケータ */
+    moreAbove: (n: number) => string;
+    /** 一覧スクロール時、下に隠れている件数のインジケータ */
+    moreBelow: (n: number) => string;
   };
   /** ステータスバッジ（progress-badge.tsx） */
   badge: {
@@ -95,6 +99,8 @@ const ja: Messages = {
     confirmRun: '実行しますか？',
     busySuffix: '…実行中',
     openNotReady: 'このセッションはまだ claude で開けません（セッションID未取得）',
+    moreAbove: (n) => `↑ 他 ${n} 件`,
+    moreBelow: (n) => `↓ 他 ${n} 件`,
   },
   badge: {
     creating: '準備中',
@@ -151,6 +157,8 @@ const en: Messages = {
     confirmRun: 'Proceed?',
     busySuffix: '…running',
     openNotReady: 'This session cannot be opened in claude yet (no session id).',
+    moreAbove: (n) => `↑ ${n} more`,
+    moreBelow: (n) => `↓ ${n} more`,
   },
   badge: {
     creating: 'Preparing',
