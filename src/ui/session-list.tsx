@@ -269,7 +269,12 @@ export const SessionList: FC<{
     // SGR マウスレポートはキー入力より先に解釈する（バッファへ混入させない）。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
-      if (mouse.kind === 'press') {
+      if (mouse.kind === 'wheel') {
+        // 一覧はスクロール窓を選択行から導く（別途スクロール位置を持たない）ので、
+        // ホイールは選択を 1 行ずつ動かして窓をスクロールさせる（矢印キーと同義）。
+        // 端末は 1 ノッチで複数レポートを出すため、1 件/回でも十分な速度になる。
+        moveSel(mouse.dir === 'up' ? -1 : 1);
+      } else if (mouse.kind === 'press') {
         handlePress(mouse.x, mouse.y);
       }
       return;

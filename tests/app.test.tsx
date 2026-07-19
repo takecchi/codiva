@@ -179,6 +179,48 @@ describe('App fullscreen layout', () => {
     app.unmount();
   }, 20000);
 
+  it('mouse-wheel reports scroll the session list (down reveals newer, up the top)', async () => {
+    const manager = makeManager();
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 120);
+    // 一覧領域に収まりきらない数のセッションを用意する。マウント後に作るので
+    // 選択は先頭（task-00）に留まり、末尾（task-11）は下へ隠れている。
+    for (let i = 0; i < 12; i++) {
+      stdin.write(`task-${String(i).padStart(2, '0')}`);
+      await flush();
+      stdin.write('\r');
+      await flush();
+    }
+
+    const initial = lastFrame();
+    expect(initial).toContain('task-00'); // 先頭が見えている
+    expect(initial).not.toContain('task-11'); // 末尾は下へ隠れている
+    expect(initial).toContain('↓'); // 下に隠れた件数のインジケータ
+
+    // ホイール下（button 65）を何度も送ると選択が下へ動き、窓が下へスクロールして
+    // 末尾が見えるようになる。生テキスト（`65`）としてコンポーザへ漏れてはいけない。
+    for (let i = 0; i < 12; i++) {
+      stdin.write('\x1b[<65;10;5M');
+      await flush();
+    }
+    const down = lastFrame();
+    expect(down.split('\n')).toHaveLength(20); // フレーム高さは固定のまま
+    expect(down).toContain('task-11'); // 末尾が見えるようになった
+    expect(down).not.toContain('task-00'); // 先頭は上へ隠れた
+    expect(down).toContain('↑'); // 上に隠れた件数のインジケータ
+    expect(down).toContain(messages.ja.list.promptPlaceholder); // コンポーザは空のまま
+    expect(down).not.toMatch(/64|65/); // エスケープ列がテキストとして漏れていない
+
+    // ホイール上（button 64）で選択が上へ戻り、再び先頭が見える。
+    for (let i = 0; i < 12; i++) {
+      stdin.write('\x1b[<64;10;5M');
+      await flush();
+    }
+    const up = lastFrame();
+    expect(up).toContain('task-00');
+    expect(up).not.toContain('task-11');
+    app.unmount();
+  }, 30000);
+
   it('opens with the newest (bottom) session selected and scrolled into view', async () => {
     const manager = makeManager();
     // 一覧領域に収まりきらない数のセッションを起動前に用意する（永続化からの復元相当）。
