@@ -158,6 +158,7 @@ interface SessionState {
 - 前提チェック: Gitリポジトリか、HEAD が存在するか（コミット0のリポジトリでは worktree を作れない）。
 - `add(slug)`: `git worktree add .codiva/worktrees/<slug> -b codiva/<slug>` を現在の HEAD から作成。slug 衝突時は `-2`, `-3` を付与。
 - `.git/info/exclude` に `.codiva/` を自動追記（初回のみ）。
+- ignore 済みファイルの複製: `copyIgnored`（既定 true）が有効なら、`git ls-files --others --ignored --exclude-standard --directory` で列挙した `.gitignore` 対象（`node_modules/`・`.env` など）をリポジトリルートから worktree へ `fs.cp` で複製する。git worktree は追跡対象しか引き継がないため、これで依存の再インストールや環境変数の再設定なしにセッションが即実行できる。列挙結果のフィルタは純関数 `ignoredCopyEntries()` に切り出し（`.codiva/`・`.git` は再帰・内部状態破壊を避けるため必ず除外）、コピー自体はエントリ単位のベストエフォート（1件の失敗で worktree 作成を止めない）。
 - `diffStat(session)`: `git -C <worktree> diff <base>...HEAD --stat` 相当。未コミット変更がある場合はその旨も返す。
 - `merge(session)`: セッションブランチをベースブランチへマージ（squash はしない。コンフリクト時はエラーを返し、手動解決を促すメッセージを表示するのみ）。
 - `remove(session, { force })`: `git worktree remove` + `git branch -D`。

@@ -24,6 +24,13 @@ export interface CodivaConfig {
    * 有効中は端末のテキスト選択が通常ドラッグでできない（Shift+ドラッグは可）。
    */
   mouse?: boolean;
+  /**
+   * セッション用 worktree 作成時に `.gitignore` された未追跡ファイル
+   * （`node_modules/`・`.env` など）をリポジトリルートから複製するか。未設定は有効（true）。
+   * git worktree は追跡対象しか引き継がないため、無効化すると依存や環境変数を
+   * セッション側で用意し直す必要がある。
+   */
+  copyIgnored?: boolean;
 }
 
 /** SDK 由来 union の実行時検証用リテラル。型が変われば型エラーで気付ける。 */
@@ -46,6 +53,7 @@ interface CodivaConfigJson {
   maxBudgetUsd?: unknown;
   notifications?: unknown;
   mouse?: unknown;
+  copyIgnored?: unknown;
 }
 
 function toLangSetting(value: unknown): Lang | 'auto' | undefined {
@@ -110,6 +118,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const mouse = toBoolean(raw.mouse);
   if (mouse !== undefined) {
     config.mouse = mouse;
+  }
+  const copyIgnored = toBoolean(raw.copyIgnored);
+  if (copyIgnored !== undefined) {
+    config.copyIgnored = copyIgnored;
   }
   return config;
 }
