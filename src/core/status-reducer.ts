@@ -221,16 +221,23 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
     }
   }
 
+  // Don't downgrade a blocked session back to running. The `assistant` message
+  // that carries an AskUserQuestion/tool_use arrives out-of-band from the
+  // canUseTool control callback that set pendingPermission; if canUseTool won
+  // the race we're already awaiting_input/awaiting_permission and must stay
+  // there (otherwise the badge flips back to "Running" with a question pending).
+  const nextStatus = state.pendingPermission ? state.status : 'running';
+
   // The full assistant message is authoritative — drop the streamed preview.
   if (messages === state.messages && todos === state.todos) {
-    if (state.status === 'running' && state.streamingText === undefined && model === state.model) {
+    if (state.status === nextStatus && state.streamingText === undefined && model === state.model) {
       return state;
     }
-    return { ...state, status: 'running', streamingText: undefined, model };
+    return { ...state, status: nextStatus, streamingText: undefined, model };
   }
   return {
     ...state,
-    status: 'running',
+    status: nextStatus,
     todos,
     progress: progressOf(todos),
     messages,
@@ -262,7 +269,9 @@ function reduceStreamEvent(state: SessionState, message: Record<string, unknown>
     if (delta?.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
       return {
         ...state,
-        status: state.status === 'running' ? state.status : 'running',
+        // Keep a blocked session (pendingPermission) in its awaiting_* status;
+        // only an unblocked stream implies the model is actively running.
+        status: state.pendingPermission ? state.status : 'running',
         streamingText: (state.streamingText ?? '') + delta.text,
       };
     }

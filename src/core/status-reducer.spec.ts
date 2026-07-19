@@ -124,6 +124,49 @@ describe('control events', () => {
     expect(state.status).toBe('awaiting_input');
   });
 
+  it('keeps awaiting_input when the assistant message carrying the question is processed after it', () => {
+    // The `assistant` message (with the AskUserQuestion tool_use) and the
+    // canUseTool control callback arrive out-of-band. If canUseTool wins the
+    // race we're already in awaiting_input; processing the assistant message
+    // must NOT downgrade the badge back to Running.
+    const req: PermissionRequest = {
+      id: 'q1',
+      toolName: 'AskUserQuestion',
+      input: { questions: [{ question: 'Which one?' }] },
+      kind: 'question',
+      questions: [{ question: 'Which one?', header: 'x', multiSelect: false, options: [] }],
+    };
+    let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
+    expect(state.status).toBe('awaiting_input');
+    state = reduce(state, {
+      kind: 'sdk',
+      message: {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 't1', name: 'AskUserQuestion', input: req.input }],
+        },
+      } as unknown as SDKMessage,
+      at: 2001,
+    });
+    expect(state.status).toBe('awaiting_input');
+    expect(state.pendingPermission?.kind).toBe('question');
+  });
+
+  it('keeps awaiting_permission when a stream delta arrives while a tool prompt is pending', () => {
+    const req: PermissionRequest = { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' };
+    let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
+    expect(state.status).toBe('awaiting_permission');
+    state = reduce(state, {
+      kind: 'sdk',
+      message: {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'x' } },
+      } as unknown as SDKMessage,
+      at: 2001,
+    });
+    expect(state.status).toBe('awaiting_permission');
+  });
+
   it('permission_resolved clears the pending request and resumes', () => {
     const req: PermissionRequest = { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' };
     let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
