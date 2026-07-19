@@ -701,4 +701,40 @@ describe('App detail view (in-app connection)', () => {
     expect(merge).toHaveBeenCalled();
     expect(manager.get('1')?.status).toBe('archived');
   });
+
+  it('/diff toggles the changes summary (hidden by default) in the detail view', async () => {
+    const diffStat = async () => ({ committed: 'M src/foo.ts', uncommitted: [] });
+    const { manager, out } = drivenManager({ diffStat });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('show me diffs');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    // Reach a terminal state so the diff summary becomes available.
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-diff' }));
+    out.push(asMsg({ type: 'result', subtype: 'success', result: 'done' }));
+    await flush();
+
+    stdin.write('\t'); // focus list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    // Hidden by default: the log gets the vertical room, no changes summary.
+    expect(lastFrame()).not.toContain('M src/foo.ts');
+
+    // /diff reveals it.
+    stdin.write('/diff');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain('M src/foo.ts');
+
+    // /diff again hides it.
+    stdin.write('/diff');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).not.toContain('M src/foo.ts');
+  });
 });

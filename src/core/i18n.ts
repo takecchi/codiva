@@ -139,6 +139,8 @@ export interface Messages {
     quit: string;
     /** /model の説明 */
     model: string;
+    /** /diff の説明 */
+    diff: string;
   };
 }
 
@@ -249,6 +251,7 @@ const ja: Messages = {
     help: 'コマンド一覧を表示',
     quit: 'codiva を終了',
     model: 'モデルを切り替え',
+    diff: '変更差分サマリの表示を切り替え',
   },
 };
 
@@ -359,6 +362,7 @@ const en: Messages = {
     help: 'Show available commands',
     quit: 'Quit codiva',
     model: 'Switch the model',
+    diff: 'Toggle the changes summary',
   },
 };
 
