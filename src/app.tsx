@@ -21,11 +21,13 @@ export type ExternalRunner = (args: {
 export const App: FC<{
   manager: SessionManager;
   cwd?: string;
+  model?: string;
   messages?: Messages;
   runExternal?: ExternalRunner;
 }> = ({
   manager,
   cwd,
+  model,
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   runExternal,
@@ -83,6 +85,7 @@ export const App: FC<{
           onOpenExternal={runExternal ? openExternal : undefined}
           onQuit={quit}
           cwd={cwd}
+          model={model}
         />
       </Box>
     </MessagesProvider>

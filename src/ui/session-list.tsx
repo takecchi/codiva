@@ -38,7 +38,8 @@ export const SessionList: FC<{
   onOpenExternal?: OpenExternal;
   onQuit: () => void;
   cwd?: string;
-}> = ({ manager, onOpenExternal, onQuit, cwd }) => {
+  model?: string;
+}> = ({ manager, onOpenExternal, onQuit, cwd, model }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -246,7 +247,12 @@ export const SessionList: FC<{
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
-      <Banner cwd={cwd} sessionCount={sessions.length} totalCostUsd={totalCostUsd(sessions)} />
+      <Banner
+        cwd={cwd}
+        model={model}
+        sessionCount={sessions.length}
+        totalCostUsd={totalCostUsd(sessions)}
+      />
 
       {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる */}
       <Box ref={rowsRef} flexDirection="column" marginY={1} flexGrow={1} overflowY="hidden">
