@@ -353,6 +353,14 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       return title.length === 0 || title === state.title ? state : { ...state, title };
     }
 
+    case 'pr': {
+      // No-op when unchanged so subscribers don't re-render on every poll.
+      if (state.pr?.number === event.pr?.number && state.pr?.url === event.pr?.url) {
+        return state;
+      }
+      return { ...state, pr: event.pr };
+    }
+
     case 'aborted': {
       const error = event.error ?? 'aborted';
       const withLog = appendLog(state, 'error', error);

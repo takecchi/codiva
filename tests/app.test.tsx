@@ -43,6 +43,7 @@ function noopSession(input: CreateSessionInput) {
     stop() {},
     detach() {},
     archive() {},
+    setPr() {},
   };
 }
 
@@ -160,12 +161,15 @@ describe('App fullscreen layout', () => {
 
     const scrolled = lastFrame();
     expect(scrolled.split('\n')).toHaveLength(20);
+    // 入力欄+フッタは最下部に残る（list フォーカスの長いヒントが折り返しても
+    // クリップされない）。最下段はセッション行ではなくフッタ＝一覧が押し下げていない。
+    expect(scrolled).toContain(messages.ja.list.promptPlaceholder);
     expect(
       scrolled
         .split('\n')
         .filter((l) => l.trim() !== '')
         .at(-1),
-    ).toContain('自動モード');
+    ).not.toContain('task-');
     expect(scrolled).toContain('task-11'); // 末尾が見えるようになった
     expect(scrolled).not.toContain('task-00'); // 先頭は隠れた
     expect(scrolled).toContain('↑'); // 上に隠れた件数のインジケータ
@@ -295,6 +299,25 @@ describe('App (list view)', () => {
     stdin.write('line two');
     await flush();
     stdin.write('\r'); // no trailing backslash → submit the two-line prompt
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(1);
+    expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');
+  });
+
+  it('Shift+Enter (modifyOtherKeys escape) inserts a newline instead of submitting', async () => {
+    const manager = makeManager();
+    const { stdin } = render(<App manager={manager} />);
+    stdin.write('line one');
+    await flush();
+    // Ghostty/xterm send Shift+Enter as `ESC [27;2;13~` — it must break the line,
+    // not get inserted verbatim as `[27;2;13~`.
+    stdin.write('\x1b[27;2;13~');
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(0); // newline, not submit
+
+    stdin.write('line two');
+    await flush();
+    stdin.write('\r'); // plain Enter → submit
     await flush();
     expect(manager.getSnapshot()).toHaveLength(1);
     expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');

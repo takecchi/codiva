@@ -38,6 +38,14 @@ export interface LogEntry {
   timestamp?: number;
 }
 
+/** A pull request opened for a session's branch (detected via `gh`). */
+export interface PrInfo {
+  /** PR number, shown as `#<number>` in the list. */
+  number: number;
+  /** Web URL, opened in the browser on click / `p`. */
+  url: string;
+}
+
 /** One question surfaced by the AskUserQuestion tool. */
 export interface QuestionSpec {
   question: string;
@@ -72,6 +80,8 @@ export interface SessionState {
   messages: LogEntry[];
   pendingPermission?: PermissionRequest;
   sdkSessionId?: string;
+  /** Pull request opened for `branch`, if any (detected asynchronously via `gh`). */
+  pr?: PrInfo;
   startedAt: number;
   finishedAt?: number;
   totalCostUsd?: number;
@@ -98,6 +108,9 @@ export type CodivaEvent =
   // A Claude-generated title (from the content of the task), replacing the
   // input-derived placeholder. Fired once, asynchronously, after a fresh start.
   | { kind: 'title'; title: string; at: number }
+  // A pull request was detected (or cleared) for this session's branch, out of
+  // band via `gh`. Carries the info; the reducer only swaps it into state.
+  | { kind: 'pr'; pr: PrInfo | undefined; at: number }
   | { kind: 'aborted'; error?: string; at: number }
   // The session was handed off to the claude CLI: codiva's query is stopped
   // quietly and the conversation continues outside.

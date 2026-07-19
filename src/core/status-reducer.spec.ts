@@ -385,6 +385,27 @@ describe('reduce over streaming partial messages', () => {
     expect(reduce(detached, { kind: 'detached', at: 43 })).toBe(detached);
   });
 
+  it('pr event stores the PR and no-ops when unchanged', () => {
+    const s0 = initialState(BASE);
+    expect(s0.pr).toBeUndefined();
+
+    const withPr = reduce(s0, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 1 });
+    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12' });
+
+    // Same PR again → same reference (no re-render on every poll).
+    expect(reduce(withPr, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 2 })).toBe(
+      withPr,
+    );
+
+    // A different PR replaces it; undefined clears it.
+    expect(
+      reduce(withPr, { kind: 'pr', pr: { number: 13, url: 'https://x/13' }, at: 3 }).pr,
+    ).toEqual({ number: 13, url: 'https://x/13' });
+    expect(reduce(withPr, { kind: 'pr', pr: undefined, at: 4 }).pr).toBeUndefined();
+    // Already undefined → same reference.
+    expect(reduce(s0, { kind: 'pr', pr: undefined, at: 5 })).toBe(s0);
+  });
+
   it('clears the streaming preview when aborted or archived mid-stream', () => {
     const streaming = sdk({ ...initialState(BASE), status: 'running' }, streamText('half'));
     expect(streaming.streamingText).toBe('half');
