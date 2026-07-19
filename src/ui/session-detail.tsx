@@ -1,12 +1,13 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useEffect, useRef, useState } from 'react';
+import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
   COMMANDS,
   type DiffStat,
+  type DisplayLine,
   emptyBuffer,
   isCommandInput,
   type LogEntry,
-  logLineText,
+  logLines,
   logViewportRows,
   logWindow,
   matchCommands,
@@ -54,12 +55,14 @@ function streamTail(text: string): string {
   return '';
 }
 
-const LogLine: FC<{ entry: LogEntry }> = ({ entry }) => {
-  const spec = LOG[entry.kind];
+// One physical row of the log. `line.text` already carries the kind's prefix /
+// continuation indent (built by core's logLines); truncate is only a safety net
+// against width drift — wrapping happened in core at the exact content width.
+const LogLine: FC<{ line: DisplayLine }> = ({ line }) => {
+  const spec = LOG[line.kind];
   return (
     <Text color={spec.color} dimColor={spec.dim} wrap="truncate-end">
-      {spec.prefix}
-      {logLineText(entry.text)}
+      {line.text}
     </Text>
   );
 };
@@ -82,7 +85,7 @@ export const SessionDetail: FC<{
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
-  const { rows } = useWindowSize();
+  const { rows, columns } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
   const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
   // 一覧と同じ理由（連打・ペースト・エスケープ列が同一 tick に複数回届く）で、
@@ -163,7 +166,17 @@ export const SessionDetail: FC<{
     }
   };
 
-  const total = session?.messages.length ?? 0;
+  // Expand entries into physical rows once per (messages, width) — the scroll
+  // model (anchor/steps/hidden counts) works in rows, so multi-line messages
+  // scroll smoothly instead of jumping an entry at a time. Width accounts for
+  // the view's horizontal padding (1 cell each side).
+  const messages = session?.messages;
+  const lines = useMemo<DisplayLine[]>(
+    () =>
+      messages ? logLines(messages, Math.max(1, columns - 2), (kind) => LOG[kind].prefix) : [],
+    [messages, columns],
+  );
+  const total = lines.length;
 
   useInput((rawInput, rawKey) => {
     // SGR マウスレポートはキー入力より先に解釈する。これをしないと（マウス有効時に）
@@ -289,7 +302,7 @@ export const SessionDetail: FC<{
       : panel === 'actions'
         ? m.detail.helpActions
         : m.detail.helpInput;
-  const win = logWindow(session.messages, rows, anchor);
+  const win = logWindow(lines, rows, anchor);
   const preview = session.streamingText ? streamTail(session.streamingText) : '';
 
   return (
@@ -302,8 +315,8 @@ export const SessionDetail: FC<{
        * バック側に書くため全画面レイアウトでは画面外に消えてしまい使えない。
        */}
       <Box flexDirection="column" flexGrow={1} overflowY="hidden" justifyContent="flex-end">
-        {win.entries.map((entry) => (
-          <LogLine key={entry.seq} entry={entry} />
+        {win.entries.map((line) => (
+          <LogLine key={line.key} line={line} />
         ))}
         {/* Live streaming preview, only while following the tail. */}
         {win.atBottom && preview ? (

@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  logLineText,
+  logLines,
   logWindow,
   pageStep,
   type ScrollAnchor,
   scrollDown,
   scrollUp,
+  wrapDisplayLines,
 } from './scroll';
-import type { LogEntry } from './types';
+import type { LogEntry, LogKind } from './types';
 
 function entries(n: number): LogEntry[] {
   return Array.from({ length: n }, (_, i) => ({ seq: i, kind: 'assistant_text', text: `l${i}` }));
@@ -60,28 +61,63 @@ describe('logWindow (scrolled up, numeric anchor)', () => {
   });
 });
 
-describe('logLineText (one physical row per entry)', () => {
-  it('collapses newlines so each entry occupies a single row', () => {
-    expect(logLineText('foo\nbar')).toBe('foo bar');
-    expect(logLineText('foo\r\nbar')).toBe('foo bar');
+describe('wrapDisplayLines', () => {
+  it('keeps short single-line text as one line', () => {
+    expect(wrapDisplayLines('hello', 10)).toEqual(['hello']);
   });
 
-  it('collapses surrounding indentation/whitespace around a break into one space', () => {
-    expect(logLineText('foo\n    bar')).toBe('foo bar');
-    expect(logLineText('foo  \n\n  bar')).toBe('foo bar');
+  it('splits on embedded newlines (LF / CRLF / VT / FF)', () => {
+    expect(wrapDisplayLines('a\nb\r\nc\vd\fe', 10)).toEqual(['a', 'b', 'c', 'd', 'e']);
   });
 
-  it('also flattens vertical tab / form feed (they move the cursor down too)', () => {
-    expect(logLineText('a\vb\fc')).toBe('a b c');
+  it('hard-wraps a long line at the display width', () => {
+    expect(wrapDisplayLines('abcdefgh', 3)).toEqual(['abc', 'def', 'gh']);
   });
 
-  it('trims leading/trailing breaks and leaves single-line text intact', () => {
-    expect(logLineText('\nfoo\n')).toBe('foo');
-    expect(logLineText('already one line')).toBe('already one line');
+  it('counts CJK as 2 cells so Japanese wraps where the terminal does', () => {
+    // 6 cells per row → 3 CJK chars per row
+    expect(wrapDisplayLines('こんにちは世界', 6)).toEqual(['こんに', 'ちは世', '界']);
   });
 
-  it('keeps interior tabs and spaces within a single line untouched', () => {
-    expect(logLineText('a\tb c')).toBe('a\tb c');
+  it('preserves empty logical lines (paragraph breaks stay visible)', () => {
+    expect(wrapDisplayLines('a\n\nb', 10)).toEqual(['a', '', 'b']);
+  });
+
+  it('never wraps when width is non-positive (degenerate viewport)', () => {
+    expect(wrapDisplayLines('abcdef', 0)).toEqual(['abcdef']);
+  });
+});
+
+describe('logLines (entries → physical rows)', () => {
+  const prefixFor = (kind: LogKind) => (kind === 'user' ? '> ' : '');
+
+  it('expands a multi-line entry into one DisplayLine per physical row', () => {
+    const lines = logLines([{ seq: 1, kind: 'assistant_text', text: 'one\ntwo' }], 20, prefixFor);
+    expect(lines).toEqual([
+      { key: '1:0', kind: 'assistant_text', text: 'one' },
+      { key: '1:1', kind: 'assistant_text', text: 'two' },
+    ]);
+  });
+
+  it('prefixes the first row and indents continuation rows by the prefix width', () => {
+    const lines = logLines([{ seq: 3, kind: 'user', text: 'abcd' }], 4, prefixFor);
+    // width 4 minus prefix "> " (2 cells) → 2 chars per row
+    expect(lines).toEqual([
+      { key: '3:0', kind: 'user', text: '> ab' },
+      { key: '3:1', kind: 'user', text: '  cd' },
+    ]);
+  });
+
+  it('keeps entry order and unique keys across entries', () => {
+    const lines = logLines(
+      [
+        { seq: 1, kind: 'user', text: 'hi' },
+        { seq: 2, kind: 'assistant_text', text: 'yo' },
+      ],
+      20,
+      prefixFor,
+    );
+    expect(lines.map((l) => l.key)).toEqual(['1:0', '2:0']);
   });
 });
 

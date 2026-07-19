@@ -139,6 +139,30 @@ describe('restoredSessionState', () => {
     expect(s.finishedAt).toBe(9);
   });
 
+  it('seeds the log from a transcript-rebuilt history and continues seq after it', () => {
+    const p: PersistedSession = {
+      id: '4',
+      title: 'With history',
+      prompt: 'p',
+      slug: 's',
+      branch: 'codiva/s',
+      worktreePath: '/tmp/wt/s',
+      base: 'main',
+      sdkSessionId: 'sdk-4',
+      status: 'completed',
+      startedAt: 1,
+      todos: [],
+    };
+    const history = [
+      { seq: 1, kind: 'user' as const, text: 'do the thing' },
+      { seq: 2, kind: 'assistant_text' as const, text: 'done' },
+    ];
+    const s = restoredSessionState(p, history);
+    expect(s.messages).toEqual(history);
+    // New turns must append after the restored entries, not collide with seq 1.
+    expect(s.logSeq).toBe(2);
+  });
+
   it('freezes elapsed time at startedAt when the session had no finishedAt', () => {
     const p: PersistedSession = {
       id: '3',

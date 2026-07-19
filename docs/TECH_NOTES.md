@@ -53,7 +53,7 @@ const options = {
   settingSources: ['project'],   // 対象リポジトリの CLAUDE.md / settings を読ませる
   // Phase 6 で公開済み（設定ファイル ~/.codiva/config.json 由来、SessionOptions 経由で注入）:
   model, effort, maxBudgetUsd,   // それぞれ存在時のみ付与
-  resume: sdkSessionId,          // 復元時のみ付与。前回セッションの履歴をロードして継続
+  resume: sdkSessionId,          // 復元時のみ付与。モデル側の会話コンテキストを引き継いで継続
 };
 ```
 
@@ -62,7 +62,11 @@ const options = {
   (`'default'|'acceptEdits'|'bypassPermissions'|'plan'|'dontAsk'|'auto'`) / `maxBudgetUsd` (`number>0`) は
   `~/.codiva/config.json` から読み、`core/config.ts` の `toConfig()` で検証。`SessionOptions` に束ねて注入。
 - `resume` は復元セッションの最初の追加指示で付与（遅延 resume）。`sdkSessionId` は `system/init.session_id`。
-- 復元では会話ログを永続しない（resume が SDK 側で履歴を持つ）。詳細は ARCHITECTURE.md「Phase 6 機能」。
+- **`resume` はモデル側の会話コンテキストのみ復元する。過去メッセージはストリームに再送出されない**
+  （検証済み: 復元直後の consumer には何も流れない）。そのため UI の会話ログは CLI が書く
+  トランスクリプト `~/.claude/projects/<cwd の非英数字を '-' 化したもの>/<sessionId>.jsonl` から再構築する
+  （純粋変換 `core/transcript.ts` の `transcriptLogEntries`、読み込みは `utils/transcript.ts`）。
+  codiva 自身は会話ログを永続しない（state.json はメタデータのみ）。詳細は ARCHITECTURE.md「Phase 6 機能」。
 
 `permissionMode` の全値: `'default' | 'dontAsk' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'auto'`。
 `'acceptEdits'` は Edit/Write + ファイル操作系 Bash（mkdir/touch/rm/mv/cp/sed）を自動許可する。
@@ -170,7 +174,7 @@ function toUserMessage(text: string): SDKUserMessage {
 
 - Ink 7 は React 19 前提。コンポーネントは通常の React。`render(<App/>)` で起動。
 - **全画面（100dvh 相当）**: Ink はコンテンツの高さぶんしか描画しないインラインレンダラ。root Box に `useWindowSize()` の rows を `height` 指定すると Ink 7 がフルスクリーンフレームとして扱う（末尾改行なし・インクリメンタル消去。ただしフレームが端末高さを**超える**と全画面クリアにフォールバックしてちらつくので、root に `overflow="hidden"` を付けて超過を防ぐ）。端末が極端に低い（`MIN_FULLSCREEN_ROWS` 未満）ときは height 固定をやめてインライン描画へフォールバックする — クリップで入力欄・フッタが消えて操作不能になるより、端末スクロールに任せる方が安全。
-- **`<Static>` は全画面レイアウトと両立しない**: Static はスクロールバック側に書き出すため、フレームが画面いっぱいだとビューポート外に消える。メッセージログは末尾ビューポート（flexGrow + `justifyContent="flex-end"` + `overflowY="hidden"`）+ `logWindow(messages, rows, anchor)`（`core/scroll.ts`）で再描画コストに上限を掛ける方式にした。`anchor` は `'bottom'`（末尾追従）か絶対 end index（上スクロール中は固定＝新着で view がぶれない）。PgUp/PgDn で `scrollUp`/`scrollDown`。alt screen でスクロールバックを無効化しているため、過去ログはこのアプリ内スクロールでのみ辿れる。
+- **`<Static>` は全画面レイアウトと両立しない**: Static はスクロールバック側に書き出すため、フレームが画面いっぱいだとビューポート外に消える。メッセージログは末尾ビューポート（flexGrow + `justifyContent="flex-end"` + `overflowY="hidden"`）+ `logWindow(lines, rows, anchor)`（`core/scroll.ts`）で再描画コストに上限を掛ける方式にした。スクロールの単位は**物理行**: エントリは `logLines(messages, width, prefixFor)` で CJK 幅（string-width）を考慮して折り返した `DisplayLine[]` に展開してから window する（複数行メッセージ 1 件でビューポートが埋まったり、スクロール量が実際の行数とズレるのを防ぐ）。`anchor` は `'bottom'`（末尾追従）か絶対 end index（上スクロール中は固定＝新着で view がぶれない）。PgUp/PgDn で `scrollUp`/`scrollDown`。alt screen でスクロールバックを無効化しているため、過去ログはこのアプリ内スクロールでのみ辿れる。
 - **複数行入力**: 純粋モデルは `core/text-buffer.ts`（value + cursor、insert/backspace/move*/`visibleLineRange`）。キー→操作の対応は `ui/input.ts`（`editText`／`resolveEnter`）。Shift/Meta+Enter か末尾バックスラッシュ+Enter で改行、それ以外は送信（バックスラッシュは Shift+Enter を送れない端末向けの堅牢なフォールバック）。一覧ビューは矢印を行選択に温存するためカーソル移動なし（末尾編集＋改行のみ）、詳細ビューは矢印でフルにカーソル移動。`PromptInput` は `INPUT_MAX_ROWS` まで伸び、超過分は `visibleLineRange` でカーソル付近を内部スクロール（空/1行時は従来どおり1行高）。
 - **`useInput`**: グローバルキーハンドラ。フォーカス管理は `useFocus` もあるが、MVP はビュー単位の単純な状態分岐で足りる。
 - **`useApp().exit()`**: 終了。終了前に SessionManager.dispose()（全 abort）を呼ぶ。

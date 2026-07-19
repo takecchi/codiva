@@ -1,4 +1,5 @@
-import type { LogEntry } from './types';
+import stringWidth from 'string-width';
+import type { LogEntry, LogKind } from './types';
 
 /**
  * Where the detail-view log viewport is anchored.
@@ -11,14 +12,14 @@ import type { LogEntry } from './types';
  */
 export type ScrollAnchor = 'bottom' | number;
 
-export interface LogWindow {
-  /** The entries to render (bottom-aligned in the viewport). */
-  entries: LogEntry[];
-  /** Entries older than the window (>0 ⇒ there is scrollback above). */
+export interface LogWindow<T = LogEntry> {
+  /** The lines to render (bottom-aligned in the viewport). */
+  entries: T[];
+  /** Lines older than the window (>0 ⇒ there is scrollback above). */
   hiddenAbove: number;
-  /** Entries newer than the window (>0 ⇒ not following the tail). */
+  /** Lines newer than the window (>0 ⇒ not following the tail). */
   hiddenBelow: number;
-  /** True when anchored to the newest entry (tail-follow). */
+  /** True when anchored to the newest line (tail-follow). */
   atBottom: boolean;
 }
 
@@ -27,24 +28,80 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 /**
- * Collapse a log entry's text into a single physical line.
- *
- * The detail-view scroll model is *entry-based*: {@link logWindow} slices the
- * message array and the flex-end viewport assumes one entry ≈ one terminal row.
- * But `assistant_text` / `result` / `user` entries can carry embedded newlines,
- * and Ink's `wrap="truncate-end"` does NOT flatten them — `cli-truncate` returns
- * multi-line text unchanged when its (newline-ignoring) display width fits, so a
- * single entry would render as many rows. That breaks the invariant: a few long
- * messages fill the viewport and the entry-based scroll math skips/overshoots.
- *
- * Flattening every vertical break (LF/CR/VT/FF) to a single space restores
- * "one entry, one row" so both the visible count and PageUp/wheel scrolling work.
+ * One physical terminal row of the detail-view log. Entries are expanded into
+ * these by {@link logLines} — the scroll model works in physical rows, not log
+ * entries, so multi-line messages neither fill the viewport with a single entry
+ * nor break the PgUp/wheel step math. `text` already includes the kind's prefix
+ * (first row) or its matching indent (continuation rows); `kind` drives color.
  */
-export function logLineText(text: string): string {
-  return text.replace(/\s*[\r\n\v\f]+\s*/g, ' ').trim();
+export interface DisplayLine {
+  /** Stable render key: `<entry seq>:<row index within the entry>`. */
+  key: string;
+  kind: LogKind;
+  text: string;
 }
 
-/** How many entries a PageUp/PageDown moves — a comfortable half-viewport chunk. */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/**
+ * Wrap `text` to physical lines of at most `width` display cells, splitting on
+ * embedded newlines first. Widths are display-based (`string-width`): CJK and
+ * emoji count as 2 cells, so Japanese text wraps where the terminal actually
+ * breaks — `.length` would drift by up to 2×. Wrapping is per grapheme (no
+ * word-boundary logic), which matches how a terminal hard-wraps.
+ */
+export function wrapDisplayLines(text: string, width: number): string[] {
+  const out: string[] = [];
+  for (const logical of text.split(/\r\n|[\r\n\v\f]/)) {
+    if (width <= 0 || stringWidth(logical) <= width) {
+      out.push(logical);
+      continue;
+    }
+    let line = '';
+    let w = 0;
+    for (const { segment } of GRAPHEMES.segment(logical)) {
+      const cw = stringWidth(segment);
+      if (w + cw > width && line.length > 0) {
+        out.push(line);
+        line = segment;
+        w = cw;
+      } else {
+        line += segment;
+        w += cw;
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+/**
+ * Expand log entries into the physical rows the detail view renders. The
+ * per-kind prefix comes from the UI (it owns glyphs/colors); continuation rows
+ * are indented by the prefix's display width so wrapped text stays aligned.
+ */
+export function logLines(
+  messages: LogEntry[],
+  width: number,
+  prefixFor: (kind: LogKind) => string,
+): DisplayLine[] {
+  const out: DisplayLine[] = [];
+  for (const entry of messages) {
+    const prefix = prefixFor(entry.kind);
+    const indent = ' '.repeat(stringWidth(prefix));
+    const rows = wrapDisplayLines(entry.text, Math.max(1, width - stringWidth(prefix)));
+    for (let i = 0; i < rows.length; i += 1) {
+      out.push({
+        key: `${entry.seq}:${i}`,
+        kind: entry.kind,
+        text: (i === 0 ? prefix : indent) + rows[i],
+      });
+    }
+  }
+  return out;
+}
+
+/** How many lines a PageUp/PageDown moves — a comfortable half-viewport chunk. */
 export function pageStep(rows: number): number {
   return Math.max(1, Math.floor(Math.max(1, rows) / 2));
 }
@@ -58,19 +115,23 @@ export function pageStep(rows: number): number {
 export const WHEEL_SCROLL_ROWS = 6;
 
 /**
- * Resolve an anchor into a concrete window over `messages`. At most ~`rows`
- * entries are rendered (Ink would otherwise render the whole, possibly huge, log);
- * the flex-end viewport clips any that don't fit. `end` is driven precisely by the
- * anchor while `start` is just "enough to fill", so a scrolled-up view is stable as
- * new entries append.
+ * Resolve an anchor into a concrete window over `lines` (physical display rows —
+ * see {@link logLines}). At most ~`rows` lines are rendered (Ink would otherwise
+ * render the whole, possibly huge, log); the flex-end viewport clips any that
+ * don't fit. `end` is driven precisely by the anchor while `start` is just
+ * "enough to fill", so a scrolled-up view is stable as new lines append.
  */
-export function logWindow(messages: LogEntry[], rows: number, anchor: ScrollAnchor): LogWindow {
-  const n = messages.length;
+export function logWindow<T>(
+  lines: readonly T[],
+  rows: number,
+  anchor: ScrollAnchor,
+): LogWindow<T> {
+  const n = lines.length;
   const cap = Math.max(1, rows);
   const end = anchor === 'bottom' ? n : clamp(anchor, Math.min(1, n), n);
   const start = Math.max(0, end - cap);
   return {
-    entries: messages.slice(start, end),
+    entries: lines.slice(start, end),
     hiddenAbove: start,
     hiddenBelow: n - end,
     atBottom: end >= n,

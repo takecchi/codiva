@@ -179,6 +179,25 @@ describe('App fullscreen layout', () => {
     app.unmount();
   }, 20000);
 
+  it('opens with the newest (bottom) session selected and scrolled into view', async () => {
+    const manager = makeManager();
+    // 一覧領域に収まりきらない数のセッションを起動前に用意する（永続化からの復元相当）。
+    for (let i = 0; i < 12; i++) {
+      manager.create(`task-${String(i).padStart(2, '0')}`);
+    }
+    await flush();
+    const { app, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 120);
+    const frame = lastFrame();
+    // 開いた直後から末尾（最新）が見え、先頭は上へスクロールされて隠れている。
+    expect(frame).toContain('task-11');
+    expect(frame).not.toContain('task-00');
+    expect(frame).toContain('↑'); // 上に隠れた件数のインジケータ
+    // 選択カーソル（❯）は最新の task-11 の行に乗っている。
+    const selectedLine = frame.split('\n').find((l) => l.includes('task-11')) ?? '';
+    expect(selectedLine).toContain('❯');
+    app.unmount();
+  });
+
   it('falls back to inline rendering on very short terminals (footer stays visible)', () => {
     const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 8);
     // height 固定だと 8 行にクリップされ入力欄・フッタが消える。フォールバックでは
@@ -529,6 +548,39 @@ describe('App detail view (in-app connection)', () => {
     stdin.write('\x1b'); // Esc → back to the list
     await flush();
     expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
+  });
+
+  it('restores list selection and focus after returning from the detail view', async () => {
+    const { manager, out } = drivenManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    for (const t of ['alpha', 'beta', 'gamma']) {
+      stdin.write(t);
+      await flush();
+      stdin.write('\r');
+      await flush();
+    }
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-r' }));
+    await flush();
+
+    stdin.write('\t'); // focus the list (selection starts at the top)
+    await flush();
+    stdin.write('\x1b[B'); // ↓ → select the middle session (beta)
+    await flush();
+    const caretRow = (label: string) =>
+      (lastFrame() ?? '').split('\n').find((l) => l.includes(label)) ?? '';
+    expect(caretRow('beta')).toContain('❯'); // caret sits on beta
+
+    stdin.write('\r'); // open detail for beta
+    await flush();
+    expect(lastFrame()).toContain('追加の指示を入力'); // in the detail view
+
+    stdin.write('\x1b'); // Esc → back to the list
+    await flush();
+    // Focus is restored to the list (list-focus footer hint) and the caret is back
+    // on beta — the previously viewed row, not the default composer/top.
+    expect(lastFrame()).toContain('詳細を開く');
+    expect(caretRow('beta')).toContain('❯');
+    expect(caretRow('alpha')).not.toContain('❯');
   });
 
   it('mouse-wheel reports scroll the log instead of typing into the composer', async () => {

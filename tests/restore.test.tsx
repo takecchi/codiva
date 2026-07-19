@@ -85,4 +85,37 @@ describe('session restoration', () => {
     expect(resumedWith).toBe('sdk-restore-1');
     expect(m2.get(session.id)?.status).toBe('running');
   });
+
+  it('seeds the restored log from a transcript-rebuilt history (resume never re-emits it)', async () => {
+    const first = drivenQuery();
+    const m1 = new SessionManager({ worktrees, queryFn: first.queryFn, now: () => 0 });
+    m1.create('add a login page');
+    await flush();
+    first.out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-restore-2' }));
+    first.out.push(asMsg({ type: 'result', subtype: 'success', result: 'done' }));
+    await flush();
+    const persisted = m1.persistableState();
+    m1.dispose();
+
+    const second = drivenQuery();
+    const m2 = new SessionManager({ worktrees, queryFn: second.queryFn, now: () => 0 });
+    const history = [
+      { seq: 1, kind: 'user' as const, text: 'add a login page' },
+      { seq: 2, kind: 'assistant_text' as const, text: 'Added the login page.' },
+    ];
+    const id = persisted.sessions[0]?.id ?? '';
+    m2.restore(persisted, new Map([[id, history]]));
+
+    const restored = m2.get(id);
+    expect(restored?.messages).toEqual(history);
+    // A follow-up appends after the restored history instead of restarting at seq 1.
+    m2.send(id, 'tweak the styles');
+    await flush();
+    const after = m2.get(id);
+    expect(after?.messages.at(-1)).toMatchObject({
+      seq: 3,
+      kind: 'user',
+      text: 'tweak the styles',
+    });
+  });
 });

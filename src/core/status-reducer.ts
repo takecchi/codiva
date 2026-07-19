@@ -76,7 +76,8 @@ function asString(v: unknown): string {
   return v == null ? '' : JSON.stringify(v);
 }
 
-function summarizeToolUse(name: string, input: Record<string, unknown>): string {
+/** One-line log summary for a tool_use block. Shared with `transcript.ts` (history restore). */
+export function summarizeToolUse(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case 'Write':
     case 'Edit':
@@ -94,6 +95,14 @@ function summarizeToolUse(name: string, input: Record<string, unknown>): string 
     default:
       return name;
   }
+}
+
+/**
+ * One-line log summary for a tool_result block's content (first line, capped).
+ * Shared with `transcript.ts` so restored history matches the live log format.
+ */
+export function toolResultSummary(content: unknown): string {
+  return asString(content).split('\n')[0]?.slice(0, 200) ?? '';
 }
 
 /** Apply a TaskCreate/TaskUpdate/TodoWrite tool_use block to the todo list. */
@@ -231,7 +240,7 @@ function reduceUser(state: SessionState, message: Record<string, unknown>): Sess
   for (const raw of content) {
     if (raw && typeof raw === 'object' && (raw as { type?: string }).type === 'tool_result') {
       const tr = raw as ToolResultBlock;
-      const text = asString(tr.content).split('\n')[0]?.slice(0, 200) ?? '';
+      const text = toolResultSummary(tr.content);
       if (text.length > 0) {
         const seq = logSeq + 1;
         messages = [...messages, { seq, kind: 'tool_result', text }];
