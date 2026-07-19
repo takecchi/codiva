@@ -121,6 +121,35 @@ describe('Session', () => {
     expect(session.getState().pendingPermission).toBeUndefined();
   });
 
+  it('stays awaiting_input when the assistant tool_use message lands after the question', async () => {
+    // Regression: canUseTool (control channel) and the assistant message
+    // carrying the AskUserQuestion tool_use (stream channel) arrive out-of-band.
+    // If the assistant message is reduced after the question is registered it
+    // must not flip the badge back to Running.
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    await tick();
+
+    const questionInput = {
+      questions: [{ question: 'Which language?', header: 'Lang', multiSelect: false, options: [] }],
+    };
+    fake.call('AskUserQuestion', questionInput);
+    expect(session.getState().status).toBe('awaiting_input');
+
+    // The stream channel now delivers the assistant message for that tool_use.
+    fake.emit({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 't1', name: 'AskUserQuestion', input: questionInput }],
+      },
+    } as unknown as SDKMessage);
+    await tick();
+
+    expect(session.getState().status).toBe('awaiting_input');
+    expect(session.getState().pendingPermission?.kind).toBe('question');
+  });
+
   it('auto-allows routine tools without escalating', async () => {
     const fake = makeFakeQuery();
     const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
