@@ -11,6 +11,7 @@ export * from './mouse';
 export * from './notify';
 export * from './persistence';
 export * from './scroll';
+export * from './sdk-parse';
 export * from './session';
 export * from './session-manager';
 export * from './slug';

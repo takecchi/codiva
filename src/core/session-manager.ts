@@ -6,7 +6,7 @@ import {
 } from './persistence';
 import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
-import { initialState } from './status-reducer';
+import { initialState, reduce } from './status-reducer';
 import type { CreateSessionInput, LogEntry, PrChecksState, PrInfo, SessionState } from './types';
 import { type DiffStat, MergeConflictError, type Worktree } from './worktree';
 
@@ -260,9 +260,15 @@ export class SessionManager {
       this.rebuild();
       session.start();
     } catch (err) {
+      // Provisioning failed before a Session exists — run it through the reducer
+      // (rather than hand-writing state) so failure classification and the error
+      // log line stay consistent with every other transition.
       const current = this.states.get(id);
       if (current) {
-        this.states.set(id, { ...current, status: 'failed', error: String(err) });
+        this.states.set(
+          id,
+          reduce(current, { kind: 'aborted', error: String(err), at: this.now() }),
+        );
         this.rebuild();
       }
     }

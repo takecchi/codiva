@@ -8,6 +8,7 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncQueue } from './async-queue';
+import { applySdkMessage } from './sdk-parse';
 import { initialState, reduce } from './status-reducer';
 import type {
   CodivaEvent,
@@ -312,7 +313,9 @@ export class Session {
         },
       });
       for await (const message of this.handle) {
-        this.dispatch({ kind: 'sdk', message: message as SDKMessage, at: this.now() });
+        // Raw SDK output is folded straight into state by sdk-parse (not routed
+        // through the reducer's event union) — see core/sdk-parse.ts.
+        this.commit(applySdkMessage(this.state, message as SDKMessage, this.now()));
       }
     } catch (err) {
       if (!this.abortController.signal.aborted) {
@@ -322,7 +325,11 @@ export class Session {
   }
 
   private dispatch(event: CodivaEvent): void {
-    const next = reduce(this.state, event);
+    this.commit(reduce(this.state, event));
+  }
+
+  /** Adopt a newly computed state and notify subscribers (skips no-op transitions). */
+  private commit(next: SessionState): void {
     if (next !== this.state) {
       this.state = next;
       this.onChange?.(next);

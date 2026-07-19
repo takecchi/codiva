@@ -1,4 +1,4 @@
-import { summarizeToolUse, toolResultSummary } from './status-reducer';
+import { summarizeToolUse, toolResultSummary } from './sdk-parse';
 import type { LogEntry } from './types';
 
 /**
