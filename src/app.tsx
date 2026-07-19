@@ -1,5 +1,5 @@
 import { Box, useApp, useInput, useWindowSize } from 'ink';
-import { type FC, useState } from 'react';
+import { type FC, useRef, useState } from 'react';
 import {
   messages as catalogs,
   isFullscreenViewport,
@@ -10,6 +10,9 @@ import { MessagesProvider, SessionDetail, SessionList } from '@/ui';
 
 /** どの画面を出しているか。詳細は対象セッション id を持つ。 */
 type View = { mode: 'list' } | { mode: 'detail'; id: string };
+
+/** 一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン）。 */
+type ListViewState = { selected: number; focus: 'composer' | 'list' };
 
 export const App: FC<{
   manager: SessionManager;
@@ -31,6 +34,10 @@ export const App: FC<{
 }) => {
   const { exit } = useApp();
   const [view, setView] = useState<View>({ mode: 'list' });
+  // 一覧はビュー切替でアンマウントされ内部 state（選択行・フォーカス）が失われる。
+  // 詳細から戻ったときに「前見ていた箇所」を復元できるよう、最新の表示状態をここに
+  // 保持し、再マウント時の初期値として渡す（選択行 = スクロール状態なので一緒に戻る）。
+  const listStateRef = useRef<ListViewState | undefined>(undefined);
   // Ink はコンテンツの高さぶんしか描画しない（インラインレンダラ）ため、端末の
   // 行数を root に明示して全画面（web の 100dvh 相当）にする。リサイズにも追従。
   // overflow="hidden" は保険: フレームが端末高さを超えると Ink が全画面クリアに
@@ -70,6 +77,10 @@ export const App: FC<{
             cwd={cwd}
             model={model}
             version={version}
+            initialViewState={listStateRef.current}
+            onViewStateChange={(state) => {
+              listStateRef.current = state;
+            }}
           />
         )}
       </Box>
