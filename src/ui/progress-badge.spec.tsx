@@ -21,6 +21,7 @@ describe('badgeFor', () => {
     expect(badgeFor({ ...base, status: 'awaiting_input' }, m).label).toBe('質問あり');
     expect(badgeFor({ ...base, status: 'completed' }, m).label).toBe('完了');
     expect(badgeFor({ ...base, status: 'interrupted' }, m).label).toBe('中断');
+    expect(badgeFor({ ...base, status: 'rate_limited' }, m).label).toBe('レート制限');
     expect(badgeFor({ ...base, status: 'failed' }, m).label).toBe('失敗');
   });
   it('maps statuses to labelled badges (en)', () => {
@@ -28,6 +29,7 @@ describe('badgeFor', () => {
     expect(badgeFor({ ...base, status: 'creating' }, m).label).toBe('Preparing');
     expect(badgeFor({ ...base, status: 'completed' }, m).label).toBe('Completed');
     expect(badgeFor({ ...base, status: 'interrupted' }, m).label).toBe('Interrupted');
+    expect(badgeFor({ ...base, status: 'rate_limited' }, m).label).toBe('Rate limited');
   });
   it('shows Step n/m when a running session has progress', () => {
     const s: SessionState = { ...base, status: 'running', progress: { done: 4, total: 7 } };

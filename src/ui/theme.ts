@@ -35,6 +35,7 @@ export const statusColor = {
   awaitingInput: '#e12885', // pink — needs your answer (matches brand pop)
   completed: '#35c46b', // green — success
   interrupted: '#c9a227', // muted gold — stopped mid-run, resumable (not a clean finish)
+  rateLimited: '#c678dd', // violet — stopped by a usage/rate limit, resumable once it resets
   failed: '#f0524b', // red — error
   conflict: '#d9663d', // burnt orange — merge conflict, needs manual resolution
   external: '#a878f0', // violet — handed off to the claude CLI

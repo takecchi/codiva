@@ -32,6 +32,7 @@ describe('restorableStatus', () => {
     ['awaiting_input', 'interrupted'],
     ['completed', 'completed'],
     ['interrupted', 'interrupted'],
+    ['rate_limited', 'interrupted'],
     ['failed', 'failed'],
     ['archived', undefined],
   ])('maps %s → %s', (status, expected) => {

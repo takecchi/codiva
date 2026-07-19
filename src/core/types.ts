@@ -8,6 +8,7 @@ export type SessionStatus =
   | 'awaiting_input' // Claude asked the user a question (AskUserQuestion)
   | 'completed' // a turn finished successfully (idle, can receive more input)
   | 'interrupted' // app was closed mid-flight (running/awaiting_*); idle & resumable, not a real completion
+  | 'rate_limited' // stopped because a usage/rate limit was hit; idle & resumable once the limit resets
   | 'failed' // query errored or was aborted
   | 'conflict' // a merge into base hit conflicts; needs manual resolution
   | 'archived'; // merged or discarded; kept for reference
@@ -117,6 +118,12 @@ export interface SessionState {
   finishedAt?: number;
   totalCostUsd?: number;
   error?: string;
+  /**
+   * When `status: 'rate_limited'`, the epoch ms at which the hit limit resets
+   * (from the SDK's `rate_limit_event.rate_limit_info.resetsAt`), if the SDK
+   * reported it. Transient — used only for display; never persisted.
+   */
+  rateLimitResetsAt?: number;
   /**
    * The assistant text streamed so far for the in-flight message (from
    * `includePartialMessages` stream events). Transient live-typing preview —
