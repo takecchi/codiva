@@ -17,7 +17,9 @@ import {
   launchClaudeSession,
   loadConfig,
   loadState,
+  lookupPr,
   notify,
+  openUrl,
   pruneMissingWorktrees,
   saveState,
   saveStateSync,
@@ -80,10 +82,20 @@ async function main(): Promise<void> {
     },
     onTransition: notifyOnTransition,
     onPersist: schedulePersist,
+    lookupPr,
   });
 
   // Restore sessions from a previous run (worktrees that still exist on disk).
   manager.restore(pruneMissingWorktrees(await loadState(statePath)));
+
+  // Poll each live session's branch for an open PR so the list can show `#<n>`
+  // (and let the user open it). Runs once now, then on an interval; unref'd so a
+  // pending timer never keeps the process alive at shutdown.
+  void manager.refreshPrs();
+  const prTimer = setInterval(() => {
+    void manager.refreshPrs();
+  }, 20_000);
+  prTimer.unref?.();
 
   // Flush synchronously on hard termination (kill / terminal close), where the
   // debounced async save wouldn't run before the process dies. Ctrl+C is handled
@@ -135,10 +147,12 @@ async function main(): Promise<void> {
       model={config.model}
       messages={t}
       runExternal={runExternal}
+      onOpenPr={openUrl}
     />,
     { exitOnCtrlC: false },
   );
   await waitUntilExit();
+  clearInterval(prTimer);
 
   // Flush the final state on quit. dispose() used stop() (not abort()), so
   // in-flight sessions are still recorded as resumable here.

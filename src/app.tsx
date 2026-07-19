@@ -24,6 +24,8 @@ export const App: FC<{
   model?: string;
   messages?: Messages;
   runExternal?: ExternalRunner;
+  /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
+  onOpenPr?: (url: string) => void;
 }> = ({
   manager,
   cwd,
@@ -31,6 +33,7 @@ export const App: FC<{
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   runExternal,
+  onOpenPr,
 }) => {
   const { exit, suspendTerminal } = useApp();
   // Ink はコンテンツの高さぶんしか描画しない（インラインレンダラ）ため、端末の
@@ -83,6 +86,7 @@ export const App: FC<{
         <SessionList
           manager={manager}
           onOpenExternal={runExternal ? openExternal : undefined}
+          onOpenPr={onOpenPr}
           onQuit={quit}
           cwd={cwd}
           model={model}

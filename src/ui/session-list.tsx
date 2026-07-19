@@ -1,4 +1,4 @@
-import { Box, type DOMElement, type Key, Text, useInput } from 'ink';
+import { Box, type DOMElement, type Key, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   bufferLines,
@@ -32,6 +32,16 @@ import { glyph, theme } from './theme';
 /** Launch the selected session in the claude CLI; resolves when the user returns. */
 export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string }>;
 
+/** Open a PR web URL in the browser (fire-and-forget). */
+export type OpenPr = (url: string) => void;
+
+/**
+ * Display width of the trailing `#<n>` PR cell. It's the row's last column, so it
+ * sits flush at the right edge regardless of the responsive title/branch widths —
+ * which lets mouse hit-testing locate it from the terminal width alone.
+ */
+const PR_CELL_WIDTH = 8;
+
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
  * zones — 'composer' (default: typing + full caret movement) and 'list'
@@ -42,14 +52,17 @@ export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string
 export const SessionList: FC<{
   manager: SessionManager;
   onOpenExternal?: OpenExternal;
+  onOpenPr?: OpenPr;
   onQuit: () => void;
   cwd?: string;
   model?: string;
-}> = ({ manager, onOpenExternal, onQuit, cwd, model }) => {
+}> = ({ manager, onOpenExternal, onOpenPr, onQuit, cwd, model }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
   const now = useClock(1000);
+  // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に使う。リサイズ追従。
+  const { columns } = useWindowSize();
   const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
   // 同一チャンクで複数キーイベントが連続すると（連打・エスケープ列のまとめ読み）、
   // React の state はイベント間で更新されず stale closure になる。編集は必ず
@@ -98,6 +111,13 @@ export const SessionList: FC<{
       setBusy(false);
       setActionError(result.ok ? undefined : result.error);
     });
+  };
+
+  /** Open the selected session's PR in the browser, if it has one. */
+  const openPr = () => {
+    if (target?.pr && onOpenPr) {
+      onOpenPr(target.pr.url);
+    }
   };
 
   /** Resolve a `/command` and perform its effect. Unknown names surface as errors. */
@@ -152,8 +172,19 @@ export const SessionList: FC<{
       }
     }
     if (rowsBox && y >= rowsBox.top && y < rowsBox.top + sorted.length) {
-      setSel(y - rowsBox.top);
+      const idx = y - rowsBox.top;
+      setSel(idx);
       setFocus('list');
+      // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
+      // browser. The cell is right-anchored, so derive its x-range from the terminal
+      // width (outer padding is symmetric, so the right pad equals rowsBox.left).
+      const s = sorted[idx];
+      if (s?.pr && onOpenPr) {
+        const cellLeft = columns - rowsBox.left - PR_CELL_WIDTH;
+        if (x >= cellLeft && x < cellLeft + PR_CELL_WIDTH) {
+          onOpenPr(s.pr.url);
+        }
+      }
     }
   };
 
@@ -240,6 +271,10 @@ export const SessionList: FC<{
       }
       if (key.return || key.rightArrow) {
         openInClaude();
+        return;
+      }
+      if (input === 'p' || input === 'P') {
+        openPr();
         return;
       }
       if (input === 'm' || input === 'M') {
@@ -343,6 +378,15 @@ export const SessionList: FC<{
                   </Text>
                 </Box>
                 <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
+                {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
+                    左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
+                <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
+                  {s.pr ? (
+                    <Text color={theme.accent} underline>
+                      #{s.pr.number}
+                    </Text>
+                  ) : null}
+                </Box>
               </Box>
             );
           })
