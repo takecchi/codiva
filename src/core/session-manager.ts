@@ -64,6 +64,8 @@ export interface SessionManagerDeps {
   onTransition?: (prev: SessionState, next: SessionState) => void;
   /** Called (as a dirty signal) whenever the persistable set changes; wired to a debounced save. */
   onPersist?: () => void;
+  /** Called when the default model for new sessions changes (via /model); wired to persist the config file. */
+  onModelChange?: (model: string | undefined) => void;
   /** Optional PR lookup (via `gh`); when set, refreshPrs() polls each live session's branch. */
   lookupPr?: PrLookup;
   /** Factory for a session; defaults to constructing a real Session. `resume`/`restored` are set when rehydrating. */
@@ -95,9 +97,16 @@ export class SessionManager {
   private seq = 0;
   private mode: RunMode = 'auto';
   private readonly now: () => number;
+  /**
+   * Live per-session knobs forwarded to each new Session. Seeded from
+   * deps.options (the config file) but mutable so /model can change the default
+   * model for sessions created later in this run.
+   */
+  private options: SessionOptions;
 
   constructor(private readonly deps: SessionManagerDeps) {
     this.now = deps.now ?? Date.now;
+    this.options = { ...deps.options };
   }
 
   subscribe(listener: Listener): () => void {
@@ -105,6 +114,23 @@ export class SessionManager {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  /** The model used for new sessions (undefined → CLI default). */
+  getModel(): string | undefined {
+    return this.options.model;
+  }
+
+  /**
+   * Set the default model for sessions created from now on (via /model). Already
+   * running sessions keep the model they started with. Persists via onModelChange.
+   */
+  setModel(model: string | undefined): void {
+    if (this.options.model === model) {
+      return;
+    }
+    this.options = { ...this.options, model };
+    this.deps.onModelChange?.(model);
   }
 
   /** Current tool-approval mode (drives the shift+tab footer indicator). */
@@ -185,7 +211,7 @@ export class SessionManager {
         new Session({
           queryFn: this.deps.queryFn,
           input,
-          options: this.deps.options,
+          options: this.options,
           now: this.now,
           policy: this.deps.policy ?? this.modePolicy,
           onChange: (s) => this.onSessionChange(id, s),
@@ -248,7 +274,7 @@ export class SessionManager {
         new Session({
           queryFn: this.deps.queryFn,
           input,
-          options: this.deps.options,
+          options: this.options,
           now: this.now,
           policy: this.deps.policy ?? this.modePolicy,
           onChange,

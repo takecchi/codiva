@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
 import {
+  type CodivaConfig,
   isFullscreenViewport,
   messages,
   notificationFor,
@@ -20,6 +21,7 @@ import {
   notify,
   openUrl,
   pruneMissingWorktrees,
+  saveConfig,
   saveState,
   saveStateSync,
 } from '@/utils';
@@ -69,6 +71,20 @@ async function main(): Promise<void> {
     }, 500);
   };
 
+  // /model による切替を ~/.codiva/config.json に永続化する。設定は起動時に一度
+  // 読むだけなので、他フィールドを保つため直近の設定を保持してマージ保存する。
+  let currentConfig: CodivaConfig = config;
+  const persistModel = (model: string | undefined): void => {
+    const next: CodivaConfig = { ...currentConfig };
+    if (model === undefined) {
+      delete next.model;
+    } else {
+      next.model = model;
+    }
+    currentConfig = next;
+    void saveConfig(next).catch(() => undefined);
+  };
+
   const manager = new SessionManager({
     worktrees,
     queryFn: query,
@@ -81,6 +97,7 @@ async function main(): Promise<void> {
     },
     onTransition: notifyOnTransition,
     onPersist: schedulePersist,
+    onModelChange: persistModel,
     lookupPr,
   });
 

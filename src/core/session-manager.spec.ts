@@ -582,4 +582,59 @@ describe('SessionManager', () => {
       expect(manager.getSnapshot()).toBe(before);
     });
   });
+
+  describe('model selection (/model)', () => {
+    it('seeds getModel from the injected options and updates on setModel', () => {
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        options: { model: 'claude-opus-4-8' },
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      expect(manager.getModel()).toBe('claude-opus-4-8');
+      manager.setModel('claude-haiku-4-5');
+      expect(manager.getModel()).toBe('claude-haiku-4-5');
+    });
+
+    it('fires onModelChange only when the model actually changes', () => {
+      const onModelChange = vi.fn();
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        options: { model: 'claude-opus-4-8' },
+        onModelChange,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      manager.setModel('claude-opus-4-8'); // no-op: same value
+      expect(onModelChange).not.toHaveBeenCalled();
+      manager.setModel(undefined); // back to CLI default
+      expect(onModelChange).toHaveBeenCalledWith(undefined);
+    });
+
+    it('applies the selected model to sessions created afterward', async () => {
+      const models: (string | undefined)[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        // Real Session path (no createSession factory) so options reach the query.
+        queryFn: ((params: { options: { model?: string } }) => {
+          models.push(params.options.model);
+          return (async function* () {})();
+        }) as never,
+        now: () => 1,
+        options: { model: 'claude-opus-4-8' },
+      });
+      manager.create('first');
+      await flush();
+      manager.setModel('claude-haiku-4-5');
+      manager.create('second');
+      await flush();
+      expect(models).toEqual(['claude-opus-4-8', 'claude-haiku-4-5']);
+    });
+  });
 });

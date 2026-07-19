@@ -121,6 +121,9 @@ UI なし。すべてユニットテストで駆動する。
 - [x] 入力欄の複数行化（`core/text-buffer.ts` + `ui/input.ts`。Shift+Enter/末尾`\`+Enter で改行、`INPUT_MAX_ROWS` まで伸び超過は内部スクロール）
 - [x] アプリ再起動後のセッション復元（`.codiva/state.json` + SDK `resume`）
 - [x] 設定ファイル（model / effort / permissionMode / maxBudgetUsd）
+- [x] `/model` コマンドでモデル切替（一覧画面のコンポーザで `/model` → モデル選択ダイアログ。
+      選択は以降の新規セッションの既定になり `~/.codiva/config.json` に保存。`core/models.ts` /
+      `core/commands.ts` / `ui/model-select.tsx` / `SessionManager.get|setModel`）
 - [x] コスト表示（result の total_cost_usd 累計）
 - [x] includePartialMessages によるストリーミング表示（`stream_event` の text_delta を `streamingText` に連結し詳細ビューにプレビュー）
 - [x] デスクトップ通知（質問・完了時）

@@ -26,6 +26,7 @@ import { CommandPalette } from './command-palette';
 import { useAbsolutePosition, useBoxHeight, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
+import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
@@ -77,6 +78,8 @@ export const SessionList: FC<{
   const [focus, setFocus] = useState<'composer' | 'list'>('composer');
   const [sel, setSel] = useState(0);
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
+  // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
+  const [modelSelect, setModelSelect] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
@@ -138,6 +141,10 @@ export const SessionList: FC<{
         return;
       case 'help':
         setShowHelp(true);
+        return;
+      case 'model':
+        // `/model` はセッションを作らずモデル選択ダイアログを開く。
+        setModelSelect(true);
         return;
     }
   };
@@ -226,6 +233,11 @@ export const SessionList: FC<{
     const input = chord ? (chord.kind === 'text' ? chord.text : '') : rawInput;
     if (key.ctrl && input === 'c') {
       onQuit();
+      return;
+    }
+    // The model picker is modal: it owns the keys (its own useInput handles
+    // arrows/Enter/Esc). Ignore everything else here so nothing leaks through.
+    if (modelSelect) {
       return;
     }
     if (key.tab && key.shift) {
@@ -323,6 +335,7 @@ export const SessionList: FC<{
         return;
       }
       // 先頭が `/` はコマンド。通常の指示（manager.create）と分岐する。
+      // `/model` はコマンドレジストリ経由でモデル選択ダイアログを開く。
       if (isCommandInput(enter.text)) {
         runCommandInput(enter.text);
         updateBuffer(emptyBuffer());
@@ -338,11 +351,13 @@ export const SessionList: FC<{
     }
   });
 
-  const footerHint = pending
-    ? m.list.helpPending
-    : focus === 'list'
-      ? m.list.helpList
-      : m.list.helpComposer;
+  const footerHint = modelSelect
+    ? m.model.help
+    : pending
+      ? m.list.helpPending
+      : focus === 'list'
+        ? m.list.helpList
+        : m.list.helpComposer;
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -441,7 +456,16 @@ export const SessionList: FC<{
         <CommandPalette title={m.command.helpTitle} commands={COMMANDS} />
       ) : null}
 
-      {pending && target ? (
+      {modelSelect ? (
+        <ModelSelect
+          current={manager.getModel()}
+          onSelect={(model) => {
+            manager.setModel(model);
+            setModelSelect(false);
+          }}
+          onCancel={() => setModelSelect(false)}
+        />
+      ) : pending && target ? (
         <PermissionDialog
           request={pending}
           onAnswer={(answers) => manager.answer(target.id, answers)}

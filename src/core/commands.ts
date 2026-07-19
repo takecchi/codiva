@@ -14,7 +14,7 @@
 import type { Messages } from './i18n';
 
 /** コマンドが UI に要求する動作。新コマンド追加時はここに足して UI で受ける。 */
-export type CommandAction = 'help' | 'quit';
+export type CommandAction = 'help' | 'quit' | 'model';
 
 /** 1 つのスラッシュコマンドの定義。 */
 export interface CommandSpec {
@@ -33,6 +33,7 @@ export interface CommandSpec {
  * 表示順はこの配列順。
  */
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: 'model', action: 'model', describe: (m) => m.command.model },
   { name: 'help', aliases: ['?'], action: 'help', describe: (m) => m.command.help },
   { name: 'quit', aliases: ['exit', 'q'], action: 'quit', describe: (m) => m.command.quit },
 ];

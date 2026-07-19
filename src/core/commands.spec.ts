@@ -62,6 +62,7 @@ describe('matchCommands', () => {
   it('prefix-matches the typed name', () => {
     expect(matchCommands('/q').map((c) => c.name)).toEqual(['quit']);
     expect(matchCommands('/h').map((c) => c.name)).toEqual(['help']);
+    expect(matchCommands('/mo').map((c) => c.name)).toEqual(['model']);
   });
   it('matches on aliases too', () => {
     expect(matchCommands('/ex').map((c) => c.name)).toEqual(['quit']);
@@ -78,6 +79,9 @@ describe('runCommand', () => {
   });
   it('resolves aliases', () => {
     expect(runCommand('/exit')).toEqual({ kind: 'run', command: findCommand('quit') });
+  });
+  it('resolves /model to the model command', () => {
+    expect(runCommand('/model')).toEqual({ kind: 'run', command: findCommand('model') });
   });
   it('treats a bare slash as help (no false unknown)', () => {
     expect(runCommand('/')).toEqual({ kind: 'run', command: findCommand('help') });
