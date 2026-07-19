@@ -11,7 +11,6 @@ import {
   SessionManager,
   type SessionState,
   transcriptLogEntries,
-  WorktreeManager,
 } from '@/core';
 import {
   createPr,
@@ -31,6 +30,7 @@ import {
   saveConfig,
   saveState,
   saveStateSync,
+  WorktreeManager,
 } from '@/utils';
 import { App } from './app';
 

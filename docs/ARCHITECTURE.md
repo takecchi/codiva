@@ -13,14 +13,23 @@ UI とコアロジックを完全に分離する。コアは Ink/React に一切
 ┌────────┴─ core/ (純TypeScript, UIなし) ─────────────┐
 │  SessionManager … セッションの生成・保持・イベント発火   │
 │  Session        … 1セッション = SDK query + 状態     │
-│  reduceStatus() … SDKMessage → SessionState 畳み込み │
+│  reduce()       … CodivaEvent → SessionState 畳み込み│
+│  Worktree 型 / MergeConflictError / 純関数            │
+└────────┬────────────────────────────────────────────┘
+┌────────┴─ utils/ (I/O ラッパ, core にのみ依存) ──────┐
 │  WorktreeManager… git worktree の作成・削除・マージ   │
+│  git() / config / state-store / pr / notify …        │
 └────────┬────────────────────────────────────────────┘
 ┌────────┴─ 外部 ─────────────────────────────────────┐
 │  @anthropic-ai/claude-agent-sdk (query)             │
 │  git CLI (worktree / diff / merge)                  │
 └─────────────────────────────────────────────────────┘
 ```
+
+依存方向は一方向（`ui → core ← utils`）。`WorktreeManager` は fs + git 実行の I/O 具象なので
+utils レイヤに置く（`core` は node の I/O を import しない）。`core/worktree.ts` には純粋な型
+（`Worktree` / `DiffStat`）・`MergeConflictError`・`ignoredCopyEntries()` だけを残し、
+`SessionManager` は `WorktreeService` インターフェース越しに具象を DI で受ける。
 
 ## ディレクトリ構造
 
@@ -36,7 +45,7 @@ codiva/
 │   │   ├── status-reducer.spec.ts   # 単体テストは実装の隣に co-located
 │   │   ├── session.ts / session.spec.ts
 │   │   ├── session-manager.ts / session-manager.spec.ts  # Store + ライフサイクル + 復元
-│   │   ├── worktree.ts / worktree.spec.ts                # WorktreeManager
+│   │   ├── worktree.ts / worktree.spec.ts                # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
 │   │   ├── async-queue.ts / async-queue.spec.ts
 │   │   ├── slug.ts / slug.spec.ts
 │   │   ├── config.ts / config.spec.ts     # 設定ドメイン型 + toConfig()（言語/model/effort/…）
@@ -62,6 +71,7 @@ codiva/
 │   └── utils/
 │       ├── index.ts           # バレル
 │       ├── git.ts / git.spec.ts             # execFile ベースの git 実行ヘルパ
+│       ├── worktree-manager.ts / worktree-manager.spec.ts  # WorktreeManager（git worktree の I/O）
 │       ├── config.ts / config.spec.ts       # ~/.codiva/config.json の読み書き
 │       ├── notify.ts / notify.spec.ts       # OS デスクトップ通知（osascript / notify-send）
 │       ├── mouse.ts / mouse.spec.ts              # SGR マウスレポートの有効化/無効化

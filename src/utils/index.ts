@@ -8,3 +8,4 @@ export * from './pr';
 export * from './state-store';
 export * from './title';
 export * from './transcript';
+export * from './worktree-manager';
