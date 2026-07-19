@@ -19,6 +19,11 @@ export interface CodivaConfig {
   maxBudgetUsd?: number;
   /** 質問・完了時のデスクトップ通知。未設定は有効（true）。 */
   notifications?: boolean;
+  /**
+   * マウスサポート（クリックでキャレット移動・行選択）。未設定は有効（true）。
+   * 有効中は端末のテキスト選択が通常ドラッグでできない（Shift+ドラッグは可）。
+   */
+  mouse?: boolean;
 }
 
 /** SDK 由来 union の実行時検証用リテラル。型が変われば型エラーで気付ける。 */
@@ -40,6 +45,7 @@ interface CodivaConfigJson {
   permissionMode?: unknown;
   maxBudgetUsd?: unknown;
   notifications?: unknown;
+  mouse?: unknown;
 }
 
 function toLangSetting(value: unknown): Lang | 'auto' | undefined {
@@ -62,7 +68,7 @@ function toMaxBudget(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-function toNotifications(value: unknown): boolean | undefined {
+function toBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
@@ -97,9 +103,13 @@ export function toConfig(json: unknown): CodivaConfig {
   if (maxBudgetUsd !== undefined) {
     config.maxBudgetUsd = maxBudgetUsd;
   }
-  const notifications = toNotifications(raw.notifications);
+  const notifications = toBoolean(raw.notifications);
   if (notifications !== undefined) {
     config.notifications = notifications;
+  }
+  const mouse = toBoolean(raw.mouse);
+  if (mouse !== undefined) {
+    config.mouse = mouse;
   }
   return config;
 }

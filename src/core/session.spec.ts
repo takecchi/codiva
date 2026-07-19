@@ -296,6 +296,23 @@ describe('Session', () => {
     expect(session.getState().status).toBe('awaiting_permission');
   });
 
+  it('detach() stops quietly and marks the session external (handed to claude CLI)', async () => {
+    const policy: PermissionPolicy = (name) => (name === 'Bash' ? 'ask' : 'allow');
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 7, policy });
+    session.start();
+    await tick();
+    const decision = fake.call('Bash', { command: 'ls' });
+    expect(session.getState().status).toBe('awaiting_permission');
+    session.detach();
+    // Like stop(): the dangling prompt is denied so the transcript stays resumable…
+    await expect(decision).resolves.toEqual({ behavior: 'deny', message: 'session stopped' });
+    // …but unlike stop(), the state records the hand-off.
+    expect(session.getState().status).toBe('external');
+    expect(session.getState().pendingPermission).toBeUndefined();
+    expect(session.getState().error).toBeUndefined();
+  });
+
   it('a restored session stays idle until send(), then resumes with the SDK session id', async () => {
     let seen: Options | undefined;
     const queryFn = (({ options }: { options: Options }) => {

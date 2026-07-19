@@ -22,30 +22,19 @@ export interface Messages {
     totalCost: (usd: string) => string;
     emptyHint: string;
     promptPlaceholder: string;
-    help: string;
-  };
-  /** 詳細ビュー（session-detail.tsx） */
-  detail: {
-    notFound: string;
-    progress: (done: number, total: number, active: string | undefined) => string;
-    cost: (usd: string) => string;
-    errorLabel: string;
-    changesTitle: (branch: string) => string;
-    noCommittedChanges: string;
-    uncommitted: (n: number) => string;
+    /** 入力（コンポーザ）フォーカス時のフッタヒント */
+    helpComposer: string;
+    /** セッション一覧フォーカス時のフッタヒント */
+    helpList: string;
+    /** 選択中セッションの許可/質問ダイアログがキーを持つ間のヒント */
+    helpPending: string;
     actionErrorLabel: string;
-    followupPlaceholder: string;
-    scrollHint: (newerBelow: number) => string;
-    actionsTitle: string;
     mergePrompt: string;
     discardPrompt: string;
     confirmRun: string;
     busySuffix: string;
-    mergeAction: string;
-    discardAction: string;
-    helpPending: string;
-    helpActions: string;
-    helpInput: string;
+    /** session_id 未確定（creating 直後など）でまだ claude で開けない */
+    openNotReady: string;
   };
   /** ステータスバッジ（progress-badge.tsx） */
   badge: {
@@ -56,6 +45,7 @@ export interface Messages {
     awaitingInput: string;
     completed: string;
     failed: string;
+    external: string;
     archived: string;
   };
   /** 許可・質問ダイアログ（permission-dialog.tsx） */
@@ -96,29 +86,15 @@ const ja: Messages = {
     totalCost: (usd) => `合計 ${usd}`,
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
-    help: 'Enter: 投入 ・ Shift+Enter: 改行 ・ ↑↓: 選択 ・ →: 詳細 ・ Ctrl+C: 終了',
-  },
-  detail: {
-    notFound: 'セッションが見つかりません。Esc で戻ります。',
-    progress: (done, total, active) => `進捗 ${done}/${total}${active ? ` — ${active}` : ''}`,
-    cost: (usd) => `コスト ${usd}`,
-    errorLabel: 'エラー',
-    changesTitle: (branch) => `変更（${branch} vs ベース）:`,
-    noCommittedChanges: '（コミット済みの変更なし）',
-    uncommitted: (n) => `未コミット ${n} 件`,
+    helpComposer: 'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ Ctrl+C: 終了',
+    helpList: '↑↓: 選択 ・ Enter: claudeで開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
+    helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
     actionErrorLabel: '操作エラー',
-    followupPlaceholder: '追加の指示を入力…',
-    scrollHint: (n) => `▲ 過去ログを表示中 — 最新まで ${n} 件（PgDn で下へ）`,
-    actionsTitle: '操作',
     mergePrompt: 'ベースへマージします。',
     discardPrompt: 'worktree とブランチを破棄します。',
     confirmRun: '実行しますか？',
     busySuffix: '…実行中',
-    mergeAction: 'マージ（--no-ff）',
-    discardAction: '破棄（worktree削除）',
-    helpPending: 'Esc: 一覧へ戻る',
-    helpActions: 'm/d: 操作 ・ Tab: 入力へ ・ Esc: 戻る',
-    helpInput: 'Enter: 送信 ・ Shift+Enter: 改行 ・ PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ',
+    openNotReady: 'このセッションはまだ claude で開けません（セッションID未取得）',
   },
   badge: {
     creating: '準備中',
@@ -128,6 +104,7 @@ const ja: Messages = {
     awaitingInput: '質問あり',
     completed: '完了',
     failed: '失敗',
+    external: 'claude作業中',
     archived: '保管済み',
   },
   permission: {
@@ -165,29 +142,15 @@ const en: Messages = {
     totalCost: (usd) => `total ${usd}`,
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
-    help: 'Enter: submit · Shift+Enter: newline · ↑↓: select · →: detail · Ctrl+C: quit',
-  },
-  detail: {
-    notFound: 'Session not found. Press Esc to go back.',
-    progress: (done, total, active) => `Progress ${done}/${total}${active ? ` — ${active}` : ''}`,
-    cost: (usd) => `Cost ${usd}`,
-    errorLabel: 'error',
-    changesTitle: (branch) => `Changes (${branch} vs base):`,
-    noCommittedChanges: '(no committed changes)',
-    uncommitted: (n) => `${n} uncommitted change${n === 1 ? '' : 's'}`,
+    helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · Ctrl+C: quit',
+    helpList: '↑↓: select · Enter: open in claude · m: merge · d: discard · Tab/Esc: input',
+    helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
     actionErrorLabel: 'Action error',
-    followupPlaceholder: 'Enter a follow-up instruction…',
-    scrollHint: (n) => `▲ Viewing older log — ${n} newer below (PgDn to go down)`,
-    actionsTitle: 'Actions',
     mergePrompt: 'Merge into the base branch.',
     discardPrompt: 'Discard the worktree and branch.',
     confirmRun: 'Proceed?',
     busySuffix: '…running',
-    mergeAction: 'Merge (--no-ff)',
-    discardAction: 'Discard (remove worktree)',
-    helpPending: 'Esc: back to list',
-    helpActions: 'm/d: actions · Tab: input · Esc: back',
-    helpInput: 'Enter: send · Shift+Enter: newline · PgUp/PgDn: log · Tab: actions · Esc: back',
+    openNotReady: 'This session cannot be opened in claude yet (no session id).',
   },
   badge: {
     creating: 'Preparing',
@@ -197,6 +160,7 @@ const en: Messages = {
     awaitingInput: 'Question',
     completed: 'Completed',
     failed: 'Failed',
+    external: 'In claude',
     archived: 'Archived',
   },
   permission: {

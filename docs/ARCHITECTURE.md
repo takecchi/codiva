@@ -6,7 +6,7 @@ UI とコアロジックを完全に分離する。コアは Ink/React に一切
 
 ```
 ┌─ ui/ (Ink + React) ────────────────────────────────┐
-│  App / SessionList / SessionDetail / PromptInput    │
+│  App / SessionList / PromptInput                    │
 │  PermissionDialog / ProgressBadge                   │
 │        ▲ useSyncExternalStore で購読                 │
 └────────┼────────────────────────────────────────────┘
@@ -28,7 +28,7 @@ UI とコアロジックを完全に分離する。コアは Ink/React に一切
 codiva/
 ├── src/
 │   ├── index.tsx              # bin エントリ。前提チェック → Ink render → 終了時に残存 worktree 表示
-│   ├── app.tsx                # ルートコンポーネント。ビュー切替（一覧 / 詳細）
+│   ├── app.tsx                # ルートコンポーネント。claude CLI 連携（suspendTerminal）の起点
 │   ├── core/                  # 純粋ドメイン（Ink/React 非依存）
 │   │   ├── index.ts           # バレル（export *）
 │   │   ├── types.ts           # SessionState, SessionStatus, CodivaEvent 等の型定義
@@ -43,13 +43,14 @@ codiva/
 │   │   ├── cost.ts / cost.spec.ts         # totalCostUsd() / formatUsd()（純粋・導出）
 │   │   ├── notify.ts / notify.spec.ts     # notificationFor()（通知の発火判定・純粋）
 │   │   ├── persistence.ts / persistence.spec.ts   # 復元用スナップショットの変換・検証（純粋）
+│   │   ├── text-buffer.ts / text-buffer.spec.ts   # 複数行テキストバッファ（value+cursor、純粋）
+│   │   ├── mouse.ts / mouse.spec.ts               # SGR マウスレポートの解析（純粋）
 │   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（reducer テスト用）
 │   ├── ui/                    # Ink コンポーネント（kebab-case, 識別子は PascalCase）
 │   │   ├── index.ts           # バレル
 │   │   ├── theme.ts           # アクセント色・グリフ（Claude Code 風の共通ビジュアル）
 │   │   ├── banner.tsx         # 起動時ヘッダ（✻ codiva + サブタイトル + cwd, 枠なし）
-│   │   ├── session-list.tsx
-│   │   ├── session-detail.tsx
+│   │   ├── session-list.tsx   # 唯一の画面（composer/list の2フォーカスゾーン）
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
 │   │   ├── status-footer.tsx  # ⏵⏵ auto mode on (shift+tab...) のモード行
 │   │   ├── permission-dialog.tsx / permission-dialog.spec.tsx
@@ -61,6 +62,8 @@ codiva/
 │       ├── git.ts / git.spec.ts             # execFile ベースの git 実行ヘルパ
 │       ├── config.ts / config.spec.ts       # ~/.codiva/config.json の読み書き
 │       ├── notify.ts / notify.spec.ts       # OS デスクトップ通知（osascript / notify-send）
+│       ├── claude-cli.ts / claude-cli.spec.ts    # claude --resume の spawn（端末 inherit）
+│       ├── mouse.ts / mouse.spec.ts              # SGR マウスレポートの有効化/無効化
 │       └── state-store.ts / state-store.spec.ts  # <repo>/.codiva/state.json の読み書き + prune
 ├── scripts/
 │   └── spike.ts               # Phase 1: SDK 挙動検証スクリプト
@@ -85,7 +88,8 @@ codiva/
  awaiting_input ──(追加指示送信)─────────────▶ running
  completed ──(追加指示送信)─────────────────▶ running   # 完了後の追加作業も許す
  * ──(query の throw / abort)──────────────▶ failed
- completed ──(マージ or 破棄)────────────────▶ archived
+ * ──(claude CLI で開く = detach)───────────▶ external  # codiva 側 query は quiet 停止
+ completed / external ──(マージ or 破棄)─────▶ archived
 ```
 
 `SessionState`（UI が購読する不変スナップショット）:
@@ -100,7 +104,7 @@ interface SessionState {
   worktreePath: string;
   todos: TodoItem[];          // TodoWrite の最新スナップショット
   progress?: { done: number; total: number }; // todos から導出
-  messages: LogEntry[];       // 詳細ビュー用の整形済みログ
+  messages: LogEntry[];       // 整形済みログ（現 UI では未表示。永続化・将来のプレビュー用に保持）
   pendingPermission?: PermissionRequest;      // awaiting_permission 時のみ
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
   startedAt: number;
@@ -129,6 +133,7 @@ interface SessionState {
 - `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
 - **復元対応**: `resume`（SDK セッションID）と `restored`（復元済み `SessionState`）を DI で受けられる。復元セッションは `start()` せず、最初の `send()` で遅延的に query を開始（`resume` 付き）。これで起動時にサブプロセスを乱立させない。
 - `stop()`: 状態を変えずにサブプロセスだけ落とす quiet 停止。アプリ終了時はこれを使い、実行中セッションを resumable のまま保存する（`abort()` は failed にする点が違い）。保留中の許可要求があれば deny で解決してから停止する（未応答の `tool_use` で resume が壊れるのを防ぐ）。
+- `detach()`: `stop()` + `detached` イベント → status `external`。claude CLI へ引き渡すときに使う（1 SDK セッション 1 ライターを守る）。
 
 ### SessionManager (`core/session-manager.ts`)
 
@@ -154,11 +159,17 @@ interface SessionState {
 
 Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**（web の 100dvh 相当。`App` が root Box に `useWindowSize()` の rows を指定。極端に低い端末では `isFullscreenViewport` が false になりインライン描画へフォールバック）に描画し、全画面時は起動時に **alt screen**（`utils/alt-screen.ts`）へ入ってスクロールバックを無効化（上へのスクロールをロック）し、下部に**上下の全幅横罫線だけ**の入力欄（`PromptInput`、角丸枠ではない）、その下にモード行（`StatusFooter` = `⏵⏵ auto mode on (shift+tab to cycle)` + 文脈ヒント）を flexGrow スペーサで**最下部に固定**。ヘッダは枠なしのワードマーク。色とグリフは `theme.ts` に集約。
 
-- `App`: ビュー状態（`list` | `detail:<id>`）と全体キーバインドを管理。`cwd` を受け取りバナーへ渡す。
+- `App`: 全画面レイアウトの root と Ctrl+C の安全網。**claude CLI 連携の起点**: `openExternal(id)` が
+  `manager.detach(id)` → Ink の `suspendTerminal`（描画・raw mode を明け渡す）→ 注入された
+  `runExternal`（`utils/claude-cli.ts` の `claude --resume` spawn。前後の mouse/alt screen 解除・再進入は
+  index.tsx が担う）→ 復帰で全再描画、を束ねる。
 - `Banner`: 起動時ヘッダ（`✻ codiva` + サブタイトル + cwd）。枠なし3行、一覧上部に表示。
-- `SessionList`: `Banner` + 一覧 + 選択カーソル + 下部 `PromptInput`/`StatusFooter`。いつでも新規投入できる。
-- `SessionDetail`: ステータスヘッダ（上部固定）+ メッセージログの**末尾ビューポート**（`⏺`/`⎿`/`>` のグリフで転記。flexGrow + `justifyContent="flex-end"` + `overflowY="hidden"` で最新行を下端に表示し、溢れた古い行は上へクリップ。表示範囲は純粋な `logWindow`（`core/scroll.ts`）で決め、PgUp/PgDn で過去ログを遡れる — alt screen でスクロールバックを無効化しているためアプリ内スクロールが唯一の手段）+ ストリーミング中は末尾にタイピング風プレビュー（`streamingText`）+ `PromptInput` または操作パネル/`PermissionDialog` + `StatusFooter`（下部固定）。`<Static>` はスクロールバックに書くため全画面レイアウトと両立せず不使用。
-- `PromptInput` / `StatusFooter`: presentational。キー処理は各 view の単一 `useInput` に集約（ロジックは持たない）。`PromptInput` は複数行対応（純粋モデルは `core/text-buffer.ts`、キー対応は `ui/input.ts` の `editText`/`resolveEnter`）。
+- `SessionList`: **唯一の画面**。`Banner` + 一覧 + 下部 `PromptInput`/`StatusFooter`。フォーカスは
+  `composer`（起動時既定。タイピング + 矢印キャレット移動）と `list`（↑↓選択・Enter/→ = claude で開く・
+  m/d = マージ/破棄）の2ゾーンで Tab 切替。選択セッションの `PermissionDialog` は list フォーカス時のみ
+  アクティブ。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で行選択・キャレット移動。
+- `PromptInput` / `StatusFooter`: presentational。キー処理は view の単一 `useInput` に集約（ロジックは持たない）。`PromptInput` は複数行対応（純粋モデルは `core/text-buffer.ts`、キー対応は `ui/input.ts` の `editText`/`resolveEnter`）。IME 対応で実端末カーソルをキャレットに重ねる（`useCursor`）。
+- セッションの中身（ログ・対話）は codiva 内では表示せず claude CLI に任せる（詳細ビューは廃止）。
 - 再描画スロットリング: SessionManager の通知を UI 側で ~100ms にスロットルする。
 
 **ランモード（shift+tab トグル）**: `SessionManager.mode`（`auto` | `confirm`）を全セッション共通で保持し、`shift+tab` で `cycleMode()`。`modePolicy` は tool 実行時に `mode` を読むので、切替は稼働中セッションにも即反映される。`auto` = AskUserQuestion 以外を自動承認、`confirm` = 毎回 allow/deny を求める（→ `awaiting_permission`／一覧に「許可待ち」）。UI は `useRunMode()` で購読し、`StatusFooter` が `⏵⏵ auto mode on` / `⏸ confirm mode on` を表示。
@@ -226,7 +237,7 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 | リスク | 対応 |
 |--------|------|
 | SDK メッセージ形式の想定違い | Phase 1 のスパイクで実メッセージを JSONL 収集し、reducer のテストフィクスチャに使う（想定で書かない） |
-| 大量ストリームで Ink 再描画が重い | 詳細ビューは選択中セッションのみ描画 + ログは `slice(-rows)` で端末高さぶんに限定 + スロットリング |
-| 質問検出の誤判定 | MVP はヒューリスティック + 詳細ビューでいつでも追加入力可能なので誤判定の実害は小さい。スパイク結果で改善 |
+| 大量ストリームで Ink 再描画が重い | ログ描画は claude CLI へ委譲（codiva はステータス行のみ）+ 購読スロットリング |
+| 質問検出の誤判定 | MVP はヒューリスティック + いつでも claude CLI で開いて対話できるので誤判定の実害は小さい。スパイク結果で改善 |
 | 並列セッションのAPIコスト | Backlog でコスト表示を追加。MVP では result メッセージの usage をログに残すのみ |
 | ユーザーのメインworktreeが dirty | worktree は HEAD から切るため影響なし。起動時チェックで警告のみ表示 |

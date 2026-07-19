@@ -5,6 +5,7 @@ import {
   bufferOf,
   cursorRowCol,
   emptyBuffer,
+  indexAtRowCol,
   insert,
   isEmptyBuffer,
   moveDown,
@@ -117,6 +118,18 @@ describe('text-buffer surrogate-pair safety', () => {
     const b = backspace(bufferOf(`a${emoji}`)); // caret at end
     expect(b.value).toBe('a');
     expect(b.cursor).toBe(1);
+  });
+});
+
+describe('indexAtRowCol', () => {
+  it.each([
+    // [desc, value, row, col, expected]
+    ['first line start', 'ab\ncd', 0, 0, 0],
+    ['second line middle', 'ab\ncd', 1, 1, 4],
+    ['clamps col to the line length', 'ab\ncd', 0, 99, 2],
+    ['clamps row to the last line', 'ab\ncd', 99, 0, 3],
+  ])('%s', (_desc, value, row, col, expected) => {
+    expect(indexAtRowCol(value, row, col)).toBe(expected);
   });
 });
 

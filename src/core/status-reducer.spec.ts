@@ -363,6 +363,28 @@ describe('reduce over streaming partial messages', () => {
     );
   });
 
+  it('detached hands the session off to claude: external status, pending cleared', () => {
+    const pending: PermissionRequest = {
+      id: 'p1',
+      kind: 'tool',
+      toolName: 'Bash',
+      input: {},
+    };
+    const blocked: SessionState = {
+      ...initialState(BASE),
+      status: 'awaiting_permission',
+      pendingPermission: pending,
+      streamingText: 'half',
+    };
+    const detached = reduce(blocked, { kind: 'detached', at: 42 });
+    expect(detached.status).toBe('external');
+    expect(detached.pendingPermission).toBeUndefined();
+    expect(detached.streamingText).toBeUndefined();
+    expect(detached.finishedAt).toBe(42);
+    // Already external → same reference (no re-render).
+    expect(reduce(detached, { kind: 'detached', at: 43 })).toBe(detached);
+  });
+
   it('clears the streaming preview when aborted or archived mid-stream', () => {
     const streaming = sdk({ ...initialState(BASE), status: 'running' }, streamText('half'));
     expect(streaming.streamingText).toBe('half');

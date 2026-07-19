@@ -1,23 +1,36 @@
 import { Box, useApp, useInput, useWindowSize } from 'ink';
-import { type FC, useState } from 'react';
+import type { FC } from 'react';
 import {
   messages as catalogs,
   isFullscreenViewport,
   type Messages,
   type SessionManager,
 } from '@/core';
-import { MessagesProvider, SessionDetail, SessionList } from '@/ui';
+import { MessagesProvider, SessionList } from '@/ui';
 
-type View = { mode: 'list' } | { mode: 'detail'; id: string };
+/**
+ * Runs the claude CLI for a session while the TUI is suspended. Injected from
+ * the composition root (index.tsx wraps alt-screen/mouse teardown around the
+ * spawn); tests inject a fake. When omitted, opening in claude is disabled.
+ */
+export type ExternalRunner = (args: {
+  cwd: string;
+  sessionId: string;
+}) => Promise<{ ok: boolean; error?: string }>;
 
-export const App: FC<{ manager: SessionManager; cwd?: string; messages?: Messages }> = ({
+export const App: FC<{
+  manager: SessionManager;
+  cwd?: string;
+  messages?: Messages;
+  runExternal?: ExternalRunner;
+}> = ({
   manager,
   cwd,
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
+  runExternal,
 }) => {
-  const { exit } = useApp();
-  const [view, setView] = useState<View>({ mode: 'list' });
+  const { exit, suspendTerminal } = useApp();
   // Ink はコンテンツの高さぶんしか描画しない（インラインレンダラ）ため、端末の
   // 行数を root に明示して全画面（web の 100dvh 相当）にする。リサイズにも追従。
   // overflow="hidden" は保険: フレームが端末高さを超えると Ink が全画面クリアに
@@ -39,6 +52,25 @@ export const App: FC<{ manager: SessionManager; cwd?: string; messages?: Message
     }
   });
 
+  /**
+   * Hand the session off to the interactive claude CLI: stop the codiva-side
+   * query (single writer per SDK session), release the terminal to the child,
+   * and pick the TUI back up when the user exits claude.
+   */
+  const openExternal = async (id: string): Promise<{ ok: boolean; error?: string }> => {
+    const state = manager.getSnapshot().find((s) => s.id === id);
+    const sessionId = state?.sdkSessionId;
+    if (!state || !sessionId || !runExternal) {
+      return { ok: false, error: messages.list.openNotReady };
+    }
+    manager.detach(id);
+    let result: { ok: boolean; error?: string } = { ok: true };
+    await suspendTerminal(async () => {
+      result = await runExternal({ cwd: state.worktreePath, sessionId });
+    });
+    return result;
+  };
+
   return (
     <MessagesProvider value={messages}>
       <Box
@@ -46,16 +78,12 @@ export const App: FC<{ manager: SessionManager; cwd?: string; messages?: Message
         height={fullscreen ? rows : undefined}
         overflow={fullscreen ? 'hidden' : undefined}
       >
-        {view.mode === 'detail' ? (
-          <SessionDetail manager={manager} id={view.id} onBack={() => setView({ mode: 'list' })} />
-        ) : (
-          <SessionList
-            manager={manager}
-            onOpen={(id) => setView({ mode: 'detail', id })}
-            onQuit={quit}
-            cwd={cwd}
-          />
-        )}
+        <SessionList
+          manager={manager}
+          onOpenExternal={runExternal ? openExternal : undefined}
+          onQuit={quit}
+          cwd={cwd}
+        />
       </Box>
     </MessagesProvider>
   );

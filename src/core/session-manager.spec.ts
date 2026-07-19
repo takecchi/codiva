@@ -56,6 +56,11 @@ class FakeSession implements SessionHandle {
   stop() {
     this.stopped = true;
   }
+  detach() {
+    this.calls.push('detach');
+    this.state = { ...this.state, status: 'external' };
+    this.onChange(this.state);
+  }
   archive() {
     this.calls.push('archive');
     this.state = { ...this.state, status: 'archived' };

@@ -41,6 +41,7 @@ function noopSession(input: CreateSessionInput) {
     async interrupt() {},
     abort() {},
     stop() {},
+    detach() {},
     archive() {},
   };
 }
@@ -60,12 +61,13 @@ function makeManager() {
 // フォールバックして非決定的になる）ため、全画面テストは Ink 本体の render に
 // 寸法固定のストリームを渡して検証する。
 class FakeStdout extends EventEmitter {
-  readonly columns = 80;
+  readonly columns: number;
   readonly rows: number;
   readonly frames: string[] = [];
-  constructor(rows = 20) {
+  constructor(rows = 20, columns = 80) {
     super();
     this.rows = rows;
+    this.columns = columns;
   }
   write = (frame: string) => {
     this.frames.push(frame);
@@ -95,8 +97,8 @@ class FakeStdin extends EventEmitter {
   };
 }
 
-function renderFullscreen(element: ReactElement, rows = 20) {
-  const stdout = new FakeStdout(rows);
+function renderFullscreen(element: ReactElement, rows = 20, columns = 80) {
+  const stdout = new FakeStdout(rows, columns);
   const stdin = new FakeStdin();
   const app = inkRender(element, {
     stdout: stdout as unknown as NodeJS.WriteStream,
@@ -131,90 +133,60 @@ describe('App fullscreen layout', () => {
     app.unmount();
   });
 
-  it('detail view clips old log lines to the terminal height, newest at the bottom', async () => {
-    const out = new AsyncQueue<SDKMessage>();
-    const queryFn = (() => {
-      const gen = (async function* () {
-        yield* out;
-      })() as unknown as Query & { interrupt: () => Promise<void> };
-      gen.interrupt = async () => {};
-      return gen;
-    }) as unknown as QueryFn;
-    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
-
-    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20);
-    stdin.write('long task');
+  it('mouse click selects a session row; click in the composer moves the caret', async () => {
+    const manager = makeManager();
+    // 幅は広めに取る（テストの経過時間表示が巨大で 80 桁だと行が折り返すため）。
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 120);
+    stdin.write('first task');
     await flush();
     stdin.write('\r');
     await flush();
-    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-t' }));
-    for (let i = 0; i < 40; i += 1) {
-      out.push(
-        asMsg({
-          type: 'assistant',
-          message: { content: [{ type: 'text', text: `log line ${i}` }] },
-        }),
-      );
-    }
+    stdin.write('second task');
     await flush();
-    stdin.write('[C'); // right arrow → detail
+    stdin.write('\r');
     await flush();
 
+    // クリック位置はフレームから実際の行を探して算出（レイアウト変更に追従）。
+    const rowIndex = lastFrame()
+      .split('\n')
+      .findIndex((l) => l.includes('second task'));
+    expect(rowIndex).toBeGreaterThan(0);
+    stdin.write(`\x1b[<0;5;${rowIndex + 1}M`); // SGR press (1-based row)
+    await flush();
+    // 一覧フォーカスのフッタヒントに切り替わる。
+    expect(lastFrame()).toContain('claudeで開く');
+
+    // 印字キーで自動的にコンポーザへ戻り、そのまま入力できる。
+    stdin.write('hello world');
+    await flush();
     const frame = lastFrame();
-    // フレームは端末高さに収まり、ログは末尾（新しい側）だけが見える。
-    expect(frame.split('\n').length).toBeLessThanOrEqual(20);
-    expect(frame).toContain('log line 39');
-    expect(frame).not.toContain('log line 0');
+    const lineIndex = frame.split('\n').findIndex((l) => l.includes('hello world'));
+    const line = frame.split('\n')[lineIndex] ?? '';
+    const col = line.indexOf('world'); // ASCII のみなのでセル位置 = 文字位置
+    stdin.write(`\x1b[<0;${col + 1};${lineIndex + 1}M`); // click before 'world'
+    await flush();
+    stdin.write('X');
+    await flush();
+    expect(lastFrame()).toContain('hello Xworld');
     app.unmount();
   });
 
-  it('scrolls the detail log with PageUp/PageDown (terminal scrollback is off)', async () => {
-    const out = new AsyncQueue<SDKMessage>();
-    const queryFn = (() => {
-      const gen = (async function* () {
-        yield* out;
-      })() as unknown as Query & { interrupt: () => Promise<void> };
-      gen.interrupt = async () => {};
-      return gen;
-    }) as unknown as QueryFn;
-    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
-
+  it('a burst of arrow keys in one chunk moves the caret cumulatively', async () => {
+    // 端末はエスケープ列をまとめて1チャンクで届けることがある。stale closure だと
+    // ←×5 が1回分しか効かない（バッファ更新は ref 経由で逐次適用する）。
+    const manager = makeManager();
     const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20);
-    stdin.write('long task');
+    stdin.write('hello world');
     await flush();
-    stdin.write('\r');
+    stdin.write('\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D'); // ←×5 in a single chunk
     await flush();
-    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-scroll' }));
-    for (let i = 0; i < 40; i += 1) {
-      out.push(
-        asMsg({
-          type: 'assistant',
-          message: { content: [{ type: 'text', text: `log line ${i}` }] },
-        }),
-      );
-    }
+    stdin.write('X');
     await flush();
-    stdin.write('\x1b[C'); // → detail
-    await flush();
-    expect(lastFrame()).toContain('log line 39');
-
-    stdin.write('\x1b[5~'); // PageUp → scroll back
-    await flush();
-    const up = lastFrame();
-    expect(up).toContain('過去ログを表示中'); // scrollback indicator
-    expect(up).not.toContain('log line 39'); // newest scrolled off the bottom
-
-    stdin.write('\x1b[6~'); // PageDown → back toward the tail
-    await flush();
-    stdin.write('\x1b[6~');
-    await flush();
-    const down = lastFrame();
-    expect(down).toContain('log line 39'); // following the tail again
-    expect(down).not.toContain('過去ログを表示中');
+    expect(lastFrame()).toContain('hello Xworld');
     app.unmount();
   });
 
-  it('shows the streaming preview and enables includePartialMessages', async () => {
+  it('enables includePartialMessages so streaming state stays available', async () => {
     const out = new AsyncQueue<SDKMessage>();
     let captured: Options | undefined;
     const queryFn = ((params: { options: Options }) => {
@@ -227,28 +199,12 @@ describe('App fullscreen layout', () => {
     }) as unknown as QueryFn;
     const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
 
-    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20);
+    const { app, stdin } = renderFullscreen(<App manager={manager} />, 20);
     stdin.write('stream it');
     await flush();
     stdin.write('\r');
     await flush();
     expect((captured as { includePartialMessages?: boolean }).includePartialMessages).toBe(true);
-
-    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-stream' }));
-    out.push(
-      asMsg({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          index: 0,
-          delta: { type: 'text_delta', text: 'Reticulating splines' },
-        },
-      }),
-    );
-    await flush();
-    stdin.write('\x1b[C'); // → detail
-    await flush();
-    expect(lastFrame()).toContain('Reticulating splines');
     app.unmount();
   });
 });
@@ -264,7 +220,7 @@ describe('App (list view)', () => {
     // The path index.tsx uses: resolved catalog → App messages prop → provider → components.
     const { lastFrame } = render(<App manager={makeManager()} messages={messages.en} />);
     expect(lastFrame()).toContain('Type an instruction');
-    expect(lastFrame()).toContain('Ctrl+C: quit');
+    expect(lastFrame()).toContain('Tab: list');
   });
 
   it('creates a session when the user types and presses Enter', async () => {
@@ -395,7 +351,7 @@ describe('App end-to-end (real Session, driven query)', () => {
     void decision;
   });
 
-  it('merges a completed session from the detail actions panel and archives it', async () => {
+  it('merges a completed session from the list (Tab → m → y) and archives it', async () => {
     const out = new AsyncQueue<SDKMessage>();
     const queryFn = (() => {
       const gen = (async function* () {
@@ -420,13 +376,11 @@ describe('App end-to-end (real Session, driven query)', () => {
     out.push(asMsg({ type: 'result', subtype: 'success', result: 'done' }));
     await flush();
 
-    stdin.write('[C'); // right arrow → open detail
+    stdin.write('\t'); // Tab → focus the session list
     await flush();
-    stdin.write('\t'); // Tab → actions panel
-    await flush();
-    expect(lastFrame()).toContain('マージ');
     stdin.write('m'); // choose merge → confirm
     await flush();
+    expect(lastFrame()).toContain('マージします');
     stdin.write('y'); // confirm
     await flush();
     expect(merge).toHaveBeenCalled();

@@ -84,8 +84,6 @@ describe('message catalogs', () => {
     const m: Messages = messages[lang];
     expect(m.list.sessionCount(1)).toContain('1');
     expect(m.badge.step(2, 5)).toBe('Step 2/5');
-    expect(m.detail.progress(1, 3, 'writing')).toContain('writing');
-    expect(m.detail.progress(1, 3, undefined)).not.toContain('—');
     expect(m.permission.toolTitle('Bash')).toContain('Bash');
     expect(m.permission.questionHelp(true)).toContain('Space');
     expect(m.permission.questionHelp(false)).not.toContain('Space');
