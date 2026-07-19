@@ -32,6 +32,14 @@ export function pageStep(rows: number): number {
 }
 
 /**
+ * The `rows` value passed to {@link scrollUp}/{@link scrollDown} for a single
+ * mouse-wheel tick. `pageStep` halves it, so this yields ~3 lines per tick — a
+ * fine-grained step (terminals emit several wheel reports per physical scroll),
+ * distinct from PageUp/PageDown's half-viewport jump.
+ */
+export const WHEEL_SCROLL_ROWS = 6;
+
+/**
  * Resolve an anchor into a concrete window over `messages`. At most ~`rows`
  * entries are rendered (Ink would otherwise render the whole, possibly huge, log);
  * the flex-end viewport clips any that don't fit. `end` is driven precisely by the

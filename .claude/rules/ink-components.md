@@ -59,9 +59,13 @@
 - ビュー切替は `App` の `View` state（`{mode:'list'}` | `{mode:'detail', id}`）。Enter/→ で `onOpen(id)`、
   Esc で `onBack`。詳細ビューは単一 `useInput` の state machine（panel = input | actions）で、
   タイピング（追加指示）と操作キー（m/d = マージ/破棄）の衝突を防ぐ。
+- 詳細ビューは**ステータスヘッダを持たない**。コンテンツ（ログ）+ フッタ（コンポーザ）だけにし、
+  ログ用の縦幅を最大化する（一覧はヘッダ=Banner + コンテンツ + フッタだが、詳細はヘッダ抜き）。
 - ログは末尾ビューポート（`justifyContent="flex-end"` + `overflowY="hidden"`）に描き、`<Static>` は使わない
-  （全画面では画面外へ消えるため）。PgUp/PgDn のスクロールは純関数 `core/scroll.ts`
-  （`logWindow`/`scrollUp`/`scrollDown`）に委譲し、移動量は可視ログ高さ（`logViewportRows`）から導く。
+  （全画面では画面外へ消えるため）。PgUp/PgDn とマウスホイールのスクロールは純関数 `core/scroll.ts`
+  （`logWindow`/`scrollUp`/`scrollDown`）に委譲し、移動量は可視ログ高さ（`logViewportRows`）／ホイールは
+  `WHEEL_SCROLL_ROWS` から導く。**マウスホイールのレポート列は `parseSgrMouse` で useInput 先頭で先取り解釈**
+  する（一覧と同じ）。これをしないとホイールのエスケープ列が生テキストとしてコンポーザへ入力されてしまう。
 - 1 SDK セッション 1 ライター。詳細ビューを開いても codiva が唯一のライターであり続ける
   （外部 CLI との二重接続はしない）。マージ/破棄は一覧・詳細のどちらからでも可能。
 
