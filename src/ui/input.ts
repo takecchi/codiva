@@ -1,5 +1,4 @@
 import type { Key } from 'ink';
-import stringWidth from 'string-width';
 import {
   backspace,
   decodeKeySequence,
@@ -11,7 +10,6 @@ import {
   newline,
   type TextBuffer,
 } from '@/core';
-import { glyph } from './theme';
 
 export interface EditResult {
   buffer: TextBuffer;
@@ -141,46 +139,4 @@ export function normalizeChord(input: string, key: Key): { input: string; key: K
       backspace: chord.kind === 'backspace',
     },
   };
-}
-
-/**
- * Column (0-based, in terminal cells) of the caret within a PromptInput row:
- * the 2-cell `❯ `／`  ` prefix plus the text before the caret on that line.
- * CJK/絵文字は2セル幅なので string-width で数える（.length だと日本語入力で
- * カーソルと IME preedit の位置がズレる）。
- */
-export function promptCaretColumn(textBeforeCaret: string): number {
-  return stringWidth(`${glyph.caret} ${textBeforeCaret}`);
-}
-
-/**
- * Inverse of the caret-column math: the caret index (UTF-16 units) for a click at
- * `column` display cells from the start of `text`. A click anywhere on a wide
- * (2-cell) character places the caret before it; past the end goes to the end.
- */
-export function caretIndexForColumn(text: string, column: number): number {
-  if (column <= 0) {
-    return 0;
-  }
-  let cells = 0;
-  let index = 0;
-  for (const ch of text) {
-    const w = stringWidth(ch);
-    if (cells + w > column) {
-      return index;
-    }
-    cells += w;
-    index += ch.length;
-  }
-  return text.length;
-}
-
-/** Format elapsed time between startedAt and end (finishedAt or now). */
-export function formatElapsed(startedAt: number, end: number): string {
-  const secs = Math.max(0, Math.floor((end - startedAt) / 1000));
-  const mins = Math.floor(secs / 60);
-  if (mins === 0) {
-    return `${secs}s`;
-  }
-  return `${mins}m${String(secs % 60).padStart(2, '0')}s`;
 }

@@ -1,73 +1,22 @@
-import {
-  type PersistedSession,
-  type PersistedState,
-  restoredSessionState,
-  toPersistedSession,
-} from './persistence';
+import { errorMessage } from './errors';
+import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
+import { PrCoordinator } from './pr-coordinator';
+import { createModePolicy, type RunMode } from './run-mode';
 import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
+import { discardSession, mergeSession, sessionDiffStat } from './session-actions';
+import type {
+  ActionResult,
+  PrAutomation,
+  PrLookup,
+  SessionHandle,
+  WorktreeMeta,
+  WorktreeService,
+} from './session-ports';
+import { SessionStore } from './session-store';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
-import { initialState } from './status-reducer';
-import type { CreateSessionInput, LogEntry, PrChecksState, PrInfo, SessionState } from './types';
-import { type DiffStat, MergeConflictError, type Worktree } from './worktree';
-
-/** The subset of WorktreeManager the SessionManager needs (for DI in tests). */
-export interface WorktreeService {
-  baseBranch(): Promise<string>;
-  takenSlugs(): Promise<Set<string>>;
-  add(slug: string, startPoint?: string): Promise<Worktree>;
-  syncedStartPoint(base: string): Promise<string | undefined>;
-  pushBranch(wt: Worktree): Promise<void>;
-  diffStat(wt: Worktree, base: string): Promise<DiffStat>;
-  merge(wt: Worktree, base: string): Promise<void>;
-  remove(wt: Worktree, opts?: { force?: boolean }): Promise<void>;
-}
-
-/**
- * GitHub PR automation seam (via `gh`), injected so the manager stays testable.
- * All calls are best-effort at the call site; failures never break a session.
- */
-export interface PrAutomation {
-  /** Open a draft PR for a pushed branch (or return the existing one). */
-  createPr(cwd: string, branch: string): Promise<PrInfo | undefined>;
-  /** Aggregate CI state of the PR's checks. */
-  checks(cwd: string, branch: string): Promise<PrChecksState>;
-  /** Flip a draft PR to ready-for-review. */
-  markReady(cwd: string, branch: string): Promise<void>;
-}
-
-/** The subset of Session the manager drives (for DI in tests). */
-export interface SessionHandle {
-  getState(): SessionState;
-  start(): void;
-  send(text: string): void;
-  answerPending(answers: Record<string, string>): void;
-  allowPending(): void;
-  denyPending(message: string): void;
-  interrupt(): Promise<void>;
-  setModel(model: string | undefined): void;
-  abort(): void;
-  stop(): void;
-  archive(): void;
-  setPr(pr: PrInfo | undefined): void;
-  markConflict(files: string[]): void;
-}
-
-/** Look up the open PR for a branch (via `gh`), or undefined if there is none. */
-export type PrLookup = (cwd: string, branch: string) => Promise<PrInfo | undefined>;
-
-/** Result of a lifecycle action (merge/discard) surfaced to the UI. */
-export interface ActionResult {
-  ok: boolean;
-  error?: string;
-}
-
-/**
- * Global tool-approval mode, toggled with shift+tab (à la Claude Code).
- * - `auto`: run every tool automatically (only AskUserQuestion pauses).
- * - `confirm`: pause on every tool for an explicit allow/deny.
- * The mode is read at each tool call, so toggling affects live sessions too.
- */
-export type RunMode = 'auto' | 'confirm';
+import { initialState, reduce } from './status-reducer';
+import type { CreateSessionInput, LogEntry, SessionState } from './types';
+import type { DiffStat, Worktree } from './worktree';
 
 export interface SessionManagerDeps {
   worktrees: WorktreeService;
@@ -108,25 +57,34 @@ export interface SessionManagerDeps {
   }) => SessionHandle;
 }
 
-type Listener = () => void;
+/** Fields that end up in the persisted snapshot (see persistence.toPersistedSession). */
+function persistRelevantChanged(prev: SessionState, next: SessionState): boolean {
+  return (
+    prev.status !== next.status ||
+    prev.sdkSessionId !== next.sdkSessionId ||
+    prev.title !== next.title ||
+    prev.finishedAt !== next.finishedAt ||
+    prev.totalCostUsd !== next.totalCostUsd ||
+    prev.model !== next.model ||
+    prev.todos !== next.todos
+  );
+}
 
 /**
- * Owns all sessions and exposes a snapshot the UI subscribes to via
- * useSyncExternalStore. create() returns synchronously with a 'creating' entry;
- * worktree setup and session start happen in the background so the input is
- * never blocked. Snapshots keep per-session object identity across rebuilds so
- * unchanged rows don't re-render.
+ * Coordinates the session lifecycle: create/provision/restore/dispose and the UI
+ * passthroughs. The subscribable snapshot lives in {@link SessionStore}, tool-mode
+ * policy in run-mode, merge/discard in session-actions, and PR automation in
+ * {@link PrCoordinator}; this class wires them together and owns the per-session
+ * worktree metadata + slug reservations. create() returns synchronously with a
+ * 'creating' entry; worktree setup and session start happen in the background so
+ * the input is never blocked.
  */
 export class SessionManager {
-  private readonly listeners = new Set<Listener>();
-  private readonly order: string[] = [];
-  private readonly states = new Map<string, SessionState>();
+  private readonly store = new SessionStore();
   private readonly sessions = new Map<string, SessionHandle>();
-  private readonly worktreeMeta = new Map<string, { worktree: Worktree; base: string }>();
+  private readonly worktreeMeta = new Map<string, WorktreeMeta>();
   private readonly usedSlugs = new Set<string>();
-  /** Sessions we've already attempted an auto-PR for (avoids repeat push/create). */
-  private readonly autoPrAttempted = new Set<string>();
-  private snapshot: SessionState[] = [];
+  private readonly prs: PrCoordinator;
   private seq = 0;
   private mode: RunMode = 'auto';
   private readonly now: () => number;
@@ -136,17 +94,26 @@ export class SessionManager {
    * model for sessions created later in this run.
    */
   private options: SessionOptions;
+  /** Default policy when a session doesn't get an explicit one; reads `this.mode` live. */
+  private readonly modePolicy: PermissionPolicy = createModePolicy(() => this.mode);
 
   constructor(private readonly deps: SessionManagerDeps) {
     this.now = deps.now ?? Date.now;
     this.options = { ...deps.options };
+    this.prs = new PrCoordinator({
+      worktrees: deps.worktrees,
+      autoPr: deps.autoPr,
+      prAutomation: deps.prAutomation,
+      lookupPr: deps.lookupPr,
+      getMeta: (id) => this.worktreeMeta.get(id),
+      getState: (id) => this.store.get(id),
+      getSession: (id) => this.sessions.get(id),
+      ids: () => this.store.ids(),
+    });
   }
 
-  subscribe(listener: Listener): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
+  subscribe(listener: () => void): () => void {
+    return this.store.subscribe(listener);
   }
 
   /** The model used for new sessions (undefined → CLI default). */
@@ -174,28 +141,16 @@ export class SessionManager {
   /** Flip auto ⇄ confirm and notify subscribers so the footer re-renders. */
   cycleMode(): RunMode {
     this.mode = this.mode === 'auto' ? 'confirm' : 'auto';
-    this.notify();
+    this.store.notify();
     return this.mode;
   }
 
-  /**
-   * Policy applied to sessions that don't get an explicit one. Reads `this.mode`
-   * at call time so a shift+tab toggle takes effect on already-running sessions.
-   * AskUserQuestion always escalates — it *is* the ask-the-user channel.
-   */
-  private readonly modePolicy: PermissionPolicy = (toolName) => {
-    if (toolName === 'AskUserQuestion') {
-      return 'ask';
-    }
-    return this.mode === 'auto' ? 'allow' : 'ask';
-  };
-
   getSnapshot(): SessionState[] {
-    return this.snapshot;
+    return this.store.getSnapshot();
   }
 
   get(id: string): SessionState | undefined {
-    return this.states.get(id);
+    return this.store.get(id);
   }
 
   /** Queue a new session for `prompt`; returns its id immediately. */
@@ -203,24 +158,49 @@ export class SessionManager {
     this.seq += 1;
     const id = String(this.seq);
     const title = makeTitle(prompt);
-    const placeholder: SessionState = {
-      ...initialState({
-        id,
-        title,
-        prompt,
-        branch: `codiva/${makeSlug(prompt)}`,
-        worktreePath: '',
-        startedAt: this.now(),
-      }),
-    };
-    this.order.push(id);
-    this.states.set(id, placeholder);
-    this.rebuild();
-    void this.provision(id, prompt, title);
+    const startedAt = this.now();
+    const placeholder = initialState({
+      id,
+      title,
+      prompt,
+      branch: `codiva/${makeSlug(prompt)}`,
+      worktreePath: '',
+      startedAt,
+    });
+    this.store.append(id, placeholder);
+    this.deps.onPersist?.();
+    void this.provision(id, prompt, title, startedAt);
     return id;
   }
 
-  private async provision(id: string, prompt: string, title: string): Promise<void> {
+  /** Construct a Session (or the injected fake) bound to this manager's callbacks. */
+  private buildSession(
+    input: CreateSessionInput,
+    extra?: { resume?: string; restored?: SessionState },
+  ): SessionHandle {
+    const onChange = (s: SessionState) => this.onSessionChange(input.id, s);
+    if (this.deps.createSession) {
+      return this.deps.createSession({ input, onChange, ...extra });
+    }
+    return new Session({
+      queryFn: this.deps.queryFn,
+      input,
+      options: this.options,
+      now: this.now,
+      policy: this.deps.policy ?? this.modePolicy,
+      onChange,
+      generateTitle: extra ? undefined : this.deps.generateTitle,
+      resume: extra?.resume,
+      restored: extra?.restored,
+    });
+  }
+
+  private async provision(
+    id: string,
+    prompt: string,
+    title: string,
+    startedAt: number,
+  ): Promise<void> {
     try {
       const taken = new Set<string>([
         ...(await this.deps.worktrees.takenSlugs()),
@@ -242,82 +222,43 @@ export class SessionManager {
         prompt,
         branch: wt.branch,
         worktreePath: wt.path,
-        startedAt: this.now(),
+        startedAt,
       };
-      const session =
-        this.deps.createSession?.({ input, onChange: (s) => this.onSessionChange(id, s) }) ??
-        new Session({
-          queryFn: this.deps.queryFn,
-          input,
-          options: this.options,
-          now: this.now,
-          policy: this.deps.policy ?? this.modePolicy,
-          onChange: (s) => this.onSessionChange(id, s),
-          generateTitle: this.deps.generateTitle,
-        });
+      const session = this.buildSession(input);
       this.sessions.set(id, session);
-      this.states.set(id, session.getState());
-      this.rebuild();
+      this.store.set(id, session.getState());
+      this.deps.onPersist?.();
       session.start();
     } catch (err) {
-      const current = this.states.get(id);
+      // Provisioning failed before a Session exists — run it through the reducer
+      // (rather than hand-writing state) so failure classification and the error
+      // log line stay consistent with every other transition.
+      const current = this.store.get(id);
       if (current) {
-        this.states.set(id, { ...current, status: 'failed', error: String(err) });
-        this.rebuild();
+        this.store.set(
+          id,
+          reduce(current, { kind: 'aborted', error: errorMessage(err), at: this.now() }),
+        );
+        this.deps.onPersist?.();
       }
     }
   }
 
   private onSessionChange(id: string, state: SessionState): void {
-    const prev = this.states.get(id);
-    this.states.set(id, state);
+    const prev = this.store.get(id);
+    this.store.set(id, state);
     if (prev && prev.status !== state.status) {
       this.deps.onTransition?.(prev, state);
       // A turn finished — open a draft PR for the branch if auto-PR is on.
       if (prev.status !== 'completed' && state.status === 'completed') {
-        void this.maybeAutoPr(id);
+        void this.prs.maybeAutoPr(id);
       }
     }
-    this.rebuild();
-  }
-
-  /**
-   * Best-effort auto-PR for a just-completed session: push the branch and open a
-   * draft PR (once per session). No-op unless autoPr + prAutomation are wired,
-   * the session already has a PR, or the branch has no committed changes to PR.
-   * refreshPrs() later flips the draft to ready when checks pass.
-   */
-  private async maybeAutoPr(id: string): Promise<void> {
-    if (!this.deps.autoPr || !this.deps.prAutomation || this.autoPrAttempted.has(id)) {
-      return;
+    // Only signal a persist when a persisted field actually changed — a burst of
+    // streaming-text/log updates shouldn't churn the debounced save.
+    if (!prev || persistRelevantChanged(prev, state)) {
+      this.deps.onPersist?.();
     }
-    const meta = this.worktreeMeta.get(id);
-    const state = this.states.get(id);
-    const session = this.sessions.get(id);
-    if (!meta || !state || !session || state.pr) {
-      return;
-    }
-    this.autoPrAttempted.add(id);
-    try {
-      const stat = await this.deps.worktrees.diffStat(meta.worktree, meta.base);
-      if (stat.committed.trim().length === 0) {
-        // Nothing committed ahead of base — there's nothing to open a PR for.
-        return;
-      }
-      await this.deps.worktrees.pushBranch(meta.worktree);
-      const pr = await this.deps.prAutomation.createPr(meta.worktree.path, state.branch);
-      if (pr) {
-        session.setPr(pr);
-      }
-    } catch {
-      // best-effort — a missing remote / `gh` / network issue must not disrupt the session
-    }
-  }
-
-  private rebuild(): void {
-    this.snapshot = this.order.map((id) => this.states.get(id) as SessionState);
-    this.deps.onPersist?.();
-    this.notify();
   }
 
   /**
@@ -330,7 +271,7 @@ export class SessionManager {
    */
   restore(persisted: PersistedState, histories?: ReadonlyMap<string, LogEntry[]>): void {
     for (const p of persisted.sessions) {
-      if (this.states.has(p.id)) {
+      if (this.store.has(p.id)) {
         continue;
       }
       const restored = restoredSessionState(p, histories?.get(p.id));
@@ -345,49 +286,24 @@ export class SessionManager {
         worktreePath: p.worktreePath,
         startedAt: p.startedAt,
       };
-      const onChange = (s: SessionState) => this.onSessionChange(p.id, s);
-      const session =
-        this.deps.createSession?.({ input, onChange, resume: p.sdkSessionId, restored }) ??
-        new Session({
-          queryFn: this.deps.queryFn,
-          input,
-          options: this.options,
-          now: this.now,
-          policy: this.deps.policy ?? this.modePolicy,
-          onChange,
-          resume: p.sdkSessionId,
-          restored,
-        });
+      const session = this.buildSession(input, { resume: p.sdkSessionId, restored });
       this.sessions.set(p.id, session);
-      this.states.set(p.id, session.getState());
-      this.order.push(p.id);
+      this.store.append(p.id, session.getState());
       const n = Number(p.id);
       if (Number.isInteger(n)) {
         this.seq = Math.max(this.seq, n);
       }
     }
-    this.rebuild();
+    this.deps.onPersist?.();
   }
 
   /** Build the on-disk snapshot of every restorable session (for state.json). */
   persistableState(): PersistedState {
-    const sessions = this.order
-      .map((id) => {
-        const state = this.states.get(id);
-        const meta = this.worktreeMeta.get(id);
-        if (!state || !meta) {
-          return undefined;
-        }
-        return toPersistedSession(state, { slug: meta.worktree.slug, base: meta.base });
-      })
-      .filter((s): s is PersistedSession => s !== undefined);
-    return { version: 1, sessions };
-  }
-
-  private notify(): void {
-    for (const listener of this.listeners) {
-      listener();
-    }
+    return assemblePersistedState(
+      this.store.ids(),
+      (id) => this.store.get(id),
+      (id) => this.worktreeMeta.get(id),
+    );
   }
 
   // ── UI passthroughs ────────────────────────────────────────────────
@@ -420,10 +336,7 @@ export class SessionManager {
   /** Committed diff stat vs. base plus uncommitted paths for a session. */
   async diffStat(id: string): Promise<DiffStat | undefined> {
     const meta = this.worktreeMeta.get(id);
-    if (!meta) {
-      return undefined;
-    }
-    return this.deps.worktrees.diffStat(meta.worktree, meta.base);
+    return meta ? sessionDiffStat(this.deps.worktrees, meta) : undefined;
   }
 
   /** Merge a session's branch into base, then archive it. */
@@ -432,18 +345,7 @@ export class SessionManager {
     if (!meta) {
       return { ok: false, error: 'worktree not found' };
     }
-    try {
-      await this.deps.worktrees.merge(meta.worktree, meta.base);
-      this.sessions.get(id)?.archive();
-      return { ok: true };
-    } catch (err) {
-      // A conflict is detected (not auto-resolved): flag the session so the list
-      // shows a `conflict` badge instead of only a transient error toast.
-      if (err instanceof MergeConflictError) {
-        this.sessions.get(id)?.markConflict(err.files);
-      }
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
+    return mergeSession(this.deps.worktrees, meta, this.sessions.get(id));
   }
 
   /** Abort a session, remove its worktree + branch, then archive it. */
@@ -452,15 +354,11 @@ export class SessionManager {
     if (!meta) {
       return { ok: false, error: 'worktree not found' };
     }
-    this.sessions.get(id)?.abort();
-    try {
-      await this.deps.worktrees.remove(meta.worktree, opts);
+    const result = await discardSession(this.deps.worktrees, meta, this.sessions.get(id), opts);
+    if (result.ok) {
       this.worktreeMeta.delete(id);
-      this.sessions.get(id)?.archive();
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
+    return result;
   }
 
   /**
@@ -472,50 +370,16 @@ export class SessionManager {
     for (const session of this.sessions.values()) {
       session.stop();
     }
-    this.listeners.clear();
+    this.store.clearListeners();
   }
 
   /** Paths of worktrees still on disk (shown to the user on exit). */
   activeWorktreePaths(): string[] {
-    return [...this.worktreeMeta.values()].map((m) => m.worktree.path);
+    return [...this.worktreeMeta.values()].map((meta) => meta.worktree.path);
   }
 
-  /**
-   * Poll every live session's branch for an open PR and feed the result back in
-   * via session.setPr (the reducer no-ops when unchanged). Best-effort: a lookup
-   * failure for one session never rejects or affects the others. No-op when no
-   * `lookupPr` is wired (e.g. in tests). Wired to a periodic timer in index.tsx.
-   */
+  /** Poll every live session's branch for an open PR (best-effort; see PrCoordinator). */
   async refreshPrs(): Promise<void> {
-    const lookup = this.deps.lookupPr;
-    if (!lookup) {
-      return;
-    }
-    await Promise.all(
-      this.order.map(async (id) => {
-        const state = this.states.get(id);
-        const meta = this.worktreeMeta.get(id);
-        const session = this.sessions.get(id);
-        // Skip rows with no worktree yet (creating) or already archived — nothing
-        // to look up, and no branch that could have a PR.
-        if (!state || !meta || !session || state.status === 'archived') {
-          return;
-        }
-        try {
-          const pr = await lookup(meta.worktree.path, state.branch);
-          session.setPr(pr);
-          // Auto-ready: once a draft PR's checks pass, flip it to ready-for-review.
-          if (this.deps.autoPr && this.deps.prAutomation && pr?.isDraft) {
-            const checks = await this.deps.prAutomation.checks(meta.worktree.path, state.branch);
-            if (checks === 'passing') {
-              await this.deps.prAutomation.markReady(meta.worktree.path, state.branch);
-              session.setPr({ ...pr, isDraft: false });
-            }
-          }
-        } catch {
-          // best-effort — a missing `gh`, network hiccup, or auth issue is ignored
-        }
-      }),
-    );
+    await this.prs.refreshPrs();
   }
 }

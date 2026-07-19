@@ -1,3 +1,5 @@
+import { stripLeadingEscape } from './ansi';
+
 /**
  * SGR mouse-report parsing (pure). With `\x1b[?1000h` + `\x1b[?1006h` enabled,
  * the terminal reports button events as `ESC [ < b ; x ; y (M|m)`. Ink strips at
@@ -17,7 +19,7 @@ const SGR_MOUSE = /^\[<(\d+);(\d+);(\d+)([Mm])$/;
  * are converted to 0-based terminal cells.
  */
 export function parseSgrMouse(input: string): MouseEvent | undefined {
-  const s = input.charCodeAt(0) === 27 ? input.slice(1) : input;
+  const s = stripLeadingEscape(input);
   const m = SGR_MOUSE.exec(s);
   if (!m) {
     return undefined;

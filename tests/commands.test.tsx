@@ -2,59 +2,11 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { messages } from '@/core/i18n';
-import { SessionManager, type WorktreeService } from '@/core/session-manager';
-import { initialState } from '@/core/status-reducer';
-import type { CreateSessionInput } from '@/core/types';
+import { flush, makeManager } from './helpers';
 
 // Feature test for slash commands driven through the whole App. Pure parsing is
 // unit-tested in src/core/commands.spec.ts; this checks the UI wiring: the
 // palette, /help overlay, /exit, and the unknown-command error.
-
-const flush = () => new Promise((r) => setTimeout(r, 150));
-
-const worktrees: WorktreeService = {
-  baseBranch: async () => 'main',
-  takenSlugs: async () => new Set(),
-  add: async (slug) => ({ slug, branch: `codiva/${slug}`, path: `/tmp/${slug}` }),
-  syncedStartPoint: async () => undefined,
-  pushBranch: async () => {},
-  diffStat: async () => ({ committed: '', uncommitted: [] }),
-  merge: async () => {},
-  remove: async () => {},
-};
-
-function noopSession(input: CreateSessionInput) {
-  return {
-    state: initialState(input),
-    getState() {
-      return this.state;
-    },
-    start() {},
-    send() {},
-    answerPending() {},
-    allowPending() {},
-    denyPending() {},
-    async interrupt() {},
-    setModel() {},
-    abort() {},
-    stop() {},
-    detach() {},
-    archive() {},
-    setPr() {},
-    markConflict() {},
-  };
-}
-
-function makeManager() {
-  return new SessionManager({
-    worktrees,
-    queryFn: (() => {
-      throw new Error('unused');
-    }) as never,
-    now: () => 0,
-    createSession: ({ input }) => noopSession(input),
-  });
-}
 
 describe('slash commands', () => {
   it('shows the command palette while typing a leading slash', async () => {

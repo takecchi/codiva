@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
 import { platform as osPlatform } from 'node:os';
+import { fireAndForget } from './exec';
 
 /**
  * Build the OS command that opens `url` in the default browser, or undefined on
@@ -31,14 +31,7 @@ export function openUrlCommand(
  */
 export function openUrl(url: string): void {
   const cmd = openUrlCommand(url, osPlatform());
-  if (!cmd) {
-    return;
-  }
-  try {
-    execFile(cmd.file, cmd.args, () => {
-      // Ignore all errors and output — opening a browser is never load-bearing.
-    });
-  } catch {
-    // execFile can throw synchronously on some argument errors; stay silent.
+  if (cmd) {
+    fireAndForget(cmd.file, cmd.args);
   }
 }

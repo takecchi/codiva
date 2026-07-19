@@ -1,5 +1,3 @@
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-
 /** Lifecycle state of a single session. See docs/ARCHITECTURE.md state machine. */
 export type SessionStatus =
   | 'creating' // worktree being created / query not yet started
@@ -135,11 +133,13 @@ export interface SessionState {
 }
 
 /**
- * Everything that can change a session's state. The reducer is a pure function
- * of (state, event); Session translates SDK output and UI actions into events.
+ * Everything that can change a session's state via the pure reducer. `Session`
+ * dispatches these for its own lifecycle actions (user input, permissions, model,
+ * abort, …). Raw SDK output is NOT an event: `Session.consume` folds each SDK
+ * message straight into state via `applySdkMessage` (see core/sdk-parse.ts), which
+ * keeps all SDK message-shape parsing out of the reducer.
  */
 export type CodivaEvent =
-  | { kind: 'sdk'; message: SDKMessage; at: number }
   | { kind: 'permission_request'; request: PermissionRequest; at: number }
   | { kind: 'permission_resolved'; at: number }
   | { kind: 'user_input'; text: string; at: number }

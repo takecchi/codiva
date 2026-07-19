@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  type PrAutomation,
-  type SessionHandle,
-  SessionManager,
-  type WorktreeService,
-} from '@/core/session-manager';
+import { SessionManager } from '@/core/session-manager';
+import type { PrAutomation, SessionHandle, WorktreeService } from '@/core/session-ports';
 import { initialState } from '@/core/status-reducer';
 import type { CreateSessionInput, PrInfo, SessionState } from '@/core/types';
 import { MergeConflictError } from '@/core/worktree';

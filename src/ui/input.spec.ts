@@ -1,7 +1,7 @@
 import type { Key } from 'ink';
 import { describe, expect, it } from 'vitest';
 import { bufferOf, emptyBuffer } from '@/core';
-import { caretIndexForColumn, editText, normalizeChord, promptCaretColumn } from './input';
+import { editText, normalizeChord } from './input';
 
 const key = (overrides: Partial<Key> = {}): Key =>
   ({
@@ -128,34 +128,5 @@ describe('normalizeChord', () => {
     expect(input).toBe('');
     expect(out).toBe(original);
     expect(out.return).toBe(true);
-  });
-});
-
-describe('caretIndexForColumn', () => {
-  it.each([
-    // [desc, text, column(cells), expected index(code units)]
-    ['start', 'abc', 0, 0],
-    ['middle of ascii', 'abc', 2, 2],
-    ['past the end clamps to length', 'abc', 10, 3],
-    ['left cell of a wide char → before it', 'あい', 0, 0],
-    ['second cell of a wide char still lands before it', 'あい', 1, 0],
-    ['boundary between wide chars', 'あい', 2, 1],
-    ['mixed ascii + cjk', 'fix バグ', 6, 5], // 'fix ' (4 cells) + バ (2 cells) → before グ
-    ['emoji is a 2-cell surrogate pair', '🍣x', 2, 2],
-  ])('%s', (_desc, text, column, expected) => {
-    expect(caretIndexForColumn(text, column)).toBe(expected);
-  });
-});
-
-describe('promptCaretColumn', () => {
-  it.each([
-    // ❯ + space = 2 columns of prefix
-    ['empty line', '', 2],
-    ['ascii', 'abc', 5],
-    // CJK chars are 2 columns wide each
-    ['hiragana', 'こんにちは', 12],
-    ['mixed ascii + japanese', 'fix バグ', 2 + 4 + 4],
-  ])('%s', (_desc, textBeforeCaret, expected) => {
-    expect(promptCaretColumn(textBeforeCaret)).toBe(expected);
   });
 });

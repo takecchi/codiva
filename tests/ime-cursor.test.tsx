@@ -3,59 +3,15 @@ import { render as inkRender } from 'ink';
 import type { ReactElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { App } from '@/app';
-import { SessionManager, type WorktreeService } from '@/core/session-manager';
-import { initialState } from '@/core/status-reducer';
-import type { CreateSessionInput } from '@/core/types';
+import { FakeStdin, flush, makeManager } from './helpers';
 
 // 日本語（IME）入力の e2e: 確定文字列がバッファに入り、実端末カーソルが
 // キャレット位置（CJK 2セル幅を加味）に置かれることを検証する。カーソル制御は
 // interactive（非 debug）レンダリングでしか書き出されないため、app.test.tsx の
 // debug ヘルパではなくチャンク収集の stdout を使う。
 
-const flush = () => new Promise((r) => setTimeout(r, 150));
-
-const worktrees: WorktreeService = {
-  baseBranch: async () => 'main',
-  takenSlugs: async () => new Set(),
-  add: async (slug) => ({ slug, branch: `codiva/${slug}`, path: `/tmp/${slug}` }),
-  syncedStartPoint: async () => undefined,
-  pushBranch: async () => {},
-  diffStat: async () => ({ committed: '', uncommitted: [] }),
-  merge: async () => {},
-  remove: async () => {},
-};
-
-function noopSession(input: CreateSessionInput) {
-  return {
-    state: initialState(input),
-    getState() {
-      return this.state;
-    },
-    start() {},
-    send() {},
-    answerPending() {},
-    allowPending() {},
-    denyPending() {},
-    async interrupt() {},
-    setModel() {},
-    abort() {},
-    stop() {},
-    archive() {},
-    setPr() {},
-    markConflict() {},
-  };
-}
-
-function makeManager() {
-  return new SessionManager({
-    worktrees,
-    queryFn: (() => {
-      throw new Error('unused');
-    }) as never,
-    now: () => 0,
-    createSession: ({ input }) => noopSession(input),
-  });
-}
+// FakeStdout / renderInteractive は IME 用（interactive: true・チャンク収集）なので
+// ここに残す。共有フェイク（FakeStdin / flush / makeManager）は ./helpers から使う。
 
 class FakeStdout extends EventEmitter {
   readonly columns = 80;
@@ -64,27 +20,6 @@ class FakeStdout extends EventEmitter {
   write = (chunk: string) => {
     this.chunks.push(chunk);
     return true;
-  };
-}
-
-class FakeStdin extends EventEmitter {
-  isTTY = true;
-  private data: string | null = null;
-  write = (data: string) => {
-    this.data = data;
-    this.emit('readable');
-    this.emit('data', data);
-  };
-  setEncoding() {}
-  setRawMode() {}
-  resume() {}
-  pause() {}
-  ref() {}
-  unref() {}
-  read = () => {
-    const { data } = this;
-    this.data = null;
-    return data;
   };
 }
 

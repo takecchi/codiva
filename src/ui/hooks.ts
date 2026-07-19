@@ -1,6 +1,21 @@
 import type { DOMElement } from 'ink';
-import { type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import type { RunMode, SessionManager, SessionState } from '@/core';
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import {
+  type CommandAction,
+  emptyBuffer,
+  type RunMode,
+  runCommand,
+  type SessionManager,
+  type SessionState,
+  type TextBuffer,
+} from '@/core';
 
 /**
  * Subscribe to the manager's snapshot. Notifications are coalesced to ~100ms so
@@ -103,4 +118,87 @@ export function useClock(ms = 1000): number {
     return () => clearInterval(timer);
   }, [ms]);
   return now;
+}
+
+export interface TextBufferRef {
+  buffer: TextBuffer;
+  bufferRef: RefObject<TextBuffer>;
+  updateBuffer: (next: TextBuffer | ((prev: TextBuffer) => TextBuffer)) => void;
+}
+
+/**
+ * A composer text buffer whose edits are applied through a ref before the render
+ * state. Terminals deliver key repeats / pastes / escape sequences as one chunk,
+ * so a `useInput` handler can fire multiple times in the same tick; going through
+ * the ref keeps each edit computed from the latest value instead of a stale one
+ * (see .claude/rules/ink-components.md). Shared by both composer views.
+ */
+export function useTextBufferRef(): TextBufferRef {
+  const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
+  const bufferRef = useRef<TextBuffer>(buffer);
+  const updateBuffer = (next: TextBuffer | ((prev: TextBuffer) => TextBuffer)) => {
+    bufferRef.current = typeof next === 'function' ? next(bufferRef.current) : next;
+    setBuffer(bufferRef.current);
+  };
+  return { buffer, bufferRef, updateBuffer };
+}
+
+/**
+ * Resolve a `/command` typed in a composer and dispatch its effect. Known actions
+ * run the matching handler (a view supplies only the ones it implements — e.g.
+ * `/diff` is detail-only); an unknown name surfaces via `onError`. Clears the
+ * error on any recognized command. Shared by the list and detail composers.
+ */
+export function useCommandRunner(
+  handlers: Partial<Record<CommandAction, () => void>>,
+  onError: (message: string | undefined) => void,
+  unknownLabel: (name: string) => string,
+): (text: string) => void {
+  return (text: string) => {
+    const result = runCommand(text);
+    if (result.kind === 'unknown') {
+      onError(unknownLabel(result.name));
+      return;
+    }
+    onError(undefined);
+    handlers[result.command.action]?.();
+  };
+}
+
+export interface LifecycleAction {
+  confirm: 'merge' | 'discard' | null;
+  setConfirm: (confirm: 'merge' | 'discard' | null) => void;
+  busy: boolean;
+  actionError: string | undefined;
+  setActionError: (error: string | undefined) => void;
+  run: (action: 'merge' | 'discard') => void;
+}
+
+/**
+ * The merge/discard confirm → busy → run → error flow shared by both views.
+ * `run` no-ops when `id` is undefined (nothing selected). `onDone(ok)` fires after
+ * completion so a view can react (e.g. the detail view returns to its input panel).
+ */
+export function useLifecycleAction(
+  manager: SessionManager,
+  id: string | undefined,
+  onDone?: (ok: boolean) => void,
+): LifecycleAction {
+  const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | undefined>(undefined);
+  const run = (action: 'merge' | 'discard') => {
+    if (id === undefined) {
+      return;
+    }
+    setBusy(true);
+    const promise = action === 'merge' ? manager.merge(id) : manager.discard(id, { force: true });
+    promise.then((result) => {
+      setBusy(false);
+      setConfirm(null);
+      setActionError(result.ok ? undefined : result.error);
+      onDone?.(result.ok);
+    });
+  };
+  return { confirm, setConfirm, busy, actionError, setActionError, run };
 }

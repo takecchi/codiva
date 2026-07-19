@@ -2,23 +2,12 @@ import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/session';
-import { SessionManager, type WorktreeService } from '@/core/session-manager';
+import { SessionManager } from '@/core/session-manager';
+import { flush, fakeWorktrees as worktrees } from './helpers';
 
 // Integration test for Phase 6 session restoration: run → persist → new manager
 // restore → resume on follow-up. Uses a real Session (driven queryFn), not a fake.
-
-const flush = () => new Promise((r) => setTimeout(r, 20));
-
-const worktrees: WorktreeService = {
-  baseBranch: async () => 'main',
-  takenSlugs: async () => new Set(),
-  add: async (slug) => ({ slug, branch: `codiva/${slug}`, path: `/tmp/${slug}` }),
-  syncedStartPoint: async () => undefined,
-  pushBranch: async () => {},
-  diffStat: async () => ({ committed: '', uncommitted: [] }),
-  merge: async () => {},
-  remove: async () => {},
-};
+// A shorter flush window is fine here (a driven query settles fast).
 
 function drivenQuery(onStart?: (options: Options) => void) {
   const out = new AsyncQueue<SDKMessage>();

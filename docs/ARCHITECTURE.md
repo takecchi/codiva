@@ -13,8 +13,12 @@ UI とコアロジックを完全に分離する。コアは Ink/React に一切
 ┌────────┴─ core/ (純TypeScript, UIなし) ─────────────┐
 │  SessionManager … セッションの生成・保持・イベント発火   │
 │  Session        … 1セッション = SDK query + 状態     │
-│  reduceStatus() … SDKMessage → SessionState 畳み込み │
+│  reduce()       … CodivaEvent → SessionState 畳み込み│
+│  Worktree 型 / MergeConflictError / 純関数            │
+└────────┬────────────────────────────────────────────┘
+┌────────┴─ utils/ (I/O ラッパ, core にのみ依存) ──────┐
 │  WorktreeManager… git worktree の作成・削除・マージ   │
+│  git() / config / state-store / pr / notify …        │
 └────────┬────────────────────────────────────────────┘
 ┌────────┴─ 外部 ─────────────────────────────────────┐
 │  @anthropic-ai/claude-agent-sdk (query)             │
@@ -22,53 +26,70 @@ UI とコアロジックを完全に分離する。コアは Ink/React に一切
 └─────────────────────────────────────────────────────┘
 ```
 
+依存方向は一方向（`ui → core ← utils`）。`WorktreeManager` は fs + git 実行の I/O 具象なので
+utils レイヤに置く（`core` は node の I/O を import しない）。`core/worktree.ts` には純粋な型
+（`Worktree` / `DiffStat`）・`MergeConflictError`・`ignoredCopyEntries()` だけを残し、
+`SessionManager` は `WorktreeService` インターフェース越しに具象を DI で受ける。
+
+`src/index.tsx` / `src/app.tsx` / `src/bootstrap/` は**合成レイヤ**（どのレイヤにも属さず core と utils を
+束ねる）。副作用の配線（manager 組み立て・復元・永続・端末モード・PR ポーリング）は `bootstrap/` に切り出し、
+`index.tsx` は「解決 → preflight → build → restore → render → shutdown」の直列だけに保つ。
+
 ## ディレクトリ構造
 
 ```
 codiva/
 ├── src/
-│   ├── index.tsx              # bin エントリ。前提チェック → Ink render → 終了時に残存 worktree 表示
+│   ├── index.tsx              # bin エントリ。解決 → preflight → build → restore → render → shutdown（合成ルート・薄い）
 │   ├── app.tsx                # ルートコンポーネント。list ⇔ detail のビュー切替
-│   ├── core/                  # 純粋ドメイン（Ink/React 非依存）
+│   ├── bootstrap/             # 副作用の配線（合成の分解。core/utils にのみ依存）
+│   │   ├── build-manager.ts   # config + I/O seam → SessionManager 組み立て + /model の config 永続
+│   │   ├── restore-sessions.ts # state.json + transcript から復元
+│   │   ├── persist-controller.ts # debounce保存 / SIGTERM同期flush / 最終flush を集約
+│   │   └── runtime.ts         # PRポーリング・alt-screen/mouse・SIGTERM/SIGHUP フラッシュ
+│   ├── core/                  # 純粋ドメイン（Ink/React/node/utils 非依存。SDK は型 + 定数のみ）
 │   │   ├── index.ts           # バレル（export *）
 │   │   ├── types.ts           # SessionState, SessionStatus, CodivaEvent 等の型定義
-│   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（純関数）
-│   │   ├── status-reducer.spec.ts   # 単体テストは実装の隣に co-located
-│   │   ├── session.ts / session.spec.ts
-│   │   ├── session-manager.ts / session-manager.spec.ts  # Store + ライフサイクル + 復元
-│   │   ├── worktree.ts / worktree.spec.ts                # WorktreeManager
-│   │   ├── async-queue.ts / async-queue.spec.ts
-│   │   ├── slug.ts / slug.spec.ts
-│   │   ├── config.ts / config.spec.ts     # 設定ドメイン型 + toConfig()（言語/model/effort/…）
-│   │   ├── cost.ts / cost.spec.ts         # totalCostUsd() / formatUsd()（純粋・導出）
-│   │   ├── notify.ts / notify.spec.ts     # notificationFor()（通知の発火判定・純粋）
-│   │   ├── persistence.ts / persistence.spec.ts   # 復元用スナップショットの変換・検証（純粋）
-│   │   ├── scroll.ts / scroll.spec.ts             # 詳細ビューのログ窓・PgUp/PgDn 計算（純粋）
-│   │   ├── text-buffer.ts / text-buffer.spec.ts   # 複数行テキストバッファ（value+cursor、純粋）
-│   │   ├── mouse.ts / mouse.spec.ts               # SGR マウスレポートの解析（純粋）
-│   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（reducer テスト用）
+│   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（型付きイベントのみ・純関数）
+│   │   ├── sdk-parse.ts       # applySdkMessage()（SDK メッセージ形状の解釈を集約・純粋）
+│   │   ├── status-meta.ts     # STATUS_META（terminal/attention/復元先/通知キーの一元表）
+│   │   ├── session.ts         # 1 SDK query のライフサイクル
+│   │   ├── session-store.ts   # 購読可能スナップショット（順序・状態・参照同一性保持）
+│   │   ├── session-manager.ts # create/restore/dispose + passthrough のファサード
+│   │   ├── session-actions.ts # merge/discard/diffStat（git 操作の純粋オーケストレーション）
+│   │   ├── pr-coordinator.ts  # PrCoordinator（autoPr/refreshPrs）
+│   │   ├── run-mode.ts        # RunMode + createModePolicy
+│   │   ├── session-ports.ts   # DI seam の interface 集約（WorktreeService/SessionHandle/…）
+│   │   ├── worktree.ts        # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
+│   │   ├── list-hit.ts        # 一覧のマウス当たり判定（純粋）
+│   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatElapsed/clamp/…）
+│   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts
+│   │   ├── scroll.ts / text-buffer.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
+│   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
+│   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（sdk-parse テスト用）
 │   ├── ui/                    # Ink コンポーネント（kebab-case, 識別子は PascalCase）
 │   │   ├── index.ts           # バレル
-│   │   ├── theme.ts           # アクセント色・グリフ（Claude Code 風の共通ビジュアル）
+│   │   ├── theme.ts           # アクセント色・状態色・logColor・グリフ（色は必ずここ経由）
 │   │   ├── banner.tsx         # 起動時ヘッダ（✻ codiva + サブタイトル + cwd, 枠なし）
 │   │   ├── session-list.tsx   # 一覧画面（composer/list の2フォーカスゾーン）
 │   │   ├── session-detail.tsx # 詳細画面（ログ + 追加指示 + マージ/破棄。SDK セッションに直結）
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
-│   │   ├── status-footer.tsx  # ⏵⏵ auto mode on (shift+tab...) のモード行
-│   │   ├── permission-dialog.tsx / permission-dialog.spec.tsx
-│   │   ├── progress-badge.tsx / progress-badge.spec.tsx
-│   │   ├── hooks.ts           # useSessions()（useSyncExternalStore）/ useClock()
-│   │   └── input.ts           # テキストバッファ編集 + 経過時間フォーマット
-│   └── utils/
+│   │   ├── dialog-box.tsx / confirm-prompt.tsx  # 共有 presentational（角丸枠・y/n 確認行）
+│   │   ├── status-footer.tsx / permission-dialog.tsx / model-select.tsx / command-palette.tsx / progress-badge.tsx
+│   │   ├── hooks.ts           # useSessions / useClock / useTextBufferRef / useCommandRunner / useLifecycleAction
+│   │   └── input.ts           # キー→テキストバッファ操作の対応（editText/resolveEnter/normalizeChord）
+│   └── utils/                 # すべての I/O（core にのみ依存＝一方向）
 │       ├── index.ts           # バレル
-│       ├── git.ts / git.spec.ts             # execFile ベースの git 実行ヘルパ
-│       ├── config.ts / config.spec.ts       # ~/.codiva/config.json の読み書き
-│       ├── notify.ts / notify.spec.ts       # OS デスクトップ通知（osascript / notify-send）
-│       ├── mouse.ts / mouse.spec.ts              # SGR マウスレポートの有効化/無効化
-│       └── state-store.ts / state-store.spec.ts  # <repo>/.codiva/state.json の読み書き + prune
+│       ├── git.ts             # execFile ベースの git 実行ヘルパ
+│       ├── worktree-manager.ts # WorktreeManager（git worktree の I/O）
+│       ├── exec.ts / terminal-mode.ts  # fireAndForget / toggleEscape（共通 I/O ラッパ）
+│       ├── config.ts          # ~/.codiva/config.json の読み書き
+│       ├── notify.ts / open-url.ts / pr.ts / title.ts / transcript.ts
+│       ├── alt-screen.ts / mouse.ts    # alt screen / SGR マウスの有効化・無効化
+│       └── state-store.ts     # <repo>/.codiva/state.json の読み書き + prune
 ├── scripts/
 │   └── spike.ts               # Phase 1: SDK 挙動検証スクリプト
-├── tests/                     # App 全体を通す機能/統合テスト（*.test.tsx）
+├── tests/                     # App 全体を通す機能/統合テスト（*.test.tsx）+ helpers.ts（共有フェイク）
 └── docs/                      # 本ドキュメント群
 
 # テスト: 単体は実装隣の *.spec.ts、機能/統合は tests/*.test.tsx。
@@ -119,7 +140,7 @@ interface SessionState {
   worktreePath: string;
   todos: TodoItem[];          // TodoWrite の最新スナップショット
   progress?: { done: number; total: number }; // todos から導出
-  messages: LogEntry[];       // 整形済みログ（現 UI では未表示。永続化・将来のプレビュー用に保持）
+  messages: LogEntry[];       // 整形済みログ。SessionDetail のログビューで表示し、復元時は SDK transcript から再構築
   pendingPermission?: PermissionRequest;      // awaiting_permission 時のみ
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
   startedAt: number;
@@ -142,7 +163,7 @@ interface SessionState {
 
 - コンストラクタで `queryFn`（SDK の `query` 関数）を **DI で受け取る**。テストでは合成メッセージストリームを注入する。
 - streaming input mode を常用: `query()` の prompt に自前の `AsyncGenerator<SDKUserMessage>` を渡し、内部キュー（push可能な async queue）で管理。`send(text)` でいつでも追加メッセージを投入できる。
-- 受信ループ: `for await (const msg of query)` で `reduceStatus()` に畳み込み、変更のたびに `onChange` を発火。
+- 受信ループ: `for await (const msg of query)` で各 SDK メッセージを `applySdkMessage()`（`core/sdk-parse.ts`）に畳み込む。SDK メッセージ形状の解釈はここに閉じ、純粋 reducer（`reduce(state, CodivaEvent)`）は型付きイベントだけを扱う。UI アクション（追加指示・許可・モデル切替等）は `reduce` へ dispatch。変更のたびに `onChange` を発火。
 - `respondToPermission(result)`: 保留中の canUseTool Promise を resolve。
 - `interrupt()` / `abort()`: SDK の interrupt / AbortController。
 - `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
@@ -160,8 +181,15 @@ interface SessionState {
 - `onPersist()`: 永続対象が変わった合図（合成ルートで debounce 保存に配線）。`persistableState()` が state.json 用スナップショットを組み立てる。
 - **モデル切替（`/model`）**: `SessionOptions` を可変フィールドとして保持し、`getModel()` / `setModel(model)` で公開。`setModel` は**以降の新規セッション**に適用（実行中セッションは起動時のモデルを維持）し、`onModelChange(model)` で合成ルートに通知 → `~/.codiva/config.json` の `model` にマージ保存される。選択肢は `core/models.ts`（`MODELS`）、コマンド解析は `core/commands.ts`（`parseSlashCommand`）。
 - `restore(persisted)`: 起動時に前回セッションを再構築（worktree meta を再配線し、`Session` に `resume`/`restored` を渡す。id/slug を予約して衝突回避）。
+- **責務分割**: SessionManager はライフサイクルと配線のファサードで、以下を委譲する:
+  - `core/session-store.ts`（`SessionStore`）… 購読可能スナップショット（順序・状態・参照同一性保持）
+  - `core/session-actions.ts` … `mergeSession` / `discardSession` / `sessionDiffStat`（git 操作）
+  - `core/pr-coordinator.ts`（`PrCoordinator`）… `maybeAutoPr` / `refreshPrs`（PR 自動化）
+  - `core/run-mode.ts` … `RunMode` + `createModePolicy`（shift+tab のツール許可モード）
+  - `core/persistence.ts` の `assemblePersistedState` … state.json スナップショットの組み立て
+  - DI seam の interface（`WorktreeService` / `SessionHandle` / `PrAutomation` / `PrLookup` / `ActionResult`）は `core/session-ports.ts`（leaf）に集約し循環を防ぐ。
 
-### WorktreeManager (`core/worktree.ts`)
+### WorktreeManager (`utils/worktree-manager.ts`)
 
 - 前提チェック: Gitリポジトリか、HEAD が存在するか（コミット0のリポジトリでは worktree を作れない）。
 - `add(slug)`: `git worktree add .codiva/worktrees/<slug> -b codiva/<slug>` を現在の HEAD から作成。slug 衝突時は `-2`, `-3` を付与。
@@ -264,6 +292,11 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   これを捕えて `session.markConflict(files)` → reducer が `status: 'conflict'` + `conflictFiles` を立てる。
   **自動解消はしない**（`-X ours/theirs` 等でコードを無言に捨てない）。UI はバッジ表示のみで、解消は人手。
   `conflict` は詳細ビューでも終端状態扱い（差分・操作を表示）で、破棄や再マージは一覧/詳細から可能。
+
+## 設計判断
+
+| 判断 | 理由 |
+|------|------|
 | 復元は「メタ + SDK resume」で、ログは永続しない | state.json を小さく保つ。会話履歴は SDK の resume が持つので二重管理しない。復元直後はアイドル表示、追加指示で継続 |
 | 復元セッションは遅延 resume（起動時に起こさない） | セッション毎に ~1GiB のサブプロセスを起動時に乱立させない。触られたものだけ起こす |
 | 終了は `abort()` ではなく `stop()`（quiet） | 実行中セッションを failed にせず resumable のまま保存するため（quit と「1件破棄」を区別） |

@@ -1,3 +1,6 @@
+import stringWidth from 'string-width';
+import { clamp } from './math';
+
 /**
  * A pure multi-line text buffer (value + caret index). All editing/movement is
  * expressed as pure functions here so the UI layer only maps keypresses to these
@@ -15,10 +18,6 @@ export interface TextBuffer {
  * (Claude-Code-style: the composer grows upward, then keeps the caret in view).
  */
 export const INPUT_MAX_ROWS = 8;
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
-}
 
 export function emptyBuffer(): TextBuffer {
   return { value: '', cursor: 0 };
@@ -135,6 +134,29 @@ export function moveDown(buf: TextBuffer): TextBuffer {
 }
 
 /**
+ * Inverse of the caret-column math: the caret index (UTF-16 units) for a click at
+ * `column` display cells from the start of `text`. A click anywhere on a wide
+ * (2-cell) character places the caret before it; past the end goes to the end.
+ * Display-width based (`string-width`) so CJK/emoji map correctly.
+ */
+export function caretIndexForColumn(text: string, column: number): number {
+  if (column <= 0) {
+    return 0;
+  }
+  let cells = 0;
+  let index = 0;
+  for (const ch of text) {
+    const w = stringWidth(ch);
+    if (cells + w > column) {
+      return index;
+    }
+    cells += w;
+    index += ch.length;
+  }
+  return text.length;
+}
+
+/**
  * Which line range to render so the caret stays visible within `maxRows` lines.
  * Anchors the caret near the bottom of the window (a growing composer), but never
  * scrolls a short buffer. Returns a half-open range [start, end).
@@ -150,4 +172,29 @@ export function visibleLineRange(
   }
   const start = clamp(cursorRow - cap + 1, 0, totalLines - cap);
   return { start, end: start + cap };
+}
+
+/**
+ * Caret index for a mouse click inside the (internally-scrolled) composer.
+ * `contentRow` is the click's 0-based row within the visible window (i.e.
+ * `y - contentTop`) and `cells` its display column within that line (`x` minus the
+ * left edge and the caret-prefix width). Returns undefined when the click lands
+ * outside the visible lines. Pure inverse of the composer's caret geometry — the
+ * UI supplies only the pixel→cell offsets.
+ */
+export function caretIndexAtClick(
+  buffer: TextBuffer,
+  contentRow: number,
+  cells: number,
+  maxRows: number,
+): number | undefined {
+  const lines = bufferLines(buffer.value);
+  const caret = cursorRowCol(buffer);
+  const { start, end } = visibleLineRange(lines.length, caret.row, maxRows);
+  const row = start + contentRow;
+  if (contentRow < 0 || row >= end) {
+    return undefined;
+  }
+  const line = lines[row] ?? '';
+  return indexAtRowCol(buffer.value, row, caretIndexForColumn(line, cells));
 }

@@ -49,6 +49,22 @@ export function logViewportRows(rows: number): number {
 }
 
 /**
+ * 一覧ビューでセッション行以外に消費される固定の縦幅（バナー + 余白 + 入力欄 +
+ * フッタ）のおおよその見積り。`logViewportRows` の一覧版 `listViewportRows` が
+ * この値を使い、行リストが内部スクロールで収まる高さを端末 rows から導く。
+ */
+export const LIST_CHROME_ROWS = 15;
+
+/**
+ * 一覧で実際にセッション行を描ける行数のおおよその見積り。端末全体の rows から
+ * 固定 chrome を引く（実測できないときのフォールバック。通常は行ボックスの実測
+ * 高さを優先する）。
+ */
+export function listViewportRows(rows: number): number {
+  return Math.max(1, rows - LIST_CHROME_ROWS);
+}
+
+/**
  * セッション一覧を高さ `cap` 行のウィンドウに収めるための表示範囲。
  * 一覧がヘッダ/フッタの間で内部スクロールするときに使う純粋な計算。
  */

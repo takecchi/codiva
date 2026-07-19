@@ -1,38 +1,43 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useRef, useState } from 'react';
 import {
-  bufferLines,
   bufferOf,
   COMMANDS,
-  cursorRowCol,
+  caretIndexAtClick,
   emptyBuffer,
+  formatElapsed,
   formatModel,
   INPUT_MAX_ROWS,
-  indexAtRowCol,
   isCommandInput,
   isFullscreenViewport,
+  isPrCellHit,
   listView,
+  listViewportRows,
   matchCommands,
+  needsAttention,
   type PrMergeStatus,
   parseSgrMouse,
-  runCommand,
+  rowLineAtPoint,
   type SessionManager,
   showsBranchColumn,
-  type TextBuffer,
   totalCostUsd,
-  visibleLineRange,
 } from '@/core';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
-import { useAbsolutePosition, useBoxHeight, useClock, useRunMode, useSessions } from './hooks';
-import { useMessages } from './i18n-context';
+import { ConfirmPrompt } from './confirm-prompt';
+import { DialogBox } from './dialog-box';
 import {
-  caretIndexForColumn,
-  editText,
-  formatElapsed,
-  normalizeChord,
-  resolveEnter,
-} from './input';
+  useAbsolutePosition,
+  useBoxHeight,
+  useClock,
+  useCommandRunner,
+  useLifecycleAction,
+  useRunMode,
+  useSessions,
+  useTextBufferRef,
+} from './hooks';
+import { useMessages } from './i18n-context';
+import { editText, normalizeChord, resolveEnter } from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
@@ -114,15 +119,7 @@ export const SessionList: FC<{
   // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
   const { columns, rows: termRows } = useWindowSize();
-  const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
-  // 同一チャンクで複数キーイベントが連続すると（連打・エスケープ列のまとめ読み）、
-  // React の state はイベント間で更新されず stale closure になる。編集は必ず
-  // この ref を経由して逐次適用し、描画用 state へ反映する。
-  const bufferRef = useRef<TextBuffer>(buffer);
-  const updateBuffer = (next: TextBuffer | ((prev: TextBuffer) => TextBuffer)) => {
-    bufferRef.current = typeof next === 'function' ? next(bufferRef.current) : next;
-    setBuffer(bufferRef.current);
-  };
+  const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
   const [focus, setFocus] = useState<'composer' | 'list'>(initialViewState?.focus ?? 'composer');
   // 初回は末尾（最新）を選択して一番下までスクロールした状態で開く。戻ってきた
   // ときは前回の選択行を復元する（選択行から listView がスクロール窓を導くため、
@@ -130,12 +127,9 @@ export const SessionList: FC<{
   const [sel, setSel] = useState(
     () => initialViewState?.selected ?? Math.max(0, sessions.length - 1),
   );
-  const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | undefined>(undefined);
   const rowsRef = useRef<DOMElement>(null);
   const rowsBox = useAbsolutePosition(rowsRef);
   const composerRef = useRef<DOMElement>(null);
@@ -144,6 +138,22 @@ export const SessionList: FC<{
   // 一覧は常に作成順（上が古い・下が新しい）。archived になっても位置は動かさない。
   const selected = Math.min(sel, Math.max(0, sessions.length - 1));
   const target = sessions[selected];
+  // 確認/実行中/エラー + マージ・破棄の実行は共有フックへ（選択セッションが対象）。
+  const { confirm, setConfirm, busy, actionError, setActionError, run } = useLifecycleAction(
+    manager,
+    target?.id,
+  );
+  // `/command` の解決・実行も共有フックへ。一覧は exit/help/model のみ扱う。
+  const runCommandInput = useCommandRunner(
+    {
+      exit: onQuit,
+      help: () => setShowHelp(true),
+      // `/model` はセッションを作らずモデル選択ダイアログを開く。
+      model: () => setModelSelect(true),
+    },
+    setActionError,
+    m.command.unknown,
+  );
   // 表示状態（クランプ後の選択行 + フォーカス）を親へ報告し、ビュー切替で
   // アンマウントされても復元できるようにする。ref 書き込みなので再描画は起きない。
   useEffect(() => {
@@ -161,7 +171,7 @@ export const SessionList: FC<{
   const showBranch = showsBranchColumn(columns);
   const listHeight = useBoxHeight(rowsRef);
   const listCap = fullscreen
-    ? Math.max(1, listHeight ?? Math.max(1, termRows - 15))
+    ? Math.max(1, listHeight ?? listViewportRows(termRows))
     : Math.max(1, sessions.length);
   const view = listView(sessions.length, selected, listCap);
 
@@ -183,79 +193,36 @@ export const SessionList: FC<{
     }
   };
 
-  /** Resolve a `/command` and perform its effect. Unknown names surface as errors. */
-  const runCommandInput = (text: string) => {
-    const result = runCommand(text);
-    if (result.kind === 'unknown') {
-      setActionError(m.command.unknown(result.name));
-      return;
-    }
-    setActionError(undefined);
-    switch (result.command.action) {
-      case 'exit':
-        onQuit();
-        return;
-      case 'help':
-        setShowHelp(true);
-        return;
-      case 'model':
-        // `/model` はセッションを作らずモデル選択ダイアログを開く。
-        setModelSelect(true);
-        return;
-    }
-  };
-
-  const runAction = (action: 'merge' | 'discard') => {
-    if (!target) {
-      return;
-    }
-    setBusy(true);
-    const promise =
-      action === 'merge' ? manager.merge(target.id) : manager.discard(target.id, { force: true });
-    promise.then((result) => {
-      setBusy(false);
-      setConfirm(null);
-      setActionError(result.ok ? undefined : result.error);
-    });
-  };
-
   /** Route a mouse press to the composer caret or a session row. */
   const handlePress = (x: number, y: number) => {
     if (composerBox) {
       const buf = bufferRef.current;
-      const lines = bufferLines(buf.value);
-      const caret = cursorRowCol(buf);
-      const { start, end } = visibleLineRange(lines.length, caret.row, INPUT_MAX_ROWS);
       const contentTop = composerBox.top + 1; // +1 = 上ボーダー
-      const clickedRow = start + (y - contentTop);
-      if (clickedRow >= start && clickedRow < end) {
-        const line = lines[clickedRow] ?? '';
-        // プレフィックス（`❯ ` / 続き行の2スペース）ぶんの2セルを引いた表示列。
-        const cells = x - composerBox.left - 2;
-        const index = indexAtRowCol(buf.value, clickedRow, caretIndexForColumn(line, cells));
+      // プレフィックス（`❯ ` / 続き行の2スペース）ぶんの2セルを引いた表示列。
+      const index = caretIndexAtClick(
+        buf,
+        y - contentTop,
+        x - composerBox.left - 2,
+        INPUT_MAX_ROWS,
+      );
+      if (index !== undefined) {
         updateBuffer(bufferOf(buf.value, index));
         setFocus('composer');
         return;
       }
     }
     if (rowsBox) {
-      // rows ボックス内の行 → セッションインデックス。上インジケータ行があれば
-      // その 1 行ぶんずらし、可視ウィンドウ（view.start..end）へ写像する。
-      const rowLine = y - rowsBox.top - (view.showAbove ? 1 : 0);
-      const visibleCount = view.end - view.start;
-      if (rowLine >= 0 && rowLine < visibleCount) {
+      // rows ボックス内の行 → セッションインデックス（可視ウィンドウ view.start.. へ写像）。
+      const rowLine = rowLineAtPoint(y, rowsBox.top, view.showAbove, view.end - view.start);
+      if (rowLine !== undefined) {
         const idx = view.start + rowLine;
         setSel(idx);
         setFocus('list');
         // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
-        // browser. The cell is right-anchored, so derive its x-range from the terminal
-        // width (outer padding is symmetric, so the right pad equals rowsBox.left).
+        // browser (the cell is right-anchored — see isPrCellHit).
         const s = sessions[idx];
-        if (s?.pr && onOpenPr) {
-          const cellLeft = columns - rowsBox.left - PR_CELL_WIDTH;
-          if (x >= cellLeft && x < cellLeft + PR_CELL_WIDTH) {
-            onOpenPr(s.pr.url);
-          }
+        if (s?.pr && onOpenPr && isPrCellHit(x, columns, rowsBox.left, PR_CELL_WIDTH)) {
+          onOpenPr(s.pr.url);
         }
       }
     }
@@ -315,7 +282,7 @@ export const SessionList: FC<{
     }
     if (confirm) {
       if (input === 'y' || input === 'Y') {
-        runAction(confirm);
+        run(confirm);
       } else if (input === 'n' || input === 'N' || key.escape) {
         setConfirm(null);
       }
@@ -423,7 +390,7 @@ export const SessionList: FC<{
             {view.showAbove ? <Text dimColor>{m.list.moreAbove(view.hiddenAbove)}</Text> : null}
             {sessions.slice(view.start, view.end).map((s, i) => {
               const idx = view.start + i;
-              const attention = s.status === 'awaiting_input' || s.status === 'awaiting_permission';
+              const attention = needsAttention(s.status);
               const archived = s.status === 'archived';
               const isSel = idx === selected;
               return (
@@ -492,17 +459,13 @@ export const SessionList: FC<{
 
       {actionError ? (
         <Text color={statusColor.failed}>
-          {m.list.actionErrorLabel}: {actionError}
+          {m.action.actionErrorLabel}: {actionError}
         </Text>
       ) : null}
       {confirm ? (
-        <Box borderStyle="round" borderColor={theme.accent} paddingX={1}>
-          <Text>
-            {confirm === 'merge' ? m.list.mergePrompt : m.list.discardPrompt} {m.list.confirmRun}{' '}
-            <Text color={theme.yes}>y</Text> / <Text color={theme.no}>n</Text>
-            {busy ? <Text dimColor> {m.list.busySuffix}</Text> : null}
-          </Text>
-        </Box>
+        <DialogBox>
+          <ConfirmPrompt kind={confirm} busy={busy} />
+        </DialogBox>
       ) : null}
 
       {showHelp && !pending ? (

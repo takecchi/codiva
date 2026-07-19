@@ -52,7 +52,23 @@ export const theme = {
   // Affirmative / negative for y/n confirm prompts.
   yes: statusColor.completed, // y — go
   no: statusColor.failed, // n — stop
+  warn: 'yellow', // caution hints (scrollback indicator, uncommitted changes)
 } as const;
+
+/**
+ * Colors for the detail-view transcript log lines, keyed by LogEntry kind.
+ * Conventional ANSI names on purpose — the transcript echoes Claude Code's look.
+ * Centralized here so components read colors from the theme, never inline.
+ */
+export const logColor: Record<string, string | undefined> = {
+  assistant_text: undefined,
+  tool_use: theme.accent,
+  tool_result: 'gray',
+  result: statusColor.completed,
+  user: 'cyan',
+  system: theme.warn,
+  error: statusColor.failed,
+};
 
 /** Glyphs that carry the Claude-Code look. Kept in one place so they stay consistent. */
 export const glyph = {

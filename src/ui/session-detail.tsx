@@ -1,78 +1,65 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useEffect, useMemo, useRef, useState } from 'react';
+import { type FC, useEffect, useMemo, useState } from 'react';
 import {
   COMMANDS,
   type DiffStat,
   type DisplayLine,
   emptyBuffer,
   isCommandInput,
+  isTerminalStatus,
   type LogEntry,
   logLines,
   logViewportRows,
   logWindow,
   matchCommands,
   parseSgrMouse,
-  runCommand,
   type ScrollAnchor,
   type SessionManager,
   scrollDown,
   scrollUp,
-  type TextBuffer,
+  streamTail,
   WHEEL_SCROLL_ROWS,
 } from '@/core';
 import { CommandPalette } from './command-palette';
-import { useRunMode, useSessions } from './hooks';
+import { ConfirmPrompt } from './confirm-prompt';
+import { DialogBox } from './dialog-box';
+import {
+  useCommandRunner,
+  useLifecycleAction,
+  useRunMode,
+  useSessions,
+  useTextBufferRef,
+} from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, normalizeChord, resolveEnter } from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
-import { glyph, theme } from './theme';
+import { glyph, logColor, statusColor, theme } from './theme';
 
-/** How each log kind is prefixed/colored — chosen to echo Claude Code's transcript. */
-const LOG: Record<LogEntry['kind'], { prefix: string; color?: string; dim?: boolean }> = {
-  assistant_text: { prefix: '' },
-  tool_use: { prefix: `${glyph.bullet} `, color: theme.accent },
-  tool_result: { prefix: `  ${glyph.branch} `, color: 'gray', dim: true },
-  result: { prefix: '', color: 'green' },
-  user: { prefix: '> ', color: 'cyan' },
-  system: { prefix: '', color: 'yellow' },
-  error: { prefix: '✗ ', color: 'red' },
+/** Prefix/indent for each log kind — echoes Claude Code's transcript. Colors live in `logColor`. */
+const LOG_PREFIX: Record<LogEntry['kind'], string> = {
+  assistant_text: '',
+  tool_use: `${glyph.bullet} `,
+  tool_result: `  ${glyph.branch} `,
+  result: '',
+  user: '> ',
+  system: '',
+  error: '✗ ',
 };
 
-const TERMINAL = new Set([
-  'completed',
-  'interrupted',
-  'rate_limited',
-  'failed',
-  'conflict',
-  'archived',
-]);
-
-/** The live-typing preview: the last non-empty line of the streamed text so far. */
-function streamTail(text: string): string {
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (line && line.length > 0) {
-      return line;
-    }
-  }
-  return '';
-}
+/** Kinds rendered dimmed (secondary transcript lines). */
+const LOG_DIM: Partial<Record<LogEntry['kind'], boolean>> = { tool_result: true };
 
 // One physical row of the log. `line.text` already carries the kind's prefix /
 // continuation indent (built by core's logLines); truncate is only a safety net
 // against width drift — wrapping happened in core at the exact content width.
-const LogLine: FC<{ line: DisplayLine }> = ({ line }) => {
-  const spec = LOG[line.kind];
-  return (
-    <Text color={spec.color} dimColor={spec.dim} wrap="truncate-end">
-      {line.text}
-    </Text>
-  );
-};
+const LogLine: FC<{ line: DisplayLine }> = ({ line }) => (
+  <Text color={logColor[line.kind]} dimColor={LOG_DIM[line.kind]} wrap="truncate-end">
+    {line.text}
+  </Text>
+);
 
 /**
  * The in-app detail view: live log of a single session plus a follow-up
@@ -94,30 +81,30 @@ export const SessionDetail: FC<{
   const mode = useRunMode(manager);
   const { rows, columns } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
-  const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
-  // 一覧と同じ理由（連打・ペースト・エスケープ列が同一 tick に複数回届く）で、
-  // バッファ編集は ref を経由して逐次適用し、描画用 state へ反映する。
-  const bufferRef = useRef<TextBuffer>(buffer);
-  const updateBuffer = (next: TextBuffer | ((prev: TextBuffer) => TextBuffer)) => {
-    bufferRef.current = typeof next === 'function' ? next(bufferRef.current) : next;
-    setBuffer(bufferRef.current);
-  };
+  const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
   // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
   const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
   const [diff, setDiff] = useState<DiffStat | undefined>(undefined);
   // 変更差分サマリは既定で畳んでおき（ログの縦幅を優先）、`/diff` でトグルする。
   const [showChanges, setShowChanges] = useState(false);
-  const [actionError, setActionError] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
+  // 確認/実行中/エラー + マージ・破棄の実行は共有フックへ。成功時は入力パネルへ戻す。
+  const { confirm, setConfirm, busy, actionError, setActionError, run } = useLifecycleAction(
+    manager,
+    id,
+    (ok) => {
+      if (ok) {
+        setPanel('input');
+      }
+    },
+  );
 
   const pending = session?.pendingPermission;
   const status = session?.status;
-  const isTerminal = status !== undefined && TERMINAL.has(status);
+  const isTerminal = status !== undefined && isTerminalStatus(status);
 
   // Fetch the diff summary once the session reaches a terminal state.
   useEffect(() => {
@@ -138,47 +125,19 @@ export const SessionDetail: FC<{
     };
   }, [manager, id, isTerminal]);
 
-  const run = (action: 'merge' | 'discard') => {
-    setBusy(true);
-    const promise = action === 'merge' ? manager.merge(id) : manager.discard(id, { force: true });
-    promise.then((result) => {
-      setBusy(false);
-      setConfirm(null);
-      if (result.ok) {
-        setActionError(undefined);
-        setPanel('input');
-      } else {
-        setActionError(result.error);
-      }
-    });
-  };
-
-  /** Resolve a `/command` typed in the composer. Unknown names surface as errors. */
-  const runCommandInput = (text: string) => {
-    const result = runCommand(text);
-    if (result.kind === 'unknown') {
-      setActionError(m.command.unknown(result.name));
-      return;
-    }
-    setActionError(undefined);
-    switch (result.command.action) {
-      case 'exit':
-        onQuit();
-        return;
-      case 'help':
-        setShowHelp(true);
-        return;
-      case 'model':
-        // `/model` opens the picker; the pick applies to THIS session only.
-        setModelSelect(true);
-        return;
-      case 'diff':
-        // `/diff` toggles the changes summary (hidden by default to give the log
-        // more vertical room).
-        setShowChanges((v) => !v);
-        return;
-    }
-  };
+  // `/diff` は詳細ビュー固有（変更差分サマリのトグル）。他は両ビュー共通。
+  const runCommandInput = useCommandRunner(
+    {
+      exit: onQuit,
+      help: () => setShowHelp(true),
+      // `/model` opens the picker; the pick applies to THIS session only.
+      model: () => setModelSelect(true),
+      // `/diff` toggles the changes summary (hidden by default for log room).
+      diff: () => setShowChanges((v) => !v),
+    },
+    setActionError,
+    m.command.unknown,
+  );
 
   // Expand entries into physical rows once per (messages, width) — the scroll
   // model (anchor/steps/hidden counts) works in rows, so multi-line messages
@@ -187,7 +146,7 @@ export const SessionDetail: FC<{
   const messages = session?.messages;
   const lines = useMemo<DisplayLine[]>(
     () =>
-      messages ? logLines(messages, Math.max(1, columns - 2), (kind) => LOG[kind].prefix) : [],
+      messages ? logLines(messages, Math.max(1, columns - 2), (kind) => LOG_PREFIX[kind]) : [],
     [messages, columns],
   );
   const total = lines.length;
@@ -343,7 +302,7 @@ export const SessionDetail: FC<{
       {/* Scrollback indicator: shown only when the view is lifted off the tail. */}
       {!win.atBottom ? (
         <Box flexShrink={0}>
-          <Text color="yellow" dimColor>
+          <Text color={theme.warn} dimColor>
             {m.detail.scrollHint(win.hiddenBelow)}
           </Text>
         </Box>
@@ -359,14 +318,14 @@ export const SessionDetail: FC<{
               <Text dimColor>{m.detail.noCommittedChanges}</Text>
             )}
             {diff.uncommitted.length > 0 ? (
-              <Text color="yellow">{m.detail.uncommitted(diff.uncommitted.length)}</Text>
+              <Text color={theme.warn}>{m.detail.uncommitted(diff.uncommitted.length)}</Text>
             ) : null}
           </Box>
         ) : null}
 
         {actionError ? (
-          <Text color="red">
-            {m.detail.actionErrorLabel}: {actionError}
+          <Text color={statusColor.failed}>
+            {m.action.actionErrorLabel}: {actionError}
           </Text>
         ) : null}
         {showHelp && !pending ? (
@@ -392,25 +351,21 @@ export const SessionDetail: FC<{
             onDeny={(message) => manager.deny(session.id, message)}
           />
         ) : panel === 'actions' ? (
-          <Box flexDirection="column" borderStyle="round" borderColor="blue" paddingX={1}>
+          <DialogBox flexDirection="column">
             {confirm ? (
-              <Text>
-                {confirm === 'merge' ? m.detail.mergePrompt : m.detail.discardPrompt}{' '}
-                {m.detail.confirmRun} <Text color="green">y</Text> / <Text color="red">n</Text>
-                {busy ? <Text dimColor> {m.detail.busySuffix}</Text> : null}
-              </Text>
+              <ConfirmPrompt kind={confirm} busy={busy} />
             ) : (
               <>
-                <Text color="blue" bold>
+                <Text color={theme.accent} bold>
                   {m.detail.actionsTitle}
                 </Text>
                 <Text>
-                  <Text color="green">m</Text>: {m.detail.mergeAction} ・ <Text color="red">d</Text>
-                  : {m.detail.discardAction}
+                  <Text color={theme.yes}>m</Text>: {m.detail.mergeAction} ・{' '}
+                  <Text color={theme.no}>d</Text>: {m.detail.discardAction}
                 </Text>
               </>
             )}
-          </Box>
+          </DialogBox>
         ) : (
           <Box flexDirection="column">
             {isCommandInput(buffer.value) ? (

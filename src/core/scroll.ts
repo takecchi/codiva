@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { clamp } from './math';
 import type { LogEntry, LogKind } from './types';
 
 /**
@@ -23,8 +24,19 @@ export interface LogWindow<T = LogEntry> {
   atBottom: boolean;
 }
 
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
+/**
+ * The live-typing preview line: the last non-empty line of the streamed text so
+ * far. The detail view shows just this one line while a turn streams in.
+ */
+export function streamTail(text: string): string {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (line && line.length > 0) {
+      return line;
+    }
+  }
+  return '';
 }
 
 /**

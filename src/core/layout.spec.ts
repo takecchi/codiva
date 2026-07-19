@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   DETAIL_CHROME_ROWS,
   isFullscreenViewport,
+  LIST_CHROME_ROWS,
   listView,
+  listViewportRows,
   logViewportRows,
   MIN_BRANCH_COLUMN_COLUMNS,
   MIN_FULLSCREEN_ROWS,
@@ -132,5 +134,17 @@ describe('listView', () => {
     expect(() => listView(10, 99, 5)).not.toThrow();
     const v = listView(10, 99, 5);
     expect(v.end).toBe(10);
+  });
+});
+
+describe('listViewportRows', () => {
+  it('subtracts the fixed list chrome from the terminal rows', () => {
+    expect(listViewportRows(40)).toBe(40 - LIST_CHROME_ROWS);
+    expect(listViewportRows(40)).toBe(25);
+  });
+
+  it('never returns less than 1 row', () => {
+    expect(listViewportRows(10)).toBe(1);
+    expect(listViewportRows(0)).toBe(1);
   });
 });
