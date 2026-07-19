@@ -58,6 +58,9 @@ class FakeSession implements SessionHandle {
   async interrupt() {
     this.calls.push('interrupt');
   }
+  setModel(model: string | undefined) {
+    this.calls.push(`setModel:${model ?? 'default'}`);
+  }
   abort() {
     this.aborted = true;
   }
@@ -194,6 +197,7 @@ describe('SessionManager', () => {
     manager.allow(id);
     manager.deny(id, 'no');
     await manager.interrupt(id);
+    manager.setSessionModel(id, 'claude-fable-5');
 
     expect(created[0]?.calls).toEqual([
       'send:more',
@@ -201,13 +205,26 @@ describe('SessionManager', () => {
       'allow',
       'deny:no',
       'interrupt',
+      'setModel:claude-fable-5',
     ]);
+  });
+
+  it('setSessionModel targets one session and leaves the global default alone', async () => {
+    const { manager, created } = makeManager();
+    const id = manager.create('a');
+    await flush();
+    expect(manager.getModel()).toBeUndefined();
+    manager.setSessionModel(id, 'claude-opus-4-8');
+    // Only the session is told to switch; the global default (new sessions) is untouched.
+    expect(created[0]?.calls).toContain('setModel:claude-opus-4-8');
+    expect(manager.getModel()).toBeUndefined();
   });
 
   it('ignores UI actions for unknown session ids', async () => {
     const { manager } = makeManager();
     expect(() => manager.send('x', 'y')).not.toThrow();
     await expect(manager.interrupt('x')).resolves.toBeUndefined();
+    expect(() => manager.setSessionModel('x', 'claude-fable-5')).not.toThrow();
   });
 
   describe('lifecycle', () => {

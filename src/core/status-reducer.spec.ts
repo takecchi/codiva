@@ -173,6 +173,16 @@ describe('control events', () => {
     expect(state.model).toBe('claude-sonnet-4-5');
   });
 
+  it('reflects a per-session model switch, and no-ops when unchanged', () => {
+    const s0: SessionState = { ...initialState(BASE), status: 'running', model: 'claude-opus-4-8' };
+    const s1 = reduce(s0, { kind: 'model', model: 'claude-fable-5', at: 1 });
+    expect(s1.model).toBe('claude-fable-5');
+    // Same model again → same reference (subscribers don't re-render).
+    expect(reduce(s1, { kind: 'model', model: 'claude-fable-5', at: 2 })).toBe(s1);
+    // Switching back to the CLI default clears the resolved model.
+    expect(reduce(s1, { kind: 'model', model: undefined, at: 3 }).model).toBeUndefined();
+  });
+
   it('archives once, then is idempotent', () => {
     const s1 = reduce({ ...initialState(BASE), status: 'completed' }, { kind: 'archived', at: 1 });
     expect(s1.status).toBe('archived');

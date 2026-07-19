@@ -1,14 +1,18 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  COMMANDS,
   type DiffStat,
   type DisplayLine,
   emptyBuffer,
+  isCommandInput,
   type LogEntry,
   logLines,
   logViewportRows,
   logWindow,
+  matchCommands,
   parseSgrMouse,
+  runCommand,
   type ScrollAnchor,
   type SessionManager,
   scrollDown,
@@ -16,9 +20,11 @@ import {
   type TextBuffer,
   WHEEL_SCROLL_ROWS,
 } from '@/core';
+import { CommandPalette } from './command-palette';
 import { useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, normalizeChord, resolveEnter } from './input';
+import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
@@ -74,7 +80,8 @@ export const SessionDetail: FC<{
   manager: SessionManager;
   id: string;
   onBack: () => void;
-}> = ({ manager, id, onBack }) => {
+  onQuit: () => void;
+}> = ({ manager, id, onBack, onQuit }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -91,6 +98,9 @@ export const SessionDetail: FC<{
   // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
   const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
+  // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
+  const [modelSelect, setModelSelect] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
   const [diff, setDiff] = useState<DiffStat | undefined>(undefined);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
@@ -134,6 +144,28 @@ export const SessionDetail: FC<{
     });
   };
 
+  /** Resolve a `/command` typed in the composer. Unknown names surface as errors. */
+  const runCommandInput = (text: string) => {
+    const result = runCommand(text);
+    if (result.kind === 'unknown') {
+      setActionError(m.command.unknown(result.name));
+      return;
+    }
+    setActionError(undefined);
+    switch (result.command.action) {
+      case 'quit':
+        onQuit();
+        return;
+      case 'help':
+        setShowHelp(true);
+        return;
+      case 'model':
+        // `/model` opens the picker; the pick applies to THIS session only.
+        setModelSelect(true);
+        return;
+    }
+  };
+
   // Expand entries into physical rows once per (messages, width) — the scroll
   // model (anchor/steps/hidden counts) works in rows, so multi-line messages
   // scroll smoothly instead of jumping an entry at a time. Width accounts for
@@ -165,6 +197,17 @@ export const SessionDetail: FC<{
     // 生テキストとして渡す。一覧と同じ共通ヘルパーで実キーへ復号し、Enter/改行/
     // Tab/Esc の挙動を両画面で揃える（詳細で Shift+Enter が改行にならない不具合対策）。
     const { input, key } = normalizeChord(rawInput, rawKey);
+    // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
+    // everything here so nothing leaks through to the composer underneath.
+    if (modelSelect) {
+      return;
+    }
+    // The /help overlay is dismissed by any key (swallowed so it doesn't also
+    // edit/navigate underneath).
+    if (showHelp) {
+      setShowHelp(false);
+      return;
+    }
     if (key.escape) {
       if (confirm) {
         setConfirm(null);
@@ -225,6 +268,12 @@ export const SessionDetail: FC<{
         updateBuffer(enter.buffer);
         return;
       }
+      // A leading `/` is a command (e.g. /model), not a follow-up instruction.
+      if (isCommandInput(enter.text)) {
+        runCommandInput(enter.text);
+        updateBuffer(emptyBuffer());
+        return;
+      }
       if (enter.text && session) {
         manager.send(session.id, enter.text);
         updateBuffer(emptyBuffer());
@@ -246,11 +295,13 @@ export const SessionDetail: FC<{
     );
   }
 
-  const footerHint = pending
-    ? m.detail.helpPending
-    : panel === 'actions'
-      ? m.detail.helpActions
-      : m.detail.helpInput;
+  const footerHint = modelSelect
+    ? m.model.help
+    : pending
+      ? m.detail.helpPending
+      : panel === 'actions'
+        ? m.detail.helpActions
+        : m.detail.helpInput;
   const win = logWindow(lines, rows, anchor);
   const preview = session.streamingText ? streamTail(session.streamingText) : '';
 
@@ -304,7 +355,22 @@ export const SessionDetail: FC<{
             {m.detail.actionErrorLabel}: {actionError}
           </Text>
         ) : null}
-        {pending ? (
+        {showHelp && !pending ? (
+          <CommandPalette title={m.command.helpTitle} commands={COMMANDS} />
+        ) : null}
+
+        {modelSelect ? (
+          <ModelSelect
+            // The session's live (resolved) model — pre-selects the current row.
+            current={session.model}
+            onSelect={(model) => {
+              manager.setSessionModel(session.id, model);
+              setModelSelect(false);
+              setAnchor('bottom');
+            }}
+            onCancel={() => setModelSelect(false)}
+          />
+        ) : pending ? (
           <PermissionDialog
             request={pending}
             onAnswer={(answers) => manager.answer(session.id, answers)}
@@ -332,7 +398,15 @@ export const SessionDetail: FC<{
             )}
           </Box>
         ) : (
-          <PromptInput buffer={buffer} focused placeholder={m.detail.followupPlaceholder} />
+          <Box flexDirection="column">
+            {isCommandInput(buffer.value) ? (
+              <CommandPalette
+                title={m.command.paletteTitle}
+                commands={matchCommands(buffer.value)}
+              />
+            ) : null}
+            <PromptInput buffer={buffer} focused placeholder={m.detail.followupPlaceholder} />
+          </Box>
         )}
 
         <StatusFooter mode={mode} hint={footerHint} />

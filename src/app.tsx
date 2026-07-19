@@ -67,7 +67,12 @@ export const App: FC<{
         overflow={fullscreen ? 'hidden' : undefined}
       >
         {view.mode === 'detail' ? (
-          <SessionDetail manager={manager} id={view.id} onBack={() => setView({ mode: 'list' })} />
+          <SessionDetail
+            manager={manager}
+            id={view.id}
+            onBack={() => setView({ mode: 'list' })}
+            onQuit={quit}
+          />
         ) : (
           <SessionList
             manager={manager}
