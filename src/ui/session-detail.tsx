@@ -3,21 +3,21 @@ import { type FC, useEffect, useRef, useState } from 'react';
 import {
   type DiffStat,
   emptyBuffer,
-  formatUsd,
   type LogEntry,
   logViewportRows,
   logWindow,
+  parseSgrMouse,
   type ScrollAnchor,
   type SessionManager,
   scrollDown,
   scrollUp,
   type TextBuffer,
+  WHEEL_SCROLL_ROWS,
 } from '@/core';
 import { useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, resolveEnter } from './input';
 import { PermissionDialog } from './permission-dialog';
-import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
 import { glyph, theme } from './theme';
@@ -130,7 +130,23 @@ export const SessionDetail: FC<{
     });
   };
 
+  const total = session?.messages.length ?? 0;
+
   useInput((input, key) => {
+    // SGR マウスレポートはキー入力より先に解釈する。これをしないと（マウス有効時に）
+    // ホイールスクロールのエスケープ列が生テキストとして editText に流れ込み、
+    // 「スクロールしようとすると文字が入力される」バグになる（一覧の useInput と同じ対策）。
+    const mouse = parseSgrMouse(input);
+    if (mouse) {
+      if (mouse.kind === 'wheel') {
+        setAnchor((a) =>
+          mouse.dir === 'up'
+            ? scrollUp(a, total, WHEEL_SCROLL_ROWS)
+            : scrollDown(a, total, WHEEL_SCROLL_ROWS),
+        );
+      }
+      return; // press/release はログビューでは無視（クリック操作はない）
+    }
     if (key.escape) {
       if (confirm) {
         setConfirm(null);
@@ -157,11 +173,11 @@ export const SessionDetail: FC<{
     // step is derived from the *visible* log height, not the full terminal, so a
     // page never jumps past unseen lines.
     if (key.pageUp) {
-      setAnchor((a) => scrollUp(a, session?.messages.length ?? 0, logViewportRows(rows)));
+      setAnchor((a) => scrollUp(a, total, logViewportRows(rows)));
       return;
     }
     if (key.pageDown) {
-      setAnchor((a) => scrollDown(a, session?.messages.length ?? 0, logViewportRows(rows)));
+      setAnchor((a) => scrollDown(a, total, logViewportRows(rows)));
       return;
     }
     if (confirm) {
@@ -212,7 +228,6 @@ export const SessionDetail: FC<{
     );
   }
 
-  const activeForm = session.todos.find((t) => t.status === 'in_progress')?.activeForm;
   const footerHint = pending
     ? m.detail.helpPending
     : panel === 'actions'
@@ -223,48 +238,14 @@ export const SessionDetail: FC<{
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
-      {/* ステータスヘッダ（画面上部に固定） */}
-      <Box flexDirection="column" flexShrink={0}>
-        <Box>
-          <Text color={theme.accent}>{glyph.star} </Text>
-          <Text bold>{session.title} </Text>
-          <ProgressBadge state={session} />
-          <Text dimColor>
-            {'   '}
-            {session.branch}
-          </Text>
-        </Box>
-
-        {session.progress ? (
-          <Text dimColor>
-            {m.detail.progress(session.progress.done, session.progress.total, activeForm)}
-          </Text>
-        ) : null}
-
-        {session.totalCostUsd ? (
-          <Text dimColor>{m.detail.cost(formatUsd(session.totalCostUsd))}</Text>
-        ) : null}
-
-        {session.error ? (
-          <Text color="red">
-            {m.detail.errorLabel}: {session.error}
-          </Text>
-        ) : null}
-      </Box>
-
       {/*
-       * メッセージログの末尾ビューポート。flexGrow で残り高さを占め、
-       * justifyContent="flex-end" + overflowY="hidden" で「最新行が下端、
-       * 溢れた古い行は上へクリップ」にする。<Static> はスクロールバック側に
-       * 書くため全画面レイアウトでは画面外に消えてしまい使えない。
+       * ヘッダは持たない（要件: セッション詳細はコンテンツ + フッタのみ）。
+       * メッセージログの末尾ビューポートが上端いっぱいまで残り高さを占める。
+       * flexGrow で残りを占め、justifyContent="flex-end" + overflowY="hidden" で
+       * 「最新行が下端、溢れた古い行は上へクリップ」にする。<Static> はスクロール
+       * バック側に書くため全画面レイアウトでは画面外に消えてしまい使えない。
        */}
-      <Box
-        flexDirection="column"
-        flexGrow={1}
-        marginTop={1}
-        overflowY="hidden"
-        justifyContent="flex-end"
-      >
+      <Box flexDirection="column" flexGrow={1} overflowY="hidden" justifyContent="flex-end">
         {win.entries.map((entry) => (
           <LogLine key={entry.seq} entry={entry} />
         ))}
