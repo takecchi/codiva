@@ -103,6 +103,8 @@ export const SessionDetail: FC<{
   const [showHelp, setShowHelp] = useState(false);
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
   const [diff, setDiff] = useState<DiffStat | undefined>(undefined);
+  // 変更差分サマリは既定で畳んでおき（ログの縦幅を優先）、`/diff` でトグルする。
+  const [showChanges, setShowChanges] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
@@ -162,6 +164,11 @@ export const SessionDetail: FC<{
       case 'model':
         // `/model` opens the picker; the pick applies to THIS session only.
         setModelSelect(true);
+        return;
+      case 'diff':
+        // `/diff` toggles the changes summary (hidden by default to give the log
+        // more vertical room).
+        setShowChanges((v) => !v);
         return;
     }
   };
@@ -336,7 +343,7 @@ export const SessionDetail: FC<{
       ) : null}
 
       <Box flexDirection="column" marginTop={1} flexShrink={0}>
-        {isTerminal && diff ? (
+        {isTerminal && diff && showChanges ? (
           <Box flexDirection="column" marginBottom={1}>
             <Text dimColor>{m.detail.changesTitle(session.branch)}</Text>
             {diff.committed ? (
