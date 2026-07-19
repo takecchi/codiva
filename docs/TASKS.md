@@ -165,6 +165,24 @@ UI なし。すべてユニットテストで駆動する。
 >   バックスラッシュ改行）。全 292 テスト緑、lint/typecheck/build 緑。手動受け入れ（実端末での改行/スクロール体感）は
 >   TTY 環境が要るため未実施だが、ink-testing の統合テストで配線を検証済み。
 
+## Phase 7: フォーカスモデル刷新 + claude CLI 連携（詳細ビュー廃止）
+
+- [x] フォーカスモデル: 一覧画面を `composer`（起動時既定）/`list` の2ゾーン化。Tab で切替、
+      composer は矢印でフルにキャレット移動（↑↓←→）、list は ↑↓選択・印字キーで composer へ自動復帰
+- [x] マウス対応: SGR レポート（`utils/mouse.ts` ?1000/?1006、全画面時のみ・`"mouse": false` で無効化）。
+      解析は純粋な `core/mouse.ts`。クリックで入力欄のキャレット移動（`caretIndexForColumn` 表示幅逆変換）
+      とセッション行の選択
+- [x] 詳細ビュー廃止 → **claude CLI 連携**: 一覧で Enter/→ → `Session.detach()`（quiet stop + `external`）
+      → Ink `suspendTerminal` → `claude --resume <session-id>`（cwd=worktree、端末 inherit）→ /exit で
+      codiva に復帰（alt screen / mouse は index.tsx が解除・再進入）。新ステータス `external`（claude作業中）
+- [x] 詳細ビューにあった機能の移設: 許可/質問ダイアログは list フォーカス時に選択セッションのものを表示、
+      マージ（m）/破棄（d）も一覧から。`core/scroll.ts`・`logViewportRows`・`streamingText` プレビューは
+      claude CLI に役割を譲り削除（reducer の streamingText 状態は保持）
+
+> 実績メモ: 全343テスト緑・lint/typecheck 緑。`external` は persistence 上 `completed`（resumable idle）として
+> 復元。1 SDK セッション 1 ライターを守るため、claude で開く際は必ず codiva 側 query を停止してから spawn。
+> claude CLI 実機での resume 挙動（認証必要）は手動確認が必要。
+
 ---
 
 ## 各 Phase 共通の完了チェック

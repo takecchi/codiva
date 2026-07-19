@@ -12,6 +12,24 @@
 
 - **1画面につき `useInput` は1つ**（view コンポーネントに置く）。`PromptInput` 等は presentational にして、キー処理は view 側の単一ハンドラに集約する（複数 `useInput` の競合を避ける）。
 - モーダルな状態（`pendingPermission` あり）では、そのダイアログにキーを委譲し、背後の view はキーを処理しない。
+- **フォーカスモデル**: 一覧画面は `composer`（入力欄・起動時の既定）と `list` の2ゾーン。
+  Tab で切替。composer 中は矢印がキャレット移動（`editText` の arrows+vertical）、list 中は
+  ↑↓が行選択・Enter/→ が「claude で開く」・m/d がマージ/破棄。list 中に印字キーを打つと
+  composer に戻ってそのまま挿入される。選択中セッションの許可/質問ダイアログは
+  **list フォーカス時のみ**アクティブ（composer のタイピングを乗っ取らない）。
+- **バッファ編集は ref 経由で逐次適用する**。端末は連打・ペースト・エスケープ列を
+  1チャンクにまとめて届けることがあり、useInput ハンドラが同一 tick に複数回呼ばれる。
+  `setState(edit(state, ...))` だと全イベントが同じ stale な state から計算されて潰れる
+  （←×5 が1回分になる等）。`bufferRef.current` を更新してから `setState(ref.current)` する。
+- **挿入テキストはサニタイズする**（`ui/input.ts` の editText 内）。複数文字チャンクは
+  キー名が付かない生テキストとして届くため、タブ・CR 等の制御文字が混ざり得る。
+  改行は LF に正規化、タブ→スペース、他の C0/DEL は捨てる。
+- **マウス**: SGR マウスレポート（`utils/mouse.ts` で ?1000/?1006、全画面時のみ有効）。
+  解析は純粋な `parseSgrMouse`（`core/mouse.ts`）で行い、**view の useInput の先頭で**
+  キー入力より先に処理する（レポート断片をバッファへ混入させない）。クリック位置→
+  キャレットは `caretIndexForColumn`（表示幅の逆変換）+ `indexAtRowCol`。座標は
+  出力原点前提なので、インライン描画フォールバック時はマウスを有効化しない。
+  設定 `"mouse": false` で無効化（有効中は端末のテキスト選択が Shift+ドラッグになるため）。
 
 ## 全画面レイアウト
 
@@ -28,16 +46,22 @@
   インライン描画フォールバック時（TTY でない / 起動時 rows が閾値未満）は enter しない。
   配線は `src/index.tsx`（合成ルート）で行い、終了メッセージは leave 後に書く。
 - **`<Static>` は使わない**。Static はスクロールバック側に書き出すため、全画面レイアウトでは
-  ビューポート外に消えて見えなくなる。追記ログは「末尾ビューポート」
-  （`flexGrow={1}` + `overflowY="hidden"` + `justifyContent="flex-end"`）で最新行を下端に表示し、
-  `logWindow(messages, rows, anchor)`（`core/scroll.ts`）で描画ノード数に上限を掛ける。
-- **ログスクロールは純関数に委譲**。`anchor`（`'bottom'`=末尾追従／絶対 end index=上スクロール中は固定）
-  を UI 状態に持ち、PgUp/PgDn で `scrollUp`/`scrollDown`（`core/scroll.ts`）。alt screen で端末スクロールバックを
-  無効化しているため、過去ログはこのアプリ内スクロールでのみ辿れる。追加指示の送信時は `'bottom'` へ戻す。
-- **複数行入力も純粋モデルへ委譲**。テキストバッファは `core/text-buffer.ts`（value+cursor）、キー→操作の
+  ビューポート外に消えて見えなくなる。
+- **複数行入力は純粋モデルへ委譲**。テキストバッファは `core/text-buffer.ts`（value+cursor）、キー→操作の
   対応だけ `ui/input.ts`（`editText`/`resolveEnter`）に置く。Shift/Meta+Enter か末尾バックスラッシュ+Enter で
-  改行、他は送信。一覧は矢印を行選択に温存（カーソル移動なし）、詳細は矢印でカーソル移動。`PromptInput` は
-  `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` でカーソル付近を内部スクロール。
+  改行、他は送信。`PromptInput` は `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` で
+  カーソル付近を内部スクロール。
+
+## claude CLI 連携（詳細画面の代替）
+
+- セッションの中身は codiva 内の詳細画面ではなく **`claude --resume <session-id>`** で開く
+  （一覧で Enter）。ログ表示・追加指示・スクロールは claude 本体に任せる。
+- 手順: `manager.detach(id)`（query を静かに停止し `external` へ。SDK セッションは resume 可能なまま）
+  → Ink の **`useApp().suspendTerminal`** で描画・raw mode を明け渡す → 合成ルート注入の
+  `runExternal`（`utils/claude-cli.ts` の spawn。前後で mouse/alt screen を解除・再進入）
+  → 子プロセス終了で Ink が全再描画。
+- codiva 側の同一セッションへの再アタッチはしない（1 SDK セッション 1 ライター）。
+  external のセッションもマージ/破棄は一覧から可能。
 
 ## IME（日本語入力）対応
 

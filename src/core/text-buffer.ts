@@ -103,7 +103,8 @@ export function cursorRowCol(buf: TextBuffer): { row: number; col: number } {
   return { row: before.length - 1, col: last.length };
 }
 
-function rowColToIndex(value: string, row: number, col: number): number {
+/** Caret index for a (row, col) position in the line grid; both are clamped. */
+export function indexAtRowCol(value: string, row: number, col: number): number {
   const lines = value.split('\n');
   const r = clamp(row, 0, lines.length - 1);
   const c = clamp(col, 0, (lines[r] ?? '').length);
@@ -120,7 +121,7 @@ export function moveUp(buf: TextBuffer): TextBuffer {
   if (row === 0) {
     return buf.cursor === 0 ? buf : { value: buf.value, cursor: 0 };
   }
-  return { value: buf.value, cursor: rowColToIndex(buf.value, row - 1, col) };
+  return { value: buf.value, cursor: indexAtRowCol(buf.value, row - 1, col) };
 }
 
 /** Move the caret down one line, keeping the column; the last line goes to end. */
@@ -130,7 +131,7 @@ export function moveDown(buf: TextBuffer): TextBuffer {
   if (row === last) {
     return buf.cursor === buf.value.length ? buf : { value: buf.value, cursor: buf.value.length };
   }
-  return { value: buf.value, cursor: rowColToIndex(buf.value, row + 1, col) };
+  return { value: buf.value, cursor: indexAtRowCol(buf.value, row + 1, col) };
 }
 
 /**

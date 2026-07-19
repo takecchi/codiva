@@ -22,6 +22,23 @@ function result(prev: TextBuffer, next: TextBuffer): EditResult {
 }
 
 /**
+ * 端末からの複数文字チャンク（ペースト、まとめ読み）はキー名が付かず生テキスト
+ * として届くため、制御文字が混ざり得る。改行は LF に正規化、タブはスペースに
+ * 変換し、それ以外の制御文字（C0 / DEL）はバッファへ入れない。
+ */
+function sanitizeInsertText(text: string): string {
+  const normalized = text.replace(/\r\n?/g, '\n').replace(/\t/g, ' ');
+  let out = '';
+  for (const ch of normalized) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (ch === '\n' || (code >= 32 && code !== 127)) {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/**
  * Apply a keypress to a multi-line text buffer. `opts.arrows` enables horizontal
  * caret movement (←/→); `opts.vertical` also enables ↑/↓. The list view leaves
  * arrows off so they stay free for row navigation; the detail composer turns both
@@ -69,7 +86,7 @@ export function editText(
     return { buffer, changed: false };
   }
   if (input.length > 0) {
-    return result(buffer, insert(buffer, input));
+    return result(buffer, insert(buffer, sanitizeInsertText(input)));
   }
   return { buffer, changed: false };
 }
@@ -103,6 +120,28 @@ export function resolveEnter(buffer: TextBuffer, key: Key): EnterAction {
  */
 export function promptCaretColumn(textBeforeCaret: string): number {
   return stringWidth(`${glyph.caret} ${textBeforeCaret}`);
+}
+
+/**
+ * Inverse of the caret-column math: the caret index (UTF-16 units) for a click at
+ * `column` display cells from the start of `text`. A click anywhere on a wide
+ * (2-cell) character places the caret before it; past the end goes to the end.
+ */
+export function caretIndexForColumn(text: string, column: number): number {
+  if (column <= 0) {
+    return 0;
+  }
+  let cells = 0;
+  let index = 0;
+  for (const ch of text) {
+    const w = stringWidth(ch);
+    if (cells + w > column) {
+      return index;
+    }
+    cells += w;
+    index += ch.length;
+  }
+  return text.length;
 }
 
 /** Format elapsed time between startedAt and end (finishedAt or now). */

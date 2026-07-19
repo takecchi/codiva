@@ -1,7 +1,7 @@
 import type { Key } from 'ink';
 import { describe, expect, it } from 'vitest';
 import { bufferOf, emptyBuffer } from '@/core';
-import { editText, promptCaretColumn } from './input';
+import { caretIndexForColumn, editText, promptCaretColumn } from './input';
 
 const key = (overrides: Partial<Key> = {}): Key =>
   ({
@@ -63,6 +63,41 @@ describe('editText (Japanese input)', () => {
   it('empty input on an empty buffer reports no change', () => {
     const edit = editText(emptyBuffer(), '', key());
     expect(edit.changed).toBe(false);
+  });
+});
+
+// まとめ読み・ペーストのチャンクはキー名なしの生テキストで届くため、制御文字が
+// バッファへ混入しないことを editText の挿入経路で保証する。
+describe('editText input sanitization', () => {
+  it.each([
+    ['tabs become spaces', 'a\tb', 'a b'],
+    ['CRLF normalizes to LF (multi-line paste keeps newlines)', 'one\r\ntwo', 'one\ntwo'],
+    ['lone CR normalizes to LF', 'one\rtwo', 'one\ntwo'],
+    [
+      'other control chars are dropped',
+      `a${String.fromCharCode(27)}${String.fromCharCode(7)}b`,
+      'ab',
+    ],
+    ['DEL is dropped', `a${String.fromCharCode(127)}b`, 'ab'],
+  ])('%s', (_desc, input, expected) => {
+    const edit = editText(emptyBuffer(), input, key());
+    expect(edit.buffer.value).toBe(expected);
+  });
+});
+
+describe('caretIndexForColumn', () => {
+  it.each([
+    // [desc, text, column(cells), expected index(code units)]
+    ['start', 'abc', 0, 0],
+    ['middle of ascii', 'abc', 2, 2],
+    ['past the end clamps to length', 'abc', 10, 3],
+    ['left cell of a wide char → before it', 'あい', 0, 0],
+    ['second cell of a wide char still lands before it', 'あい', 1, 0],
+    ['boundary between wide chars', 'あい', 2, 1],
+    ['mixed ascii + cjk', 'fix バグ', 6, 5], // 'fix ' (4 cells) + バ (2 cells) → before グ
+    ['emoji is a 2-cell surrogate pair', '🍣x', 2, 2],
+  ])('%s', (_desc, text, column, expected) => {
+    expect(caretIndexForColumn(text, column)).toBe(expected);
   });
 });
 
