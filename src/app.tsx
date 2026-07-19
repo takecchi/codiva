@@ -21,6 +21,7 @@ export type ExternalRunner = (args: {
 export const App: FC<{
   manager: SessionManager;
   cwd?: string;
+  model?: string;
   messages?: Messages;
   runExternal?: ExternalRunner;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
@@ -28,6 +29,7 @@ export const App: FC<{
 }> = ({
   manager,
   cwd,
+  model,
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   runExternal,
@@ -87,6 +89,7 @@ export const App: FC<{
           onOpenPr={onOpenPr}
           onQuit={quit}
           cwd={cwd}
+          model={model}
         />
       </Box>
     </MessagesProvider>

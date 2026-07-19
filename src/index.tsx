@@ -144,6 +144,7 @@ async function main(): Promise<void> {
     <App
       manager={manager}
       cwd={repoRoot}
+      model={config.model}
       messages={t}
       runExternal={runExternal}
       onOpenPr={openUrl}

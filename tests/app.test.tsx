@@ -252,6 +252,25 @@ describe('App (list view)', () => {
     expect(manager.getSnapshot()).toHaveLength(1);
     expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');
   });
+
+  it('Shift+Enter (modifyOtherKeys escape) inserts a newline instead of submitting', async () => {
+    const manager = makeManager();
+    const { stdin } = render(<App manager={manager} />);
+    stdin.write('line one');
+    await flush();
+    // Ghostty/xterm send Shift+Enter as `ESC [27;2;13~` — it must break the line,
+    // not get inserted verbatim as `[27;2;13~`.
+    stdin.write('\x1b[27;2;13~');
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(0); // newline, not submit
+
+    stdin.write('line two');
+    await flush();
+    stdin.write('\r'); // plain Enter → submit
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(1);
+    expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');
+  });
 });
 
 function asMsg(m: unknown): SDKMessage {

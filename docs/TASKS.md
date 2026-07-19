@@ -183,6 +183,22 @@ UI なし。すべてユニットテストで駆動する。
 > 復元。1 SDK セッション 1 ライターを守るため、claude で開く際は必ず codiva 側 query を停止してから spawn。
 > claude CLI 実機での resume 挙動（認証必要）は手動確認が必要。
 
+## Phase 8: スラッシュコマンド
+
+- [x] 入力欄の先頭が `/` のとき通常の指示ではなくコマンドとして扱う土台を用意
+- [x] コマンドは `core/commands.ts` の `COMMANDS` レジストリに 1 エントリ足すだけで増やせる設計
+      （`CommandAction` に動作を追加 → UI が switch で受ける）。解析・照合は純粋関数（`parseCommand` /
+      `matchCommands` / `runCommand`）に閉じ込め、副作用は UI 層が `CommandAction` を解釈して実行
+- [x] 入力中は前方一致するコマンドをパレット表示（`ui/command-palette.tsx`）。`/help` は全コマンドの
+      ヘルプ一覧をオーバーレイ表示（任意キーで閉じる）
+- [x] 初期コマンド: `/help`（別名 `?`）・`/quit`（別名 `exit` / `q`）。未知コマンドは操作エラー表示
+- [x] i18n: `command` グループを ja/en 両カタログに追加（説明文はカタログに集約）
+
+> 実績メモ: `commands.ts` は 100% カバレッジ（`commands.spec.ts` でテーブル駆動）。UI 配線は
+> `tests/commands.test.tsx`（パレット表示・前方一致・/help オーバーレイ・/quit で dispose・未知エラー）で検証。
+> 単一 useInput の原則は維持（コマンドは composer の Enter 分岐で処理、/help オーバーレイは任意キーで閉じる）。
+> 全 383 テスト緑・lint / typecheck / build 緑。
+
 ---
 
 ## 各 Phase 共通の完了チェック

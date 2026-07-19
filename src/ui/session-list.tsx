@@ -1,19 +1,25 @@
-import { Box, type DOMElement, Text, useInput } from 'ink';
+import { Box, type DOMElement, type Key, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   bufferLines,
   bufferOf,
+  COMMANDS,
   cursorRowCol,
+  decodeKeySequence,
   emptyBuffer,
   INPUT_MAX_ROWS,
   indexAtRowCol,
+  isCommandInput,
+  matchCommands,
   parseSgrMouse,
+  runCommand,
   type SessionManager,
   type TextBuffer,
   totalCostUsd,
   visibleLineRange,
 } from '@/core';
 import { Banner } from './banner';
+import { CommandPalette } from './command-palette';
 import { useAbsolutePosition, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
 import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
@@ -30,13 +36,11 @@ export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string
 export type OpenPr = (url: string) => void;
 
 /**
- * Fixed display widths of each session-row column, shared by rendering and mouse
- * hit-testing so a click on the `#<n>` PR cell maps back to the right x-range.
+ * Display width of the trailing `#<n>` PR cell. It's the row's last column, so it
+ * sits flush at the right edge regardless of the responsive title/branch widths —
+ * which lets mouse hit-testing locate it from the terminal width alone.
  */
-const ROW_COL = { caret: 2, attention: 2, title: 30, badge: 12, branch: 22, pr: 8 } as const;
-/** x offset (from the row's left) where the PR cell starts. */
-const PR_COL_LEFT =
-  ROW_COL.caret + ROW_COL.attention + ROW_COL.title + ROW_COL.badge + ROW_COL.branch;
+const PR_CELL_WIDTH = 8;
 
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
@@ -51,11 +55,14 @@ export const SessionList: FC<{
   onOpenPr?: OpenPr;
   onQuit: () => void;
   cwd?: string;
-}> = ({ manager, onOpenExternal, onOpenPr, onQuit, cwd }) => {
+  model?: string;
+}> = ({ manager, onOpenExternal, onOpenPr, onQuit, cwd, model }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
   const now = useClock(1000);
+  // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に使う。リサイズ追従。
+  const { columns } = useWindowSize();
   const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
   // 同一チャンクで複数キーイベントが連続すると（連打・エスケープ列のまとめ読み）、
   // React の state はイベント間で更新されず stale closure になる。編集は必ず
@@ -68,6 +75,7 @@ export const SessionList: FC<{
   const [focus, setFocus] = useState<'composer' | 'list'>('composer');
   const [sel, setSel] = useState(0);
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const rowsRef = useRef<DOMElement>(null);
@@ -112,6 +120,24 @@ export const SessionList: FC<{
     }
   };
 
+  /** Resolve a `/command` and perform its effect. Unknown names surface as errors. */
+  const runCommandInput = (text: string) => {
+    const result = runCommand(text);
+    if (result.kind === 'unknown') {
+      setActionError(m.command.unknown(result.name));
+      return;
+    }
+    setActionError(undefined);
+    switch (result.command.action) {
+      case 'quit':
+        onQuit();
+        return;
+      case 'help':
+        setShowHelp(true);
+        return;
+    }
+  };
+
   const runAction = (action: 'merge' | 'discard') => {
     if (!target) {
       return;
@@ -149,33 +175,57 @@ export const SessionList: FC<{
       const idx = y - rowsBox.top;
       setSel(idx);
       setFocus('list');
-      // A click inside the `#<n>` cell of a row with a PR opens it in the browser.
+      // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
+      // browser. The cell is right-anchored, so derive its x-range from the terminal
+      // width (outer padding is symmetric, so the right pad equals rowsBox.left).
       const s = sorted[idx];
       if (s?.pr && onOpenPr) {
-        const relX = x - rowsBox.left;
-        const label = `#${s.pr.number}`;
-        if (relX >= PR_COL_LEFT && relX < PR_COL_LEFT + label.length) {
+        const cellLeft = columns - rowsBox.left - PR_CELL_WIDTH;
+        if (x >= cellLeft && x < cellLeft + PR_CELL_WIDTH) {
           onOpenPr(s.pr.url);
         }
       }
     }
   };
 
-  useInput((input, key) => {
+  useInput((rawInput, rawKey) => {
     // SGR マウスレポートはキー入力より先に解釈する（バッファへ混入させない）。
-    const mouse = parseSgrMouse(input);
+    const mouse = parseSgrMouse(rawInput);
     if (mouse) {
       if (mouse.kind === 'press') {
         handlePress(mouse.x, mouse.y);
       }
       return;
     }
+    // Shift+Enter 等の修飾キーは modifyOtherKeys / CSI-u エスケープ（`[27;2;13~`）
+    // で届く。Ink はこれを解釈できず生テキストとして渡すため、ここで実キーへ
+    // 復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
+    const chord = decodeKeySequence(rawInput);
+    const key: Key = chord
+      ? {
+          ...rawKey,
+          shift: chord.shift,
+          ctrl: chord.ctrl,
+          meta: chord.meta,
+          return: chord.kind === 'return',
+          tab: chord.kind === 'tab',
+          escape: chord.kind === 'escape',
+          backspace: chord.kind === 'backspace',
+        }
+      : rawKey;
+    const input = chord ? (chord.kind === 'text' ? chord.text : '') : rawInput;
     if (key.ctrl && input === 'c') {
       onQuit();
       return;
     }
     if (key.tab && key.shift) {
       manager.cycleMode();
+      return;
+    }
+    // The /help overlay is modal-lite: any key dismisses it (and is swallowed so
+    // it doesn't also edit/navigate underneath).
+    if (showHelp) {
+      setShowHelp(false);
       return;
     }
     if (busy) {
@@ -262,6 +312,12 @@ export const SessionList: FC<{
         setFocus('list');
         return;
       }
+      // 先頭が `/` はコマンド。通常の指示（manager.create）と分岐する。
+      if (isCommandInput(enter.text)) {
+        runCommandInput(enter.text);
+        updateBuffer(emptyBuffer());
+        return;
+      }
       manager.create(enter.text);
       updateBuffer(emptyBuffer());
       return;
@@ -280,7 +336,12 @@ export const SessionList: FC<{
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
-      <Banner cwd={cwd} sessionCount={sessions.length} totalCostUsd={totalCostUsd(sessions)} />
+      <Banner
+        cwd={cwd}
+        model={model}
+        sessionCount={sessions.length}
+        totalCostUsd={totalCostUsd(sessions)}
+      />
 
       {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる */}
       <Box ref={rowsRef} flexDirection="column" marginY={1} flexGrow={1} overflowY="hidden">
@@ -296,32 +357,36 @@ export const SessionList: FC<{
                 <Text color={focus === 'list' ? theme.accent : theme.dim}>
                   {isSel ? `${glyph.caret} ` : '  '}
                 </Text>
-                <Box width={ROW_COL.attention}>
+                <Box width={2}>
                   <Text color={s.status === 'awaiting_input' ? 'magenta' : 'yellow'}>
                     {attention ? glyph.attention : ' '}
                   </Text>
                 </Box>
-                <Box width={ROW_COL.title}>
+                {/* title/branch は固定幅だと広い端末でも切り詰められる。flexGrow で
+                    残り幅を title:branch = 3:2 で分配し、狭いときは minWidth まで縮む。 */}
+                <Box flexGrow={3} flexBasis={0} minWidth={20} marginRight={1}>
                   <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
                     {s.title}
                   </Text>
                 </Box>
-                <Box width={ROW_COL.badge}>
+                <Box width={12}>
                   <ProgressBadge state={s} />
                 </Box>
-                <Box width={ROW_COL.branch}>
+                <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
                   <Text dimColor wrap="truncate-end">
                     {s.branch}
                   </Text>
                 </Box>
-                <Box width={ROW_COL.pr}>
+                <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
+                {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
+                    左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
+                <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
                   {s.pr ? (
                     <Text color={theme.accent} underline>
                       #{s.pr.number}
                     </Text>
                   ) : null}
                 </Box>
-                <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
               </Box>
             );
           })
@@ -343,6 +408,10 @@ export const SessionList: FC<{
         </Box>
       ) : null}
 
+      {showHelp && !pending ? (
+        <CommandPalette title={m.command.helpTitle} commands={COMMANDS} />
+      ) : null}
+
       {pending && target ? (
         <PermissionDialog
           request={pending}
@@ -352,6 +421,9 @@ export const SessionList: FC<{
         />
       ) : (
         <Box ref={composerRef} flexDirection="column">
+          {focus === 'composer' && isCommandInput(buffer.value) ? (
+            <CommandPalette title={m.command.paletteTitle} commands={matchCommands(buffer.value)} />
+          ) : null}
           <PromptInput
             buffer={buffer}
             focused={focus === 'composer'}
