@@ -25,12 +25,13 @@ function state(overrides: Partial<SessionState> = {}): SessionState {
 }
 
 describe('restorableStatus', () => {
-  it.each<[SessionStatus, 'completed' | 'failed' | undefined]>([
+  it.each<[SessionStatus, 'completed' | 'interrupted' | 'failed' | undefined]>([
     ['creating', undefined],
-    ['running', 'completed'],
-    ['awaiting_permission', 'completed'],
-    ['awaiting_input', 'completed'],
+    ['running', 'interrupted'],
+    ['awaiting_permission', 'interrupted'],
+    ['awaiting_input', 'interrupted'],
     ['completed', 'completed'],
+    ['interrupted', 'interrupted'],
     ['failed', 'failed'],
     ['archived', undefined],
   ])('maps %s → %s', (status, expected) => {
@@ -74,9 +75,18 @@ describe('toPersistedSession', () => {
     expect(fromPersistedJson({ sessions: [persisted] }).sessions[0]?.model).toBe('claude-opus-4-8');
   });
 
-  it('maps an in-flight status to completed (resumable)', () => {
+  it('maps an in-flight status to interrupted (resumable, not a clean finish)', () => {
     const s = state({ status: 'running', sdkSessionId: 'sdk-9' });
-    expect(toPersistedSession(s, { slug: 'x', base: 'main' })?.status).toBe('completed');
+    expect(toPersistedSession(s, { slug: 'x', base: 'main' })?.status).toBe('interrupted');
+  });
+
+  it('round-trips an interrupted session through persist → restore → JSON', () => {
+    const s = state({ status: 'interrupted', sdkSessionId: 'sdk-int' });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' });
+    expect(persisted?.status).toBe('interrupted');
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
+    expect(restoredSessionState(persisted!).status).toBe('interrupted');
+    expect(fromPersistedJson({ sessions: [persisted] }).sessions[0]?.status).toBe('interrupted');
   });
 
   it('drops archived/creating sessions', () => {

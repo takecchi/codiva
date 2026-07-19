@@ -20,12 +20,14 @@ describe('badgeFor', () => {
     expect(badgeFor({ ...base, status: 'awaiting_permission' }, m).label).toBe('許可待ち');
     expect(badgeFor({ ...base, status: 'awaiting_input' }, m).label).toBe('質問あり');
     expect(badgeFor({ ...base, status: 'completed' }, m).label).toBe('完了');
+    expect(badgeFor({ ...base, status: 'interrupted' }, m).label).toBe('中断');
     expect(badgeFor({ ...base, status: 'failed' }, m).label).toBe('失敗');
   });
   it('maps statuses to labelled badges (en)', () => {
     const m = messages.en;
     expect(badgeFor({ ...base, status: 'creating' }, m).label).toBe('Preparing');
     expect(badgeFor({ ...base, status: 'completed' }, m).label).toBe('Completed');
+    expect(badgeFor({ ...base, status: 'interrupted' }, m).label).toBe('Interrupted');
   });
   it('shows Step n/m when a running session has progress', () => {
     const s: SessionState = { ...base, status: 'running', progress: { done: 4, total: 7 } };
