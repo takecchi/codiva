@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { logWindow, pageStep, type ScrollAnchor, scrollDown, scrollUp } from './scroll';
+import {
+  logLineText,
+  logWindow,
+  pageStep,
+  type ScrollAnchor,
+  scrollDown,
+  scrollUp,
+} from './scroll';
 import type { LogEntry } from './types';
 
 function entries(n: number): LogEntry[] {
@@ -50,6 +57,31 @@ describe('logWindow (scrolled up, numeric anchor)', () => {
     const w = logWindow(entries(5), 20, 99);
     expect(w.atBottom).toBe(true);
     expect(w.entries).toHaveLength(5);
+  });
+});
+
+describe('logLineText (one physical row per entry)', () => {
+  it('collapses newlines so each entry occupies a single row', () => {
+    expect(logLineText('foo\nbar')).toBe('foo bar');
+    expect(logLineText('foo\r\nbar')).toBe('foo bar');
+  });
+
+  it('collapses surrounding indentation/whitespace around a break into one space', () => {
+    expect(logLineText('foo\n    bar')).toBe('foo bar');
+    expect(logLineText('foo  \n\n  bar')).toBe('foo bar');
+  });
+
+  it('also flattens vertical tab / form feed (they move the cursor down too)', () => {
+    expect(logLineText('a\vb\fc')).toBe('a b c');
+  });
+
+  it('trims leading/trailing breaks and leaves single-line text intact', () => {
+    expect(logLineText('\nfoo\n')).toBe('foo');
+    expect(logLineText('already one line')).toBe('already one line');
+  });
+
+  it('keeps interior tabs and spaces within a single line untouched', () => {
+    expect(logLineText('a\tb c')).toBe('a\tb c');
   });
 });
 

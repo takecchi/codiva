@@ -4,6 +4,7 @@ import {
   type DiffStat,
   emptyBuffer,
   type LogEntry,
+  logLineText,
   logViewportRows,
   logWindow,
   parseSgrMouse,
@@ -52,7 +53,7 @@ const LogLine: FC<{ entry: LogEntry }> = ({ entry }) => {
   return (
     <Text color={spec.color} dimColor={spec.dim} wrap="truncate-end">
       {spec.prefix}
-      {entry.text}
+      {logLineText(entry.text)}
     </Text>
   );
 };
