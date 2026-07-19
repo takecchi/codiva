@@ -8,7 +8,6 @@ export type SessionStatus =
   | 'awaiting_input' // Claude asked the user a question (AskUserQuestion)
   | 'completed' // a turn finished successfully (idle, can receive more input)
   | 'failed' // query errored or was aborted
-  | 'external' // handed off to the claude CLI (codiva-side query stopped)
   | 'archived'; // merged or discarded; kept for reference
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
@@ -99,9 +98,6 @@ export type CodivaEvent =
   // input-derived placeholder. Fired once, asynchronously, after a fresh start.
   | { kind: 'title'; title: string; at: number }
   | { kind: 'aborted'; error?: string; at: number }
-  // The session was handed off to the claude CLI: codiva's query is stopped
-  // quietly and the conversation continues outside.
-  | { kind: 'detached'; at: number }
   | { kind: 'archived'; at: number };
 
 export interface CreateSessionInput {

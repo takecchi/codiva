@@ -37,7 +37,6 @@ function noopSession(input: CreateSessionInput) {
     async interrupt() {},
     abort() {},
     stop() {},
-    detach() {},
     archive() {},
   };
 }

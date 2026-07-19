@@ -183,6 +183,27 @@ UI なし。すべてユニットテストで駆動する。
 > 復元。1 SDK セッション 1 ライターを守るため、claude で開く際は必ず codiva 側 query を停止してから spawn。
 > claude CLI 実機での resume 挙動（認証必要）は手動確認が必要。
 
+## Phase 8: 内蔵詳細ビューへ復帰（claude CLI 連携の廃止）
+
+> codiva 側の機能（ログ描画・追加指示・スクロール・マージ/破棄）が揃ったため、Phase 7 の
+> claude CLI 連携をやめ、一覧で Enter/→ したら **codiva 内蔵の詳細ビュー**で稼働中の SDK
+> セッションに直結する方式へ戻す。
+
+- [x] `ui/session-detail.tsx` を新規に書き直し: SDK セッション直結。ヘッダ（タイトル/バッジ/進捗/コスト/エラー）
+      + 末尾ビューポートのログ（`core/scroll.ts` で PgUp/PgDn）+ `streamingText` プレビュー + 追加指示
+      コンポーザ（`manager.send`）。Tab で入力↔操作、操作パネルで m/d。バッファ編集は ref 経由で逐次適用
+- [x] `core/scroll.ts` + spec、`layout.ts` の `logViewportRows`/`DETAIL_CHROME_ROWS` を復元（純粋・テスト付き）
+- [x] `app.tsx` に `View`（list ⇔ detail）状態機械を再導入。`SessionList` は `onOpen(id)` でナビゲート
+- [x] claude CLI 連携を**完全削除**: `utils/claude-cli.ts`（+spec）・`ExternalRunner`/`runExternal`/`openExternal`・
+      `Session.detach()`・`detached` イベント・`external` ステータス（types/reducer/persistence/badge/i18n）を撤去
+- [x] i18n: `detail` グループを復活（ja/en 対）、`list.helpList` を「詳細を開く」へ、`list.openNotReady` と
+      `badge.external` を削除
+- [x] 統合テスト追加（`tests/app.test.tsx`）: Enter で詳細を開き Esc で戻る / 詳細から追加指示を送る /
+      詳細の操作パネルからマージ
+
+> 実績メモ: 全358テスト緑・lint/typecheck 緑。1 SDK セッション 1 ライターは維持（詳細ビューでも
+> codiva が唯一のライター、外部 CLI との二重接続なし）。
+
 ---
 
 ## 各 Phase 共通の完了チェック

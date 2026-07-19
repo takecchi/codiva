@@ -13,3 +13,19 @@ export const MIN_FULLSCREEN_ROWS = 16;
 export function isFullscreenViewport(rows: number): boolean {
   return rows >= MIN_FULLSCREEN_ROWS;
 }
+
+/**
+ * 詳細ビューでログ以外に消費される固定の縦幅（ステータスヘッダ + 余白 + 入力欄 +
+ * フッタ）のおおよその見積り。実測値の下限をやや大きめに取る（過小評価すると
+ * スクロール1回の移動量が実際の可視ログ高さを超え、未表示の行を飛ばしてしまうため）。
+ */
+export const DETAIL_CHROME_ROWS = 10;
+
+/**
+ * 詳細ビューで実際にログが見える行数のおおよその見積り。端末全体の rows から
+ * 固定 chrome を引く。ページスクロールの移動量（`scroll.ts` の `pageStep`）を
+ * この可視高さから導くことで「一度に画面外の行を飛び越える」のを防ぐ。
+ */
+export function logViewportRows(rows: number): number {
+  return Math.max(1, rows - DETAIL_CHROME_ROWS);
+}

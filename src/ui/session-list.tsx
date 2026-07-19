@@ -23,22 +23,20 @@ import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
 import { glyph, theme } from './theme';
 
-/** Launch the selected session in the claude CLI; resolves when the user returns. */
-export type OpenExternal = (id: string) => Promise<{ ok: boolean; error?: string }>;
-
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
  * zones — 'composer' (default: typing + full caret movement) and 'list'
- * (↑↓ selection, Enter → open in claude, m/d → merge/discard). Tab toggles.
- * When the selected session is blocked on a permission/question, the dialog
- * takes the composer's place and owns the keys while the list is focused.
+ * (↑↓ selection, Enter/→ → open the in-app detail view, m/d → merge/discard).
+ * Tab toggles. When the selected session is blocked on a permission/question,
+ * the dialog takes the composer's place and owns the keys while the list is
+ * focused.
  */
 export const SessionList: FC<{
   manager: SessionManager;
-  onOpenExternal?: OpenExternal;
+  onOpen: (id: string) => void;
   onQuit: () => void;
   cwd?: string;
-}> = ({ manager, onOpenExternal, onQuit, cwd }) => {
+}> = ({ manager, onOpen, onQuit, cwd }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -77,19 +75,11 @@ export const SessionList: FC<{
     setSel((s) => Math.min(Math.max(0, s + delta), Math.max(0, sorted.length - 1)));
   };
 
-  const openInClaude = () => {
+  const openDetail = () => {
     if (!target || busy) {
       return;
     }
-    if (target.status === 'archived' || !target.sdkSessionId) {
-      setActionError(m.list.openNotReady);
-      return;
-    }
-    setBusy(true);
-    onOpenExternal?.(target.id).then((result) => {
-      setBusy(false);
-      setActionError(result.ok ? undefined : result.error);
-    });
+    onOpen(target.id);
   };
 
   const runAction = (action: 'merge' | 'discard') => {
@@ -190,7 +180,7 @@ export const SessionList: FC<{
         return;
       }
       if (key.return || key.rightArrow) {
-        openInClaude();
+        openDetail();
         return;
       }
       if (input === 'm' || input === 'M') {

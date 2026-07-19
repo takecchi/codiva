@@ -31,7 +31,6 @@ export interface SessionHandle {
   interrupt(): Promise<void>;
   abort(): void;
   stop(): void;
-  detach(): void;
   archive(): void;
 }
 
@@ -294,10 +293,6 @@ export class SessionManager {
   }
   deny(id: string, message: string): void {
     this.sessions.get(id)?.denyPending(message);
-  }
-  /** claude CLI へ引き渡す前に codiva 側の query を静かに止め、external にする。 */
-  detach(id: string): void {
-    this.sessions.get(id)?.detach();
   }
   async interrupt(id: string): Promise<void> {
     await this.sessions.get(id)?.interrupt();

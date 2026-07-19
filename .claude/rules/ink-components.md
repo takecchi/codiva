@@ -52,16 +52,18 @@
   改行、他は送信。`PromptInput` は `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` で
   カーソル付近を内部スクロール。
 
-## claude CLI 連携（詳細画面の代替）
+## セッション詳細（codiva 内蔵ビュー）
 
-- セッションの中身は codiva 内の詳細画面ではなく **`claude --resume <session-id>`** で開く
-  （一覧で Enter）。ログ表示・追加指示・スクロールは claude 本体に任せる。
-- 手順: `manager.detach(id)`（query を静かに停止し `external` へ。SDK セッションは resume 可能なまま）
-  → Ink の **`useApp().suspendTerminal`** で描画・raw mode を明け渡す → 合成ルート注入の
-  `runExternal`（`utils/claude-cli.ts` の spawn。前後で mouse/alt screen を解除・再進入）
-  → 子プロセス終了で Ink が全再描画。
-- codiva 側の同一セッションへの再アタッチはしない（1 SDK セッション 1 ライター）。
-  external のセッションもマージ/破棄は一覧から可能。
+- セッションの中身は codiva 内の **`SessionDetail`** で表示・操作する（一覧で Enter/→）。外部の
+  `claude --resume` へは飛ばさず、稼働中の SDK セッションに直結する（`manager.send(id, text)` で追加指示）。
+- ビュー切替は `App` の `View` state（`{mode:'list'}` | `{mode:'detail', id}`）。Enter/→ で `onOpen(id)`、
+  Esc で `onBack`。詳細ビューは単一 `useInput` の state machine（panel = input | actions）で、
+  タイピング（追加指示）と操作キー（m/d = マージ/破棄）の衝突を防ぐ。
+- ログは末尾ビューポート（`justifyContent="flex-end"` + `overflowY="hidden"`）に描き、`<Static>` は使わない
+  （全画面では画面外へ消えるため）。PgUp/PgDn のスクロールは純関数 `core/scroll.ts`
+  （`logWindow`/`scrollUp`/`scrollDown`）に委譲し、移動量は可視ログ高さ（`logViewportRows`）から導く。
+- 1 SDK セッション 1 ライター。詳細ビューを開いても codiva が唯一のライターであり続ける
+  （外部 CLI との二重接続はしない）。マージ/破棄は一覧・詳細のどちらからでも可能。
 
 ## IME（日本語入力）対応
 
