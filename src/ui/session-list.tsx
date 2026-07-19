@@ -1,25 +1,26 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useRef, useState } from 'react';
 import {
-  bufferLines,
   bufferOf,
   COMMANDS,
-  cursorRowCol,
+  caretIndexAtClick,
   emptyBuffer,
+  formatElapsed,
   formatModel,
   INPUT_MAX_ROWS,
-  indexAtRowCol,
   isCommandInput,
   isFullscreenViewport,
+  isPrCellHit,
   listView,
+  listViewportRows,
   matchCommands,
   needsAttention,
   type PrMergeStatus,
   parseSgrMouse,
+  rowLineAtPoint,
   type SessionManager,
   showsBranchColumn,
   totalCostUsd,
-  visibleLineRange,
 } from '@/core';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
@@ -36,13 +37,7 @@ import {
   useTextBufferRef,
 } from './hooks';
 import { useMessages } from './i18n-context';
-import {
-  caretIndexForColumn,
-  editText,
-  formatElapsed,
-  normalizeChord,
-  resolveEnter,
-} from './input';
+import { editText, normalizeChord, resolveEnter } from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
@@ -176,7 +171,7 @@ export const SessionList: FC<{
   const showBranch = showsBranchColumn(columns);
   const listHeight = useBoxHeight(rowsRef);
   const listCap = fullscreen
-    ? Math.max(1, listHeight ?? Math.max(1, termRows - 15))
+    ? Math.max(1, listHeight ?? listViewportRows(termRows))
     : Math.max(1, sessions.length);
   const view = listView(sessions.length, selected, listCap);
 
@@ -202,39 +197,32 @@ export const SessionList: FC<{
   const handlePress = (x: number, y: number) => {
     if (composerBox) {
       const buf = bufferRef.current;
-      const lines = bufferLines(buf.value);
-      const caret = cursorRowCol(buf);
-      const { start, end } = visibleLineRange(lines.length, caret.row, INPUT_MAX_ROWS);
       const contentTop = composerBox.top + 1; // +1 = 上ボーダー
-      const clickedRow = start + (y - contentTop);
-      if (clickedRow >= start && clickedRow < end) {
-        const line = lines[clickedRow] ?? '';
-        // プレフィックス（`❯ ` / 続き行の2スペース）ぶんの2セルを引いた表示列。
-        const cells = x - composerBox.left - 2;
-        const index = indexAtRowCol(buf.value, clickedRow, caretIndexForColumn(line, cells));
+      // プレフィックス（`❯ ` / 続き行の2スペース）ぶんの2セルを引いた表示列。
+      const index = caretIndexAtClick(
+        buf,
+        y - contentTop,
+        x - composerBox.left - 2,
+        INPUT_MAX_ROWS,
+      );
+      if (index !== undefined) {
         updateBuffer(bufferOf(buf.value, index));
         setFocus('composer');
         return;
       }
     }
     if (rowsBox) {
-      // rows ボックス内の行 → セッションインデックス。上インジケータ行があれば
-      // その 1 行ぶんずらし、可視ウィンドウ（view.start..end）へ写像する。
-      const rowLine = y - rowsBox.top - (view.showAbove ? 1 : 0);
-      const visibleCount = view.end - view.start;
-      if (rowLine >= 0 && rowLine < visibleCount) {
+      // rows ボックス内の行 → セッションインデックス（可視ウィンドウ view.start.. へ写像）。
+      const rowLine = rowLineAtPoint(y, rowsBox.top, view.showAbove, view.end - view.start);
+      if (rowLine !== undefined) {
         const idx = view.start + rowLine;
         setSel(idx);
         setFocus('list');
         // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
-        // browser. The cell is right-anchored, so derive its x-range from the terminal
-        // width (outer padding is symmetric, so the right pad equals rowsBox.left).
+        // browser (the cell is right-anchored — see isPrCellHit).
         const s = sessions[idx];
-        if (s?.pr && onOpenPr) {
-          const cellLeft = columns - rowsBox.left - PR_CELL_WIDTH;
-          if (x >= cellLeft && x < cellLeft + PR_CELL_WIDTH) {
-            onOpenPr(s.pr.url);
-          }
+        if (s?.pr && onOpenPr && isPrCellHit(x, columns, rowsBox.left, PR_CELL_WIDTH)) {
+          onOpenPr(s.pr.url);
         }
       }
     }

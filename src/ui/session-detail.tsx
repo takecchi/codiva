@@ -17,6 +17,7 @@ import {
   type SessionManager,
   scrollDown,
   scrollUp,
+  streamTail,
   WHEEL_SCROLL_ROWS,
 } from '@/core';
 import { CommandPalette } from './command-palette';
@@ -50,18 +51,6 @@ const LOG_PREFIX: Record<LogEntry['kind'], string> = {
 
 /** Kinds rendered dimmed (secondary transcript lines). */
 const LOG_DIM: Partial<Record<LogEntry['kind'], boolean>> = { tool_result: true };
-
-/** The live-typing preview: the last non-empty line of the streamed text so far. */
-function streamTail(text: string): string {
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (line && line.length > 0) {
-      return line;
-    }
-  }
-  return '';
-}
 
 // One physical row of the log. `line.text` already carries the kind's prefix /
 // continuation indent (built by core's logLines); truncate is only a safety net

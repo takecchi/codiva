@@ -3,6 +3,8 @@ import {
   backspace,
   bufferLines,
   bufferOf,
+  caretIndexAtClick,
+  caretIndexForColumn,
   cursorRowCol,
   emptyBuffer,
   indexAtRowCol,
@@ -159,5 +161,44 @@ describe('visibleLineRange', () => {
     const { start, end } = visibleLineRange(20, 10, 8);
     expect(10).toBeGreaterThanOrEqual(start);
     expect(10).toBeLessThan(end);
+  });
+});
+
+describe('caretIndexForColumn', () => {
+  it.each([
+    // [desc, text, column(cells), expected index(code units)]
+    ['start', 'abc', 0, 0],
+    ['middle of ascii', 'abc', 2, 2],
+    ['past the end clamps to length', 'abc', 10, 3],
+    ['left cell of a wide char lands before it', 'あい', 0, 0],
+    ['second cell of a wide char still lands before it', 'あい', 1, 0],
+    ['boundary between wide chars', 'あい', 2, 1],
+    ['mixed ascii + cjk', 'fix バグ', 6, 5], // 'fix ' (4 cells) + バ (2 cells) -> before グ
+    ['emoji is a 2-cell surrogate pair', '🍣x', 2, 2],
+  ])('%s', (_desc, text, column, expected) => {
+    expect(caretIndexForColumn(text, column)).toBe(expected);
+  });
+});
+
+describe('caretIndexAtClick', () => {
+  it('maps a click on a single-line buffer to the caret index', () => {
+    const buf = bufferOf('hello', 0);
+    // click on row 0, column 2 -> caret index 2
+    expect(caretIndexAtClick(buf, 0, 2, 8)).toBe(2);
+  });
+
+  it('returns undefined for a click above the visible content', () => {
+    expect(caretIndexAtClick(bufferOf('hi'), -1, 0, 8)).toBeUndefined();
+  });
+
+  it('returns undefined for a click below the visible content', () => {
+    // one physical line, but clicked two rows down
+    expect(caretIndexAtClick(bufferOf('hi'), 2, 0, 8)).toBeUndefined();
+  });
+
+  it('resolves a click on a later line to that line index', () => {
+    const buf = bufferOf('ab\ncd\nef'); // 3 lines, caret at end (row 2)
+    // row offset 1 within the visible window (all 3 lines fit in maxRows 8), col 1
+    expect(caretIndexAtClick(buf, 1, 1, 8)).toBe(4); // 'ab\n' = 3, + col 1 = index 4
   });
 });

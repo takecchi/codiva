@@ -1,5 +1,6 @@
 import { Box, type DOMElement, Text, useCursor } from 'ink';
 import { type FC, useRef } from 'react';
+import stringWidth from 'string-width';
 import {
   bufferLines,
   cursorRowCol,
@@ -9,8 +10,18 @@ import {
   visibleLineRange,
 } from '@/core';
 import { useAbsolutePosition } from './hooks';
-import { promptCaretColumn } from './input';
 import { glyph, theme } from './theme';
+
+/**
+ * Column (0-based, in terminal cells) of the caret within a row: the 2-cell
+ * `❯ `／`  ` prefix plus the display width of the text before the caret on that
+ * line. CJK/絵文字は2セル幅なので string-width で数える（.length だと日本語入力で
+ * カーソルと IME preedit の位置がズレる）。Glyph-coupled, so it lives with the
+ * component that draws the caret rather than in a pure core module.
+ */
+function promptCaretColumn(textBeforeCaret: string): number {
+  return stringWidth(`${glyph.caret} ${textBeforeCaret}`);
+}
 
 /** Render one line with a block caret drawn at `col` (inverse cell). Reads a full
  *  code point so an astral char under the caret isn't split into a lone surrogate. */

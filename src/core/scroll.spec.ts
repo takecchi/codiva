@@ -6,6 +6,7 @@ import {
   type ScrollAnchor,
   scrollDown,
   scrollUp,
+  streamTail,
   wrapDisplayLines,
 } from './scroll';
 import type { LogEntry, LogKind } from './types';
@@ -159,5 +160,24 @@ describe('scrollUp / scrollDown', () => {
     const up = scrollUp('bottom', 100, 20); // 90
     const down = scrollDown(up, 100, 20); // 100 >= total → bottom
     expect(down).toBe('bottom');
+  });
+});
+
+describe('streamTail', () => {
+  it('returns the last non-empty line', () => {
+    expect(streamTail('foo\nbar\nbaz')).toBe('baz');
+  });
+
+  it('skips trailing empty lines', () => {
+    expect(streamTail('foo\nbar\n\n')).toBe('bar');
+  });
+
+  it('returns an empty string for all-empty input', () => {
+    expect(streamTail('')).toBe('');
+    expect(streamTail('\n\n')).toBe('');
+  });
+
+  it('returns a single line unchanged', () => {
+    expect(streamTail('just one')).toBe('just one');
   });
 });

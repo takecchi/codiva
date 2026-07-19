@@ -28,6 +28,21 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 /**
+ * The live-typing preview line: the last non-empty line of the streamed text so
+ * far. The detail view shows just this one line while a turn streams in.
+ */
+export function streamTail(text: string): string {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (line && line.length > 0) {
+      return line;
+    }
+  }
+  return '';
+}
+
+/**
  * One physical terminal row of the detail-view log. Entries are expanded into
  * these by {@link logLines} — the scroll model works in physical rows, not log
  * entries, so multi-line messages neither fill the viewport with a single entry
