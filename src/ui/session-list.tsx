@@ -16,16 +16,25 @@ import {
   needsAttention,
   type PrMergeStatus,
   parseSgrMouse,
-  runCommand,
   type SessionManager,
   showsBranchColumn,
-  type TextBuffer,
   totalCostUsd,
   visibleLineRange,
 } from '@/core';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
-import { useAbsolutePosition, useBoxHeight, useClock, useRunMode, useSessions } from './hooks';
+import { ConfirmPrompt } from './confirm-prompt';
+import { DialogBox } from './dialog-box';
+import {
+  useAbsolutePosition,
+  useBoxHeight,
+  useClock,
+  useCommandRunner,
+  useLifecycleAction,
+  useRunMode,
+  useSessions,
+  useTextBufferRef,
+} from './hooks';
 import { useMessages } from './i18n-context';
 import {
   caretIndexForColumn,
@@ -115,15 +124,7 @@ export const SessionList: FC<{
   // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
   const { columns, rows: termRows } = useWindowSize();
-  const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
-  // 同一チャンクで複数キーイベントが連続すると（連打・エスケープ列のまとめ読み）、
-  // React の state はイベント間で更新されず stale closure になる。編集は必ず
-  // この ref を経由して逐次適用し、描画用 state へ反映する。
-  const bufferRef = useRef<TextBuffer>(buffer);
-  const updateBuffer = (next: TextBuffer | ((prev: TextBuffer) => TextBuffer)) => {
-    bufferRef.current = typeof next === 'function' ? next(bufferRef.current) : next;
-    setBuffer(bufferRef.current);
-  };
+  const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
   const [focus, setFocus] = useState<'composer' | 'list'>(initialViewState?.focus ?? 'composer');
   // 初回は末尾（最新）を選択して一番下までスクロールした状態で開く。戻ってきた
   // ときは前回の選択行を復元する（選択行から listView がスクロール窓を導くため、
@@ -131,12 +132,9 @@ export const SessionList: FC<{
   const [sel, setSel] = useState(
     () => initialViewState?.selected ?? Math.max(0, sessions.length - 1),
   );
-  const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | undefined>(undefined);
   const rowsRef = useRef<DOMElement>(null);
   const rowsBox = useAbsolutePosition(rowsRef);
   const composerRef = useRef<DOMElement>(null);
@@ -145,6 +143,22 @@ export const SessionList: FC<{
   // 一覧は常に作成順（上が古い・下が新しい）。archived になっても位置は動かさない。
   const selected = Math.min(sel, Math.max(0, sessions.length - 1));
   const target = sessions[selected];
+  // 確認/実行中/エラー + マージ・破棄の実行は共有フックへ（選択セッションが対象）。
+  const { confirm, setConfirm, busy, actionError, setActionError, run } = useLifecycleAction(
+    manager,
+    target?.id,
+  );
+  // `/command` の解決・実行も共有フックへ。一覧は exit/help/model のみ扱う。
+  const runCommandInput = useCommandRunner(
+    {
+      exit: onQuit,
+      help: () => setShowHelp(true),
+      // `/model` はセッションを作らずモデル選択ダイアログを開く。
+      model: () => setModelSelect(true),
+    },
+    setActionError,
+    m.command.unknown,
+  );
   // 表示状態（クランプ後の選択行 + フォーカス）を親へ報告し、ビュー切替で
   // アンマウントされても復元できるようにする。ref 書き込みなので再描画は起きない。
   useEffect(() => {
@@ -182,42 +196,6 @@ export const SessionList: FC<{
     if (target?.pr && onOpenPr) {
       onOpenPr(target.pr.url);
     }
-  };
-
-  /** Resolve a `/command` and perform its effect. Unknown names surface as errors. */
-  const runCommandInput = (text: string) => {
-    const result = runCommand(text);
-    if (result.kind === 'unknown') {
-      setActionError(m.command.unknown(result.name));
-      return;
-    }
-    setActionError(undefined);
-    switch (result.command.action) {
-      case 'exit':
-        onQuit();
-        return;
-      case 'help':
-        setShowHelp(true);
-        return;
-      case 'model':
-        // `/model` はセッションを作らずモデル選択ダイアログを開く。
-        setModelSelect(true);
-        return;
-    }
-  };
-
-  const runAction = (action: 'merge' | 'discard') => {
-    if (!target) {
-      return;
-    }
-    setBusy(true);
-    const promise =
-      action === 'merge' ? manager.merge(target.id) : manager.discard(target.id, { force: true });
-    promise.then((result) => {
-      setBusy(false);
-      setConfirm(null);
-      setActionError(result.ok ? undefined : result.error);
-    });
   };
 
   /** Route a mouse press to the composer caret or a session row. */
@@ -316,7 +294,7 @@ export const SessionList: FC<{
     }
     if (confirm) {
       if (input === 'y' || input === 'Y') {
-        runAction(confirm);
+        run(confirm);
       } else if (input === 'n' || input === 'N' || key.escape) {
         setConfirm(null);
       }
@@ -493,17 +471,13 @@ export const SessionList: FC<{
 
       {actionError ? (
         <Text color={statusColor.failed}>
-          {m.list.actionErrorLabel}: {actionError}
+          {m.action.actionErrorLabel}: {actionError}
         </Text>
       ) : null}
       {confirm ? (
-        <Box borderStyle="round" borderColor={theme.accent} paddingX={1}>
-          <Text>
-            {confirm === 'merge' ? m.list.mergePrompt : m.list.discardPrompt} {m.list.confirmRun}{' '}
-            <Text color={theme.yes}>y</Text> / <Text color={theme.no}>n</Text>
-            {busy ? <Text dimColor> {m.list.busySuffix}</Text> : null}
-          </Text>
-        </Box>
+        <DialogBox>
+          <ConfirmPrompt kind={confirm} busy={busy} />
+        </DialogBox>
       ) : null}
 
       {showHelp && !pending ? (

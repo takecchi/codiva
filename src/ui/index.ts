@@ -1,5 +1,7 @@
 export * from './banner';
 export * from './command-palette';
+export * from './confirm-prompt';
+export * from './dialog-box';
 export * from './hooks';
 export * from './i18n-context';
 export * from './input';

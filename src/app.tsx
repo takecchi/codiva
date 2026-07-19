@@ -6,13 +6,10 @@ import {
   type Messages,
   type SessionManager,
 } from '@/core';
-import { MessagesProvider, SessionDetail, SessionList } from '@/ui';
+import { type ListViewState, MessagesProvider, SessionDetail, SessionList } from '@/ui';
 
 /** どの画面を出しているか。詳細は対象セッション id を持つ。 */
 type View = { mode: 'list' } | { mode: 'detail'; id: string };
-
-/** 一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン）。 */
-type ListViewState = { selected: number; focus: 'composer' | 'list' };
 
 export const App: FC<{
   manager: SessionManager;

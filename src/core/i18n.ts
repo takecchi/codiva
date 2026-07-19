@@ -30,11 +30,6 @@ export interface Messages {
     helpList: string;
     /** 選択中セッションの許可/質問ダイアログがキーを持つ間のヒント */
     helpPending: string;
-    actionErrorLabel: string;
-    mergePrompt: string;
-    discardPrompt: string;
-    confirmRun: string;
-    busySuffix: string;
     /** 一覧スクロール時、上に隠れている件数のインジケータ */
     moreAbove: (n: number) => string;
     /** 一覧スクロール時、下に隠れている件数のインジケータ */
@@ -49,19 +44,25 @@ export interface Messages {
     changesTitle: (branch: string) => string;
     noCommittedChanges: string;
     uncommitted: (n: number) => string;
-    actionErrorLabel: string;
     followupPlaceholder: string;
     scrollHint: (newerBelow: number) => string;
     actionsTitle: string;
-    mergePrompt: string;
-    discardPrompt: string;
-    confirmRun: string;
-    busySuffix: string;
     mergeAction: string;
     discardAction: string;
     helpPending: string;
     helpActions: string;
     helpInput: string;
+  };
+  /**
+   * マージ/破棄の確認フロー（一覧・詳細で共有する ConfirmPrompt / エラー表示）。
+   * 両ビューで同一だったキーをここに集約する。
+   */
+  action: {
+    actionErrorLabel: string;
+    mergePrompt: string;
+    discardPrompt: string;
+    confirmRun: string;
+    busySuffix: string;
   };
   /** ステータスバッジ（progress-badge.tsx） */
   badge: {
@@ -154,11 +155,6 @@ const ja: Messages = {
     helpList:
       '↑↓: 選択 ・ Enter/→: 詳細を開く ・ p: PRを開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
-    actionErrorLabel: '操作エラー',
-    mergePrompt: 'ベースへマージします。',
-    discardPrompt: 'worktree とブランチを破棄します。',
-    confirmRun: '実行しますか？',
-    busySuffix: '…実行中',
     moreAbove: (n) => `↑ 他 ${n} 件`,
     moreBelow: (n) => `↓ 他 ${n} 件`,
   },
@@ -170,19 +166,21 @@ const ja: Messages = {
     changesTitle: (branch) => `変更（${branch} vs ベース）:`,
     noCommittedChanges: '（コミット済みの変更なし）',
     uncommitted: (n) => `未コミット ${n} 件`,
-    actionErrorLabel: '操作エラー',
     followupPlaceholder: '追加の指示を入力…',
     scrollHint: (n) => `▲ 過去ログを表示中 — 最新まで ${n} 行（PgDn で下へ）`,
     actionsTitle: '操作',
-    mergePrompt: 'ベースへマージします。',
-    discardPrompt: 'worktree とブランチを破棄します。',
-    confirmRun: '実行しますか？',
-    busySuffix: '…実行中',
     mergeAction: 'マージ（--no-ff）',
     discardAction: '破棄（worktree削除）',
     helpPending: 'Esc: 一覧へ戻る',
     helpActions: 'm/d: 操作 ・ Tab: 入力へ ・ Esc: 戻る',
     helpInput: 'Enter: 送信 ・ Shift+Enter: 改行 ・ PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ',
+  },
+  action: {
+    actionErrorLabel: '操作エラー',
+    mergePrompt: 'ベースへマージします。',
+    discardPrompt: 'worktree とブランチを破棄します。',
+    confirmRun: '実行しますか？',
+    busySuffix: '…実行中',
   },
   badge: {
     creating: '準備中',
@@ -265,11 +263,6 @@ const en: Messages = {
     helpList:
       '↑↓: select · Enter/→: open detail · p: open PR · m: merge · d: discard · Tab/Esc: input',
     helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
-    actionErrorLabel: 'Action error',
-    mergePrompt: 'Merge into the base branch.',
-    discardPrompt: 'Discard the worktree and branch.',
-    confirmRun: 'Proceed?',
-    busySuffix: '…running',
     moreAbove: (n) => `↑ ${n} more`,
     moreBelow: (n) => `↓ ${n} more`,
   },
@@ -281,19 +274,21 @@ const en: Messages = {
     changesTitle: (branch) => `Changes (${branch} vs base):`,
     noCommittedChanges: '(no committed changes)',
     uncommitted: (n) => `${n} uncommitted change${n === 1 ? '' : 's'}`,
-    actionErrorLabel: 'Action error',
     followupPlaceholder: 'Enter a follow-up instruction…',
     scrollHint: (n) => `▲ Viewing older log — ${n} newer lines below (PgDn to go down)`,
     actionsTitle: 'Actions',
-    mergePrompt: 'Merge into the base branch.',
-    discardPrompt: 'Discard the worktree and branch.',
-    confirmRun: 'Proceed?',
-    busySuffix: '…running',
     mergeAction: 'Merge (--no-ff)',
     discardAction: 'Discard (remove worktree)',
     helpPending: 'Esc: back to list',
     helpActions: 'm/d: actions · Tab: input · Esc: back',
     helpInput: 'Enter: send · Shift+Enter: newline · PgUp/PgDn: log · Tab: actions · Esc: back',
+  },
+  action: {
+    actionErrorLabel: 'Action error',
+    mergePrompt: 'Merge into the base branch.',
+    discardPrompt: 'Discard the worktree and branch.',
+    confirmRun: 'Proceed?',
+    busySuffix: '…running',
   },
   badge: {
     creating: 'Preparing',
