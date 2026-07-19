@@ -1,5 +1,5 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useRef, useState } from 'react';
+import { type FC, useEffect, useRef, useState } from 'react';
 import {
   bufferLines,
   bufferOf,
@@ -69,6 +69,9 @@ function prStatusBadge(status: PrMergeStatus): { char: string; color: string } |
   }
 }
 
+/** 復元・報告する一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン）。 */
+export type ListViewState = { selected: number; focus: 'composer' | 'list' };
+
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
  * zones — 'composer' (default: typing + full caret movement) and 'list'
@@ -85,7 +88,25 @@ export const SessionList: FC<{
   cwd?: string;
   model?: string;
   version?: string;
-}> = ({ manager, onOpen, onOpenPr, onQuit, cwd, model, version }) => {
+  /**
+   * 前回この一覧を離れたときの表示状態。詳細ビュー等から戻ったときに選択行
+   * （= スクロール位置）とフォーカスを復元する。未指定（初回起動）なら選択は
+   * 末尾（最新セッション）に置き、一番下までスクロールされた状態で開く。
+   */
+  initialViewState?: ListViewState;
+  /** 選択行・フォーカスが変わるたびに親へ報告する（再マウント時の復元用）。 */
+  onViewStateChange?: (state: ListViewState) => void;
+}> = ({
+  manager,
+  onOpen,
+  onOpenPr,
+  onQuit,
+  cwd,
+  model,
+  version,
+  initialViewState,
+  onViewStateChange,
+}) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -102,8 +123,13 @@ export const SessionList: FC<{
     bufferRef.current = typeof next === 'function' ? next(bufferRef.current) : next;
     setBuffer(bufferRef.current);
   };
-  const [focus, setFocus] = useState<'composer' | 'list'>('composer');
-  const [sel, setSel] = useState(0);
+  const [focus, setFocus] = useState<'composer' | 'list'>(initialViewState?.focus ?? 'composer');
+  // 初回は末尾（最新）を選択して一番下までスクロールした状態で開く。戻ってきた
+  // ときは前回の選択行を復元する（選択行から listView がスクロール窓を導くため、
+  // 選択を戻せばスクロール状態も戻る）。
+  const [sel, setSel] = useState(
+    () => initialViewState?.selected ?? Math.max(0, sessions.length - 1),
+  );
   const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
@@ -122,6 +148,11 @@ export const SessionList: FC<{
   );
   const selected = Math.min(sel, Math.max(0, sorted.length - 1));
   const target = sorted[selected];
+  // 表示状態（クランプ後の選択行 + フォーカス）を親へ報告し、ビュー切替で
+  // アンマウントされても復元できるようにする。ref 書き込みなので再描画は起きない。
+  useEffect(() => {
+    onViewStateChange?.({ selected, focus });
+  }, [selected, focus, onViewStateChange]);
   // The dialog owns the keys only while the list side has focus, so the
   // composer is never hijacked mid-typing by a session that starts asking.
   const pending = focus === 'list' ? target?.pendingPermission : undefined;
