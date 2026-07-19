@@ -17,6 +17,7 @@ import {
   parseSgrMouse,
   runCommand,
   type SessionManager,
+  showsBranchColumn,
   type TextBuffer,
   totalCostUsd,
   visibleLineRange,
@@ -103,6 +104,8 @@ export const SessionList: FC<{
   // 実測高さぶんだけ項目を描画し、選択が常に見えるようウィンドウを動かす。全画面
   // でないインライン描画時はクリップされないため全件描画（端末側スクロールに任せる）。
   const fullscreen = isFullscreenViewport(termRows);
+  // 端末が狭いときは worktree（ブランチ）名の列を省き、title に幅を譲る。
+  const showBranch = showsBranchColumn(columns);
   const listHeight = useBoxHeight(rowsRef);
   const listCap = fullscreen
     ? Math.max(1, listHeight ?? Math.max(1, termRows - 15))
@@ -414,11 +417,13 @@ export const SessionList: FC<{
                       {formatModel(s.model) ?? ''}
                     </Text>
                   </Box>
-                  <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
-                    <Text dimColor wrap="truncate-end">
-                      {s.branch}
-                    </Text>
-                  </Box>
+                  {showBranch ? (
+                    <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
+                      <Text dimColor wrap="truncate-end">
+                        {s.branch}
+                      </Text>
+                    </Box>
+                  ) : null}
                   <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
                   {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
                       左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}

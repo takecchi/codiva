@@ -4,7 +4,9 @@ import {
   isFullscreenViewport,
   listView,
   logViewportRows,
+  MIN_BRANCH_COLUMN_COLUMNS,
   MIN_FULLSCREEN_ROWS,
+  showsBranchColumn,
 } from './layout';
 
 describe('isFullscreenViewport', () => {
@@ -16,6 +18,18 @@ describe('isFullscreenViewport', () => {
     [0, false],
   ])('rows=%d → %s', (rows, expected) => {
     expect(isFullscreenViewport(rows)).toBe(expected);
+  });
+});
+
+describe('showsBranchColumn', () => {
+  it.each([
+    [MIN_BRANCH_COLUMN_COLUMNS - 1, false],
+    [MIN_BRANCH_COLUMN_COLUMNS, true],
+    [40, false],
+    [120, true],
+    [0, false],
+  ])('columns=%d → %s', (columns, expected) => {
+    expect(showsBranchColumn(columns)).toBe(expected);
   });
 });
 
