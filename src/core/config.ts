@@ -35,6 +35,13 @@ export interface CodivaConfig {
    * ポーリングでチェックが緑になったら ready 化する。未設定は有効（true）。
    */
   autoPr?: boolean;
+  /**
+   * セッション用 worktree 作成時に `.gitignore` された未追跡ファイル
+   * （`node_modules/`・`.env` など）をリポジトリルートから複製するか。未設定は有効（true）。
+   * git worktree は追跡対象しか引き継がないため、無効化すると依存や環境変数を
+   * セッション側で用意し直す必要がある。
+   */
+  copyIgnored?: boolean;
 }
 
 /** SDK 由来 union の実行時検証用リテラル。型が変われば型エラーで気付ける。 */
@@ -59,6 +66,7 @@ interface CodivaConfigJson {
   mouse?: unknown;
   followOrigin?: unknown;
   autoPr?: unknown;
+  copyIgnored?: unknown;
 }
 
 function toLangSetting(value: unknown): Lang | 'auto' | undefined {
@@ -131,6 +139,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const autoPr = toBoolean(raw.autoPr);
   if (autoPr !== undefined) {
     config.autoPr = autoPr;
+  }
+  const copyIgnored = toBoolean(raw.copyIgnored);
+  if (copyIgnored !== undefined) {
+    config.copyIgnored = copyIgnored;
   }
   return config;
 }

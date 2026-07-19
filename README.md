@@ -58,11 +58,13 @@ codiva
 
 ```json
 {
-  "language": "auto"
+  "language": "auto",
+  "copyIgnored": true
 }
 ```
 
 - `language`: `"ja"` / `"en"` / `"auto"`（OS ロケール準拠）。環境変数 `CODIVA_LANG`（`ja` / `en`）が最優先です。
+- `copyIgnored`: セッション用 worktree を作るとき、`.gitignore` された未追跡ファイル（`node_modules/` や `.env` など）をリポジトリルートから複製するか。既定 `true`。git worktree は追跡対象しか引き継がないため、これにより依存の再インストールや環境変数の再設定なしにセッションを即実行できます（`false` で無効化）。
 
 ## 開発
 

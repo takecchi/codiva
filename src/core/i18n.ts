@@ -71,6 +71,7 @@ export interface Messages {
     awaitingPermission: string;
     awaitingInput: string;
     completed: string;
+    interrupted: string;
     failed: string;
     conflict: string;
     archived: string;
@@ -190,6 +191,7 @@ const ja: Messages = {
     awaitingPermission: '許可待ち',
     awaitingInput: '質問あり',
     completed: '完了',
+    interrupted: '中断',
     failed: '失敗',
     conflict: 'コンフリクト',
     archived: '保管済み',
@@ -301,6 +303,7 @@ const en: Messages = {
     awaitingPermission: 'Awaiting permission',
     awaitingInput: 'Question',
     completed: 'Completed',
+    interrupted: 'Interrupted',
     failed: 'Failed',
     conflict: 'Conflict',
     archived: 'Archived',

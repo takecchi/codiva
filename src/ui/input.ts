@@ -2,6 +2,7 @@ import type { Key } from 'ink';
 import stringWidth from 'string-width';
 import {
   backspace,
+  decodeKeySequence,
   insert,
   moveDown,
   moveLeft,
@@ -110,6 +111,36 @@ export function resolveEnter(buffer: TextBuffer, key: Key): EnterAction {
     return { kind: 'newline', buffer: newline(backspace(buffer)) };
   }
   return { kind: 'submit', text: buffer.value.trim() };
+}
+
+/**
+ * Normalize a raw `useInput` `(input, key)` pair for a composer view.
+ *
+ * Modern terminals encode modified keys such as Shift+Enter as an xterm
+ * modifyOtherKeys / CSI-u escape (`[27;2;13~`). Ink can't parse these, so they
+ * arrive as literal text with `key.return`/`key.shift` unset — which is why an
+ * un-normalized composer treats Shift+Enter as pasted text instead of a newline.
+ * Decoding here rebuilds the real chord so every composer (list + detail) shares
+ * one Enter/newline/Tab/Esc behavior. Non-escape input passes through untouched.
+ */
+export function normalizeChord(input: string, key: Key): { input: string; key: Key } {
+  const chord = decodeKeySequence(input);
+  if (!chord) {
+    return { input, key };
+  }
+  return {
+    input: chord.kind === 'text' ? chord.text : '',
+    key: {
+      ...key,
+      shift: chord.shift,
+      ctrl: chord.ctrl,
+      meta: chord.meta,
+      return: chord.kind === 'return',
+      tab: chord.kind === 'tab',
+      escape: chord.kind === 'escape',
+      backspace: chord.kind === 'backspace',
+    },
+  };
 }
 
 /**

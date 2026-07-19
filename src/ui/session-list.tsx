@@ -1,11 +1,10 @@
-import { Box, type DOMElement, type Key, Text, useInput, useWindowSize } from 'ink';
+import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   bufferLines,
   bufferOf,
   COMMANDS,
   cursorRowCol,
-  decodeKeySequence,
   emptyBuffer,
   formatModel,
   INPUT_MAX_ROWS,
@@ -17,6 +16,7 @@ import {
   parseSgrMouse,
   runCommand,
   type SessionManager,
+  showsBranchColumn,
   type TextBuffer,
   totalCostUsd,
   visibleLineRange,
@@ -25,7 +25,13 @@ import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
 import { useAbsolutePosition, useBoxHeight, useClock, useRunMode, useSessions } from './hooks';
 import { useMessages } from './i18n-context';
-import { caretIndexForColumn, editText, formatElapsed, resolveEnter } from './input';
+import {
+  caretIndexForColumn,
+  editText,
+  formatElapsed,
+  normalizeChord,
+  resolveEnter,
+} from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
@@ -103,6 +109,8 @@ export const SessionList: FC<{
   // 実測高さぶんだけ項目を描画し、選択が常に見えるようウィンドウを動かす。全画面
   // でないインライン描画時はクリップされないため全件描画（端末側スクロールに任せる）。
   const fullscreen = isFullscreenViewport(termRows);
+  // 端末が狭いときは worktree（ブランチ）名の列を省き、title に幅を譲る。
+  const showBranch = showsBranchColumn(columns);
   const listHeight = useBoxHeight(rowsRef);
   const listCap = fullscreen
     ? Math.max(1, listHeight ?? Math.max(1, termRows - 15))
@@ -215,22 +223,9 @@ export const SessionList: FC<{
       return;
     }
     // Shift+Enter 等の修飾キーは modifyOtherKeys / CSI-u エスケープ（`[27;2;13~`）
-    // で届く。Ink はこれを解釈できず生テキストとして渡すため、ここで実キーへ
-    // 復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
-    const chord = decodeKeySequence(rawInput);
-    const key: Key = chord
-      ? {
-          ...rawKey,
-          shift: chord.shift,
-          ctrl: chord.ctrl,
-          meta: chord.meta,
-          return: chord.kind === 'return',
-          tab: chord.kind === 'tab',
-          escape: chord.kind === 'escape',
-          backspace: chord.kind === 'backspace',
-        }
-      : rawKey;
-    const input = chord ? (chord.kind === 'text' ? chord.text : '') : rawInput;
+    // で届く。Ink はこれを解釈できず生テキストとして渡すため、共通ヘルパーで
+    // 実キーへ復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
+    const { input, key } = normalizeChord(rawInput, rawKey);
     if (key.ctrl && input === 'c') {
       onQuit();
       return;
@@ -414,11 +409,13 @@ export const SessionList: FC<{
                       {formatModel(s.model) ?? ''}
                     </Text>
                   </Box>
-                  <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
-                    <Text dimColor wrap="truncate-end">
-                      {s.branch}
-                    </Text>
-                  </Box>
+                  {showBranch ? (
+                    <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
+                      <Text dimColor wrap="truncate-end">
+                        {s.branch}
+                      </Text>
+                    </Box>
+                  ) : null}
                   <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
                   {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
                       左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}

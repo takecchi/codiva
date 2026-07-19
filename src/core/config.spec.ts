@@ -98,6 +98,17 @@ describe('toConfig', () => {
     expect(toConfig({ followOrigin: value, autoPr: value })).toEqual({});
   });
 
+  it.each([
+    [true, true],
+    [false, false],
+  ])('keeps boolean copyIgnored %o', (input, expected) => {
+    expect(toConfig({ copyIgnored: input })).toEqual({ copyIgnored: expected });
+  });
+
+  it.each([['yes'], [1], [null]])('drops invalid copyIgnored: %o', (copyIgnored) => {
+    expect(toConfig({ copyIgnored })).toEqual({});
+  });
+
   it('collects all valid keys together', () => {
     expect(
       toConfig({
@@ -109,6 +120,7 @@ describe('toConfig', () => {
         notifications: false,
         followOrigin: false,
         autoPr: true,
+        copyIgnored: false,
       }),
     ).toEqual({
       language: 'en',
@@ -119,6 +131,7 @@ describe('toConfig', () => {
       notifications: false,
       followOrigin: false,
       autoPr: true,
+      copyIgnored: false,
     });
   });
 });

@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { uniqueSlug } from '@/core/slug';
-import { MergeConflictError, WorktreeManager } from '@/core/worktree';
+import { ignoredCopyEntries, MergeConflictError, WorktreeManager } from '@/core/worktree';
 
 const execFileAsync = promisify(execFile);
 const g = (cwd: string, ...args: string[]) => execFileAsync('git', args, { cwd });
@@ -204,6 +204,51 @@ describe('WorktreeManager', () => {
       await wm.pushBranch(wt);
       const remote = await g(repo, 'ls-remote', 'origin', 'codiva/pushme');
       expect(remote.stdout).toContain('codiva/pushme');
+    });
+  });
+
+  describe('ignoredCopyEntries', () => {
+    it('keeps ignored files and dirs but drops .codiva and .git', () => {
+      const raw = ['.codiva/', '.env', '.env.local', '.git/', 'node_modules/', ''].join('\n');
+      expect(ignoredCopyEntries(raw)).toEqual(['.env', '.env.local', 'node_modules/']);
+    });
+
+    it('returns an empty list for empty output', () => {
+      expect(ignoredCopyEntries('')).toEqual([]);
+    });
+  });
+
+  describe('copying .gitignore-d files into a new worktree', () => {
+    beforeEach(async () => {
+      repo = await makeRepo(true);
+      // ignore node_modules/ and .env, then leave them untracked on disk
+      await writeFile(join(repo, '.gitignore'), 'node_modules/\n.env\n.codiva/\n');
+      await g(repo, 'add', '.gitignore');
+      await g(repo, 'commit', '-m', 'add gitignore');
+      await mkdir(join(repo, 'node_modules', 'dep'), { recursive: true });
+      await writeFile(join(repo, 'node_modules', 'dep', 'index.js'), 'module.exports = 1\n');
+      await writeFile(join(repo, '.env'), 'SECRET=1\n');
+    });
+
+    it('copies ignored files/dirs from the repo root by default', async () => {
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('with-ignored');
+      expect(await readFile(join(wt.path, '.env'), 'utf8')).toBe('SECRET=1\n');
+      expect(await readFile(join(wt.path, 'node_modules', 'dep', 'index.js'), 'utf8')).toBe(
+        'module.exports = 1\n',
+      );
+    });
+
+    it('does not copy .codiva (would recurse into worktrees)', async () => {
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('no-codiva');
+      await expect(readFile(join(wt.path, '.codiva', 'state.json'), 'utf8')).rejects.toBeTruthy();
+    });
+
+    it('skips copying when copyIgnored is false', async () => {
+      const wm = new WorktreeManager(repo, { copyIgnored: false });
+      const wt = await wm.add('bare');
+      await expect(readFile(join(wt.path, '.env'), 'utf8')).rejects.toBeTruthy();
     });
   });
 

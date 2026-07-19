@@ -41,7 +41,9 @@ async function main(): Promise<void> {
   const t = messages[lang];
 
   const repoRoot = process.cwd();
-  const worktrees = new WorktreeManager(repoRoot);
+  // `.gitignore` された node_modules/.env 等は git worktree に引き継がれないため、
+  // 既定でリポジトリルートから複製する（`"copyIgnored": false` で無効化）。
+  const worktrees = new WorktreeManager(repoRoot, { copyIgnored: config.copyIgnored !== false });
 
   try {
     await worktrees.preflight();

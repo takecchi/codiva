@@ -520,13 +520,41 @@ describe('App detail view (in-app connection)', () => {
     await flush();
     stdin.write('\r'); // Enter → open detail in-app (no external CLI)
     await flush();
-    // Detail chrome: the follow-up composer placeholder + the session title header.
+    // Detail chrome: the follow-up composer placeholder is shown, and the list
+    // composer placeholder is gone (no status header — content + footer only).
     expect(lastFrame()).toContain('追加の指示を入力');
-    expect(lastFrame()).toContain('open me');
+    expect(lastFrame()).not.toContain('実装してほしいこと');
 
     stdin.write('\x1b'); // Esc → back to the list
     await flush();
     expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
+  });
+
+  it('mouse-wheel reports scroll the log instead of typing into the composer', async () => {
+    const { manager, out } = drivenManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('scroll me');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-w' }));
+    await flush();
+
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    // Wheel up/down SGR reports (button 64/65). They must be consumed as scroll
+    // gestures, never inserted as text — the composer stays empty (placeholder shown).
+    stdin.write('\x1b[<64;10;3M');
+    await flush();
+    stdin.write('\x1b[<65;10;3M');
+    await flush();
+
+    const frame = lastFrame();
+    expect(frame).toContain('追加の指示を入力'); // empty composer → placeholder still visible
+    expect(frame).not.toMatch(/64|65/); // no escape-report fragments leaked as text
   });
 
   it('sends a follow-up from the detail composer to the live session', async () => {
