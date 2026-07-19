@@ -1,0 +1,70 @@
+name: Release
+
+# GitHub 上で Release を publish すると発火する。
+# リリースタグ（例: v1.2.3）からバージョンを決定し、package.json を同期して
+# npm へ Trusted Publishing（OIDC / トークンレス）で配信し、
+# バージョン更新コミットを main に戻す。
+on:
+  release:
+    types: [published]
+
+# 同一リリースの多重実行を防ぐ（バージョン更新コミットの競合回避）。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # package.json のバージョン更新を main へ push するため
+  id-token: write # npm Trusted Publishing (OIDC) と provenance のため
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # リリースは main から切る前提。バージョン更新を main へ戻すため main を取得する。
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      # Trusted Publishing は npm >= 11.5.1 が必要。node 24 同梱版でも満たすが念のため最新化。
+      - name: Ensure recent npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      # リリースタグ（v1.2.3 / 1.2.3 どちらも可）から package.json を更新する。
+      - name: Sync version from release tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Releasing version: $VERSION"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Build
+        run: npm run build
+
+      # NODE_AUTH_TOKEN は不要。OIDC で短命トークンを取得して認証・provenance 付与する。
+      - name: Publish to npm (Trusted Publishing / OIDC)
+        run: npm publish
+
+      # バージョン更新を main へ戻す（次回リリースまで main が古いバージョンのままになるのを防ぐ）。
+      - name: Commit version bump back to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo "No version change to commit."
+          else
+            git commit -m "chore: release v${GITHUB_REF_NAME#v}"
+            git push origin HEAD:main
+          fi
