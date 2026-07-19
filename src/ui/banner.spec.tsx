@@ -13,6 +13,21 @@ function renderBanner(props: Parameters<typeof Banner>[0], lang: 'ja' | 'en' = '
 }
 
 describe('Banner', () => {
+  it('ワードマークを Codiva として表示する', () => {
+    const { lastFrame } = renderBanner({ sessionCount: 0 }, 'en');
+    expect(lastFrame()).toContain('Codiva');
+  });
+
+  it('バージョンをワードマークの右に表示する', () => {
+    const { lastFrame } = renderBanner({ sessionCount: 0, version: '0.1.5' }, 'en');
+    expect(lastFrame()).toContain('Codiva v0.1.5');
+  });
+
+  it('バージョン未指定なら v 表記を出さない', () => {
+    const { lastFrame } = renderBanner({ sessionCount: 0 }, 'en');
+    expect(lastFrame()).not.toContain(' v');
+  });
+
   it('設定されたモデル名をヘッダに表示する', () => {
     const { lastFrame } = renderBanner({ sessionCount: 0, model: 'claude-opus-4-8' }, 'en');
     expect(lastFrame()).toContain('model: claude-opus-4-8');
