@@ -100,10 +100,6 @@ export interface Messages {
     /** 選択肢の説明文 */
     descriptions: Record<ModelId, string>;
   };
-  /** アプリ全体（index.tsx） */
-  app: {
-    remainingWorktrees: (n: number) => string;
-  };
   /** デスクトップ通知（notify.ts） */
   notify: {
     needsInput: string;
@@ -225,10 +221,6 @@ const ja: Messages = {
       haiku: 'Haiku 4.5 ・ 手早い回答に最速',
     },
   },
-  app: {
-    remainingWorktrees: (n) =>
-      `codiva: ${n} 個の worktree が残っています（作業内容は保持されます）:`,
-  },
   notify: {
     needsInput: '質問があります',
     needsPermission: '許可を待っています',
@@ -336,10 +328,6 @@ const en: Messages = {
       sonnet: 'Sonnet 5 · Efficient for routine tasks',
       haiku: 'Haiku 4.5 · Fastest for quick answers',
     },
-  },
-  app: {
-    remainingWorktrees: (n) =>
-      `codiva: ${n} worktree${n === 1 ? '' : 's'} left in place (your work is preserved):`,
   },
   notify: {
     needsInput: 'Needs your input',
