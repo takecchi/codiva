@@ -80,6 +80,15 @@ export interface SessionState {
   messages: LogEntry[];
   pendingPermission?: PermissionRequest;
   sdkSessionId?: string;
+  /**
+   * The model this session is actually running on, as reported by the SDK
+   * (`system/init` and each `assistant` message). This is the *resolved* model —
+   * present even when config left `model` unset — so it can differ from the
+   * globally configured model shown in the banner. Undefined until the first
+   * SDK message arrives. Raw id (e.g. `claude-opus-4-8`); format for display
+   * with `formatModel`.
+   */
+  model?: string;
   /** Pull request opened for `branch`, if any (detected asynchronously via `gh`). */
   pr?: PrInfo;
   startedAt: number;

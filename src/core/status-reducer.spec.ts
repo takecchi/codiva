@@ -55,6 +55,11 @@ describe('reduce over real fixtures', () => {
     expect(state.sdkSessionId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it('captures the resolved model from the SDK stream', () => {
+    const state = replay(basic);
+    expect(state.model).toBe('claude-opus-4-8');
+  });
+
   it('builds the todo list from TaskCreate/TaskUpdate and marks it done', () => {
     const state = replay(basic);
     expect(state.todos.length).toBeGreaterThanOrEqual(2);
@@ -145,6 +150,27 @@ describe('control events', () => {
     const s0: SessionState = { ...initialState(BASE), status: 'running' };
     const s1 = reduce(s0, { kind: 'permission_resolved', at: 1 }); // no pending → no-op
     expect(s1).toBe(s0);
+  });
+
+  it('captures the resolved model from system/init even when config left it unset', () => {
+    const init = {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'abc',
+      model: 'claude-haiku-4-5',
+    } as unknown as SDKMessage;
+    const state = reduce(initialState(BASE), { kind: 'sdk', message: init, at: 1 });
+    expect(state.model).toBe('claude-haiku-4-5');
+  });
+
+  it('tracks a mid-session model switch from an assistant message', () => {
+    const s0: SessionState = { ...initialState(BASE), status: 'running', model: 'claude-opus-4-8' };
+    const assistant = {
+      type: 'assistant',
+      message: { model: 'claude-sonnet-4-5', content: [{ type: 'text', text: 'hi' }] },
+    } as unknown as SDKMessage;
+    const state = reduce(s0, { kind: 'sdk', message: assistant, at: 2 });
+    expect(state.model).toBe('claude-sonnet-4-5');
   });
 
   it('archives once, then is idempotent', () => {

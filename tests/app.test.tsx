@@ -346,7 +346,9 @@ describe('App end-to-end (real Session, driven query)', () => {
     stdin.write('\r');
     await flush(); // provision worktree + start session
 
-    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-x' }));
+    out.push(
+      asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-x', model: 'claude-opus-4-8' }),
+    );
     out.push(
       asMsg({
         type: 'assistant',
@@ -360,6 +362,8 @@ describe('App end-to-end (real Session, driven query)', () => {
     );
     await flush();
     expect(lastFrame()).toContain('Step 0/2');
+    // the session row shows the model it actually resolved to (from system/init)
+    expect(lastFrame()).toContain('Opus 4.8');
 
     out.push(
       asMsg({

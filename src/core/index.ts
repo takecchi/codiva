@@ -5,6 +5,7 @@ export * from './cost';
 export * from './i18n';
 export * from './key-sequence';
 export * from './layout';
+export * from './model';
 export * from './mouse';
 export * from './notify';
 export * from './persistence';
