@@ -138,9 +138,13 @@ function applyTaskTool(todos: TodoItem[], block: ToolUseBlock): TodoItem[] {
 }
 
 function reduceAssistant(state: SessionState, message: Record<string, unknown>): SessionState {
-  const inner = message.message as { content?: unknown } | undefined;
+  const inner = message.message as { content?: unknown; model?: unknown } | undefined;
   const content = Array.isArray(inner?.content) ? inner.content : [];
   const timestamp = typeof message.timestamp === 'number' ? message.timestamp : undefined;
+  // Each assistant message reports the model that produced it — track it so a
+  // mid-session model switch is reflected (init only fires at the start).
+  const model =
+    typeof inner?.model === 'string' && inner.model.length > 0 ? inner.model : state.model;
 
   let todos = state.todos;
   let messages = state.messages;
@@ -172,10 +176,10 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
 
   // The full assistant message is authoritative — drop the streamed preview.
   if (messages === state.messages && todos === state.todos) {
-    if (state.status === 'running' && state.streamingText === undefined) {
+    if (state.status === 'running' && state.streamingText === undefined && model === state.model) {
       return state;
     }
-    return { ...state, status: 'running', streamingText: undefined };
+    return { ...state, status: 'running', streamingText: undefined, model };
   }
   return {
     ...state,
@@ -185,6 +189,7 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
     messages,
     logSeq,
     streamingText: undefined,
+    model,
   };
 }
 
@@ -250,7 +255,9 @@ function reduceSdk(
   if (type === 'system') {
     if (message.subtype === 'init') {
       const sid = typeof message.session_id === 'string' ? message.session_id : state.sdkSessionId;
-      return { ...state, status: 'running', sdkSessionId: sid ?? state.sdkSessionId };
+      // init carries the *resolved* model even when config left it unset.
+      const model = typeof message.model === 'string' ? message.model : state.model;
+      return { ...state, status: 'running', sdkSessionId: sid ?? state.sdkSessionId, model };
     }
     return state;
   }
@@ -351,6 +358,14 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       const title = makeTitle(event.title);
       // Ignore empty generations; keep the placeholder rather than blank it.
       return title.length === 0 || title === state.title ? state : { ...state, title };
+    }
+
+    case 'pr': {
+      // No-op when unchanged so subscribers don't re-render on every poll.
+      if (state.pr?.number === event.pr?.number && state.pr?.url === event.pr?.url) {
+        return state;
+      }
+      return { ...state, pr: event.pr };
     }
 
     case 'aborted': {

@@ -1,3 +1,5 @@
+import { visibleLineRange } from './text-buffer';
+
 /**
  * 全画面レイアウトに必要な最小の端末行数。固定部分（バナー6行 + 入力欄3行 +
  * フッタ・余白・パディング）だけで約15行あり、これ未満で root の height を
@@ -28,4 +30,84 @@ export const DETAIL_CHROME_ROWS = 10;
  */
 export function logViewportRows(rows: number): number {
   return Math.max(1, rows - DETAIL_CHROME_ROWS);
+}
+
+/**
+ * セッション一覧を高さ `cap` 行のウィンドウに収めるための表示範囲。
+ * 一覧がヘッダ/フッタの間で内部スクロールするときに使う純粋な計算。
+ */
+export interface ListView {
+  /** 表示する最初の項目インデックス（含む） */
+  start: number;
+  /** 表示する最後の項目インデックスの次（含まない） */
+  end: number;
+  /** ウィンドウより上に隠れている項目数 */
+  hiddenAbove: number;
+  /** ウィンドウより下に隠れている項目数 */
+  hiddenBelow: number;
+  /** 上端に「さらに N 件」インジケータ行を出すか */
+  showAbove: boolean;
+  /** 下端に「さらに N 件」インジケータ行を出すか */
+  showBelow: boolean;
+}
+
+/**
+ * `total` 件のうち `cap` 行に収まる表示範囲を、`selected` を常に見える位置に
+ * 保ちながら求める。項目が溢れる端には「さらに N 件」インジケータ用に 1 行を
+ * 予約するため、描画行数（項目 + インジケータ）は常に `cap` 以下になる。
+ * 選択はウィンドウ下端寄りにアンカーする（下へ動かすとスクロールする挙動。
+ * コンポーザの {@link visibleLineRange} と同じ）。
+ */
+export function listView(total: number, selected: number, cap: number): ListView {
+  const c = Math.max(1, Math.floor(cap));
+  if (total <= c) {
+    return {
+      start: 0,
+      end: total,
+      hiddenAbove: 0,
+      hiddenBelow: 0,
+      showAbove: false,
+      showBelow: false,
+    };
+  }
+  const sel = Math.max(0, Math.min(selected, total - 1));
+  // 溢れる端ごとにインジケータ 1 行を予約するが、その予約でウィンドウが縮むと
+  // 別の端が新たに溢れることがある（縮小は隠れ項目を増やすだけなので単調）。
+  // 予約は増やす方向にのみ更新して不動点まで反復する（最大 3 周で収束）。
+  let above = false;
+  let below = false;
+  let win = { start: 0, end: 0 };
+  for (let i = 0; i < 3; i++) {
+    // インジケータで席を使い切らないよう、内容行を必ず 1 行は残す。
+    const reserved = Math.min((above ? 1 : 0) + (below ? 1 : 0), c - 1);
+    win = visibleLineRange(total, sel, c - reserved);
+    const nextAbove = win.start > 0;
+    const nextBelow = win.end < total;
+    if (nextAbove === above && nextBelow === below) {
+      break;
+    }
+    above = above || nextAbove;
+    below = below || nextBelow;
+  }
+  // 極端に低い cap では両方は出せない。内容行を守るため下インジケータから捨てる。
+  const rows = win.end - win.start;
+  let showAbove = above;
+  let showBelow = below;
+  while ((showAbove ? 1 : 0) + (showBelow ? 1 : 0) > c - rows) {
+    if (showBelow) {
+      showBelow = false;
+    } else {
+      showAbove = false;
+    }
+  }
+  const hiddenAbove = win.start;
+  const hiddenBelow = total - win.end;
+  return {
+    start: win.start,
+    end: win.end,
+    hiddenAbove,
+    hiddenBelow,
+    showAbove: showAbove && hiddenAbove > 0,
+    showBelow: showBelow && hiddenBelow > 0,
+  };
 }

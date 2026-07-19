@@ -13,6 +13,7 @@ import type {
   CodivaEvent,
   CreateSessionInput,
   PermissionRequest,
+  PrInfo,
   QuestionSpec,
   SessionState,
 } from './types';
@@ -213,6 +214,14 @@ export class Session {
   /** Mark the session archived (after its branch is merged or discarded). */
   archive(): void {
     this.dispatch({ kind: 'archived', at: this.now() });
+  }
+
+  /**
+   * Record (or clear) the pull request detected for this branch. Driven by the
+   * manager's out-of-band `gh` poll; a no-op event doesn't change state.
+   */
+  setPr(pr: PrInfo | undefined): void {
+    this.dispatch({ kind: 'pr', pr, at: this.now() });
   }
 
   private resolvePending(result: PermissionResult): void {

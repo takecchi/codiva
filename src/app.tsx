@@ -11,11 +11,20 @@ import { MessagesProvider, SessionDetail, SessionList } from '@/ui';
 /** どの画面を出しているか。詳細は対象セッション id を持つ。 */
 type View = { mode: 'list' } | { mode: 'detail'; id: string };
 
-export const App: FC<{ manager: SessionManager; cwd?: string; messages?: Messages }> = ({
+export const App: FC<{
+  manager: SessionManager;
+  cwd?: string;
+  model?: string;
+  messages?: Messages;
+  /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
+  onOpenPr?: (url: string) => void;
+}> = ({
   manager,
   cwd,
+  model,
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
+  onOpenPr,
 }) => {
   const { exit } = useApp();
   const [view, setView] = useState<View>({ mode: 'list' });
@@ -53,8 +62,10 @@ export const App: FC<{ manager: SessionManager; cwd?: string; messages?: Message
           <SessionList
             manager={manager}
             onOpen={(id) => setView({ mode: 'detail', id })}
+            onOpenPr={onOpenPr}
             onQuit={quit}
             cwd={cwd}
+            model={model}
           />
         )}
       </Box>

@@ -1,4 +1,5 @@
 export * from './banner';
+export * from './command-palette';
 export * from './hooks';
 export * from './i18n-context';
 export * from './input';

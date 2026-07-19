@@ -78,6 +78,23 @@ export function useAbsolutePosition(
   return pos;
 }
 
+/**
+ * Computed content height (terminal rows) of an Ink box, measured after every
+ * render. A `flexGrow` box in a height-constrained parent reports its allocated
+ * height regardless of how much content it holds, so this yields the space a
+ * scrollable list may fill. Undefined until first measured. Re-renders only when
+ * the height actually changes.
+ */
+export function useBoxHeight(ref: RefObject<DOMElement | null>): number | undefined {
+  const [height, setHeight] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    const layout = ref.current?.yogaNode?.getComputedLayout();
+    const next = layout?.height;
+    setHeight((prev) => (prev === next ? prev : next));
+  });
+  return height;
+}
+
 /** A clock that ticks every `ms` so elapsed-time displays stay current. */
 export function useClock(ms = 1000): number {
   const [now, setNow] = useState(() => Date.now());

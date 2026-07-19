@@ -55,6 +55,11 @@ describe('reduce over real fixtures', () => {
     expect(state.sdkSessionId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it('captures the resolved model from the SDK stream', () => {
+    const state = replay(basic);
+    expect(state.model).toBe('claude-opus-4-8');
+  });
+
   it('builds the todo list from TaskCreate/TaskUpdate and marks it done', () => {
     const state = replay(basic);
     expect(state.todos.length).toBeGreaterThanOrEqual(2);
@@ -145,6 +150,27 @@ describe('control events', () => {
     const s0: SessionState = { ...initialState(BASE), status: 'running' };
     const s1 = reduce(s0, { kind: 'permission_resolved', at: 1 }); // no pending → no-op
     expect(s1).toBe(s0);
+  });
+
+  it('captures the resolved model from system/init even when config left it unset', () => {
+    const init = {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'abc',
+      model: 'claude-haiku-4-5',
+    } as unknown as SDKMessage;
+    const state = reduce(initialState(BASE), { kind: 'sdk', message: init, at: 1 });
+    expect(state.model).toBe('claude-haiku-4-5');
+  });
+
+  it('tracks a mid-session model switch from an assistant message', () => {
+    const s0: SessionState = { ...initialState(BASE), status: 'running', model: 'claude-opus-4-8' };
+    const assistant = {
+      type: 'assistant',
+      message: { model: 'claude-sonnet-4-5', content: [{ type: 'text', text: 'hi' }] },
+    } as unknown as SDKMessage;
+    const state = reduce(s0, { kind: 'sdk', message: assistant, at: 2 });
+    expect(state.model).toBe('claude-sonnet-4-5');
   });
 
   it('archives once, then is idempotent', () => {
@@ -361,6 +387,27 @@ describe('reduce over streaming partial messages', () => {
     expect(sdk(s0, { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } })).toBe(
       s0,
     );
+  });
+
+  it('pr event stores the PR and no-ops when unchanged', () => {
+    const s0 = initialState(BASE);
+    expect(s0.pr).toBeUndefined();
+
+    const withPr = reduce(s0, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 1 });
+    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12' });
+
+    // Same PR again → same reference (no re-render on every poll).
+    expect(reduce(withPr, { kind: 'pr', pr: { number: 12, url: 'https://x/12' }, at: 2 })).toBe(
+      withPr,
+    );
+
+    // A different PR replaces it; undefined clears it.
+    expect(
+      reduce(withPr, { kind: 'pr', pr: { number: 13, url: 'https://x/13' }, at: 3 }).pr,
+    ).toEqual({ number: 13, url: 'https://x/13' });
+    expect(reduce(withPr, { kind: 'pr', pr: undefined, at: 4 }).pr).toBeUndefined();
+    // Already undefined → same reference.
+    expect(reduce(s0, { kind: 'pr', pr: undefined, at: 5 })).toBe(s0);
   });
 
   it('clears the streaming preview when aborted or archived mid-stream', () => {

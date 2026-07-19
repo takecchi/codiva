@@ -42,6 +42,7 @@ function noopSession(input: CreateSessionInput) {
     abort() {},
     stop() {},
     archive() {},
+    setPr() {},
   };
 }
 
@@ -122,6 +123,57 @@ describe('App fullscreen layout', () => {
     expect(lastContent).toContain('自動モード');
     app.unmount();
   });
+
+  it('scrolls the session list internally, keeping the frame height and footer fixed', async () => {
+    const manager = makeManager();
+    // 幅は広め（経過時間表示で行が折り返さないように）。
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 120);
+    // 一覧領域（〜6行）に収まりきらない数のセッションを作る。
+    for (let i = 0; i < 12; i++) {
+      stdin.write(`task-${String(i).padStart(2, '0')}`);
+      await flush();
+      stdin.write('\r');
+      await flush();
+    }
+
+    const initial = lastFrame();
+    // フレーム高さは端末ぴったり、フッタは最下段に固定されたまま。
+    expect(initial.split('\n')).toHaveLength(20);
+    expect(
+      initial
+        .split('\n')
+        .filter((l) => l.trim() !== '')
+        .at(-1),
+    ).toContain('自動モード');
+    // 先頭は見え、末尾は隠れ、下に「さらに N 件」インジケータが出る。
+    expect(initial).toContain('task-00');
+    expect(initial).not.toContain('task-11');
+    expect(initial).toContain('↓');
+
+    // 一覧へフォーカスし、末尾まで選択を下げるとウィンドウがスクロールする。
+    stdin.write('\t');
+    await flush();
+    for (let i = 0; i < 11; i++) {
+      stdin.write('\x1b[B'); // ↓
+      await flush();
+    }
+
+    const scrolled = lastFrame();
+    expect(scrolled.split('\n')).toHaveLength(20);
+    // 入力欄+フッタは最下部に残る（list フォーカスの長いヒントが折り返しても
+    // クリップされない）。最下段はセッション行ではなくフッタ＝一覧が押し下げていない。
+    expect(scrolled).toContain(messages.ja.list.promptPlaceholder);
+    expect(
+      scrolled
+        .split('\n')
+        .filter((l) => l.trim() !== '')
+        .at(-1),
+    ).not.toContain('task-');
+    expect(scrolled).toContain('task-11'); // 末尾が見えるようになった
+    expect(scrolled).not.toContain('task-00'); // 先頭は隠れた
+    expect(scrolled).toContain('↑'); // 上に隠れた件数のインジケータ
+    app.unmount();
+  }, 20000);
 
   it('falls back to inline rendering on very short terminals (footer stays visible)', () => {
     const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 8);
@@ -250,6 +302,25 @@ describe('App (list view)', () => {
     expect(manager.getSnapshot()).toHaveLength(1);
     expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');
   });
+
+  it('Shift+Enter (modifyOtherKeys escape) inserts a newline instead of submitting', async () => {
+    const manager = makeManager();
+    const { stdin } = render(<App manager={manager} />);
+    stdin.write('line one');
+    await flush();
+    // Ghostty/xterm send Shift+Enter as `ESC [27;2;13~` — it must break the line,
+    // not get inserted verbatim as `[27;2;13~`.
+    stdin.write('\x1b[27;2;13~');
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(0); // newline, not submit
+
+    stdin.write('line two');
+    await flush();
+    stdin.write('\r'); // plain Enter → submit
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(1);
+    expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');
+  });
 });
 
 function asMsg(m: unknown): SDKMessage {
@@ -274,7 +345,9 @@ describe('App end-to-end (real Session, driven query)', () => {
     stdin.write('\r');
     await flush(); // provision worktree + start session
 
-    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-x' }));
+    out.push(
+      asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-x', model: 'claude-opus-4-8' }),
+    );
     out.push(
       asMsg({
         type: 'assistant',
@@ -288,6 +361,8 @@ describe('App end-to-end (real Session, driven query)', () => {
     );
     await flush();
     expect(lastFrame()).toContain('Step 0/2');
+    // the session row shows the model it actually resolved to (from system/init)
+    expect(lastFrame()).toContain('Opus 4.8');
 
     out.push(
       asMsg({

@@ -38,6 +38,7 @@ function noopSession(input: CreateSessionInput) {
     abort() {},
     stop() {},
     archive() {},
+    setPr() {},
   };
 }
 
