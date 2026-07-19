@@ -7,7 +7,7 @@ import {
 import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
 import { initialState } from './status-reducer';
-import type { CreateSessionInput, PrChecksState, PrInfo, SessionState } from './types';
+import type { CreateSessionInput, LogEntry, PrChecksState, PrInfo, SessionState } from './types';
 import { type DiffStat, MergeConflictError, type Worktree } from './worktree';
 
 /** The subset of WorktreeManager the SessionManager needs (for DI in tests). */
@@ -324,13 +324,15 @@ export class SessionManager {
    * create(). Restored sessions are NOT started — they sit idle (their worktree
    * already exists on disk) and lazily resume their SDK conversation on the first
    * follow-up. Ids/slugs are reserved so new sessions don't collide.
+   * `histories` (session id → log rebuilt from the SDK transcript) fills the
+   * detail-view log; without it a restored session's log starts empty.
    */
-  restore(persisted: PersistedState): void {
+  restore(persisted: PersistedState, histories?: ReadonlyMap<string, LogEntry[]>): void {
     for (const p of persisted.sessions) {
       if (this.states.has(p.id)) {
         continue;
       }
-      const restored = restoredSessionState(p);
+      const restored = restoredSessionState(p, histories?.get(p.id));
       const worktree: Worktree = { slug: p.slug, branch: p.branch, path: p.worktreePath };
       this.worktreeMeta.set(p.id, { worktree, base: p.base });
       this.usedSlugs.add(p.slug);

@@ -7,3 +7,4 @@ export * from './open-url';
 export * from './pr';
 export * from './state-store';
 export * from './title';
+export * from './transcript';

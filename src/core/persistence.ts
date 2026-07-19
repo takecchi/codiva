@@ -1,10 +1,12 @@
 import { progressOf } from './status-reducer';
-import type { SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
+import type { LogEntry, SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
 
 /**
  * On-disk snapshot of a session, enough to rebuild it and resume its SDK
  * conversation after an app restart. The full message log is intentionally not
- * persisted — resuming reloads history on the SDK side, and new turns re-stream.
+ * persisted here — it is rebuilt at restore time from the CLI's own transcript
+ * (`~/.claude/projects/…/<sessionId>.jsonl`, see `core/transcript.ts`), the
+ * single source of truth that also feeds the SDK's `resume`.
  */
 export interface PersistedSession {
   id: string;
@@ -98,8 +100,14 @@ export function toPersistedSession(
   };
 }
 
-/** Reconstruct the UI-facing SessionState for a restored (idle) session. */
-export function restoredSessionState(p: PersistedSession): SessionState {
+/**
+ * Reconstruct the UI-facing SessionState for a restored (idle) session.
+ * `history` is the log rebuilt from the SDK transcript (seq 1..n, see
+ * `transcriptLogEntries`); without it the detail view of a restored session
+ * would be empty — `resume` restores the model-side context only and never
+ * re-emits past messages on the stream.
+ */
+export function restoredSessionState(p: PersistedSession, history: LogEntry[] = []): SessionState {
   return {
     id: p.id,
     title: p.title,
@@ -109,7 +117,7 @@ export function restoredSessionState(p: PersistedSession): SessionState {
     worktreePath: p.worktreePath,
     todos: p.todos,
     progress: progressOf(p.todos),
-    messages: [],
+    messages: history,
     sdkSessionId: p.sdkSessionId,
     startedAt: p.startedAt,
     // In-flight sessions persisted as `interrupted` have no finishedAt; freeze the
@@ -118,7 +126,8 @@ export function restoredSessionState(p: PersistedSession): SessionState {
     finishedAt: p.finishedAt ?? p.startedAt,
     totalCostUsd: p.totalCostUsd,
     model: p.model,
-    logSeq: 0,
+    // Continue numbering after the restored history so new turns append cleanly.
+    logSeq: history.at(-1)?.seq ?? 0,
   };
 }
 
