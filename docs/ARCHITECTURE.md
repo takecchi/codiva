@@ -90,7 +90,14 @@ codiva/
  completed ──(追加指示送信)─────────────────▶ running   # 完了後の追加作業も許す
  * ──(query の throw / abort)──────────────▶ failed
  completed ──(マージ or 破棄)────────────────▶ archived
+ running/awaiting_* ──(アプリ終了 → 保存)────▶ interrupted # メモリ上は状態不変。保存時に丸める（restorableStatus）
+ interrupted ──(追加指示送信で resume)───────▶ running
 ```
+
+`interrupted` は「実行中/入力待ちのままアプリを閉じた」セッションを表す**復元専用**の状態。`stop()`
+はメモリ上の状態を変えないが、保存時に `restorableStatus` が `running`/`awaiting_*` を
+`interrupted` に丸める（正常終了した `completed` とは区別する）。復元後は `completed` と同じく
+idle で resumable、追加指示で resume できる。
 
 `SessionState`（UI が購読する不変スナップショット）:
 
@@ -208,8 +215,9 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 - **セッション復元**: 永続スナップショットの型・変換・検証は純粋な `core/persistence.ts`
   （`toPersistedSession` / `restoredSessionState` / `fromPersistedJson`）。ファイル I/O は
   `utils/state-store.ts`（`<repo>/.codiva/state.json`。破損時は空へフォールバック、起動時に存在しない
-  worktree を prune）。永続対象は `completed`/`failed` かつ **`sdkSessionId` を持つ**もののみ（実行中は
-  `completed`＝resumable に丸める。`archived`/`creating`、および init 前に落ちて resume 不能なものは除外）。
+  worktree を prune）。永続対象は `completed`/`interrupted`/`failed` かつ **`sdkSessionId` を持つ**もののみ
+  （実行中/入力待ちは `interrupted`＝resumable だが「未完了」と分かる状態に丸める。`archived`/`creating`、
+  および init 前に落ちて resume 不能なものは除外）。
   メッセージログは永続しない（resume が SDK 側で履歴を復元し、以降のターンで再ストリームされる）。
   復元セッションは遅延 resume（最初の追加指示まで query を立てない）。復元時は `finishedAt` を
   `startedAt` にフォールバックし、経過時間が復元後に伸び続けないようにする。

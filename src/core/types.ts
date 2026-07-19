@@ -7,6 +7,7 @@ export type SessionStatus =
   | 'awaiting_permission' // a tool needs user allow/deny
   | 'awaiting_input' // Claude asked the user a question (AskUserQuestion)
   | 'completed' // a turn finished successfully (idle, can receive more input)
+  | 'interrupted' // app was closed mid-flight (running/awaiting_*); idle & resumable, not a real completion
   | 'failed' // query errored or was aborted
   | 'archived'; // merged or discarded; kept for reference
 
