@@ -14,13 +14,13 @@
 import type { Messages } from './i18n';
 
 /** コマンドが UI に要求する動作。新コマンド追加時はここに足して UI で受ける。 */
-export type CommandAction = 'help' | 'quit' | 'model' | 'diff';
+export type CommandAction = 'help' | 'exit' | 'model' | 'diff';
 
 /** 1 つのスラッシュコマンドの定義。 */
 export interface CommandSpec {
   /** 正式名（先頭スラッシュなし・小文字）。一覧・実行の主キー。 */
   name: string;
-  /** 別名（`/exit` = `/quit` など）。省略可。 */
+  /** 別名（`/? ` = `/help` など）。省略可。 */
   aliases?: readonly string[];
   /** UI が解釈する動作。 */
   action: CommandAction;
@@ -36,7 +36,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'model', action: 'model', describe: (m) => m.command.model },
   { name: 'diff', aliases: ['changes'], action: 'diff', describe: (m) => m.command.diff },
   { name: 'help', aliases: ['?'], action: 'help', describe: (m) => m.command.help },
-  { name: 'quit', aliases: ['exit', 'q'], action: 'quit', describe: (m) => m.command.quit },
+  { name: 'exit', action: 'exit', describe: (m) => m.command.exit },
 ];
 
 /** 先頭が `/` ならコマンド入力とみなす（引数の有無は問わない）。 */

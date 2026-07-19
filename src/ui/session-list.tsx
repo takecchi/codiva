@@ -196,7 +196,7 @@ export const SessionList: FC<{
     }
     setActionError(undefined);
     switch (result.command.action) {
-      case 'quit':
+      case 'exit':
         onQuit();
         return;
       case 'help':
@@ -278,10 +278,6 @@ export const SessionList: FC<{
     // で届く。Ink はこれを解釈できず生テキストとして渡すため、共通ヘルパーで
     // 実キーへ復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
     const { input, key } = normalizeChord(rawInput, rawKey);
-    if (key.ctrl && input === 'c') {
-      onQuit();
-      return;
-    }
     // The model picker is modal: it owns the keys (its own useInput handles
     // arrows/Enter/Esc). Ignore everything else here so nothing leaks through.
     if (modelSelect) {

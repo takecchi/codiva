@@ -1,4 +1,4 @@
-import { Box, useApp, useInput, useWindowSize } from 'ink';
+import { Box, useApp, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   messages as catalogs,
@@ -47,17 +47,12 @@ export const App: FC<{
   const { rows } = useWindowSize();
   const fullscreen = isFullscreenViewport(rows);
 
+  // 終了は `/exit` コマンド経由のみ。Ctrl+C では終了しない（render は
+  // exitOnCtrlC: false で構成し、Ctrl+C 用のグローバルハンドラも持たない）。
   const quit = () => {
     manager.dispose();
     exit();
   };
-
-  // Global safety net for Ctrl+C (render is configured with exitOnCtrlC: false).
-  useInput((input, key) => {
-    if (key.ctrl && input === 'c') {
-      quit();
-    }
-  });
 
   return (
     <MessagesProvider value={messages}>

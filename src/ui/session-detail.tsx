@@ -162,7 +162,7 @@ export const SessionDetail: FC<{
     }
     setActionError(undefined);
     switch (result.command.action) {
-      case 'quit':
+      case 'exit':
         onQuit();
         return;
       case 'help':
