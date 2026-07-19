@@ -267,7 +267,9 @@ export const SessionList: FC<{
                     {attention ? glyph.attention : ' '}
                   </Text>
                 </Box>
-                <Box width={30}>
+                {/* title/branch は固定幅だと広い端末でも切り詰められる。flexGrow で
+                    残り幅を title:branch = 3:2 で分配し、狭いときは minWidth まで縮む。 */}
+                <Box flexGrow={3} flexBasis={0} minWidth={20} marginRight={1}>
                   <Text bold={isSel || attention} dimColor={archived} wrap="truncate-end">
                     {s.title}
                   </Text>
@@ -275,7 +277,7 @@ export const SessionList: FC<{
                 <Box width={12}>
                   <ProgressBadge state={s} />
                 </Box>
-                <Box width={22}>
+                <Box flexGrow={2} flexBasis={0} minWidth={16} marginRight={1}>
                   <Text dimColor wrap="truncate-end">
                     {s.branch}
                   </Text>
