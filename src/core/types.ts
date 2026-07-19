@@ -41,7 +41,7 @@ export interface LogEntry {
 
 /**
  * Merge state of a PR, shown as a glyph next to `#<number>`:
- *  - `merged`      — already merged (crown)
+ *  - `merged`      — already merged (fork mark)
  *  - `mergeable`   — can be merged cleanly (check)
  *  - `conflicting` — has conflicts, cannot merge (cross)
  *  - `unknown`     — GitHub hasn't computed mergeability yet (no glyph)

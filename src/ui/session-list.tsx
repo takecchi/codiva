@@ -51,7 +51,7 @@ export type OpenPr = (url: string) => void;
 const PR_CELL_WIDTH = 10;
 
 /**
- * Glyph + color shown before `#<number>` for a PR's merge state (crown = merged,
+ * Glyph + color shown before `#<number>` for a PR's merge state (⑂ = merged,
  * check = mergeable, cross = conflicting). GitHub-conventional colors: merged is
  * violet, clean is green, conflicting is red. `unknown` (GitHub still computing)
  * shows no glyph so the row stays quiet until the state is real.
