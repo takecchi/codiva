@@ -1,6 +1,12 @@
 import { createRequire } from 'node:module';
 import { render } from 'ink';
-import { errorMessage, messages, resolveLang, type SessionManager } from '@/core';
+import {
+  errorMessage,
+  messages,
+  resolveIgnoredFilesMode,
+  resolveLang,
+  type SessionManager,
+} from '@/core';
 import { defaultStatePath, loadConfig, openUrl, WorktreeManager } from '@/utils';
 import { App } from './app';
 import {
@@ -31,8 +37,11 @@ async function main(): Promise<void> {
 
   const repoRoot = process.cwd();
   // `.gitignore` された node_modules/.env 等は git worktree に引き継がれないため、
-  // 既定でリポジトリルートから複製する（`"copyIgnored": false` で無効化）。
-  const worktrees = new WorktreeManager(repoRoot, { copyIgnored: config.copyIgnored !== false });
+  // 既定でリポジトリルートへシンボリックリンクを張る（設定 `"ignoredFiles"`: 'symlink' |
+  // 'copy' | 'none' で切替。非推奨の `copyIgnored` も後方互換で解釈する）。
+  const worktrees = new WorktreeManager(repoRoot, {
+    ignoredFiles: resolveIgnoredFilesMode(config),
+  });
   try {
     await worktrees.preflight();
   } catch (err) {

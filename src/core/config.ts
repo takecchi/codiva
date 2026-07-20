@@ -1,5 +1,6 @@
 import type { EffortLevel, PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import type { Lang } from './i18n';
+import type { IgnoredFilesMode } from './worktree';
 
 /**
  * 永続設定のドメイン型。表示言語に加え、セッション起動時に SDK へ渡す
@@ -37,9 +38,15 @@ export interface CodivaConfig {
   autoPr?: boolean;
   /**
    * セッション用 worktree 作成時に `.gitignore` された未追跡ファイル
-   * （`node_modules/`・`.env` など）をリポジトリルートから複製するか。未設定は有効（true）。
-   * git worktree は追跡対象しか引き継がないため、無効化すると依存や環境変数を
-   * セッション側で用意し直す必要がある。
+   * （`node_modules/`・`.env` など）をどう引き継ぐか。未設定は `'symlink'`。
+   * - `'symlink'`: 元へシンボリックリンクを張る（複製なしで即起動、実体は共有）。
+   * - `'copy'`: 実体を複製する（worktree 完全独立、大きいと重い）。
+   * - `'none'`: 引き継がない。
+   */
+  ignoredFiles?: IgnoredFilesMode;
+  /**
+   * @deprecated `ignoredFiles` を使う。後方互換のためだけに残す:
+   * `true`→`'copy'` 相当、`false`→`'none'` 相当として解釈される（`resolveIgnoredFilesMode`）。
    */
   copyIgnored?: boolean;
 }
@@ -54,6 +61,7 @@ const PERMISSION_MODES: readonly PermissionMode[] = [
   'dontAsk',
   'auto',
 ];
+const IGNORED_FILES_MODES: readonly IgnoredFilesMode[] = ['symlink', 'copy', 'none'];
 
 /** 設定ファイルの生 JSON 形（各フィールドは unknown として受ける）。 */
 interface CodivaConfigJson {
@@ -66,6 +74,7 @@ interface CodivaConfigJson {
   mouse?: unknown;
   followOrigin?: unknown;
   autoPr?: unknown;
+  ignoredFiles?: unknown;
   copyIgnored?: unknown;
 }
 
@@ -91,6 +100,27 @@ function toMaxBudget(value: unknown): number | undefined {
 
 function toBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
+}
+
+function toIgnoredFilesMode(value: unknown): IgnoredFilesMode | undefined {
+  return IGNORED_FILES_MODES.includes(value as IgnoredFilesMode)
+    ? (value as IgnoredFilesMode)
+    : undefined;
+}
+
+/**
+ * 設定から worktree の ignore ファイル引き継ぎモードを決める。新しい `ignoredFiles` を
+ * 優先し、無ければ非推奨の `copyIgnored`（`true`→`'copy'` / `false`→`'none'`）へ後方互換
+ * フォールバック、どちらも無ければ既定の `'symlink'`。純粋（副作用なし）。
+ */
+export function resolveIgnoredFilesMode(config: CodivaConfig): IgnoredFilesMode {
+  if (config.ignoredFiles !== undefined) {
+    return config.ignoredFiles;
+  }
+  if (config.copyIgnored !== undefined) {
+    return config.copyIgnored ? 'copy' : 'none';
+  }
+  return 'symlink';
 }
 
 /**
@@ -139,6 +169,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const autoPr = toBoolean(raw.autoPr);
   if (autoPr !== undefined) {
     config.autoPr = autoPr;
+  }
+  const ignoredFiles = toIgnoredFilesMode(raw.ignoredFiles);
+  if (ignoredFiles !== undefined) {
+    config.ignoredFiles = ignoredFiles;
   }
   const copyIgnored = toBoolean(raw.copyIgnored);
   if (copyIgnored !== undefined) {
