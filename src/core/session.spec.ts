@@ -90,6 +90,37 @@ describe('Session', () => {
     expect(states).toContain('completed');
   });
 
+  it('forwards rate_limit_event payloads to onRateLimit', async () => {
+    const fake = makeFakeQuery();
+    const infos: unknown[] = [];
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      onRateLimit: (info) => infos.push(info),
+    });
+    session.start();
+    fake.emit(initMsg());
+    fake.emit({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed_warning',
+        rateLimitType: 'five_hour',
+        utilization: 5,
+        resetsAt: 1785542400,
+      },
+    } as unknown as SDKMessage);
+    await tick();
+    expect(infos).toEqual([
+      {
+        status: 'allowed_warning',
+        rateLimitType: 'five_hour',
+        utilization: 5,
+        resetsAt: 1785542400,
+      },
+    ]);
+  });
+
   it('escalates AskUserQuestion and resolves it with answers', async () => {
     const fake = makeFakeQuery();
     const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });

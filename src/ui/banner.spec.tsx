@@ -46,4 +46,51 @@ describe('Banner', () => {
     const frame = lastFrame() ?? '';
     expect(frame.indexOf('model: sonnet')).toBeLessThan(frame.indexOf('/tmp/repo'));
   });
+
+  it('サブスクリプション使用リミットが無ければ Usage 節を出さない', () => {
+    const { lastFrame } = renderBanner({ sessionCount: 0 }, 'en');
+    expect(lastFrame()).not.toContain('Usage');
+  });
+
+  it('5時間枠の使用率とリセットまでの残り時間を表示する', () => {
+    const now = 1_000_000_000_000;
+    const { lastFrame } = renderBanner(
+      {
+        sessionCount: 0,
+        now,
+        rateLimits: [
+          {
+            type: 'five_hour',
+            status: 'allowed',
+            utilization: 5,
+            resetsAt: now + (4 * 60 + 45) * 60_000, // 4h45m out
+          },
+        ],
+      },
+      'en',
+    );
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('Usage');
+    expect(frame).toContain('Current session');
+    expect(frame).toContain('5% used');
+    expect(frame).toContain('resets in 4h 45m');
+  });
+
+  it('日本語では現在のセッションと使用率を日本語で表示する', () => {
+    const now = 1_000_000_000_000;
+    const { lastFrame } = renderBanner(
+      {
+        sessionCount: 0,
+        now,
+        rateLimits: [
+          { type: 'five_hour', status: 'allowed', utilization: 5, resetsAt: now + 285 * 60_000 },
+        ],
+      },
+      'ja',
+    );
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('現在のセッション');
+    expect(frame).toContain('5% 使用');
+    expect(frame).toContain('4時間45分後にリセット');
+  });
 });

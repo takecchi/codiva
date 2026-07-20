@@ -16,6 +16,7 @@ export * from './mouse';
 export * from './notify';
 export * from './persistence';
 export * from './pr-coordinator';
+export * from './rate-limit';
 export * from './run-mode';
 export * from './scroll';
 export * from './sdk-parse';

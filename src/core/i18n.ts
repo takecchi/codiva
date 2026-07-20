@@ -127,6 +127,28 @@ export interface Messages {
     model: (name: string) => string;
     /** model 未設定時に表示するプレースホルダ（CLI 既定）。 */
     defaultModel: string;
+    /**
+     * claude.ai サブスクリプションの使用リミット表示（SDK の rate_limit_event 由来）。
+     * ウィンドウ見出しのキーは core の RateLimitLabelKey と一致させる。
+     */
+    usage: {
+      /** セクション先頭のラベル（「使用状況」）。 */
+      heading: string;
+      /** 5時間枠（現在のセッション）の見出し。 */
+      session: string;
+      /** 週次枠の見出し。 */
+      week: string;
+      /** 週次枠（Opus 専用）の見出し。 */
+      weekOpus: string;
+      /** 週次枠（Sonnet 専用）の見出し。 */
+      weekSonnet: string;
+      /** 追加利用（overage）枠の見出し。 */
+      overage: string;
+      /** 使用率（0-100 の整数パーセント）。 */
+      used: (pct: number) => string;
+      /** リセットまでの残り時間（日・時・分）。 */
+      resetsIn: (days: number, hours: number, minutes: number) => string;
+    };
   };
   /** 下部モード行（status-footer.tsx） */
   footer: {
@@ -250,6 +272,24 @@ const ja: Messages = {
     subtitle: '並列 Claude Code セッションを git worktree 上で実行',
     model: (name) => `モデル: ${name}`,
     defaultModel: 'CLI 既定',
+    usage: {
+      heading: '使用状況',
+      session: '現在のセッション',
+      week: '今週',
+      weekOpus: '今週 (Opus)',
+      weekSonnet: '今週 (Sonnet)',
+      overage: '追加利用',
+      used: (pct) => `${pct}% 使用`,
+      resetsIn: (days, hours, minutes) => {
+        const when =
+          days > 0
+            ? `${days}日${hours}時間`
+            : hours > 0
+              ? `${hours}時間${minutes}分`
+              : `${minutes}分`;
+        return `${when}後にリセット`;
+      },
+    },
   },
   footer: {
     autoMode: '自動モード',
@@ -363,6 +403,20 @@ const en: Messages = {
     subtitle: 'Parallel Claude Code sessions in git worktrees',
     model: (name) => `model: ${name}`,
     defaultModel: 'CLI default',
+    usage: {
+      heading: 'Usage',
+      session: 'Current session',
+      week: 'This week',
+      weekOpus: 'This week (Opus)',
+      weekSonnet: 'This week (Sonnet)',
+      overage: 'Overage',
+      used: (pct) => `${pct}% used`,
+      resetsIn: (days, hours, minutes) => {
+        const when =
+          days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+        return `resets in ${when}`;
+      },
+    },
   },
   footer: {
     autoMode: 'auto mode on',

@@ -9,6 +9,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncQueue } from './async-queue';
 import { errorMessage } from './errors';
+import type { RateLimitInfoJson } from './rate-limit';
 import { applySdkMessage } from './sdk-parse';
 import { initialState, reduce } from './status-reducer';
 import type {
@@ -55,6 +56,13 @@ export interface SessionDeps {
   now?: () => number;
   policy?: PermissionPolicy;
   onChange?: (state: SessionState) => void;
+  /**
+   * Called with the raw `rate_limit_info` whenever the SDK emits a
+   * `rate_limit_event`. This is account-wide (claude.ai subscription) usage data,
+   * not per-session, so the manager keeps the latest per window type and the
+   * banner renders it. Injected so the session stays a pure stream consumer.
+   */
+  onRateLimit?: (info: RateLimitInfoJson) => void;
   /**
    * Optional title generator. When provided, a fresh session asks it to
    * summarize the initial prompt into a short title (à la Claude Code's tab
@@ -314,9 +322,15 @@ export class Session {
         },
       });
       for await (const message of this.handle) {
+        const msg = message as SDKMessage;
+        // Account-wide subscription usage is surfaced out-of-band (it isn't
+        // per-session state) so the manager can aggregate it for the banner.
+        if (msg.type === 'rate_limit_event') {
+          this.deps.onRateLimit?.(msg.rate_limit_info);
+        }
         // Raw SDK output is folded straight into state by sdk-parse (not routed
         // through the reducer's event union) — see core/sdk-parse.ts.
-        this.commit(applySdkMessage(this.state, message as SDKMessage, this.now()));
+        this.commit(applySdkMessage(this.state, msg, this.now()));
       }
     } catch (err) {
       if (!this.abortController.signal.aborted) {

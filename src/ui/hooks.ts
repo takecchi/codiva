@@ -10,6 +10,7 @@ import {
 import {
   type CommandAction,
   emptyBuffer,
+  type RateLimitWindow,
   type RunMode,
   runCommand,
   type SessionManager,
@@ -51,6 +52,19 @@ export function useRunMode(manager: SessionManager): RunMode {
     (onChange) => manager.subscribe(onChange),
     () => manager.getMode(),
     () => manager.getMode(),
+  );
+}
+
+/**
+ * Subscribe to the account-wide claude.ai subscription usage windows. The manager
+ * returns a stable array reference across no-op events, so this only re-renders
+ * when a window actually changes (safe for useSyncExternalStore).
+ */
+export function useRateLimit(manager: SessionManager): RateLimitWindow[] {
+  return useSyncExternalStore(
+    (onChange) => manager.subscribe(onChange),
+    () => manager.getRateLimits(),
+    () => manager.getRateLimits(),
   );
 }
 
