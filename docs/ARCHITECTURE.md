@@ -84,6 +84,7 @@ codiva/
 │       ├── worktree-manager.ts # WorktreeManager（git worktree の I/O）
 │       ├── exec.ts / terminal-mode.ts  # fireAndForget / toggleEscape（共通 I/O ラッパ）
 │       ├── config.ts          # ~/.codiva/config.json の読み書き
+│       ├── repo-prompt.ts     # <repo>/.codiva/prompt.md の読み込み（リポジトリ追加指示）
 │       ├── notify.ts / open-url.ts / pr.ts / title.ts / transcript.ts
 │       ├── alt-screen.ts / mouse.ts    # alt screen / SGR マウスの有効化・無効化
 │       └── state-store.ts     # <repo>/.codiva/state.json の読み書き + prune
@@ -174,7 +175,8 @@ interface SessionState {
 - 受信ループ: `for await (const msg of query)` で各 SDK メッセージを `applySdkMessage()`（`core/sdk-parse.ts`）に畳み込む。SDK メッセージ形状の解釈はここに閉じ、純粋 reducer（`reduce(state, CodivaEvent)`）は型付きイベントだけを扱う。UI アクション（追加指示・許可・モデル切替等）は `reduce` へ dispatch。変更のたびに `onChange` を発火。
 - `respondToPermission(result)`: 保留中の canUseTool Promise を resolve。
 - `interrupt()` / `abort()`: SDK の interrupt / AbortController。
-- `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
+- `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`/`appendSystemPrompt`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
+- **リポジトリ追加指示（`.codiva/prompt.md`）**: 合成ルート（`index.tsx`）が起動時に `loadRepoPrompt(repoRoot)` で読み、`buildManager` → `SessionOptions.appendSystemPrompt` へ流す。`consume()` は存在時のみ `options.systemPrompt` として渡す。SDK は systemPrompt 省略時に空文字へ写像する（claude_code プリセットは使わない）ため、文字列を渡すのは「空への追記」と等価で現挙動を変えない。CLAUDE.md は `settingSources: ['project']` 経由で別途注入されるので、これはそれへの上乗せ。将来ベースの systemPrompt を導入する場合は array / preset-append 形へ切り替える（`session.ts` の注入コメント参照）。
 - **復元対応**: `resume`（SDK セッションID）と `restored`（復元済み `SessionState`）を DI で受けられる。復元セッションは `start()` せず、最初の `send()` で遅延的に query を開始（`resume` 付き）。これで起動時にサブプロセスを乱立させない。
 - `stop()`: 状態を変えずにサブプロセスだけ落とす quiet 停止。アプリ終了時はこれを使い、実行中セッションを resumable のまま保存する（`abort()` は failed にする点が違い）。保留中の許可要求があれば deny で解決してから停止する（未応答の `tool_use` で resume が壊れるのを防ぐ）。
 

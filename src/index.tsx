@@ -7,7 +7,7 @@ import {
   resolveLang,
   type SessionManager,
 } from '@/core';
-import { defaultStatePath, loadConfig, openUrl, WorktreeManager } from '@/utils';
+import { defaultStatePath, loadConfig, loadRepoPrompt, openUrl, WorktreeManager } from '@/utils';
 import { App } from './app';
 import {
   buildManager,
@@ -54,7 +54,16 @@ async function main(): Promise<void> {
   const statePath = defaultStatePath(repoRoot);
   let manager: SessionManager;
   const persist = createPersistController(() => manager.persistableState(), statePath);
-  manager = buildManager({ repoRoot, config, messages: t, worktrees, onPersist: persist.schedule });
+  // リポジトリ固有の追加指示（`.codiva/prompt.md`）を全セッションの systemPrompt に載せる。
+  const appendSystemPrompt = await loadRepoPrompt(repoRoot);
+  manager = buildManager({
+    repoRoot,
+    config,
+    messages: t,
+    worktrees,
+    onPersist: persist.schedule,
+    appendSystemPrompt,
+  });
 
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);

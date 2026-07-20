@@ -47,6 +47,11 @@ export interface SessionOptions {
   effort?: EffortLevel;
   permissionMode?: PermissionMode;
   maxBudgetUsd?: number;
+  /**
+   * リポジトリ単位の追加指示（`.codiva/prompt.md`）。全セッションの systemPrompt に載る。
+   * 詳細は `consume()` の注入コメントを参照。
+   */
+  appendSystemPrompt?: string;
 }
 
 export interface SessionDeps {
@@ -315,6 +320,11 @@ export class Session {
           // Stream partial assistant text so the detail view shows a live preview
           // (reduced into state.streamingText). See status-reducer reduceStreamEvent.
           includePartialMessages: true,
+          // リポジトリ追加指示を systemPrompt として注入する。SDK は systemPrompt 省略時に
+          // 空文字("")へ写像する（claude_code プリセットは使わない）ため、ここに文字列を
+          // 渡すのは「空への追記」と等価で現挙動を変えない。将来ベースの systemPrompt を
+          // 足すなら、この行は array / preset-append 形へ切り替える必要がある。
+          ...(opts?.appendSystemPrompt ? { systemPrompt: opts.appendSystemPrompt } : {}),
           ...(model ? { model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
           ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),

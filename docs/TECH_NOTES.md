@@ -53,6 +53,7 @@ const options = {
   settingSources: ['project'],   // 対象リポジトリの CLAUDE.md / settings を読ませる
   // Phase 6 で公開済み（設定ファイル ~/.codiva/config.json 由来、SessionOptions 経由で注入）:
   model, effort, maxBudgetUsd,   // それぞれ存在時のみ付与
+  systemPrompt,                  // <repo>/.codiva/prompt.md の内容。存在時のみ付与（下記メモ参照）
   resume: sdkSessionId,          // 復元時のみ付与。モデル側の会話コンテキストを引き継いで継続
 };
 ```
@@ -62,6 +63,14 @@ const options = {
   (`'default'|'acceptEdits'|'bypassPermissions'|'plan'|'dontAsk'|'auto'`) / `maxBudgetUsd` (`number>0`) は
   `~/.codiva/config.json` から読み、`core/config.ts` の `toConfig()` で検証。`SessionOptions` に束ねて注入。
 - `resume` は復元セッションの最初の追加指示で付与（遅延 resume）。`sdkSessionId` は `system/init.session_id`。
+- **`systemPrompt`（リポジトリ追加指示）**: `<repo>/.codiva/prompt.md` を `utils/repo-prompt.ts` の
+  `loadRepoPrompt()` で読み、`core/repo-prompt.ts` の `toRepoPrompt()` で正規化（BOM 除去＋trim、空は無し）。
+  存在時のみ `options.systemPrompt` に載せる。**SDK は `systemPrompt` 省略時に空文字（`""`）へ写像し、
+  claude_code プリセットは使わない**（`sdk.mjs` の内部変換 `uO` で確認: `i===undefined → f=""`、
+  `{type:'preset',preset:'claude_code',append}` を渡すと逆にプリセットが有効化される）。よって文字列を
+  そのまま渡すのは「空への追記」と等価で、追加指示が無い場合の現挙動を一切変えない。CLAUDE.md は
+  `settingSources: ['project']` 経由なので systemPrompt とは独立に効き続ける（両立）。**将来ベースの
+  systemPrompt を導入する場合はこの単純代入では上書きになるため、array / preset-append 形へ要変更。**
 - **`resume` はモデル側の会話コンテキストのみ復元する。過去メッセージはストリームに再送出されない**
   （検証済み: 復元直後の consumer には何も流れない）。そのため UI の会話ログは CLI が書く
   トランスクリプト `~/.claude/projects/<cwd の非英数字を '-' 化したもの>/<sessionId>.jsonl` から再構築する

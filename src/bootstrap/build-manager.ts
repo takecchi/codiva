@@ -47,8 +47,10 @@ export function buildManager(opts: {
   messages: Messages;
   worktrees: WorktreeManager;
   onPersist: () => void;
+  /** リポジトリ単位の追加指示（`.codiva/prompt.md`）。全セッションの systemPrompt に載る。 */
+  appendSystemPrompt?: string;
 }): SessionManager {
-  const { repoRoot, config, messages: t, worktrees, onPersist } = opts;
+  const { repoRoot, config, messages: t, worktrees, onPersist, appendSystemPrompt } = opts;
 
   // Notifications default on; disable with `"notifications": false` in config.
   const onTransition =
@@ -70,6 +72,7 @@ export function buildManager(opts: {
       effort: config.effort,
       permissionMode: config.permissionMode,
       maxBudgetUsd: config.maxBudgetUsd,
+      appendSystemPrompt,
     },
     onTransition,
     onPersist,
