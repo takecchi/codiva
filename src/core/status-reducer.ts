@@ -122,7 +122,11 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       const withLog = appendLog(state, 'user', event.text, event.at);
       return {
         ...state,
-        status: 'running',
+        // 保留中の決定（質問/許可待ち）があるセッションを running へ降格させない。
+        // 追加指示を送っても pendingPermission は解決されないため、ダイアログは
+        // 出たまま awaiting_* を維持する（#37 と同じ不変条件: pending がある間は
+        // 決して "Running" に戻さない）。解決は permission_resolved のみが行う。
+        status: state.pendingPermission ? state.status : 'running',
         finishedAt: undefined,
         streamingText: undefined,
         messages: withLog.messages,

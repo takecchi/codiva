@@ -147,6 +147,23 @@ describe('applySdkMessage interaction with pending control state', () => {
     expect(state.pendingPermission?.kind).toBe('question');
   });
 
+  it('keeps awaiting_input when a system/init arrives while a question is pending', () => {
+    // Defensive: a (re)started query emits system/init → running. It must not
+    // downgrade a session that is blocked on a pending question back to Running.
+    const req: PermissionRequest = {
+      id: 'q1',
+      toolName: 'AskUserQuestion',
+      input: {},
+      kind: 'question',
+      questions: [{ question: 'Which one?', header: 'x', multiSelect: false, options: [] }],
+    };
+    let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
+    expect(state.status).toBe('awaiting_input');
+    state = sdk(state, { type: 'system', subtype: 'init', session_id: 'abc' }, 2001);
+    expect(state.status).toBe('awaiting_input');
+    expect(state.pendingPermission?.kind).toBe('question');
+  });
+
   it('keeps awaiting_permission when a stream delta arrives while a tool prompt is pending', () => {
     const req: PermissionRequest = { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' };
     let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
