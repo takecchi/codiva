@@ -89,6 +89,11 @@ export interface ListView {
  * 予約するため、描画行数（項目 + インジケータ）は常に `cap` 以下になる。
  * 選択はウィンドウ下端寄りにアンカーする（下へ動かすとスクロールする挙動。
  * コンポーザの {@link visibleLineRange} と同じ）。
+ *
+ * ただし端に隠れているのが 1 件だけの場合は、インジケータ（「他 1 件」）を出さず
+ * その項目自体を表示する。インジケータも実項目も 1 行なので描画行数は変わらず、
+ * 「1 件を隠して代わりに 1 行のインジケータを出す」より実項目を見せたほうがよい
+ * （下から 2 番目を選ぶと最後の 1 件が「↓ 他 1 件」に化ける、を防ぐ）。
  */
 export function listView(total: number, selected: number, cap: number): ListView {
   const c = Math.max(1, Math.floor(cap));
@@ -132,11 +137,24 @@ export function listView(total: number, selected: number, cap: number): ListView
       showAbove = false;
     }
   }
-  const hiddenAbove = win.start;
-  const hiddenBelow = total - win.end;
+  // 隠れているのが 1 件だけの端は、インジケータ用に予約した 1 行へその項目を
+  // 直接出す（描画行数は不変）。両端が同時に 1 件になることは overflow 時には
+  // 起きない（それは total === cap を意味し、その場合は上で早期 return 済み）。
+  let start = win.start;
+  let end = win.end;
+  if (showBelow && total - end === 1) {
+    end += 1;
+    showBelow = false;
+  }
+  if (showAbove && start === 1) {
+    start -= 1;
+    showAbove = false;
+  }
+  const hiddenAbove = start;
+  const hiddenBelow = total - end;
   return {
-    start: win.start,
-    end: win.end,
+    start,
+    end,
     hiddenAbove,
     hiddenBelow,
     showAbove: showAbove && hiddenAbove > 0,
