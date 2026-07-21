@@ -11,7 +11,7 @@ import { AsyncQueue } from './async-queue';
 import { errorMessage } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
 import { applySdkMessage } from './sdk-parse';
-import { initialState, reduce } from './status-reducer';
+import { accrueActive, initialState, reduce } from './status-reducer';
 import type {
   CodivaEvent,
   CreateSessionInput,
@@ -355,9 +355,14 @@ export class Session {
 
   /** Adopt a newly computed state and notify subscribers (skips no-op transitions). */
   private commit(next: SessionState): void {
-    if (next !== this.state) {
-      this.state = next;
-      this.onChange?.(next);
+    if (next === this.state) {
+      return;
     }
+    // Fold the transition into the active-time accumulator centrally, so every
+    // status change (reducer- or SDK-driven) counts only the time actually spent
+    // working (see accrueActive). Uses the injected clock for determinism.
+    const adjusted = accrueActive(this.state, next, this.now());
+    this.state = adjusted;
+    this.onChange?.(adjusted);
   }
 }

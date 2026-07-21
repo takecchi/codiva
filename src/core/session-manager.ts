@@ -23,7 +23,7 @@ import type {
 import { SessionStore } from './session-store';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
 import { isTerminalStatus } from './status-meta';
-import { initialState, reduce } from './status-reducer';
+import { accrueActive, initialState, reduce } from './status-reducer';
 import type { CreateSessionInput, LogEntry, SessionState } from './types';
 import type { DiffStat, Worktree } from './worktree';
 
@@ -300,10 +300,13 @@ export class SessionManager {
       // log line stay consistent with every other transition.
       const current = this.store.get(id);
       if (current) {
-        this.store.set(
-          id,
-          reduce(current, { kind: 'aborted', error: errorMessage(err), at: this.now() }),
-        );
+        const at = this.now();
+        // This is the one state transition that doesn't flow through Session.commit
+        // (it happens before a Session exists), so fold the active-time accumulator
+        // here too — otherwise the failed row's clock would never stop (activeSince
+        // stays open on a terminal state).
+        const next = reduce(current, { kind: 'aborted', error: errorMessage(err), at });
+        this.store.set(id, accrueActive(current, next, at));
         this.deps.onPersist?.();
       }
     }
@@ -368,6 +371,7 @@ export class SessionManager {
       this.store.ids(),
       (id) => this.store.get(id),
       (id) => this.worktreeMeta.get(id),
+      this.now(),
     );
   }
 

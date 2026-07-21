@@ -1,6 +1,6 @@
 import type { WorktreeMeta } from './session-ports';
 import { STATUS_META } from './status-meta';
-import { progressOf } from './status-reducer';
+import { activeElapsedMs, progressOf } from './status-reducer';
 import type { LogEntry, SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
 
 /**
@@ -25,6 +25,12 @@ export interface PersistedSession {
   status: 'completed' | 'interrupted' | 'failed';
   startedAt: number;
   finishedAt?: number;
+  /**
+   * Accumulated active (working) time in ms, frozen at persist time (includes the
+   * in-flight segment if the session was still running when the app quit). Absent
+   * in snapshots written before this field existed — treated as 0 on restore.
+   */
+  activeMs?: number;
   totalCostUsd?: number;
   /** Resolved model the session last ran on, so a restored row shows it before it resumes. */
   model?: string;
@@ -67,6 +73,7 @@ export function restorableStatus(
 export function toPersistedSession(
   state: SessionState,
   meta: { slug: string; base: string },
+  now: number,
 ): PersistedSession | undefined {
   const status = restorableStatus(state.status);
   if (!status || !state.worktreePath || !state.sdkSessionId) {
@@ -84,6 +91,10 @@ export function toPersistedSession(
     status,
     startedAt: state.startedAt,
     finishedAt: state.finishedAt,
+    // Freeze the active clock now: an interrupted (still-running) session has an
+    // open segment that was never accrued, so persisting raw `state.activeMs`
+    // would drop the last run. `activeElapsedMs` folds it in.
+    activeMs: activeElapsedMs(state, now),
     totalCostUsd: state.totalCostUsd,
     model: state.model,
     todos: state.todos,
@@ -114,6 +125,9 @@ export function restoredSessionState(p: PersistedSession, history: LogEntry[] = 
     // elapsed clock at startedAt so a restored (idle) row doesn't show an
     // ever-growing timer computed from an old startedAt.
     finishedAt: p.finishedAt ?? p.startedAt,
+    // Resume idle: keep the frozen accumulated active time, but leave `activeSince`
+    // undefined so offline time never counts. A follow-up re-opens a segment.
+    activeMs: p.activeMs ?? 0,
     totalCostUsd: p.totalCostUsd,
     model: p.model,
     // Continue numbering after the restored history so new turns append cleanly.
@@ -131,6 +145,7 @@ export function assemblePersistedState(
   ids: readonly string[],
   getState: (id: string) => SessionState | undefined,
   getMeta: (id: string) => WorktreeMeta | undefined,
+  now: number,
 ): PersistedState {
   const sessions = ids
     .map((id) => {
@@ -139,7 +154,7 @@ export function assemblePersistedState(
       if (!state || !meta) {
         return undefined;
       }
-      return toPersistedSession(state, { slug: meta.worktree.slug, base: meta.base });
+      return toPersistedSession(state, { slug: meta.worktree.slug, base: meta.base }, now);
     })
     .filter((s): s is PersistedSession => s !== undefined);
   return { version: 1, sessions };
@@ -217,6 +232,7 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
     status,
     startedAt: startedAt ?? 0,
     finishedAt: num(o.finishedAt),
+    activeMs: num(o.activeMs),
     totalCostUsd: num(o.totalCostUsd),
     model: str(o.model),
     todos,

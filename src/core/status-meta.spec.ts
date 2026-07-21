@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTerminalStatus, needsAttention, STATUS_META } from './status-meta';
+import { isActiveStatus, isTerminalStatus, needsAttention, STATUS_META } from './status-meta';
 import type { SessionStatus } from './types';
 
 const ALL_STATUSES: SessionStatus[] = [
@@ -46,6 +46,22 @@ describe('STATUS_META', () => {
     ['creating', false],
   ] as const)('needsAttention(%s) = %s', (status, expected) => {
     expect(needsAttention(status)).toBe(expected);
+  });
+
+  it.each([
+    // Only creating/running count as "working" for session-time accounting.
+    ['creating', true],
+    ['running', true],
+    ['awaiting_permission', false],
+    ['awaiting_input', false],
+    ['completed', false],
+    ['interrupted', false],
+    ['rate_limited', false],
+    ['failed', false],
+    ['conflict', false],
+    ['archived', false],
+  ] as const)('isActiveStatus(%s) = %s', (status, expected) => {
+    expect(isActiveStatus(status)).toBe(expected);
   });
 
   it.each([

@@ -90,6 +90,50 @@ describe('Session', () => {
     expect(states).toContain('completed');
   });
 
+  it('accrues only active (working) time, excluding time spent awaiting the user', async () => {
+    const fake = makeFakeQuery();
+    let t = 0;
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => t });
+    session.start();
+
+    // creating → running: still active, clock keeps running from startedAt (0).
+    t = 10;
+    fake.emit(initMsg());
+    await tick();
+    expect(session.getState().status).toBe('running');
+
+    // running → awaiting_input at t=100: closes the segment (0→100 = 100ms active).
+    t = 100;
+    const decision = fake.call('AskUserQuestion', {
+      questions: [{ question: 'Q', header: 'h', multiSelect: false, options: [] }],
+    });
+    await tick();
+    expect(session.getState().status).toBe('awaiting_input');
+    expect(session.getState().activeMs).toBe(100);
+    expect(session.getState().activeSince).toBeUndefined();
+
+    // The user takes 400ms to answer — that idle gap must NOT be counted.
+    t = 500;
+    session.answerPending({ Q: 'A' });
+    await tick();
+    expect(session.getState().status).toBe('running');
+    expect(session.getState().activeSince).toBe(500);
+    expect(session.getState().activeMs).toBe(100);
+
+    // running → completed at t=800: adds the second segment (500→800 = 300ms).
+    t = 800;
+    fake.emit(resultOk());
+    await tick();
+    fake.end();
+    await tick();
+    expect(session.getState().status).toBe('completed');
+    // 100 + 300 = 400ms of actual work; wall-clock since start would be 800ms.
+    expect(session.getState().activeMs).toBe(400);
+    expect(session.getState().activeSince).toBeUndefined();
+
+    await decision;
+  });
+
   it('forwards rate_limit_event payloads to onRateLimit', async () => {
     const fake = makeFakeQuery();
     const infos: unknown[] = [];

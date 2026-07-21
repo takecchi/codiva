@@ -112,7 +112,9 @@ describe('App fullscreen layout', () => {
     expect(down).not.toContain('task-00'); // 先頭は上へ隠れた
     expect(down).toContain('↑'); // 上に隠れた件数のインジケータ
     expect(down).toContain(messages.ja.list.promptPlaceholder); // コンポーザは空のまま
-    expect(down).not.toMatch(/64|65/); // エスケープ列がテキストとして漏れていない
+    // エスケープ列（SGR レポート本体 `6[45];col;row`）がテキストとして漏れていない。
+    // ボタン番号 `64|65` だけを見ると動作時間列の数字に誤マッチするため本体パターンで判定する。
+    expect(down).not.toMatch(/6[45];\d+;\d+/);
 
     // ホイール上（button 64）で選択が上へ戻り、再び先頭が見える。
     for (let i = 0; i < 12; i++) {
@@ -584,7 +586,9 @@ describe('App detail view (in-app connection)', () => {
 
     const frame = lastFrame();
     expect(frame).toContain('追加の指示を入力'); // empty composer → placeholder still visible
-    expect(frame).not.toMatch(/64|65/); // no escape-report fragments leaked as text
+    // Match the SGR report body (`6[45];col;row`), not the bare button number —
+    // a bare `64|65` can false-match unrelated digits (e.g. the duration column).
+    expect(frame).not.toMatch(/6[45];\d+;\d+/);
   });
 
   it('sends a follow-up from the detail composer to the live session', async () => {

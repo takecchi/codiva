@@ -10,6 +10,9 @@ import {
 import { initialState } from '@/core/status-reducer';
 import type { SessionState, SessionStatus } from '@/core/types';
 
+/** Clock passed to toPersistedSession; only matters when a state is still active. */
+const NOW = 1000;
+
 function state(overrides: Partial<SessionState> = {}): SessionState {
   return {
     ...initialState({
@@ -47,9 +50,12 @@ describe('toPersistedSession', () => {
       sdkSessionId: 'sdk-123',
       totalCostUsd: 0.05,
       finishedAt: 20,
+      // A finished session: clock frozen, no open segment.
+      activeMs: 15,
+      activeSince: undefined,
       todos: [{ id: '1', subject: 'step', status: 'completed' }],
     });
-    expect(toPersistedSession(s, { slug: 'add-login', base: 'main' })).toEqual({
+    expect(toPersistedSession(s, { slug: 'add-login', base: 'main' }, NOW)).toEqual({
       id: '1',
       title: 'Add login',
       prompt: 'add login',
@@ -61,14 +67,22 @@ describe('toPersistedSession', () => {
       status: 'completed',
       startedAt: 5,
       finishedAt: 20,
+      activeMs: 15,
       totalCostUsd: 0.05,
       todos: [{ id: '1', subject: 'step', status: 'completed' }],
     });
   });
 
+  it('freezes the in-flight active segment when persisting a still-running session', () => {
+    // A running session persisted at quit: activeSince open at 5, now = 1000.
+    const s = state({ status: 'running', sdkSessionId: 'sdk-r', activeMs: 100, activeSince: 400 });
+    // Persisted as interrupted with 100ms accrued + the open (1000-400) segment.
+    expect(toPersistedSession(s, { slug: 'x', base: 'main' }, NOW)?.activeMs).toBe(100 + 600);
+  });
+
   it('round-trips the resolved model through persist → restore', () => {
     const s = state({ status: 'completed', sdkSessionId: 'sdk-1', model: 'claude-opus-4-8' });
-    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' }, NOW);
     expect(persisted?.model).toBe('claude-opus-4-8');
     // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
     expect(restoredSessionState(persisted!).model).toBe('claude-opus-4-8');
@@ -78,12 +92,12 @@ describe('toPersistedSession', () => {
 
   it('maps an in-flight status to interrupted (resumable, not a clean finish)', () => {
     const s = state({ status: 'running', sdkSessionId: 'sdk-9' });
-    expect(toPersistedSession(s, { slug: 'x', base: 'main' })?.status).toBe('interrupted');
+    expect(toPersistedSession(s, { slug: 'x', base: 'main' }, NOW)?.status).toBe('interrupted');
   });
 
   it('round-trips an interrupted session through persist → restore → JSON', () => {
     const s = state({ status: 'interrupted', sdkSessionId: 'sdk-int' });
-    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' }, NOW);
     expect(persisted?.status).toBe('interrupted');
     // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
     expect(restoredSessionState(persisted!).status).toBe('interrupted');
@@ -92,21 +106,21 @@ describe('toPersistedSession', () => {
 
   it('drops archived/creating sessions', () => {
     expect(
-      toPersistedSession(state({ status: 'archived' }), { slug: 'x', base: 'm' }),
+      toPersistedSession(state({ status: 'archived' }), { slug: 'x', base: 'm' }, NOW),
     ).toBeUndefined();
     expect(
-      toPersistedSession(state({ status: 'creating' }), { slug: 'x', base: 'm' }),
+      toPersistedSession(state({ status: 'creating' }), { slug: 'x', base: 'm' }, NOW),
     ).toBeUndefined();
   });
 
   it('drops sessions without a worktree path', () => {
     const s = state({ status: 'completed', worktreePath: '', sdkSessionId: 'sdk-1' });
-    expect(toPersistedSession(s, { slug: 'x', base: 'm' })).toBeUndefined();
+    expect(toPersistedSession(s, { slug: 'x', base: 'm' }, NOW)).toBeUndefined();
   });
 
   it('drops sessions without an sdkSessionId (nothing to resume)', () => {
     const s = state({ status: 'completed' }); // initialState leaves sdkSessionId undefined
-    expect(toPersistedSession(s, { slug: 'x', base: 'm' })).toBeUndefined();
+    expect(toPersistedSession(s, { slug: 'x', base: 'm' }, NOW)).toBeUndefined();
   });
 });
 
@@ -181,14 +195,54 @@ describe('restoredSessionState', () => {
     // Avoids an ever-growing timer for a restored, never-really-finished session.
     expect(restoredSessionState(p).finishedAt).toBe(42);
   });
+
+  it('restores accumulated active time frozen (idle, no open segment)', () => {
+    const p: PersistedSession = {
+      id: '5',
+      title: 'Resumed',
+      prompt: 'p',
+      slug: 's',
+      branch: 'codiva/s',
+      worktreePath: '/tmp/wt/s',
+      base: 'main',
+      sdkSessionId: 'sdk-5',
+      status: 'interrupted',
+      startedAt: 1,
+      activeMs: 7_500,
+      todos: [],
+    };
+    const s = restoredSessionState(p);
+    // Frozen accumulated time is kept, but the clock is stopped (idle) so offline
+    // time never counts — a follow-up re-opens a segment.
+    expect(s.activeMs).toBe(7_500);
+    expect(s.activeSince).toBeUndefined();
+  });
+
+  it('defaults active time to 0 for snapshots written before the field existed', () => {
+    const p: PersistedSession = {
+      id: '6',
+      title: 'Old snapshot',
+      prompt: 'p',
+      slug: 's',
+      branch: 'codiva/s',
+      worktreePath: '/tmp/wt/s',
+      base: 'main',
+      sdkSessionId: 'sdk-6',
+      status: 'completed',
+      startedAt: 1,
+      todos: [],
+    };
+    expect(restoredSessionState(p).activeMs).toBe(0);
+  });
 });
 
 describe('fromPersistedJson', () => {
   it('round-trips a valid persisted state', () => {
-    const s = toPersistedSession(state({ status: 'completed', sdkSessionId: 'sdk-1' }), {
-      slug: 'add-login',
-      base: 'main',
-    });
+    const s = toPersistedSession(
+      state({ status: 'completed', sdkSessionId: 'sdk-1' }),
+      { slug: 'add-login', base: 'main' },
+      NOW,
+    );
     const parsed = fromPersistedJson({ version: 1, sessions: [s] });
     expect(parsed.sessions).toEqual([s]);
   });
@@ -201,10 +255,11 @@ describe('fromPersistedJson', () => {
   );
 
   it('drops individual malformed sessions but keeps valid ones', () => {
-    const valid = toPersistedSession(state({ status: 'completed', sdkSessionId: 'sdk-1' }), {
-      slug: 's',
-      base: 'main',
-    });
+    const valid = toPersistedSession(
+      state({ status: 'completed', sdkSessionId: 'sdk-1' }),
+      { slug: 's', base: 'main' },
+      NOW,
+    );
     const parsed = fromPersistedJson({
       version: 1,
       sessions: [

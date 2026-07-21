@@ -1,11 +1,12 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useRef, useState } from 'react';
 import {
+  activeElapsedMs,
   bufferOf,
   COMMANDS,
   caretIndexAtClick,
   emptyBuffer,
-  formatElapsed,
+  formatDuration,
   formatModel,
   INPUT_MAX_ROWS,
   isCommandInput,
@@ -447,7 +448,7 @@ export const SessionList: FC<{
                       </Text>
                     </Box>
                   ) : null}
-                  <Text dimColor>{formatElapsed(s.startedAt, s.finishedAt ?? now)}</Text>
+                  <Text dimColor>{formatDuration(activeElapsedMs(s, now))}</Text>
                   {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
                       左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
                   <Box width={PR_CELL_WIDTH} justifyContent="flex-end">

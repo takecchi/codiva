@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initialState, reduce } from '@/core/status-reducer';
+import { accrueActive, activeElapsedMs, initialState, reduce } from '@/core/status-reducer';
 import type { CreateSessionInput, PermissionRequest, SessionState } from '@/core/types';
 
 const BASE: CreateSessionInput = {
@@ -274,5 +274,73 @@ describe('conflict event', () => {
     const next = reduce(initialState(BASE), { kind: 'conflict', files: [], at: 5 });
     expect(next.status).toBe('conflict');
     expect(next.messages.at(-1)?.text).toBe('merge conflict');
+  });
+});
+
+describe('active-time accounting', () => {
+  it('initialState starts the clock (creating is active)', () => {
+    const s0 = initialState(BASE);
+    expect(s0.activeMs).toBe(0);
+    expect(s0.activeSince).toBe(BASE.startedAt);
+  });
+
+  it('activeElapsedMs adds the open segment while active', () => {
+    const s = { ...initialState(BASE), activeMs: 2_000, activeSince: 10_000 };
+    expect(activeElapsedMs(s, 12_500)).toBe(2_000 + 2_500);
+  });
+
+  it('activeElapsedMs returns only the accumulated total while idle', () => {
+    const s = {
+      ...initialState(BASE),
+      status: 'completed' as const,
+      activeMs: 2_000,
+      activeSince: undefined,
+    };
+    expect(activeElapsedMs(s, 999_999)).toBe(2_000);
+  });
+
+  it('never returns a negative open segment if now precedes activeSince', () => {
+    const s = { ...initialState(BASE), activeMs: 500, activeSince: 10_000 };
+    expect(activeElapsedMs(s, 9_000)).toBe(500);
+  });
+
+  it('accrueActive closes the segment when leaving an active status', () => {
+    const prev = {
+      ...initialState(BASE),
+      status: 'running' as const,
+      activeMs: 1_000,
+      activeSince: 5_000,
+    };
+    const next = { ...prev, status: 'completed' as const };
+    const out = accrueActive(prev, next, 8_000);
+    // 1_000 accumulated + (8_000 - 5_000) open segment, clock stopped.
+    expect(out.activeMs).toBe(4_000);
+    expect(out.activeSince).toBeUndefined();
+  });
+
+  it('accrueActive opens a fresh segment when entering an active status', () => {
+    const prev = {
+      ...initialState(BASE),
+      status: 'completed' as const,
+      activeMs: 4_000,
+      activeSince: undefined,
+    };
+    const next = { ...prev, status: 'running' as const };
+    const out = accrueActive(prev, next, 20_000);
+    expect(out.activeMs).toBe(4_000); // untouched until this new segment closes
+    expect(out.activeSince).toBe(20_000);
+  });
+
+  it('accrueActive is a no-op across active→active (creating→running) and idle→idle', () => {
+    const creating = initialState(BASE);
+    const running = { ...creating, status: 'running' as const };
+    const stayed = accrueActive(creating, running, 9_999);
+    // Same side of the boundary: activeSince carried, nothing accrued, ref unchanged.
+    expect(stayed).toBe(running);
+    expect(stayed.activeSince).toBe(BASE.startedAt);
+
+    const completed = { ...creating, status: 'completed' as const, activeSince: undefined };
+    const failed = { ...completed, status: 'failed' as const };
+    expect(accrueActive(completed, failed, 5)).toBe(failed);
   });
 });

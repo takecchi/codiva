@@ -62,7 +62,7 @@ codiva/
 │   │   ├── session-ports.ts   # DI seam の interface 集約（WorktreeService/SessionHandle/…）
 │   │   ├── worktree.ts        # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
 │   │   ├── list-hit.ts        # 一覧のマウス当たり判定（純粋）
-│   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatElapsed/clamp/…）
+│   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatDuration/clamp/…）
 │   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts
 │   │   ├── scroll.ts / text-buffer.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
 │   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
@@ -292,6 +292,14 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   `utils/transcript.ts`、配線は合成ルート（履歴 Map を `manager.restore(persisted, histories)` へ渡す）。
   復元セッションは遅延 resume（最初の追加指示まで query を立てない）。復元時は `finishedAt` を
   `startedAt` にフォールバックし、経過時間が復元後に伸び続けないようにする。
+  **動作時間は wall-clock ではなく「実際に動いた時間」で計る**: `SessionState.activeMs`（累積）と
+  `activeSince`（現稼働セグメントの開始時刻）を持ち、`running`/`creating`（＝ `STATUS_META.active`）
+  の区間だけを積算する。ユーザー操作待ち（`awaiting_*`）や終端状態は idle として除外。
+  状態遷移ごとの積算は `accrueActive`（純関数）に集約し、全状態採用の単一経路 `Session.commit`
+  から呼ぶ（reducer/SDK 由来の遷移を個別に触らずに済む）。表示は `activeElapsedMs(state, now)`
+  ＝累積＋（稼働中なら開いているセグメント）を `formatDuration` で整形。永続時は
+  `activeElapsedMs` で稼働中セグメントを畳み込んで凍結し、復元時は `activeSince` を未設定
+  （idle）にしてオフライン時間を数えない。
   保存は `onPersist` → debounce（合成ルート）＋終了時の最終フラッシュ＋ SIGTERM/SIGHUP 時の
   同期フラッシュ（`saveStateSync`）。`stop()` は保留中の許可要求を deny で解決してから停止し、
   resume 先のトランスクリプトが未応答の `tool_use` で終わらないようにする（best-effort）。
