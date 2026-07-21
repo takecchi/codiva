@@ -4,6 +4,7 @@ import {
   messages as catalogs,
   isFullscreenViewport,
   type Messages,
+  type MouseControl,
   type SessionManager,
 } from '@/core';
 import { type ListViewState, MessagesProvider, SessionDetail, SessionList } from '@/ui';
@@ -22,6 +23,11 @@ export const App: FC<{
   onOpenPr?: (url: string) => void;
   /** Copy composer selection to the clipboard. Injected from index.tsx (OSC 52). */
   onCopy?: (text: string) => void;
+  /**
+   * マウスレポート制御。詳細ビューはこれを使い、開いている間だけ捕捉を解除して
+   * 端末ネイティブのテキスト選択（コピペ）を可能にする。マウス無効環境では undefined。
+   */
+  mouse?: MouseControl;
 }> = ({
   manager,
   cwd,
@@ -31,6 +37,7 @@ export const App: FC<{
   messages = catalogs.ja,
   onOpenPr,
   onCopy,
+  mouse,
 }) => {
   const { exit } = useApp();
   const [view, setView] = useState<View>({ mode: 'list' });
@@ -68,6 +75,7 @@ export const App: FC<{
             onBack={() => setView({ mode: 'list' })}
             onQuit={quit}
             onCopy={onCopy}
+            mouse={mouse}
           />
         ) : (
           <SessionList

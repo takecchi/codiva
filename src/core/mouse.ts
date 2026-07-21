@@ -45,3 +45,18 @@ export function parseSgrMouse(input: string): MouseEvent | undefined {
   }
   return { kind: m[4] === 'M' ? 'press' : 'release', x, y };
 }
+
+/**
+ * ランタイムでマウスレポートを有効/無効に切り替えるためのハンドル（実装は I/O を
+ * 伴うため `utils/mouse.ts` の `createMouseControl`）。core にはインターフェースだけ
+ * 置き、UI は `@/core` の型として受け取る（ui → utils の逆流を避ける）。
+ *
+ * 用途: 詳細ビューを開いている間だけマウス捕捉を解除し、端末ネイティブのドラッグ
+ * 選択（コピペ）を可能にする。戻ると再度有効化してホイールスクロールを復帰させる。
+ */
+export interface MouseControl {
+  /** マウスレポートを有効化（冪等）。 */
+  enable(): void;
+  /** マウスレポートを無効化（冪等）。端末のドラッグ選択が可能になる。 */
+  disable(): void;
+}

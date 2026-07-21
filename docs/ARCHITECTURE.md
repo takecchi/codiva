@@ -114,17 +114,24 @@ codiva/
  running ──(レート制限に到達)─────────────────▶ rate_limited # rate_limit_event(rejected) / error='rate_limit' / usage-limit result・throw
  awaiting_input ──(追加指示送信)─────────────▶ running
  completed ──(追加指示送信)─────────────────▶ running   # 完了後の追加作業も許す
- * ──(query の throw / abort)──────────────▶ failed
+ running ──(通信断で query が throw / エラー result & sdkSessionId あり)──▶ interrupted # 接続中断。resumable
+ * ──(query の throw / abort)──────────────▶ failed  # 通信断以外（or sdkSessionId 無し）
  completed ──(マージ or 破棄)────────────────▶ archived
  running/awaiting_* ──(アプリ終了 → 保存)────▶ interrupted # メモリ上は状態不変。保存時に丸める（restorableStatus）
  rate_limited ──(アプリ終了 → 保存)──────────▶ interrupted # 制限は一時的。復元時は resumable な interrupted に丸める
- interrupted ──(追加指示送信で resume)───────▶ running
+ interrupted ──(追加指示送信 / 再開アクションで resume)───────▶ running # 生存中セッションもその場で再開（consume ループ再起動）
 ```
 
-`interrupted` は「実行中/入力待ちのままアプリを閉じた」セッションを表す**復元専用**の状態。`stop()`
-はメモリ上の状態を変えないが、保存時に `restorableStatus` が `running`/`awaiting_*` を
-`interrupted` に丸める（正常終了した `completed` とは区別する）。復元後は `completed` と同じく
-idle で resumable、追加指示で resume できる。
+`interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は2つ:
+(1) **通信断**（`Session.consume` の for-await が throw、または接続断を示すエラー `result`。`core/errors.ts`
+の `isConnectionError` で判定し、resume 元となる `sdkSessionId` がある場合のみ。無い＝init 前の早期失敗は
+`failed`）。(2) **アプリ終了時の丸め**（`restorableStatus` が実行中/入力待ちを保存時に `interrupted` にする。
+`stop()` はメモリ上の状態を変えない）。いずれも `completed` と同じく idle で resumable。追加指示または
+**再開アクション（一覧/詳細の `r`）** で resume できる — 送信すると `SessionManager.send` → `Session.send`
+が（通信断で終了した）consume ループを `resume: sdkSessionId` 付きで**再起動**し、同じ SDK 会話を続行する
+（生存中セッションでもその場で再開でき、アプリ再起動を待たなくてよい）。通信断遷移時はデスクトップ通知
+（`notify.interrupted`）で中断をユーザーに知らせる。判定ヘルパは `core/status-meta.ts` の `isResumable`
+（`interrupted` / `rate_limited`）。再開時に送る指示文は i18n の `resume.instruction`。
 
 **サブエージェント（Task ツール）の完了ゲート**: サブエージェントが **バックグラウンド実行**されると、
 その tool_result は即座に返り本体ターンは続行するため、サブエージェントがまだ稼働中でも**トップレベルの

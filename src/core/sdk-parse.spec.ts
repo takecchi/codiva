@@ -77,11 +77,16 @@ describe('applySdkMessage over real fixtures', () => {
     expect(state.todos[0]?.id).toBe('1');
   });
 
-  it('records assistant text and a final result in the log', () => {
+  it('records assistant text and tool use, without doubling the final message', () => {
     const state = replay(basic);
     expect(state.messages.some((m) => m.kind === 'assistant_text')).toBe(true);
     expect(state.messages.some((m) => m.kind === 'tool_use')).toBe(true);
-    expect(state.messages.some((m) => m.kind === 'result')).toBe(true);
+    // The success `result` echoes the final assistant text (identical string in
+    // real transcripts), so it must NOT be logged again as a green `result` line
+    // — otherwise the last message shows twice (white assistant_text + green).
+    expect(state.messages.some((m) => m.kind === 'result')).toBe(false);
+    const finalText = state.messages.findLast((m) => m.kind === 'assistant_text')?.text;
+    expect(state.messages.filter((m) => m.text === finalText)).toHaveLength(1);
   });
 
   it('keeps a stable session_id across a multi-turn (followup) session', () => {
@@ -346,6 +351,19 @@ describe('applySdkMessage over rate-limit signals', () => {
     expect(state.status).toBe('rate_limited');
     expect(state.totalCostUsd).toBe(0.5);
   });
+
+  it('a connection-error result is interrupted (resumable), not failed', () => {
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      result: 'Connection error.',
+      total_cost_usd: 0.25,
+    });
+    expect(state.status).toBe('interrupted');
+    expect(state.error).toBeUndefined();
+    expect(state.totalCostUsd).toBe(0.25);
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'system', text: 'Connection error.' });
+  });
 });
 
 describe('applySdkMessage gates completion on in-flight sub-agent tasks', () => {
@@ -501,5 +519,37 @@ describe('applySdkMessage over streaming partial messages', () => {
     expect(sdk(s0, { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } })).toBe(
       s0,
     );
+  });
+});
+
+describe('applySdkMessage does not double the final message on completion', () => {
+  const assistant = (text: string) => ({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] },
+  });
+
+  it('drops the success result when it echoes the final assistant text', () => {
+    let state: SessionState = { ...initialState(BASE), status: 'running' };
+    state = sdk(state, assistant('All done.'), 1);
+    state = sdk(state, { type: 'result', subtype: 'success', result: 'All done.' }, 2);
+    expect(state.status).toBe('completed');
+    // Only the assistant_text remains — no duplicate green `result` line.
+    expect(state.messages.filter((m) => m.text === 'All done.')).toHaveLength(1);
+    expect(state.messages.some((m) => m.kind === 'result')).toBe(false);
+  });
+
+  it('ignores surrounding whitespace when matching the echo', () => {
+    let state: SessionState = { ...initialState(BASE), status: 'running' };
+    state = sdk(state, assistant('Answer.'), 1);
+    // The SDK result text is untrimmed; assistant_text is stored trimmed.
+    state = sdk(state, { type: 'result', subtype: 'success', result: '  Answer.\n' }, 2);
+    expect(state.messages.some((m) => m.kind === 'result')).toBe(false);
+  });
+
+  it('still logs a result that carries new content', () => {
+    let state: SessionState = { ...initialState(BASE), status: 'running' };
+    state = sdk(state, assistant('Working on it.'), 1);
+    state = sdk(state, { type: 'result', subtype: 'success', result: 'Different summary.' }, 2);
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'result', text: 'Different summary.' });
   });
 });

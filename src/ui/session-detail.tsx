@@ -9,11 +9,13 @@ import {
   emptyBuffer,
   INPUT_MAX_ROWS,
   isCommandInput,
+  isResumable,
   isTerminalStatus,
   type LogEntry,
   logLines,
   logViewportRows,
   logWindow,
+  type MouseControl,
   matchCommands,
   parseSgrMouse,
   type ScrollAnchor,
@@ -82,7 +84,13 @@ export const SessionDetail: FC<{
   onQuit: () => void;
   /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
   onCopy?: (text: string) => void;
-}> = ({ manager, id, onBack, onQuit, onCopy }) => {
+  /**
+   * マウスレポート制御（マウス有効環境でのみ渡る）。詳細ビューを開いている間は
+   * 捕捉を解除し、端末ネイティブのドラッグ選択でログをコピペできるようにする。
+   * 戻る（アンマウント）と再度有効化する。
+   */
+  mouse?: MouseControl;
+}> = ({ manager, id, onBack, onQuit, onCopy, mouse }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -116,6 +124,25 @@ export const SessionDetail: FC<{
   const pending = session?.pendingPermission;
   const status = session?.status;
   const isTerminal = status !== undefined && isTerminalStatus(status);
+  // A session cut off by a dropped connection (or a rate limit) can be resumed:
+  // sending a follow-up restarts the SDK query with `resume`. Surfaced as an
+  // explicit action so the user can continue without typing.
+  const resumable = status !== undefined && isResumable(status);
+  const resume = () => {
+    if (session && resumable) {
+      manager.send(session.id, m.resume.instruction);
+      setPanel('input');
+      setAnchor('bottom');
+    }
+  };
+
+  // 詳細ビューにいる間はマウス捕捉を解除し、端末ネイティブのドラッグ選択で
+  // ログをそのままコピペできるようにする。一覧へ戻る（アンマウント）と再度有効化して
+  // 一覧のクリック/ホイール操作を復帰させる。マウス無効環境では `mouse` が undefined。
+  useEffect(() => {
+    mouse?.disable();
+    return () => mouse?.enable();
+  }, [mouse]);
 
   // Fetch the diff summary once the session reaches a terminal state.
   useEffect(() => {
@@ -176,9 +203,11 @@ export const SessionDetail: FC<{
   };
 
   useInput((rawInput, rawKey) => {
-    // SGR マウスレポートはキー入力より先に解釈する。これをしないと（マウス有効時に）
-    // ホイールスクロールのエスケープ列が生テキストとして editText に流れ込み、
-    // 「スクロールしようとすると文字が入力される」バグになる（一覧の useInput と同じ対策）。
+    // 詳細ビューでは（コピペのため）マウス捕捉を解除しているので通常マウスレポートは
+    // 届かない。ただし解除の境界で端末が送り残したレポート断片が生テキストとして
+    // editText に流れ込む（「スクロールしようとすると文字が入力される」）のを防ぐため、
+    // キー入力より先に SGR レポートを解釈して握り潰す（一覧の useInput と同じ防御）。
+    // スクロールは PgUp/PgDn を使う。捕捉が生きている隙間ではホイールも一応効かせる。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
       if (mouse.kind === 'wheel') {
@@ -276,6 +305,8 @@ export const SessionDetail: FC<{
         setConfirm('merge');
       } else if (input === 'd' || input === 'D') {
         setConfirm('discard');
+      } else if ((input === 'r' || input === 'R') && resumable) {
+        resume();
       }
       return;
     }
@@ -404,6 +435,11 @@ export const SessionDetail: FC<{
                 <Text color={theme.accent} bold>
                   {m.detail.actionsTitle}
                 </Text>
+                {resumable ? (
+                  <Text>
+                    <Text color={statusColor.interrupted}>r</Text>: {m.resume.action}
+                  </Text>
+                ) : null}
                 <Text>
                   <Text color={theme.yes}>m</Text>: {m.detail.mergeAction} ・{' '}
                   <Text color={theme.no}>d</Text>: {m.detail.discardAction}

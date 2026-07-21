@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isActiveStatus, isTerminalStatus, needsAttention, STATUS_META } from './status-meta';
+import {
+  isActiveStatus,
+  isResumable,
+  isTerminalStatus,
+  needsAttention,
+  STATUS_META,
+} from './status-meta';
 import type { SessionStatus } from './types';
 
 const ALL_STATUSES: SessionStatus[] = [
@@ -83,6 +89,7 @@ describe('STATUS_META', () => {
     ['awaiting_permission', 'needsPermission'],
     ['awaiting_input', 'needsInput'],
     ['completed', 'completed'],
+    ['interrupted', 'interrupted'],
     ['rate_limited', 'rateLimited'],
     ['failed', 'failed'],
     ['running', undefined],
@@ -91,5 +98,22 @@ describe('STATUS_META', () => {
     ['archived', undefined],
   ] as const)('notifyKey(%s) = %s', (status, expected) => {
     expect(STATUS_META[status].notifyKey).toBe(expected);
+  });
+
+  it.each([
+    // "Cut off, resume to continue" states offer the explicit resume action.
+    ['interrupted', true],
+    ['rate_limited', true],
+    // completed can receive follow-ups but wasn't cut off — no resume action.
+    ['completed', false],
+    ['running', false],
+    ['creating', false],
+    ['awaiting_permission', false],
+    ['awaiting_input', false],
+    ['failed', false],
+    ['conflict', false],
+    ['archived', false],
+  ] as const)('isResumable(%s) = %s', (status, expected) => {
+    expect(isResumable(status)).toBe(expected);
   });
 });

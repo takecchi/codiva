@@ -1,5 +1,12 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { appendLog, isRateLimitError, progressOf, toRateLimited } from './status-reducer';
+import { isConnectionError } from './errors';
+import {
+  appendLog,
+  isRateLimitError,
+  progressOf,
+  toInterrupted,
+  toRateLimited,
+} from './status-reducer';
 import type { SessionState, TaskStatus, TodoItem } from './types';
 
 /**
@@ -121,9 +128,19 @@ function completeWith(
   state: SessionState,
   result: { at: number; totalCostUsd?: number; resultText: string },
 ): SessionState {
+  // The SDK's success `result` text echoes the final assistant message, which is
+  // already in the log as an `assistant_text` entry (verified against real
+  // fixtures — the two strings are identical). Appending it again as a `result`
+  // line doubles the last message on screen (white assistant_text + green
+  // result). Log the result only when it carries something new, matching the
+  // restore path (transcript.ts never emits a `result` entry). assistant_text is
+  // stored trimmed, so trim the result before comparing.
+  const resultText = result.resultText.trim();
+  const lastAssistantText = state.messages.findLast((m) => m.kind === 'assistant_text')?.text;
+  const isEcho = resultText.length > 0 && resultText === lastAssistantText;
   const withLog =
-    result.resultText.length > 0
-      ? appendLog(state, 'result', result.resultText)
+    resultText.length > 0 && !isEcho
+      ? appendLog(state, 'result', resultText)
       : { messages: state.messages, logSeq: state.logSeq };
   // Drop the transient deferral bookkeeping — the turn is genuinely done now.
   const { deferredResult, activeTaskIds, ...rest } = state;
@@ -387,6 +404,11 @@ function reduceSdk(
     // the user can wait for the reset and resume rather than treating it as an error.
     if (isRateLimitError(error) || isRateLimitError(resultText)) {
       return { ...toRateLimited(state, at, resultText || error), totalCostUsd: cost };
+    }
+    // A dropped connection surfaced as an error result — resumable, not a real
+    // failure (same treatment as the thrown-error path in Session.consume).
+    if (isConnectionError(error) || isConnectionError(resultText)) {
+      return { ...toInterrupted(state, at, resultText || error), totalCostUsd: cost };
     }
     const withLog = appendLog(state, 'error', error);
     return {

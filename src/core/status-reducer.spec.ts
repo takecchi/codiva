@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { accrueActive, activeElapsedMs, initialState, reduce } from '@/core/status-reducer';
+import {
+  accrueActive,
+  activeElapsedMs,
+  initialState,
+  reduce,
+  toInterrupted,
+} from '@/core/status-reducer';
 import type { CreateSessionInput, PermissionRequest, SessionState } from '@/core/types';
 
 const BASE: CreateSessionInput = {
@@ -184,6 +190,46 @@ describe('reduce classifies aborted rate-limit errors', () => {
     const archived = reduce(streaming, { kind: 'archived', at: 9 });
     expect(archived.status).toBe('archived');
     expect(archived.streamingText).toBeUndefined();
+  });
+});
+
+describe('interrupted event (connection drop)', () => {
+  const running: SessionState = {
+    ...initialState(BASE),
+    status: 'running',
+    sdkSessionId: 'sdk-1',
+  };
+
+  it('marks the session interrupted (idle, resumable) — not failed', () => {
+    const state = reduce(running, { kind: 'interrupted', error: 'fetch failed', at: 5000 });
+    expect(state.status).toBe('interrupted');
+    expect(state.finishedAt).toBe(5000);
+    // interrupted is not an error state — no error field is set (unlike `aborted`).
+    expect(state.error).toBeUndefined();
+    // The reason is recorded as a system log line, not an error line.
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'system', text: 'fetch failed' });
+  });
+
+  it('defaults the reason text when none is given', () => {
+    const state = reduce(running, { kind: 'interrupted', at: 5000 });
+    expect(state.status).toBe('interrupted');
+    expect(state.messages.at(-1)?.text).toBe('connection interrupted');
+  });
+
+  it('clears transient turn state (streaming preview, pending, deferred/task bookkeeping)', () => {
+    const messy: SessionState = {
+      ...running,
+      streamingText: 'half a sentence',
+      pendingPermission: { id: 'p', toolName: 'Bash', input: {}, kind: 'tool' },
+      activeTaskIds: ['t1'],
+      deferredResult: { at: 1, resultText: 'x' },
+    };
+    const state = toInterrupted(messy, 6000, 'socket hang up');
+    expect(state.status).toBe('interrupted');
+    expect(state.streamingText).toBeUndefined();
+    expect(state.pendingPermission).toBeUndefined();
+    expect(state.activeTaskIds).toBeUndefined();
+    expect(state.deferredResult).toBeUndefined();
   });
 });
 

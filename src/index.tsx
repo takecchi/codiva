@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);
   installHardExitFlush(persist.flushSync);
-  const restoreTerminal = setupTerminal(config.mouse !== false);
+  const terminal = setupTerminal(config.mouse !== false);
 
   const { waitUntilExit } = render(
     <App
@@ -86,6 +86,9 @@ async function main(): Promise<void> {
       messages={t}
       onOpenPr={openUrl}
       onCopy={(text) => copyToClipboard(text)}
+      // 詳細ビューを開いている間だけマウス捕捉を解除し、端末ネイティブの
+      // ドラッグ選択（コピペ）を可能にするためのハンドル。
+      mouse={terminal.mouse}
     />,
     { exitOnCtrlC: false },
   );
@@ -96,7 +99,7 @@ async function main(): Promise<void> {
   // terminal (leave alt screen + mouse) so the shell history is intact.
   stopPrPolling();
   await persist.flushAsync();
-  restoreTerminal();
+  terminal.teardown();
 }
 
 await main();

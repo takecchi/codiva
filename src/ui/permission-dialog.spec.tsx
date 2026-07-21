@@ -152,6 +152,29 @@ describe('PermissionDialog — question', () => {
     await flush();
     expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'English, Japanese' });
   });
+
+  // Ghostty/xterm など modifyOtherKeys / CSI-u を送る端末では、Space が生の
+  // エスケープ列（`ESC [ 27 ; 1 ; 32 ~` / `ESC [ 32 u`）で届く。Ink はこれを
+  // 素の ' ' に解釈しないため、正規化しないとトグルできない（実機で再現した不具合）。
+  it('toggles with a modifyOtherKeys-encoded space', async () => {
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question(true)} onAnswer={noop} onAllow={noop} onDeny={noop} />,
+    );
+    await flush();
+    stdin.write('\x1b[27;1;32~'); // modifyOtherKeys space → toggle English
+    await flush();
+    expect(lastFrame()).toContain('❯ [x] English');
+  });
+
+  it('toggles with a CSI-u-encoded space', async () => {
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question(true)} onAnswer={noop} onAllow={noop} onDeny={noop} />,
+    );
+    await flush();
+    stdin.write('\x1b[32u'); // CSI-u space → toggle English
+    await flush();
+    expect(lastFrame()).toContain('❯ [x] English');
+  });
 });
 
 describe('PermissionDialog — tool', () => {
