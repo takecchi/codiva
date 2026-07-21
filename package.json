@@ -1,6 +1,6 @@
 {
   "name": "codiva",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TUI app that runs parallel Claude Code sessions in isolated git worktrees",
   "type": "module",
   "bin": {
