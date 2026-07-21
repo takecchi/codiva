@@ -93,6 +93,27 @@ describe('slash commands', () => {
     expect(lastFrame() ?? '').not.toContain(messages.ja.prompt.title);
   });
 
+  it('lists /clear in the command palette', async () => {
+    const { stdin, lastFrame } = render(<App manager={makeManager()} />);
+    stdin.write('/clear');
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('/clear');
+    expect(frame).toContain(messages.ja.command.clear); // description shown
+  });
+
+  it('/clear clears the session list and creates no session', async () => {
+    const manager = makeManager();
+    const clear = vi.spyOn(manager, 'clear');
+    const { stdin } = render(<App manager={manager} />);
+    stdin.write('/clear');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(clear).toHaveBeenCalledOnce();
+    expect(manager.getSnapshot()).toHaveLength(0);
+  });
+
   it('reports an unknown command as an error', async () => {
     const manager = makeManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

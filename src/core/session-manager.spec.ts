@@ -229,6 +229,90 @@ describe('SessionManager', () => {
     expect(after[1]).not.toBe(before[1]); // changed row is a new object
   });
 
+  describe('clear()', () => {
+    it('drops finished sessions (stopped, forgotten) but keeps in-flight ones', async () => {
+      const { manager, created } = makeManager();
+      manager.create('done'); // 0 → completed
+      manager.create('busy'); // 1 → running (kept)
+      manager.create('gone'); // 2 → interrupted
+      await flush();
+      created[0]?.drive('completed', 'sdk-0');
+      created[1]?.drive('running', 'sdk-1');
+      created[2]?.drive('interrupted', 'sdk-2');
+
+      const cleared = manager.clear();
+
+      expect(cleared).toBe(2);
+      // Only the in-flight (running) session remains in the list.
+      expect(manager.getSnapshot().map((s) => s.title)).toEqual(['busy']);
+      // Cleared sessions were quietly stopped (not aborted), running one untouched.
+      expect(created[0]?.stopped).toBe(true);
+      expect(created[2]?.stopped).toBe(true);
+      expect(created[1]?.stopped).toBe(false);
+      expect(created.some((s) => s.aborted)).toBe(false);
+    });
+
+    it('excludes cleared sessions from the persisted snapshot (stay gone after restart)', async () => {
+      const { manager, created } = makeManager();
+      manager.create('done');
+      await flush();
+      created[0]?.drive('completed', 'sdk-0');
+      expect(manager.persistableState().sessions).toHaveLength(1);
+
+      manager.clear();
+
+      expect(manager.persistableState().sessions).toEqual([]);
+    });
+
+    it('signals a persist and notifies subscribers when it removes sessions', async () => {
+      const onPersist = vi.fn();
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 100,
+        onPersist,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      manager.create('done');
+      await flush();
+      created[0]?.drive('completed', 'sdk-0');
+      const listener = vi.fn();
+      manager.subscribe(listener);
+      onPersist.mockClear();
+
+      manager.clear();
+
+      expect(onPersist).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalled(); // store rebuild notified subscribers
+    });
+
+    it('is a no-op (no persist) when there is nothing finished to clear', async () => {
+      const onPersist = vi.fn();
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 100,
+        onPersist,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      manager.create('busy');
+      await flush();
+      onPersist.mockClear();
+      expect(manager.clear()).toBe(0);
+      expect(onPersist).not.toHaveBeenCalled();
+      expect(manager.getSnapshot()).toHaveLength(1);
+    });
+  });
+
   it('dispose() quietly stops every session (resumable, not marked failed)', async () => {
     const { manager, created } = makeManager();
     manager.create('a');

@@ -157,6 +157,9 @@ export const SessionList: FC<{
       model: () => setModelSelect(true),
       // `/prompt` はリポジトリ追加指示（.codiva/prompt.md）のエディタを開く。
       prompt: () => setPromptEdit(true),
+      // `/clear` は完了したセッションを一覧から消去する（worktree/履歴は残す）。
+      // 実行中セッションは残るため確認は不要（core 側で終端状態のみ対象にする）。
+      clear: () => manager.clear(),
     },
     setActionError,
     m.command.unknown,

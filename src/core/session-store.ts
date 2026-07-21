@@ -64,6 +64,17 @@ export class SessionStore {
     this.rebuild();
   }
 
+  /** Drop a session entirely (from both order and state). Used by clear(). */
+  remove(id: string): void {
+    const idx = this.order.indexOf(id);
+    if (idx === -1) {
+      return;
+    }
+    this.order.splice(idx, 1);
+    this.states.delete(id);
+    this.rebuild();
+  }
+
   clearListeners(): void {
     this.listeners.clear();
   }

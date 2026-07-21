@@ -22,6 +22,7 @@ import type {
 } from './session-ports';
 import { SessionStore } from './session-store';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
+import { isTerminalStatus } from './status-meta';
 import { initialState, reduce } from './status-reducer';
 import type { CreateSessionInput, LogEntry, SessionState } from './types';
 import type { DiffStat, Worktree } from './worktree';
@@ -423,6 +424,35 @@ export class SessionManager {
       this.worktreeMeta.delete(id);
     }
     return result;
+  }
+
+  /**
+   * Clear finished sessions from the list (the `/clear` command). Every terminal
+   * session (completed/interrupted/rate_limited/failed/conflict/archived) is
+   * dropped from the store and from the persisted snapshot, so it stays gone after
+   * a restart — persistableState() reads the store, and a session no longer there
+   * is never written to state.json nor restored. In-flight sessions
+   * (creating/running/awaiting_*) are kept: clearing them would orphan a live SDK
+   * conversation. Worktrees/branches are left on disk (history is preserved); only
+   * the codiva session entry is forgotten. The reserved slug is intentionally not
+   * freed — the worktree still exists on disk, so its slug stays taken.
+   * Returns the number of sessions cleared.
+   */
+  clear(): number {
+    const removed = this.store
+      .ids()
+      .filter((id) => isTerminalStatus(this.store.get(id)?.status ?? 'running'));
+    if (removed.length === 0) {
+      return 0;
+    }
+    for (const id of removed) {
+      this.sessions.get(id)?.stop();
+      this.sessions.delete(id);
+      this.worktreeMeta.delete(id);
+      this.store.remove(id);
+    }
+    this.deps.onPersist?.();
+    return removed.length;
   }
 
   /**

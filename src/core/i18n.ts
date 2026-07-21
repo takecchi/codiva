@@ -185,6 +185,8 @@ export interface Messages {
     diff: string;
     /** /prompt の説明 */
     prompt: string;
+    /** /clear の説明 */
+    clear: string;
   };
 }
 
@@ -322,6 +324,7 @@ const ja: Messages = {
     model: 'モデルを切り替え',
     diff: '変更差分サマリの表示を切り替え',
     prompt: 'リポジトリの追加指示を編集',
+    clear: '完了したセッションを一覧から消去（履歴は残る）',
   },
 };
 
@@ -455,6 +458,7 @@ const en: Messages = {
     model: 'Switch the model',
     diff: 'Toggle the changes summary',
     prompt: 'Edit the repository instructions',
+    clear: 'Clear finished sessions from the list (history is kept)',
   },
 };
 
