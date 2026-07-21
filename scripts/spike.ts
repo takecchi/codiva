@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import type { PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-type Scenario = 'basic' | 'followup' | 'interrupt';
+type Scenario = 'basic' | 'followup' | 'interrupt' | 'subagent';
 
 const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const scenario = (positional[0] as Scenario) ?? 'basic';
@@ -39,6 +39,12 @@ const PROMPTS: Record<Scenario, string> = {
   interrupt:
     'Count slowly: create files step1.txt, step2.txt, step3.txt, step4.txt, step5.txt one at a time, ' +
     'each containing its number.',
+  subagent:
+    'This is a test harness for observing sub-agent delegation. You MUST delegate the actual work ' +
+    'to a sub-agent using the Task tool (subagent_type "general-purpose"): ask that sub-agent to ' +
+    'create a file report.txt containing the single line "done by subagent" and then report back. ' +
+    'Do not do the file work yourself in the main thread — delegate it. After the sub-agent finishes, ' +
+    'tell me it is complete.',
 };
 
 const prompt = PROMPTS[scenario];
@@ -214,6 +220,14 @@ async function main(): Promise<void> {
         if (scenario === 'followup' && resultCount === 1) {
           console.log('[spike] pushing follow-up message...');
           input.push('Now append the word "world" to notes.txt.');
+          continue;
+        }
+        // subagent: close input but keep draining so any post-result background
+        // task settling (task_notification / background_tasks_changed / a 2nd
+        // result) is captured — we want to see how a result relates to sub-agent
+        // work still in flight rather than stopping at the first result.
+        if (scenario === 'subagent') {
+          input.close();
           continue;
         }
         // basic / followup(after 2nd) / interrupt: end the session.

@@ -107,7 +107,9 @@ codiva/
  running ──(canUseTool 発火)───────────────▶ awaiting_permission
  awaiting_permission ──(ユーザー応答)────────▶ running
  running ──(result 受信 & 質問で終了)────────▶ awaiting_input
- running ──(result 受信 & 正常終了)──────────▶ completed
+ running ──(result 受信 & 正常終了 & サブエージェント未稼働)──▶ completed
+ running ──(result 受信 & サブエージェント稼働中)──▶ running    # 結果を deferredResult に保留し running 継続
+ running ──(最後の task_notification で全タスク完了 & 保留結果あり)──▶ completed
  running ──(result subtype がエラー系)───────▶ failed
  running ──(レート制限に到達)─────────────────▶ rate_limited # rate_limit_event(rejected) / error='rate_limit' / usage-limit result・throw
  awaiting_input ──(追加指示送信)─────────────▶ running
@@ -123,6 +125,17 @@ codiva/
 はメモリ上の状態を変えないが、保存時に `restorableStatus` が `running`/`awaiting_*` を
 `interrupted` に丸める（正常終了した `completed` とは区別する）。復元後は `completed` と同じく
 idle で resumable、追加指示で resume できる。
+
+**サブエージェント（Task ツール）の完了ゲート**: サブエージェントが **バックグラウンド実行**されると、
+その tool_result は即座に返り本体ターンは続行するため、サブエージェントがまだ稼働中でも**トップレベルの
+`result/success` が先に届く**。この result をそのまま `completed` にすると、実際には作業継続中なのに
+バッジが「Completed」へ倒れてしまう（本 issue の不具合）。対策として `system/task_started` /
+`system/task_notification` で稼働中タスク集合（`activeTaskIds`）を追跡し、result 受信時にタスクが残って
+いれば `completed` にせず結果を `deferredResult` に保留して `running` を維持する。最後のタスクが
+`task_notification` で settle し集合が空になった時点で保留結果を使って `completed` を確定する
+（`sdk-parse.ts` の `onTaskStarted` / `onTaskSettled` / `completeWith`）。`skip_transcript` の雑務タスクは
+ゲート対象外。`activeTaskIds` / `deferredResult` は transient で永続しない。実データは
+`__fixtures__/session-subagent.jsonl`（スパイクの `subagent` シナリオで採取）。
 
 `rate_limited` は「使用量／レート制限に達して止まった」セッションを表す。`completed`/`failed` と同じく
 idle だが、エラー扱い（`failed`）にはせず「制限が解けるのを待って再開できる」状態として区別する。

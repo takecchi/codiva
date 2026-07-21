@@ -43,11 +43,13 @@ describe('applySdkMessage over real fixtures', () => {
   let basic: SDKMessage[];
   let followup: SDKMessage[];
   let interrupted: SDKMessage[];
+  let subagent: SDKMessage[];
 
   beforeAll(() => {
     basic = loadFixture('session-basic.jsonl');
     followup = loadFixture('session-followup.jsonl');
     interrupted = loadFixture('session-interrupt.jsonl');
+    subagent = loadFixture('session-subagent.jsonl');
   });
 
   it('reaches completed on a successful session', () => {
@@ -94,6 +96,15 @@ describe('applySdkMessage over real fixtures', () => {
     const state = replay(interrupted);
     expect(state.status).toBe('failed');
     expect(state.error).toContain('error');
+  });
+
+  it('reaches completed on a session that delegated to a sub-agent (Task tool)', () => {
+    // Real capture: the sub-agent settled (task_notification) before the top-level
+    // result, so the session completes cleanly and no task stays in flight.
+    const state = replay(subagent);
+    expect(state.status).toBe('completed');
+    expect(state.activeTaskIds ?? []).toHaveLength(0);
+    expect(state.deferredResult).toBeUndefined();
   });
 });
 
@@ -334,6 +345,93 @@ describe('applySdkMessage over rate-limit signals', () => {
     });
     expect(state.status).toBe('rate_limited');
     expect(state.totalCostUsd).toBe(0.5);
+  });
+});
+
+describe('applySdkMessage gates completion on in-flight sub-agent tasks', () => {
+  const running: SessionState = { ...initialState(BASE), status: 'running' };
+  const taskStarted = (task_id: string, extra: Record<string, unknown> = {}) => ({
+    type: 'system',
+    subtype: 'task_started',
+    task_id,
+    ...extra,
+  });
+  const taskNotification = (task_id: string, status = 'completed') => ({
+    type: 'system',
+    subtype: 'task_notification',
+    task_id,
+    status,
+  });
+  const success = (result = 'all done') => ({ type: 'result', subtype: 'success', result });
+
+  it('does NOT complete while a backgrounded task is still running; defers the result', () => {
+    // A backgrounded Task returns its tool_result immediately, so the top-level
+    // `result` can arrive before the sub-agent finishes. The session must stay
+    // Running (not flip to Completed) until the task settles.
+    let state = sdk(running, taskStarted('t1'), 1);
+    expect(state.activeTaskIds).toEqual(['t1']);
+    state = sdk(state, success('done'), 2);
+    expect(state.status).toBe('running');
+    expect(state.deferredResult).toMatchObject({ resultText: 'done' });
+    // Result log is held back until the turn is truly done.
+    expect(state.messages.some((m) => m.kind === 'result')).toBe(false);
+  });
+
+  it('completes once the last sub-agent task settles after a deferred result', () => {
+    let state = sdk(running, taskStarted('t1'), 1);
+    state = sdk(state, success('done'), 2);
+    expect(state.status).toBe('running');
+    state = sdk(state, taskNotification('t1'), 3);
+    expect(state.status).toBe('completed');
+    expect(state.finishedAt).toBe(3);
+    expect(state.activeTaskIds ?? []).toHaveLength(0);
+    expect(state.deferredResult).toBeUndefined();
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'result', text: 'done' });
+  });
+
+  it('waits for ALL tasks: a deferred result completes only when the set empties', () => {
+    let state = sdk(running, taskStarted('t1'), 1);
+    state = sdk(state, taskStarted('t2'), 2);
+    state = sdk(state, success(), 3);
+    expect(state.status).toBe('running');
+    state = sdk(state, taskNotification('t1'), 4);
+    expect(state.status).toBe('running');
+    expect(state.activeTaskIds).toEqual(['t2']);
+    state = sdk(state, taskNotification('t2'), 5);
+    expect(state.status).toBe('completed');
+  });
+
+  it('completes immediately when a task settled before the result arrived (foreground)', () => {
+    let state = sdk(running, taskStarted('t1'), 1);
+    state = sdk(state, taskNotification('t1'), 2);
+    expect(state.status).toBe('running');
+    expect(state.activeTaskIds).toEqual([]);
+    state = sdk(state, success('ok'), 3);
+    expect(state.status).toBe('completed');
+  });
+
+  it('ignores ambient housekeeping tasks (skip_transcript) so they never gate completion', () => {
+    let state = sdk(running, taskStarted('t1', { skip_transcript: true }), 1);
+    expect(state.activeTaskIds).toBeUndefined();
+    state = sdk(state, success('ok'), 2);
+    expect(state.status).toBe('completed');
+  });
+
+  it('a late task_notification does not resurrect a failed session as completed', () => {
+    let state = sdk(running, taskStarted('t1'), 1);
+    // Turn errors while the task is still in flight.
+    state = sdk(state, { type: 'result', subtype: 'error_during_execution' }, 2);
+    expect(state.status).toBe('failed');
+    state = sdk(state, taskNotification('t1'), 3);
+    expect(state.status).toBe('failed');
+  });
+
+  it('deduplicates repeated task_started for the same id', () => {
+    let state = sdk(running, taskStarted('t1'), 1);
+    const before = state;
+    state = sdk(state, taskStarted('t1'), 2);
+    expect(state).toBe(before);
+    expect(state.activeTaskIds).toEqual(['t1']);
   });
 });
 

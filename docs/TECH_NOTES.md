@@ -109,6 +109,8 @@ const options = {
 
 **注意**: streaming input mode では `result` はターンの区切りごとに届き、セッション終了を意味しない。`result` 受信 = 「Claude のターンが終わり入力待ちになった」と解釈する（completed 判定はこのタイミング）。
 
+**サブエージェント（Task ツール）**: 本体エージェントが Task ツールで作業を委譲すると、サブエージェントのメッセージは `parent_tool_use_id`（= Task の tool_use id）付きで流れてくる（トップレベルは `null`）。サブエージェント自身は独自の `result` を出さず、**`result/success` は最後にトップレベル1件だけ**。ライフサイクルは `system/task_started` → `system/task_progress` → `system/task_notification`（`status: 'completed'|'failed'|'stopped'`）。Task が**バックグラウンド実行**されると tool_result が即返り本体ターンが続行するため、サブエージェント稼働中に `result/success` が先に届きうる。このとき素直に completed 判定すると「作業中なのに Completed」になる。対策は `task_started`/`task_notification` で稼働中タスクを追跡し、稼働中に届いた result を保留 → 全タスク settle 後に completed 確定（ARCHITECTURE.md「完了ゲート」参照）。実データは `scripts/spike.ts` の `subagent` シナリオで採取（`__fixtures__/session-subagent.jsonl`）。
+
 `includePartialMessages: true` にすると `{ type: 'stream_event', event }`（`SDKPartialAssistantMessage`）で生のストリーミングデルタが届く。**Phase 6 で採用**：`event.type === 'content_block_delta'` かつ `delta.type === 'text_delta'` のときのみ `delta.text` を `state.streamingText` に連結し、詳細ビューにタイピング風プレビューを出す。確定 `assistant` メッセージ / `result` / 追加入力で `streamingText` はクリア（確定ログが正）。`streamingText` は transient で永続しない。非テキストデルタ（`input_json_delta`・thinking 等）は状態を変えない。`~100ms` スロットル（`useSessions`）で再描画コストを抑える。
 
 ### TODO進捗の抽出（Step n/m）— 要スパイク検証

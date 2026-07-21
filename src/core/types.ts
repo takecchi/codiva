@@ -128,6 +128,20 @@ export interface SessionState {
    * cleared when the full message/result arrives; never persisted.
    */
   streamingText?: string;
+  /**
+   * Task ids of sub-agent / Task-tool runs that have started (`system/task_started`)
+   * but not yet settled (`system/task_notification`). A backgrounded Task lets the
+   * top-level turn's `result` arrive while the sub-agent is still working; while this
+   * set is non-empty we must NOT treat that `result` as a real completion (the badge
+   * would flip to "Completed" mid-work). Transient runtime state; never persisted.
+   */
+  activeTaskIds?: string[];
+  /**
+   * A `result/success` that arrived while `activeTaskIds` was non-empty. We hold its
+   * payload here and stay `running`; completion is finalized once the last sub-agent
+   * task settles. Transient; never persisted.
+   */
+  deferredResult?: { at: number; totalCostUsd?: number; resultText: string };
   /** Internal monotonic counter for LogEntry.seq; keeps the reducer pure. */
   logSeq: number;
 }
