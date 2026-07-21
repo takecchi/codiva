@@ -325,6 +325,7 @@ describe('Session', () => {
         effort: 'high',
         permissionMode: 'plan',
         maxBudgetUsd: 3,
+        appendSystemPrompt: 'Open a PR when done',
       },
     });
     session.start();
@@ -333,6 +334,8 @@ describe('Session', () => {
     expect(seen?.effort).toBe('high');
     expect(seen?.permissionMode).toBe('plan');
     expect(seen?.maxBudgetUsd).toBe(3);
+    // The repo prompt is injected as systemPrompt (append-to-empty; see consume()).
+    expect(seen?.systemPrompt).toBe('Open a PR when done');
   });
 
   it('defaults permissionMode to acceptEdits and omits absent options', async () => {
@@ -352,6 +355,8 @@ describe('Session', () => {
     expect(seen?.model).toBeUndefined();
     expect(seen?.effort).toBeUndefined();
     expect(seen?.maxBudgetUsd).toBeUndefined();
+    // No repo prompt configured → systemPrompt is omitted (preserves default behavior).
+    expect(seen?.systemPrompt).toBeUndefined();
   });
 
   it('works with all optional deps defaulted (now/policy/onChange)', async () => {

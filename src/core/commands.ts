@@ -14,7 +14,7 @@
 import type { Messages } from './i18n';
 
 /** コマンドが UI に要求する動作。新コマンド追加時はここに足して UI で受ける。 */
-export type CommandAction = 'help' | 'exit' | 'model' | 'diff';
+export type CommandAction = 'help' | 'exit' | 'model' | 'diff' | 'prompt';
 
 /** 1 つのスラッシュコマンドの定義。 */
 export interface CommandSpec {
@@ -34,6 +34,7 @@ export interface CommandSpec {
  */
 export const COMMANDS: readonly CommandSpec[] = [
   { name: 'model', action: 'model', describe: (m) => m.command.model },
+  { name: 'prompt', action: 'prompt', describe: (m) => m.command.prompt },
   { name: 'diff', aliases: ['changes'], action: 'diff', describe: (m) => m.command.diff },
   { name: 'help', aliases: ['?'], action: 'help', describe: (m) => m.command.help },
   { name: 'exit', action: 'exit', describe: (m) => m.command.exit },

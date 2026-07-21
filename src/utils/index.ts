@@ -6,6 +6,7 @@ export * from './mouse';
 export * from './notify';
 export * from './open-url';
 export * from './pr';
+export * from './repo-prompt';
 export * from './state-store';
 export * from './terminal-mode';
 export * from './title';

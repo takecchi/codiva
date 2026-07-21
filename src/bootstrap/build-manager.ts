@@ -14,6 +14,7 @@ import {
   notify,
   prChecks,
   saveConfig,
+  saveRepoPrompt,
   type WorktreeManager,
 } from '@/utils';
 
@@ -47,8 +48,10 @@ export function buildManager(opts: {
   messages: Messages;
   worktrees: WorktreeManager;
   onPersist: () => void;
+  /** リポジトリ単位の追加指示（`.codiva/prompt.md`）。全セッションの systemPrompt に載る。 */
+  appendSystemPrompt?: string;
 }): SessionManager {
-  const { repoRoot, config, messages: t, worktrees, onPersist } = opts;
+  const { repoRoot, config, messages: t, worktrees, onPersist, appendSystemPrompt } = opts;
 
   // Notifications default on; disable with `"notifications": false` in config.
   const onTransition =
@@ -70,10 +73,15 @@ export function buildManager(opts: {
       effort: config.effort,
       permissionMode: config.permissionMode,
       maxBudgetUsd: config.maxBudgetUsd,
+      appendSystemPrompt,
     },
     onTransition,
     onPersist,
     onModelChange: createModelPersister(config),
+    // /prompt での編集を `.codiva/prompt.md` へ永続化（次回起動・新規セッションに反映）。
+    onRepoPromptChange: (prompt) => {
+      void saveRepoPrompt(repoRoot, prompt ?? '').catch(() => undefined);
+    },
     lookupPr,
     // origin 追従 / PR 自動化は既定 on。`"followOrigin": false` / `"autoPr": false` で無効化。
     followOrigin: config.followOrigin !== false,

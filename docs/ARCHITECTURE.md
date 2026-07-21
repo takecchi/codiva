@@ -43,7 +43,7 @@ codiva/
 │   ├── index.tsx              # bin エントリ。解決 → preflight → build → restore → render → shutdown（合成ルート・薄い）
 │   ├── app.tsx                # ルートコンポーネント。list ⇔ detail のビュー切替
 │   ├── bootstrap/             # 副作用の配線（合成の分解。core/utils にのみ依存）
-│   │   ├── build-manager.ts   # config + I/O seam → SessionManager 組み立て + /model の config 永続
+│   │   ├── build-manager.ts   # config + I/O seam → SessionManager 組み立て + /model の config 永続・/prompt の prompt.md 永続
 │   │   ├── restore-sessions.ts # state.json + transcript から復元
 │   │   ├── persist-controller.ts # debounce保存 / SIGTERM同期flush / 最終flush を集約
 │   │   └── runtime.ts         # PRポーリング・alt-screen/mouse・SIGTERM/SIGHUP フラッシュ
@@ -74,6 +74,7 @@ codiva/
 │   │   ├── session-list.tsx   # 一覧画面（composer/list の2フォーカスゾーン）
 │   │   ├── session-detail.tsx # 詳細画面（ログ + 追加指示 + マージ/破棄。SDK セッションに直結）
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
+│   │   ├── repo-prompt-editor.tsx # /prompt のリポジトリ追加指示エディタ（モーダル・composer を置換）
 │   │   ├── dialog-box.tsx / confirm-prompt.tsx  # 共有 presentational（角丸枠・y/n 確認行）
 │   │   ├── status-footer.tsx / permission-dialog.tsx / model-select.tsx / command-palette.tsx / progress-badge.tsx
 │   │   ├── hooks.ts           # useSessions / useClock / useTextBufferRef / useCommandRunner / useLifecycleAction
@@ -84,6 +85,7 @@ codiva/
 │       ├── worktree-manager.ts # WorktreeManager（git worktree の I/O）
 │       ├── exec.ts / terminal-mode.ts  # fireAndForget / toggleEscape（共通 I/O ラッパ）
 │       ├── config.ts          # ~/.codiva/config.json の読み書き
+│       ├── repo-prompt.ts     # <repo>/.codiva/prompt.md の読み書き（loadRepoPrompt / saveRepoPrompt）
 │       ├── notify.ts / open-url.ts / pr.ts / title.ts / transcript.ts
 │       ├── alt-screen.ts / mouse.ts    # alt screen / SGR マウスの有効化・無効化
 │       └── state-store.ts     # <repo>/.codiva/state.json の読み書き + prune
@@ -174,7 +176,8 @@ interface SessionState {
 - 受信ループ: `for await (const msg of query)` で各 SDK メッセージを `applySdkMessage()`（`core/sdk-parse.ts`）に畳み込む。SDK メッセージ形状の解釈はここに閉じ、純粋 reducer（`reduce(state, CodivaEvent)`）は型付きイベントだけを扱う。UI アクション（追加指示・許可・モデル切替等）は `reduce` へ dispatch。変更のたびに `onChange` を発火。
 - `respondToPermission(result)`: 保留中の canUseTool Promise を resolve。
 - `interrupt()` / `abort()`: SDK の interrupt / AbortController。
-- `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
+- `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`/`appendSystemPrompt`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
+- **リポジトリ追加指示（`.codiva/prompt.md`）**: 合成ルート（`index.tsx`）が起動時に `loadRepoPrompt(repoRoot)` で読み、`buildManager` → `SessionOptions.appendSystemPrompt` へ流す。`consume()` は存在時のみ `options.systemPrompt` として渡す。SDK は systemPrompt 省略時に空文字へ写像する（claude_code プリセットは使わない）ため、文字列を渡すのは「空への追記」と等価で現挙動を変えない。CLAUDE.md は `settingSources: ['project']` 経由で別途注入されるので、これはそれへの上乗せ。将来ベースの systemPrompt を導入する場合は array / preset-append 形へ切り替える（`session.ts` の注入コメント参照）。
 - **復元対応**: `resume`（SDK セッションID）と `restored`（復元済み `SessionState`）を DI で受けられる。復元セッションは `start()` せず、最初の `send()` で遅延的に query を開始（`resume` 付き）。これで起動時にサブプロセスを乱立させない。
 - `stop()`: 状態を変えずにサブプロセスだけ落とす quiet 停止。アプリ終了時はこれを使い、実行中セッションを resumable のまま保存する（`abort()` は failed にする点が違い）。保留中の許可要求があれば deny で解決してから停止する（未応答の `tool_use` で resume が壊れるのを防ぐ）。
 
@@ -188,6 +191,7 @@ interface SessionState {
 - `onTransition(prev,next)`: ステータス遷移ごとに発火（デスクトップ通知に配線）。
 - `onPersist()`: 永続対象が変わった合図（合成ルートで debounce 保存に配線）。`persistableState()` が state.json 用スナップショットを組み立てる。
 - **モデル切替（`/model`）**: `SessionOptions` を可変フィールドとして保持し、`getModel()` / `setModel(model)` で公開。`setModel` は**以降の新規セッション**に適用（実行中セッションは起動時のモデルを維持）し、`onModelChange(model)` で合成ルートに通知 → `~/.codiva/config.json` の `model` にマージ保存される。選択肢は `core/models.ts`（`MODELS`）、コマンド解析は `core/commands.ts`（`parseSlashCommand`）。
+- **リポジトリ追加指示の編集（`/prompt`）**: モデル切替と同じ形。`getRepoPrompt()` / `setRepoPrompt(text)` で `SessionOptions.appendSystemPrompt` を可変管理し、`setRepoPrompt` は**以降の新規セッション**に適用（実行中セッションは起動時の指示を維持。systemPrompt は query 開始時に確定するため）、`onRepoPromptChange(text)` で合成ルートに通知 → `utils/saveRepoPrompt()` が `<repo>/.codiva/prompt.md` へ永続化（空なら削除）。UI は一覧の `/prompt` で `ui/repo-prompt-editor.tsx`（現在値をシードしたモーダル。Enter 保存 / Shift+Enter 改行 / Esc 取消。composer と同じ `input.ts` の chord モデル）を開く。起動時読込は従来どおり `loadRepoPrompt()`。
 - `restore(persisted)`: 起動時に前回セッションを再構築（worktree meta を再配線し、`Session` に `resume`/`restored` を渡す。id/slug を予約して衝突回避）。
 - **責務分割**: SessionManager はライフサイクルと配線のファサードで、以下を委譲する:
   - `core/session-store.ts`（`SessionStore`）… 購読可能スナップショット（順序・状態・参照同一性保持）
