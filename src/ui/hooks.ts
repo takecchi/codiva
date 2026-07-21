@@ -10,11 +10,14 @@ import {
 import {
   type CommandAction,
   emptyBuffer,
+  normalizeSelection,
   type RateLimitWindow,
   type RunMode,
   runCommand,
+  type SelectionRange,
   type SessionManager,
   type SessionState,
+  selectionText,
   type TextBuffer,
 } from '@/core';
 
@@ -180,6 +183,76 @@ export function useCommandRunner(
     onError(undefined);
     handlers[result.command.action]?.();
   };
+}
+
+export interface ComposerSelection {
+  /** The current highlighted range, or undefined when nothing is selected. */
+  selection: SelectionRange | undefined;
+  /** True between a press and its release (a drag is in progress). */
+  dragging: () => boolean;
+  /** Mouse press inside the composer: set the anchor and drop any old selection. */
+  begin: (index: number) => void;
+  /** Mouse drag: move the focus end to `index`, updating the highlight live. */
+  extend: (index: number) => void;
+  /** Mouse release: copy the selected text (if any) to the clipboard. */
+  end: (value: string) => void;
+  /** Drop the selection (e.g. the user typed or moved the caret with a key). */
+  clear: () => void;
+}
+
+/**
+ * Mouse-drag text selection for a composer, shared by both views. A press sets an
+ * anchor caret index, drags extend the focus (live highlight), and release copies
+ * the selected substring via the injected `onCopy` (OSC 52). Copy fires once on
+ * release — never per drag event — so a burst of motion reports doesn't spam the
+ * clipboard (a bug seen in other TUIs). The selection stays highlighted after
+ * release until a key clears it. Anchor/focus live in refs so `end` reads the
+ * final range even if the last `extend`'s state update hasn't flushed.
+ */
+export function useComposerSelection(onCopy?: (text: string) => void): ComposerSelection {
+  const [selection, setSelection] = useState<SelectionRange | undefined>(undefined);
+  const anchorRef = useRef<number | undefined>(undefined);
+  const focusRef = useRef<number | undefined>(undefined);
+  const selectionRef = useRef<SelectionRange | undefined>(undefined);
+
+  const set = (next: SelectionRange | undefined) => {
+    selectionRef.current = next;
+    setSelection(next);
+  };
+
+  const begin = (index: number) => {
+    anchorRef.current = index;
+    focusRef.current = index;
+    set(undefined);
+  };
+  const extend = (index: number) => {
+    if (anchorRef.current === undefined) {
+      return;
+    }
+    focusRef.current = index;
+    set(normalizeSelection(anchorRef.current, index));
+  };
+  const end = (value: string) => {
+    const anchor = anchorRef.current;
+    const focus = focusRef.current;
+    anchorRef.current = undefined;
+    if (anchor === undefined || focus === undefined) {
+      return;
+    }
+    const range = normalizeSelection(anchor, focus);
+    if (range) {
+      onCopy?.(selectionText(value, range));
+    }
+  };
+  const clear = () => {
+    anchorRef.current = undefined;
+    focusRef.current = undefined;
+    if (selectionRef.current) {
+      set(undefined);
+    }
+  };
+  const dragging = () => anchorRef.current !== undefined;
+  return { selection, dragging, begin, extend, end, clear };
 }
 
 export interface LifecycleAction {

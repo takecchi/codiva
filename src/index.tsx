@@ -7,7 +7,14 @@ import {
   resolveLang,
   type SessionManager,
 } from '@/core';
-import { defaultStatePath, loadConfig, loadRepoPrompt, openUrl, WorktreeManager } from '@/utils';
+import {
+  copyToClipboard,
+  defaultStatePath,
+  loadConfig,
+  loadRepoPrompt,
+  openUrl,
+  WorktreeManager,
+} from '@/utils';
 import { App } from './app';
 import {
   buildManager,
@@ -78,6 +85,7 @@ async function main(): Promise<void> {
       version={appVersion}
       messages={t}
       onOpenPr={openUrl}
+      onCopy={(text) => copyToClipboard(text)}
       // 詳細ビューを開いている間だけマウス捕捉を解除し、端末ネイティブの
       // ドラッグ選択（コピペ）を可能にするためのハンドル。
       mouse={terminal.mouse}

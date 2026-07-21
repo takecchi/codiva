@@ -30,12 +30,22 @@
 - **挿入テキストはサニタイズする**（`ui/input.ts` の editText 内）。複数文字チャンクは
   キー名が付かない生テキストとして届くため、タブ・CR 等の制御文字が混ざり得る。
   改行は LF に正規化、タブ→スペース、他の C0/DEL は捨てる。
-- **マウス**: SGR マウスレポート（`utils/mouse.ts` で ?1000/?1006、全画面時のみ有効）。
+- **マウス**: SGR マウスレポート（`utils/mouse.ts` で ?1002/?1006、全画面時のみ有効）。
+  ?1002 はボタン押下中のドラッグ移動も報告する（`parseSgrMouse` は `kind:'drag'` を返す）。
   解析は純粋な `parseSgrMouse`（`core/mouse.ts`）で行い、**view の useInput の先頭で**
   キー入力より先に処理する（レポート断片をバッファへ混入させない）。クリック位置→
   キャレットは `caretIndexForColumn`（表示幅の逆変換）+ `indexAtRowCol`。座標は
   出力原点前提なので、インライン描画フォールバック時はマウスを有効化しない。
-  設定 `"mouse": false` で無効化（有効中は端末のテキスト選択が Shift+ドラッグになるため）。
+  設定 `"mouse": false` で無効化（有効中は端末の通常ドラッグ選択が奪われるが、入力欄は
+  アプリ側の範囲選択でカバーする。端末ネイティブ選択は Shift+ドラッグで可）。
+- **入力欄の範囲選択コピー**: コンポーザ上のドラッグ（press=アンカー→drag=終点→release）で
+  範囲選択し、離した時点で **1 回だけ** クリップボードへコピー（`utils/clipboard.ts` の
+  OSC 52。SSH 越しでも動く）。選択の純粋ロジックは `core/text-selection.ts`
+  （`normalizeSelection`/`selectionText`/`lineSelection`）、状態管理は共有フック
+  `useComposerSelection`（`ui/hooks.ts`、コピー関数は DI）。ハイライト描画は `PromptInput`
+  の `selection` prop（選択中は block caret を出さない）。コピー関数は合成ルート
+  （`index.tsx`→`App`→両 view の `onCopy`）で注入する（ui は utils を直接 import しない）。
+  ドラッグごとに送らない（再描画毎コピーは他 TUI で既知のバグ）。
 
 ## 全画面レイアウト
 

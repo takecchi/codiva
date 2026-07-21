@@ -224,6 +224,36 @@ describe('App fullscreen layout', () => {
     app.unmount();
   });
 
+  it('dragging over the composer selects text and copies it on release (OSC 52)', async () => {
+    const copied: string[] = [];
+    const manager = makeManager();
+    const { app, stdin, lastFrame } = renderFullscreen(
+      <App manager={manager} onCopy={(t) => copied.push(t)} />,
+      20,
+      120,
+    );
+    stdin.write('hello world');
+    await flush();
+
+    const frame = lastFrame();
+    const lineIndex = frame.split('\n').findIndex((l) => l.includes('hello world'));
+    const line = frame.split('\n')[lineIndex] ?? '';
+    const startCol = line.indexOf('world'); // frame col of 'w' (includes `❯ ` prefix)
+    const endCol = startCol + 'world'.length; // just past 'd'
+    // Press on 'w', drag (motion bit 32) to the end, then release → copy once.
+    stdin.write(`\x1b[<0;${startCol + 1};${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<32;${endCol + 1};${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<0;${endCol + 1};${lineIndex + 1}m`);
+    await flush();
+
+    expect(copied).toEqual(['world']);
+    // The dragged text is still typed in the composer (selection doesn't delete).
+    expect(lastFrame()).toContain('hello world');
+    app.unmount();
+  });
+
   it('a burst of arrow keys in one chunk moves the caret cumulatively', async () => {
     // 端末はエスケープ列をまとめて1チャンクで届けることがある。stale closure だと
     // ←×5 が1回分しか効かない（バッファ更新は ref 経由で逐次適用する）。

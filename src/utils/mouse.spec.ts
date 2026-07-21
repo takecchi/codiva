@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createMouseControl, enableMouse } from './mouse';
 
-const ENABLE = '\x1b[?1000h\x1b[?1006h';
-const DISABLE = '\x1b[?1006l\x1b[?1000l';
+const ENABLE = '\x1b[?1002h\x1b[?1006h';
+const DISABLE = '\x1b[?1006l\x1b[?1002l\x1b[?1000l';
 
 describe('enableMouse', () => {
   it('writes the enable sequence and disables once (idempotent)', () => {

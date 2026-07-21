@@ -1,10 +1,13 @@
-import { Box, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useEffect, useMemo, useState } from 'react';
+import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
+import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  bufferOf,
   COMMANDS,
+  caretIndexAtClick,
   type DiffStat,
   type DisplayLine,
   emptyBuffer,
+  INPUT_MAX_ROWS,
   isCommandInput,
   isResumable,
   isTerminalStatus,
@@ -26,7 +29,9 @@ import { CommandPalette } from './command-palette';
 import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
+  useAbsolutePosition,
   useCommandRunner,
+  useComposerSelection,
   useLifecycleAction,
   useRunMode,
   useSessions,
@@ -77,19 +82,25 @@ export const SessionDetail: FC<{
   id: string;
   onBack: () => void;
   onQuit: () => void;
+  /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
+  onCopy?: (text: string) => void;
   /**
    * マウスレポート制御（マウス有効環境でのみ渡る）。詳細ビューを開いている間は
    * 捕捉を解除し、端末ネイティブのドラッグ選択でログをコピペできるようにする。
    * 戻る（アンマウント）と再度有効化する。
    */
   mouse?: MouseControl;
-}> = ({ manager, id, onBack, onQuit, mouse }) => {
+}> = ({ manager, id, onBack, onQuit, onCopy, mouse }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
   const { rows, columns } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
+  // フォローアップ入力欄のマウス範囲選択（ドラッグで選択→離すとコピー）。
+  const sel = useComposerSelection(onCopy);
+  const composerRef = useRef<DOMElement>(null);
+  const composerBox = useAbsolutePosition(composerRef);
   // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
   const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
@@ -178,6 +189,19 @@ export const SessionDetail: FC<{
   );
   const total = lines.length;
 
+  /** Caret index for a mouse point inside the composer, or undefined if outside. */
+  const composerCaretAt = (x: number, y: number): number | undefined => {
+    if (!composerBox) {
+      return undefined;
+    }
+    return caretIndexAtClick(
+      bufferRef.current,
+      y - (composerBox.top + 1),
+      x - composerBox.left - 2,
+      INPUT_MAX_ROWS,
+    );
+  };
+
   useInput((rawInput, rawKey) => {
     // 詳細ビューでは（コピペのため）マウス捕捉を解除しているので通常マウスレポートは
     // 届かない。ただし解除の境界で端末が送り残したレポート断片が生テキストとして
@@ -192,13 +216,34 @@ export const SessionDetail: FC<{
             ? scrollUp(a, total, WHEEL_SCROLL_ROWS)
             : scrollDown(a, total, WHEEL_SCROLL_ROWS),
         );
+      } else if (mouse.kind === 'press') {
+        // コンポーザ内のクリックはキャレット移動 + 選択アンカー。欄外は選択解除。
+        const index = composerCaretAt(mouse.x, mouse.y);
+        if (index !== undefined) {
+          updateBuffer(bufferOf(bufferRef.current.value, index));
+          sel.begin(index);
+        } else {
+          sel.clear();
+        }
+      } else if (mouse.kind === 'drag') {
+        if (sel.dragging()) {
+          const index = composerCaretAt(mouse.x, mouse.y);
+          if (index !== undefined) {
+            updateBuffer(bufferOf(bufferRef.current.value, index));
+            sel.extend(index);
+          }
+        }
+      } else if (mouse.kind === 'release') {
+        sel.end(bufferRef.current.value); // 離した時点で 1 回だけコピー
       }
-      return; // press/release はログビューでは無視（クリック操作はない）
+      return;
     }
     // Shift+Enter 等の修飾キーは modifyOtherKeys / CSI-u エスケープで届き、Ink は
     // 生テキストとして渡す。一覧と同じ共通ヘルパーで実キーへ復号し、Enter/改行/
     // Tab/Esc の挙動を両画面で揃える（詳細で Shift+Enter が改行にならない不具合対策）。
     const { input, key } = normalizeChord(rawInput, rawKey);
+    // 何かキーが来たらマウス選択のハイライトは消す。
+    sel.clear();
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
     // everything here so nothing leaks through to the composer underneath.
     if (modelSelect) {
@@ -403,14 +448,19 @@ export const SessionDetail: FC<{
             )}
           </DialogBox>
         ) : (
-          <Box flexDirection="column">
+          <Box ref={composerRef} flexDirection="column">
             {isCommandInput(buffer.value) ? (
               <CommandPalette
                 title={m.command.paletteTitle}
                 commands={matchCommands(buffer.value)}
               />
             ) : null}
-            <PromptInput buffer={buffer} focused placeholder={m.detail.followupPlaceholder} />
+            <PromptInput
+              buffer={buffer}
+              focused
+              placeholder={m.detail.followupPlaceholder}
+              selection={sel.selection}
+            />
           </Box>
         )}
 

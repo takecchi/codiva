@@ -21,6 +21,8 @@ export const App: FC<{
   messages?: Messages;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
+  /** Copy composer selection to the clipboard. Injected from index.tsx (OSC 52). */
+  onCopy?: (text: string) => void;
   /**
    * マウスレポート制御。詳細ビューはこれを使い、開いている間だけ捕捉を解除して
    * 端末ネイティブのテキスト選択（コピペ）を可能にする。マウス無効環境では undefined。
@@ -34,6 +36,7 @@ export const App: FC<{
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   onOpenPr,
+  onCopy,
   mouse,
 }) => {
   const { exit } = useApp();
@@ -71,6 +74,7 @@ export const App: FC<{
             id={view.id}
             onBack={() => setView({ mode: 'list' })}
             onQuit={quit}
+            onCopy={onCopy}
             mouse={mouse}
           />
         ) : (
@@ -86,6 +90,7 @@ export const App: FC<{
             onViewStateChange={(state) => {
               listStateRef.current = state;
             }}
+            onCopy={onCopy}
           />
         )}
       </Box>
