@@ -48,6 +48,28 @@ describe('SessionStore', () => {
     expect(after[1]).not.toBe(before[1]); // changed row is a new object
   });
 
+  it('remove drops a session from order and state, keeping the rest', () => {
+    const store = new SessionStore();
+    store.append('1', state('1'));
+    store.append('2', state('2'));
+    store.append('3', state('3'));
+    store.remove('2');
+    expect(store.ids()).toEqual(['1', '3']);
+    expect(store.getSnapshot().map((s) => s.id)).toEqual(['1', '3']);
+    expect(store.has('2')).toBe(false);
+    expect(store.get('2')).toBeUndefined();
+  });
+
+  it('remove is a no-op (no notify) for an unknown id', () => {
+    const store = new SessionStore();
+    store.append('1', state('1'));
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.remove('nope');
+    expect(store.ids()).toEqual(['1']);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
   it('notifies subscribers on every change and stops after unsubscribe', () => {
     const store = new SessionStore();
     const listener = vi.fn();
