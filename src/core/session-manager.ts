@@ -1,6 +1,14 @@
 import { errorMessage } from './errors';
 import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
 import { PrCoordinator } from './pr-coordinator';
+import {
+  type RateLimitInfoJson,
+  type RateLimitType,
+  type RateLimitWindow,
+  sameRateLimitWindow,
+  sortRateLimitWindows,
+  toRateLimitWindow,
+} from './rate-limit';
 import { createModePolicy, type RunMode } from './run-mode';
 import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
 import { discardSession, mergeSession, sessionDiffStat } from './session-actions';
@@ -52,6 +60,7 @@ export interface SessionManagerDeps {
   createSession?: (args: {
     input: CreateSessionInput;
     onChange: (state: SessionState) => void;
+    onRateLimit: (info: RateLimitInfoJson) => void;
     resume?: string;
     restored?: SessionState;
   }) => SessionHandle;
@@ -85,6 +94,13 @@ export class SessionManager {
   private readonly worktreeMeta = new Map<string, WorktreeMeta>();
   private readonly usedSlugs = new Set<string>();
   private readonly prs: PrCoordinator;
+  /**
+   * Latest account-wide subscription usage per window type (claude.ai limits).
+   * Every live session reports the same limits, so we keep the newest per type
+   * and expose a sorted snapshot for the banner. Transient — never persisted.
+   */
+  private readonly rateLimits = new Map<RateLimitType, RateLimitWindow>();
+  private rateLimitSnapshot: RateLimitWindow[] = [];
   private seq = 0;
   private mode: RunMode = 'auto';
   private readonly now: () => number;
@@ -149,6 +165,31 @@ export class SessionManager {
     return this.store.getSnapshot();
   }
 
+  /**
+   * Account-wide claude.ai subscription usage windows (5-hour + weekly), newest
+   * per type, in display order. Empty until the SDK reports a limit (Console/API
+   * keys never do). The reference is stable across no-op events so the banner
+   * subscription doesn't churn.
+   */
+  getRateLimits(): RateLimitWindow[] {
+    return this.rateLimitSnapshot;
+  }
+
+  /** Fold a session's `rate_limit_event` into the account-wide snapshot. */
+  private onRateLimit(info: RateLimitInfoJson): void {
+    const window = toRateLimitWindow(info);
+    if (!window) {
+      return;
+    }
+    const prev = this.rateLimits.get(window.type);
+    if (prev && sameRateLimitWindow(prev, window)) {
+      return; // unchanged — don't rebuild the snapshot or re-render
+    }
+    this.rateLimits.set(window.type, window);
+    this.rateLimitSnapshot = sortRateLimitWindows([...this.rateLimits.values()]);
+    this.store.notify();
+  }
+
   get(id: string): SessionState | undefined {
     return this.store.get(id);
   }
@@ -179,8 +220,9 @@ export class SessionManager {
     extra?: { resume?: string; restored?: SessionState },
   ): SessionHandle {
     const onChange = (s: SessionState) => this.onSessionChange(input.id, s);
+    const onRateLimit = (info: RateLimitInfoJson) => this.onRateLimit(info);
     if (this.deps.createSession) {
-      return this.deps.createSession({ input, onChange, ...extra });
+      return this.deps.createSession({ input, onChange, onRateLimit, ...extra });
     }
     return new Session({
       queryFn: this.deps.queryFn,
@@ -189,6 +231,7 @@ export class SessionManager {
       now: this.now,
       policy: this.deps.policy ?? this.modePolicy,
       onChange,
+      onRateLimit,
       generateTitle: extra ? undefined : this.deps.generateTitle,
       resume: extra?.resume,
       restored: extra?.restored,

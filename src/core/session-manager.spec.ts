@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { RateLimitInfoJson } from '@/core/rate-limit';
 import { SessionManager } from '@/core/session-manager';
 import type { PrAutomation, SessionHandle, WorktreeService } from '@/core/session-ports';
 import { initialState } from '@/core/status-reducer';
@@ -29,8 +30,13 @@ class FakeSession implements SessionHandle {
     input: CreateSessionInput,
     private readonly onChange: (s: SessionState) => void,
     restored?: SessionState,
+    private readonly onRateLimit?: (info: RateLimitInfoJson) => void,
   ) {
     this.state = restored ?? initialState(input);
+  }
+  /** Simulate the SDK reporting an account-wide usage limit through this session. */
+  emitRateLimit(info: RateLimitInfoJson) {
+    this.onRateLimit?.(info);
   }
   calls: string[] = [];
   getState() {
@@ -92,8 +98,8 @@ function makeManager() {
       throw new Error('should not be called with a fake factory');
     }) as never,
     now: () => 100,
-    createSession: ({ input, onChange, restored }) => {
-      const s = new FakeSession(input, onChange, restored);
+    createSession: ({ input, onChange, restored, onRateLimit }) => {
+      const s = new FakeSession(input, onChange, restored, onRateLimit);
       created.push(s);
       return s;
     },
@@ -124,6 +130,58 @@ describe('SessionManager', () => {
     expect(created).toHaveLength(1);
     expect(created[0]?.started).toBe(true);
     expect(manager.getSnapshot()[0]?.branch).toBe('codiva/add-feature');
+  });
+
+  it('aggregates rate-limit events into a sorted, account-wide snapshot', async () => {
+    const { manager, created } = makeManager();
+    const listener = vi.fn();
+    manager.subscribe(listener);
+    expect(manager.getRateLimits()).toEqual([]);
+
+    manager.create('task');
+    await flush();
+    listener.mockClear();
+
+    // Weekly first, then the 5-hour window — the snapshot must sort five_hour first.
+    created[0]?.emitRateLimit({
+      status: 'allowed',
+      rateLimitType: 'seven_day',
+      utilization: 40,
+      resetsAt: 2000,
+    });
+    created[0]?.emitRateLimit({
+      status: 'allowed',
+      rateLimitType: 'five_hour',
+      utilization: 5,
+      resetsAt: 1000,
+    });
+    const windows = manager.getRateLimits();
+    expect(windows.map((w) => w.type)).toEqual(['five_hour', 'seven_day']);
+    expect(windows[0]).toMatchObject({ utilization: 5, resetsAt: 1000_000 });
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it('ignores unchanged rate-limit events (stable reference, no re-render)', async () => {
+    const { manager, created } = makeManager();
+    manager.create('task');
+    await flush();
+    created[0]?.emitRateLimit({
+      status: 'allowed',
+      rateLimitType: 'five_hour',
+      utilization: 5,
+      resetsAt: 1000,
+    });
+    const first = manager.getRateLimits();
+    const listener = vi.fn();
+    manager.subscribe(listener);
+    created[0]?.emitRateLimit({
+      status: 'allowed',
+      rateLimitType: 'five_hour',
+      utilization: 5,
+      resetsAt: 1000,
+    });
+    expect(manager.getRateLimits()).toBe(first); // same reference — no rebuild
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it('avoids slug collisions across concurrent creates', async () => {

@@ -32,6 +32,7 @@ import {
   useClock,
   useCommandRunner,
   useLifecycleAction,
+  useRateLimit,
   useRunMode,
   useSessions,
   useTextBufferRef,
@@ -115,6 +116,7 @@ export const SessionList: FC<{
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
+  const rateLimits = useRateLimit(manager);
   const now = useClock(1000);
   // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
@@ -378,6 +380,8 @@ export const SessionList: FC<{
         version={version}
         sessionCount={sessions.length}
         totalCostUsd={totalCostUsd(sessions)}
+        rateLimits={rateLimits}
+        now={now}
       />
 
       {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる。
