@@ -123,6 +123,33 @@ export function toRateLimited(
   };
 }
 
+/**
+ * Transition into the `interrupted` state: the live query dropped mid-flight
+ * because the connection was interrupted (not a clean finish, not a real
+ * failure). Idle & resumable — sending a follow-up (or the explicit "resume"
+ * action) restarts the query with `resume` so Claude continues where it left
+ * off. Records the reason in the log. Shared with `sdk-parse.ts` (a connection
+ * drop can surface both as a thrown error caught by `Session.consume` and as an
+ * error `result` on the stream). Transient bookkeeping (`pendingPermission` from
+ * a turn that can never resolve now, deferred sub-agent results) is dropped so a
+ * resumed turn starts clean.
+ */
+export function toInterrupted(state: SessionState, at: number, detail: string): SessionState {
+  const withLog = appendLog(state, 'system', detail);
+  const { pendingPermission, deferredResult, activeTaskIds, ...rest } = state;
+  void pendingPermission;
+  void deferredResult;
+  void activeTaskIds;
+  return {
+    ...rest,
+    status: 'interrupted',
+    finishedAt: at,
+    streamingText: undefined,
+    messages: withLog.messages,
+    logSeq: withLog.logSeq,
+  };
+}
+
 /** Pure reducer: the single source of truth for session state transitions. */
 export function reduce(state: SessionState, event: CodivaEvent): SessionState {
   switch (event.kind) {
@@ -228,6 +255,9 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         logSeq: withLog.logSeq,
       };
     }
+
+    case 'interrupted':
+      return toInterrupted(state, event.at, event.error ?? 'connection interrupted');
 
     case 'archived':
       return state.status === 'archived'

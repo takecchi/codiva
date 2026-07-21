@@ -350,6 +350,63 @@ describe('Session', () => {
     expect(session.getState().error).toContain('stream boom');
   });
 
+  it('a dropped connection marks the session interrupted (resumable), then resumes on send', async () => {
+    // Once the query has reached init (sdkSessionId known), a mid-stream throw
+    // whose message looks like a connection drop is treated as `interrupted`
+    // (idle & resumable) rather than `failed`. The next send() restarts the
+    // (ended) consume loop with resume=sdkSessionId, continuing the SDK session.
+    const optionsSeen: Options[] = [];
+    let call = 0;
+    const queryFn = (({ options }: { options: Options }) => {
+      optionsSeen.push(options);
+      const n = call++;
+      const gen = (async function* () {
+        if (n === 0) {
+          yield { type: 'system', subtype: 'init', session_id: 'sdk-9' } as unknown as SDKMessage;
+          throw new Error('terminated');
+        }
+        // The resumed query stays open (streaming input) with no further output.
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const session = new Session({ queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    await tick();
+    expect(session.getState().status).toBe('interrupted');
+    expect(session.getState().sdkSessionId).toBe('sdk-9');
+    // Not an error state — the reason is logged, but `error` stays unset.
+    expect(session.getState().error).toBeUndefined();
+
+    session.send('continue');
+    await tick();
+    expect(session.getState().status).toBe('running');
+    // The restarted query resumed the prior SDK conversation.
+    expect(optionsSeen[1]?.resume).toBe('sdk-9');
+    expect(session.getState().messages.at(-1)?.text).toBe('continue');
+  });
+
+  it('a connection error before init has no session to resume, so it fails', async () => {
+    // Without an sdkSessionId there is nothing to resume — a connection drop this
+    // early is a genuine early failure, not a resumable interruption.
+    const queryFn = (() => {
+      const gen = {
+        next: async () => {
+          throw new Error('fetch failed');
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        interrupt: async () => {},
+      };
+      return gen as unknown as Query;
+    }) as unknown as QueryFn;
+    const session = new Session({ queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    await tick();
+    expect(session.getState().status).toBe('failed');
+  });
+
   it('forwards model/effort/permissionMode/maxBudgetUsd into the query options', async () => {
     let seen: Options | undefined;
     const queryFn = (({ options }: { options: Options }) => {

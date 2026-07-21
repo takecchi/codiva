@@ -53,7 +53,13 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     restoreAs: 'completed',
     notifyKey: 'completed',
   },
-  interrupted: { terminal: true, attention: false, active: false, restoreAs: 'interrupted' },
+  interrupted: {
+    terminal: true,
+    attention: false,
+    active: false,
+    restoreAs: 'interrupted',
+    notifyKey: 'interrupted',
+  },
   // A rate limit is transient — by the time the app restarts the limit may have
   // reset, so restore it as a plain resumable (idle = interrupted) session.
   rate_limited: {
@@ -90,4 +96,14 @@ export function needsAttention(status: SessionStatus): boolean {
  */
 export function isActiveStatus(status: SessionStatus): boolean {
   return STATUS_META[status].active;
+}
+
+/**
+ * 「中断されて再開待ち」か。通信断で止まった `interrupted`、および使用量制限で
+ * 止まった `rate_limited` が該当する。どちらも「クリーンに完了したわけではないが
+ * resume で続行できる」状態なので、一覧/詳細に明示的な再開（continue）アクションを
+ * 出す。`completed` は追加指示を受けられるが「中断」ではないため対象外。
+ */
+export function isResumable(status: SessionStatus): boolean {
+  return status === 'interrupted' || status === 'rate_limited';
 }

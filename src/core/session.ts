@@ -8,7 +8,7 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncQueue } from './async-queue';
-import { errorMessage } from './errors';
+import { errorMessage, isConnectionError } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
 import { applySdkMessage } from './sdk-parse';
 import { accrueActive, initialState, reduce } from './status-reducer';
@@ -112,7 +112,16 @@ export class Session {
   private handle?: Query;
   private pending?: { request: PermissionRequest; resolve: (r: PermissionResult) => void };
   private reqSeq = 0;
-  private started = false;
+  /** True once the initial prompt has been enqueued (start / first send); keeps start() idempotent. */
+  private startedOnce = false;
+  /**
+   * True while the SDK consume loop is running. Distinct from `startedOnce`: the
+   * loop exits when the stream ends (abort/stop) or throws (connection drop). A
+   * connection interruption leaves the session `interrupted` but resumable — the
+   * next send() restarts the loop (with `resume`), which this flag gates so we
+   * never run two consume loops at once.
+   */
+  private consuming = false;
   /**
    * Per-session model override set via setModel() (the detail view's /model).
    * `deps.options` is readonly, so we track the chosen model here and prefer it
@@ -142,9 +151,10 @@ export class Session {
    * session at launch.
    */
   start(): void {
-    if (this.started) {
+    if (this.startedOnce) {
       return;
     }
+    this.startedOnce = true;
     this.inputQueue.push(toUserMessage(this.state.prompt));
     this.ensureConsuming();
     void this.runTitleGen();
@@ -169,19 +179,31 @@ export class Session {
     }
   }
 
-  /** Send an additional instruction into the (possibly not-yet-started) session. */
+  /**
+   * Send an additional instruction into the session. Works whether the session
+   * has never started (restored → lazy resume), is idle after a completed turn,
+   * or was `interrupted` by a dropped connection — in the last case ensureConsuming
+   * restarts the (ended) consume loop with `resume`, so the follow-up continues the
+   * same SDK conversation. This is what powers the one-key "resume" action.
+   */
   send(text: string): void {
+    this.startedOnce = true;
     this.inputQueue.push(toUserMessage(text));
     this.ensureConsuming();
     this.dispatch({ kind: 'user_input', text, at: this.now() });
   }
 
-  /** Start the SDK query + consume loop if it isn't running yet. */
+  /**
+   * Start the SDK query + consume loop if one isn't already running. Safe to call
+   * again after a connection interruption ended the previous loop (it restarts,
+   * resuming the SDK session). A permanently stopped session (abort/stop aborts
+   * the controller) is never restarted.
+   */
   private ensureConsuming(): void {
-    if (this.started) {
+    if (this.consuming || this.abortController.signal.aborted) {
       return;
     }
-    this.started = true;
+    this.consuming = true;
     void this.consume();
   }
 
@@ -309,6 +331,10 @@ export class Session {
       const opts = this.deps.options;
       // A per-session /model override wins over the configured default.
       const model = this.modelOverride.overridden ? this.modelOverride.model : opts?.model;
+      // Resume the prior SDK conversation when we have one: `deps.resume` for a
+      // restored session, or the live `sdkSessionId` when restarting after a
+      // connection interruption. Absent on a fresh session's first start.
+      const resume = this.deps.resume ?? this.state.sdkSessionId;
       this.handle = this.deps.queryFn({
         prompt: this.inputQueue,
         options: {
@@ -328,7 +354,7 @@ export class Session {
           ...(model ? { model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
           ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
-          ...(this.deps.resume ? { resume: this.deps.resume } : {}),
+          ...(resume ? { resume } : {}),
         },
       });
       for await (const message of this.handle) {
@@ -344,8 +370,28 @@ export class Session {
       }
     } catch (err) {
       if (!this.abortController.signal.aborted) {
-        this.dispatch({ kind: 'aborted', error: errorMessage(err), at: this.now() });
+        const error = errorMessage(err);
+        // A connection drop mid-flight is not a failure: mark the session
+        // `interrupted` (idle & resumable) so a follow-up / the resume action
+        // continues the same SDK conversation. Require an sdkSessionId — without
+        // one there's nothing to resume, so it's a genuine early failure. A
+        // pending permission from the dead turn can never resolve now; drop it so
+        // the resumed turn starts clean. Rate-limit throws fall through to
+        // `aborted`, which the reducer classifies as `rate_limited`.
+        if (isConnectionError(error) && this.state.sdkSessionId) {
+          if (this.pending) {
+            this.pending.resolve({ behavior: 'deny', message: 'connection interrupted' });
+            this.pending = undefined;
+          }
+          this.dispatch({ kind: 'interrupted', error, at: this.now() });
+        } else {
+          this.dispatch({ kind: 'aborted', error, at: this.now() });
+        }
       }
+    } finally {
+      // The loop has exited (stream end, abort, or throw). Release the guard so a
+      // later send() can restart it — an interrupted session resumes this way.
+      this.consuming = false;
     }
   }
 

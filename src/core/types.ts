@@ -187,6 +187,10 @@ export type CodivaEvent =
   // band during the merge action). Carries the conflicted file paths.
   | { kind: 'conflict'; files: string[]; at: number }
   | { kind: 'aborted'; error?: string; at: number }
+  // The live query dropped mid-flight because the connection was interrupted
+  // (see isConnectionError). Unlike `aborted` this is not a failure: the session
+  // becomes `interrupted` (idle & resumable) so the user can continue it.
+  | { kind: 'interrupted'; error?: string; at: number }
   | { kind: 'archived'; at: number };
 
 export interface CreateSessionInput {

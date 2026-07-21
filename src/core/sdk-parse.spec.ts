@@ -351,6 +351,19 @@ describe('applySdkMessage over rate-limit signals', () => {
     expect(state.status).toBe('rate_limited');
     expect(state.totalCostUsd).toBe(0.5);
   });
+
+  it('a connection-error result is interrupted (resumable), not failed', () => {
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      result: 'Connection error.',
+      total_cost_usd: 0.25,
+    });
+    expect(state.status).toBe('interrupted');
+    expect(state.error).toBeUndefined();
+    expect(state.totalCostUsd).toBe(0.25);
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'system', text: 'Connection error.' });
+  });
 });
 
 describe('applySdkMessage gates completion on in-flight sub-agent tasks', () => {

@@ -12,6 +12,7 @@ import {
   isCommandInput,
   isFullscreenViewport,
   isPrCellHit,
+  isResumable,
   listView,
   listViewportRows,
   matchCommands,
@@ -329,6 +330,13 @@ export const SessionList: FC<{
         setConfirm('discard');
         return;
       }
+      // Resume a session that was cut off (connection interrupted / rate limited):
+      // sends a "continue" instruction, which restarts the SDK query with `resume`
+      // so Claude picks up where it left off. Only meaningful for resumable rows.
+      if ((input === 'r' || input === 'R') && target && isResumable(target.status)) {
+        manager.send(target.id, m.resume.instruction);
+        return;
+      }
       if (key.escape) {
         setFocus('composer');
         return;
@@ -380,7 +388,10 @@ export const SessionList: FC<{
       : pending
         ? m.list.helpPending
         : focus === 'list'
-          ? m.list.helpList
+          ? // 中断された（再開可能な）行を選択中は再開キー（r）を含むヒントに切り替える。
+            target && isResumable(target.status)
+            ? m.resume.listHint
+            : m.list.helpList
           : m.list.helpComposer;
 
   return (
