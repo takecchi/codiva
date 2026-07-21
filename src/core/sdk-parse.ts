@@ -112,6 +112,79 @@ function applyTaskTool(todos: TodoItem[], block: ToolUseBlock): TodoItem[] {
   return todos;
 }
 
+/**
+ * Finalize a successful turn into `completed`, appending the result text (if any)
+ * to the log. Shared by the direct path (no sub-agent work in flight) and the
+ * deferred path (a `result` that had to wait for the last sub-agent task to settle).
+ */
+function completeWith(
+  state: SessionState,
+  result: { at: number; totalCostUsd?: number; resultText: string },
+): SessionState {
+  const withLog =
+    result.resultText.length > 0
+      ? appendLog(state, 'result', result.resultText)
+      : { messages: state.messages, logSeq: state.logSeq };
+  // Drop the transient deferral bookkeeping — the turn is genuinely done now.
+  const { deferredResult, activeTaskIds, ...rest } = state;
+  void deferredResult;
+  void activeTaskIds;
+  return {
+    ...rest,
+    status: 'completed',
+    finishedAt: result.at,
+    totalCostUsd: result.totalCostUsd,
+    streamingText: undefined,
+    messages: withLog.messages,
+    logSeq: withLog.logSeq,
+  };
+}
+
+/**
+ * `system/task_started`: a sub-agent (Task tool) began. Track its id so a `result`
+ * that arrives while it is still running is recognized as premature (a backgrounded
+ * Task returns its tool_result immediately and the top-level turn continues). Ambient
+ * housekeeping tasks (`skip_transcript`) are ignored — they must not gate completion.
+ */
+function onTaskStarted(state: SessionState, message: Record<string, unknown>): SessionState {
+  if (message.skip_transcript === true) {
+    return state;
+  }
+  const taskId = typeof message.task_id === 'string' ? message.task_id : undefined;
+  if (taskId === undefined) {
+    return state;
+  }
+  const active = state.activeTaskIds ?? [];
+  if (active.includes(taskId)) {
+    return state;
+  }
+  return { ...state, activeTaskIds: [...active, taskId] };
+}
+
+/**
+ * `system/task_notification`: a sub-agent task settled (completed/failed/stopped).
+ * Drop it from the in-flight set; if that empties the set and a `result` was already
+ * deferred, finalize the completion now (the turn really is done). We only finalize
+ * a still-`running` session — a session that meanwhile failed/was aborted must not be
+ * flipped to completed by a late notification.
+ */
+function onTaskSettled(
+  state: SessionState,
+  message: Record<string, unknown>,
+  at: number,
+): SessionState {
+  const taskId = typeof message.task_id === 'string' ? message.task_id : undefined;
+  const active = state.activeTaskIds ?? [];
+  const nextActive = taskId ? active.filter((id) => id !== taskId) : active;
+  if (nextActive.length === 0 && state.deferredResult && state.status === 'running') {
+    return completeWith(state, { ...state.deferredResult, at });
+  }
+  if (nextActive.length === active.length) {
+    return state;
+  }
+  return { ...state, activeTaskIds: nextActive };
+}
+
 function reduceAssistant(state: SessionState, message: Record<string, unknown>): SessionState {
   const inner = message.message as { content?: unknown; model?: unknown } | undefined;
   const content = Array.isArray(inner?.content) ? inner.content : [];
@@ -251,6 +324,14 @@ function reduceSdk(
         model,
       };
     }
+    // Sub-agent (Task tool) lifecycle — track in-flight tasks so a backgrounded
+    // Task can't let the top-level `result` mark the session completed early.
+    if (message.subtype === 'task_started') {
+      return onTaskStarted(state, message);
+    }
+    if (message.subtype === 'task_notification') {
+      return onTaskSettled(state, message, at);
+    }
     return state;
   }
 
@@ -286,19 +367,19 @@ function reduceSdk(
       typeof message.total_cost_usd === 'number' ? message.total_cost_usd : state.totalCostUsd;
     if (message.subtype === 'success') {
       const resultText = asString(message.result);
-      const withLog =
-        resultText.length > 0
-          ? appendLog(state, 'result', resultText)
-          : { messages: state.messages, logSeq: state.logSeq };
-      return {
-        ...state,
-        status: 'completed',
-        finishedAt: at,
-        totalCostUsd: cost,
-        streamingText: undefined,
-        messages: withLog.messages,
-        logSeq: withLog.logSeq,
-      };
+      // A sub-agent (Task) is still running: this top-level `result` arrived
+      // because the Task was backgrounded and returned its tool_result early. The
+      // session is NOT actually done — hold the result and stay `running` until
+      // the last task settles (`task_notification` → onTaskSettled finalizes it).
+      if ((state.activeTaskIds?.length ?? 0) > 0) {
+        return {
+          ...state,
+          totalCostUsd: cost,
+          streamingText: undefined,
+          deferredResult: { at, totalCostUsd: cost, resultText },
+        };
+      }
+      return completeWith(state, { at, totalCostUsd: cost, resultText });
     }
     const error = String(message.subtype ?? 'error');
     const resultText = asString(message.result);
