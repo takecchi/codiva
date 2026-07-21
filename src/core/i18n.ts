@@ -128,6 +128,20 @@ export interface Messages {
     completed: string;
     rateLimited: string;
     failed: string;
+    /** 通信断でセッションが中断された（再開可能）ときの通知。 */
+    interrupted: string;
+  };
+  /**
+   * 中断されたセッションの再開（continue）。通信断で `interrupted` になった、または
+   * 使用量制限で `rate_limited` になったセッションを続行するためのアクション。
+   */
+  resume: {
+    /** 再開時に Claude へ送る指示文（中断箇所からの続行を促す）。ログにユーザー発話として残る。 */
+    instruction: string;
+    /** 一覧で再開可能なセッションを選択中のフッタヒント。 */
+    listHint: string;
+    /** 詳細ビューの操作パネルに出す再開アクションのラベル。 */
+    action: string;
   };
   /** 起動バナー（banner.tsx） */
   banner: {
@@ -285,6 +299,12 @@ const ja: Messages = {
     completed: '完了しました',
     rateLimited: 'レート制限に達しました',
     failed: '失敗しました',
+    interrupted: '接続が中断されました（再開できます）',
+  },
+  resume: {
+    instruction: '接続が切れて中断しました。中断したところから作業を続けてください。',
+    listHint: '↑↓: 選択 ・ r: 再開 ・ Enter/→: 詳細 ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
+    action: '再開（続行）',
   },
   banner: {
     subtitle: '並列 Claude Code セッションを git worktree 上で実行',
@@ -423,6 +443,14 @@ const en: Messages = {
     completed: 'Completed',
     rateLimited: 'Rate limit reached',
     failed: 'Failed',
+    interrupted: 'Connection interrupted (resumable)',
+  },
+  resume: {
+    instruction:
+      'The connection dropped and this session was interrupted. Continue from where you left off.',
+    listHint:
+      '↑↓: select · r: resume · Enter/→: open detail · m: merge · d: discard · Tab/Esc: input',
+    action: 'Resume (continue)',
   },
   banner: {
     subtitle: 'Parallel Claude Code sessions in git worktrees',

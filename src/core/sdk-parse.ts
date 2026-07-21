@@ -1,5 +1,12 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { appendLog, isRateLimitError, progressOf, toRateLimited } from './status-reducer';
+import { isConnectionError } from './errors';
+import {
+  appendLog,
+  isRateLimitError,
+  progressOf,
+  toInterrupted,
+  toRateLimited,
+} from './status-reducer';
 import type { SessionState, TaskStatus, TodoItem } from './types';
 
 /**
@@ -397,6 +404,11 @@ function reduceSdk(
     // the user can wait for the reset and resume rather than treating it as an error.
     if (isRateLimitError(error) || isRateLimitError(resultText)) {
       return { ...toRateLimited(state, at, resultText || error), totalCostUsd: cost };
+    }
+    // A dropped connection surfaced as an error result — resumable, not a real
+    // failure (same treatment as the thrown-error path in Session.consume).
+    if (isConnectionError(error) || isConnectionError(resultText)) {
+      return { ...toInterrupted(state, at, resultText || error), totalCostUsd: cost };
     }
     const withLog = appendLog(state, 'error', error);
     return {

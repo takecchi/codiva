@@ -6,6 +6,7 @@ import {
   type DisplayLine,
   emptyBuffer,
   isCommandInput,
+  isResumable,
   isTerminalStatus,
   type LogEntry,
   logLines,
@@ -112,6 +113,17 @@ export const SessionDetail: FC<{
   const pending = session?.pendingPermission;
   const status = session?.status;
   const isTerminal = status !== undefined && isTerminalStatus(status);
+  // A session cut off by a dropped connection (or a rate limit) can be resumed:
+  // sending a follow-up restarts the SDK query with `resume`. Surfaced as an
+  // explicit action so the user can continue without typing.
+  const resumable = status !== undefined && isResumable(status);
+  const resume = () => {
+    if (session && resumable) {
+      manager.send(session.id, m.resume.instruction);
+      setPanel('input');
+      setAnchor('bottom');
+    }
+  };
 
   // 詳細ビューにいる間はマウス捕捉を解除し、端末ネイティブのドラッグ選択で
   // ログをそのままコピペできるようにする。一覧へ戻る（アンマウント）と再度有効化して
@@ -248,6 +260,8 @@ export const SessionDetail: FC<{
         setConfirm('merge');
       } else if (input === 'd' || input === 'D') {
         setConfirm('discard');
+      } else if ((input === 'r' || input === 'R') && resumable) {
+        resume();
       }
       return;
     }
@@ -376,6 +390,11 @@ export const SessionDetail: FC<{
                 <Text color={theme.accent} bold>
                   {m.detail.actionsTitle}
                 </Text>
+                {resumable ? (
+                  <Text>
+                    <Text color={statusColor.interrupted}>r</Text>: {m.resume.action}
+                  </Text>
+                ) : null}
                 <Text>
                   <Text color={theme.yes}>m</Text>: {m.detail.mergeAction} ・{' '}
                   <Text color={theme.no}>d</Text>: {m.detail.discardAction}
