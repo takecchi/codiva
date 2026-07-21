@@ -1,5 +1,6 @@
 import { USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
 import { makeTitle } from './slug';
+import { isActiveStatus } from './status-meta';
 import type {
   CodivaEvent,
   CreateSessionInput,
@@ -33,8 +34,43 @@ export function initialState(input: CreateSessionInput): SessionState {
     todos: [],
     messages: [],
     startedAt: input.startedAt,
+    // `creating` is an active status, so the clock starts running immediately.
+    activeMs: 0,
+    activeSince: input.startedAt,
     logSeq: 0,
   };
+}
+
+/**
+ * Fold a status transition into the active-time accumulator. Called centrally
+ * for every adopted state (see `Session.commit`) so we don't have to touch each
+ * individual transition: whenever the session crosses the active/idle boundary
+ * we either open a new segment (`activeSince = at`) or close the current one
+ * (`activeMs += at - activeSince`). Staying on the same side is a no-op — the
+ * spread in the reducers already carried `activeMs`/`activeSince` forward, so we
+ * return `next` unchanged to preserve the caller's no-op/ref-equality checks.
+ */
+export function accrueActive(prev: SessionState, next: SessionState, at: number): SessionState {
+  const wasActive = isActiveStatus(prev.status);
+  const nowActive = isActiveStatus(next.status);
+  if (wasActive === nowActive) {
+    return next;
+  }
+  if (nowActive) {
+    return { ...next, activeSince: at };
+  }
+  const segment = prev.activeSince !== undefined ? Math.max(0, at - prev.activeSince) : 0;
+  return { ...next, activeMs: next.activeMs + segment, activeSince: undefined };
+}
+
+/**
+ * Total active (working) time in ms as of `now`: the accumulated completed
+ * segments plus the currently-open segment if the session is still active. This
+ * is what the UI shows for "session running time" — idle waiting never counts.
+ */
+export function activeElapsedMs(state: SessionState, now: number): number {
+  const open = state.activeSince !== undefined ? Math.max(0, now - state.activeSince) : 0;
+  return state.activeMs + open;
 }
 
 /** Derive Step n/m progress from a todo list. Exported for session restoration. */

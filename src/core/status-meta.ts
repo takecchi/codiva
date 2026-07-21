@@ -15,6 +15,12 @@ export interface StatusMeta {
   /** ユーザーの操作待ちで一覧上に注意グリフ(●)を出すか。 */
   attention: boolean;
   /**
+   * 「稼働中」か。セッション動作時間の換算対象（creating/running のみ）。
+   * ユーザー操作待ち(awaiting_*)や終端状態は idle なので false — この時間は
+   * 動作時間に含めない（wall-clock ではなく「実際に動いた時間」を計るため）。
+   */
+  active: boolean;
+  /**
    * 復元時に丸める先の状態。undefined は「永続対象外」を意味する
    * (creating = worktree 未作成、conflict/archived = 復元しない)。
    */
@@ -24,33 +30,48 @@ export interface StatusMeta {
 }
 
 export const STATUS_META: Record<SessionStatus, StatusMeta> = {
-  creating: { terminal: false, attention: false },
-  running: { terminal: false, attention: false, restoreAs: 'interrupted' },
+  creating: { terminal: false, attention: false, active: true },
+  running: { terminal: false, attention: false, active: true, restoreAs: 'interrupted' },
   awaiting_permission: {
     terminal: false,
     attention: true,
+    active: false,
     restoreAs: 'interrupted',
     notifyKey: 'needsPermission',
   },
   awaiting_input: {
     terminal: false,
     attention: true,
+    active: false,
     restoreAs: 'interrupted',
     notifyKey: 'needsInput',
   },
-  completed: { terminal: true, attention: false, restoreAs: 'completed', notifyKey: 'completed' },
-  interrupted: { terminal: true, attention: false, restoreAs: 'interrupted' },
+  completed: {
+    terminal: true,
+    attention: false,
+    active: false,
+    restoreAs: 'completed',
+    notifyKey: 'completed',
+  },
+  interrupted: { terminal: true, attention: false, active: false, restoreAs: 'interrupted' },
   // A rate limit is transient — by the time the app restarts the limit may have
   // reset, so restore it as a plain resumable (idle = interrupted) session.
   rate_limited: {
     terminal: true,
     attention: false,
+    active: false,
     restoreAs: 'interrupted',
     notifyKey: 'rateLimited',
   },
-  failed: { terminal: true, attention: false, restoreAs: 'failed', notifyKey: 'failed' },
-  conflict: { terminal: true, attention: false },
-  archived: { terminal: true, attention: false },
+  failed: {
+    terminal: true,
+    attention: false,
+    active: false,
+    restoreAs: 'failed',
+    notifyKey: 'failed',
+  },
+  conflict: { terminal: true, attention: false, active: false },
+  archived: { terminal: true, attention: false, active: false },
 };
 
 /** 終端状態（これ以上 SDK ストリームが状態を進めない）か。 */
@@ -61,4 +82,12 @@ export function isTerminalStatus(status: SessionStatus): boolean {
 /** 一覧上でユーザーの操作を促す（許可待ち・質問待ち）状態か。 */
 export function needsAttention(status: SessionStatus): boolean {
   return STATUS_META[status].attention;
+}
+
+/**
+ * 「稼働中」（動作時間の換算対象）か。creating/running のみ true。
+ * idle（awaiting_*）・終端状態はユーザー操作待ちや停止中なので含めない。
+ */
+export function isActiveStatus(status: SessionStatus): boolean {
+  return STATUS_META[status].active;
 }

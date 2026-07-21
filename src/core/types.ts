@@ -114,6 +114,22 @@ export interface SessionState {
   conflictFiles?: string[];
   startedAt: number;
   finishedAt?: number;
+  /**
+   * Accumulated *active* (working) time in ms — the sum of every completed
+   * running/creating segment. Idle time (awaiting the user, completed, terminal)
+   * is excluded, so this is the "session actually ran" duration rather than
+   * wall-clock since `startedAt`. In-flight time isn't folded in here; add the
+   * current open segment at display time via `activeElapsedMs`.
+   */
+  activeMs: number;
+  /**
+   * Epoch ms at which the current active segment began, present iff the session
+   * is currently in an active status (see `isActiveStatus`). Undefined while idle
+   * or terminal. On a status boundary the reducer accrues `now - activeSince`
+   * into `activeMs` and clears/sets this (see `accrueActive`). Transient — never
+   * persisted (a restored session resumes idle, so it starts undefined).
+   */
+  activeSince?: number;
   totalCostUsd?: number;
   error?: string;
   /**

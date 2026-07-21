@@ -1,21 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { formatElapsed } from './format';
+import { formatDuration } from './format';
 
-describe('formatElapsed', () => {
+describe('formatDuration', () => {
   it.each([
-    [0, 0, '0s'],
-    [0, 5_000, '5s'],
-    [0, 59_000, '59s'],
-    [0, 60_000, '1m00s'],
-    [0, 65_000, '1m05s'],
-    [0, 3_723_000, '62m03s'],
-    // sub-second differences floor to whole seconds
-    [1000, 1900, '0s'],
-  ])('formatElapsed(%i, %i) = %s', (start, end, expected) => {
-    expect(formatElapsed(start, end)).toBe(expected);
+    [0, '0s'],
+    [5_000, '5s'],
+    [59_000, '59s'],
+    [60_000, '1m00s'],
+    [65_000, '1m05s'],
+    [3_723_000, '62m03s'],
+    // sub-second remainders floor to whole seconds
+    [900, '0s'],
+    [1_900, '1s'],
+  ])('formatDuration(%i) = %s', (ms, expected) => {
+    expect(formatDuration(ms)).toBe(expected);
   });
 
-  it('never returns a negative duration when end precedes start', () => {
-    expect(formatElapsed(5_000, 0)).toBe('0s');
+  it('never returns a negative duration', () => {
+    expect(formatDuration(-5_000)).toBe('0s');
   });
 });
