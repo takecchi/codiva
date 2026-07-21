@@ -7,7 +7,14 @@ import {
   resolveLang,
   type SessionManager,
 } from '@/core';
-import { defaultStatePath, loadConfig, loadRepoPrompt, openUrl, WorktreeManager } from '@/utils';
+import {
+  copyToClipboard,
+  defaultStatePath,
+  loadConfig,
+  loadRepoPrompt,
+  openUrl,
+  WorktreeManager,
+} from '@/utils';
 import { App } from './app';
 import {
   buildManager,
@@ -78,6 +85,7 @@ async function main(): Promise<void> {
       version={appVersion}
       messages={t}
       onOpenPr={openUrl}
+      onCopy={(text) => copyToClipboard(text)}
     />,
     { exitOnCtrlC: false },
   );

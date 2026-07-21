@@ -32,6 +32,7 @@ import {
   useBoxHeight,
   useClock,
   useCommandRunner,
+  useComposerSelection,
   useLifecycleAction,
   useRateLimit,
   useRunMode,
@@ -104,6 +105,8 @@ export const SessionList: FC<{
   initialViewState?: ListViewState;
   /** 選択行・フォーカスが変わるたびに親へ報告する（再マウント時の復元用）。 */
   onViewStateChange?: (state: ListViewState) => void;
+  /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
+  onCopy?: (text: string) => void;
 }> = ({
   manager,
   onOpen,
@@ -114,6 +117,7 @@ export const SessionList: FC<{
   version,
   initialViewState,
   onViewStateChange,
+  onCopy,
 }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
@@ -124,6 +128,8 @@ export const SessionList: FC<{
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
   const { columns, rows: termRows } = useWindowSize();
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
+  // コンポーザのマウス範囲選択（ドラッグで選択→離すとクリップボードへコピー）。
+  const composerSel = useComposerSelection(onCopy);
   const [focus, setFocus] = useState<'composer' | 'list'>(initialViewState?.focus ?? 'composer');
   // 初回は末尾（最新）を選択して一番下までスクロールした状態で開く。戻ってきた
   // ときは前回の選択行を復元する（選択行から listView がスクロール窓を導くため、
@@ -204,24 +210,33 @@ export const SessionList: FC<{
     }
   };
 
-  /** Route a mouse press to the composer caret or a session row. */
-  const handlePress = (x: number, y: number) => {
-    if (composerBox) {
-      const buf = bufferRef.current;
-      const contentTop = composerBox.top + 1; // +1 = 上ボーダー
-      // プレフィックス（`❯ ` / 続き行の2スペース）ぶんの2セルを引いた表示列。
-      const index = caretIndexAtClick(
-        buf,
-        y - contentTop,
-        x - composerBox.left - 2,
-        INPUT_MAX_ROWS,
-      );
-      if (index !== undefined) {
-        updateBuffer(bufferOf(buf.value, index));
-        setFocus('composer');
-        return;
-      }
+  /**
+   * Caret index for a mouse point inside the composer, or undefined if the point
+   * is outside it. `contentTop` skips the top border; the `-2` drops the `❯ ` /
+   * continuation prefix so `x` becomes the display column within the text.
+   */
+  const composerCaretAt = (x: number, y: number): number | undefined => {
+    if (!composerBox) {
+      return undefined;
     }
+    return caretIndexAtClick(
+      bufferRef.current,
+      y - (composerBox.top + 1),
+      x - composerBox.left - 2,
+      INPUT_MAX_ROWS,
+    );
+  };
+
+  /** Route a mouse press to the composer caret (starting a selection) or a row. */
+  const handlePress = (x: number, y: number) => {
+    const index = composerCaretAt(x, y);
+    if (index !== undefined) {
+      updateBuffer(bufferOf(bufferRef.current.value, index));
+      setFocus('composer');
+      composerSel.begin(index); // anchor a possible drag-selection at the click
+      return;
+    }
+    composerSel.clear(); // a press outside the composer drops any highlight
     if (rowsBox) {
       // rows ボックス内の行 → セッションインデックス（可視ウィンドウ view.start.. へ写像）。
       const rowLine = rowLineAtPoint(y, rowsBox.top, view.showAbove, view.end - view.start);
@@ -239,6 +254,18 @@ export const SessionList: FC<{
     }
   };
 
+  /** Drag inside the composer extends the selection (live highlight). */
+  const handleDrag = (x: number, y: number) => {
+    if (!composerSel.dragging()) {
+      return;
+    }
+    const index = composerCaretAt(x, y);
+    if (index !== undefined) {
+      updateBuffer(bufferOf(bufferRef.current.value, index));
+      composerSel.extend(index);
+    }
+  };
+
   useInput((rawInput, rawKey) => {
     // SGR マウスレポートはキー入力より先に解釈する（バッファへ混入させない）。
     const mouse = parseSgrMouse(rawInput);
@@ -250,6 +277,11 @@ export const SessionList: FC<{
         moveSel(mouse.dir === 'up' ? -1 : 1);
       } else if (mouse.kind === 'press') {
         handlePress(mouse.x, mouse.y);
+      } else if (mouse.kind === 'drag') {
+        handleDrag(mouse.x, mouse.y);
+      } else if (mouse.kind === 'release') {
+        // 離した時点で 1 回だけコピー（ドラッグごとに送らない）。ハイライトは残す。
+        composerSel.end(bufferRef.current.value);
       }
       return;
     }
@@ -257,6 +289,8 @@ export const SessionList: FC<{
     // で届く。Ink はこれを解釈できず生テキストとして渡すため、共通ヘルパーで
     // 実キーへ復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
     const { input, key } = normalizeChord(rawInput, rawKey);
+    // 何かキーが来たらマウス選択のハイライトは消す（タイピング/カーソル移動で解除）。
+    composerSel.clear();
     // The model picker and repo-prompt editor are modal: each owns the keys (its
     // own useInput). Ignore everything here so nothing leaks through to the list.
     if (modelSelect || promptEdit) {
@@ -521,6 +555,7 @@ export const SessionList: FC<{
             buffer={buffer}
             focused={focus === 'composer'}
             placeholder={m.list.promptPlaceholder}
+            selection={composerSel.selection}
           />
         </Box>
       )}

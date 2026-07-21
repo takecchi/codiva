@@ -30,6 +30,7 @@ export * from './slug';
 export * from './status-meta';
 export * from './status-reducer';
 export * from './text-buffer';
+export * from './text-selection';
 export * from './transcript';
 export * from './types';
 export * from './worktree';

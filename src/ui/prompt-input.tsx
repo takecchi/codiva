@@ -6,6 +6,8 @@ import {
   cursorRowCol,
   INPUT_MAX_ROWS,
   isEmptyBuffer,
+  lineSelection,
+  type SelectionRange,
   type TextBuffer,
   visibleLineRange,
 } from '@/core';
@@ -37,6 +39,15 @@ const CaretLine: FC<{ line: string; col: number }> = ({ line, col }) => {
   );
 };
 
+/** Render one line with the `[from, to)` char range highlighted (mouse selection). */
+const SelectionLine: FC<{ line: string; from: number; to: number }> = ({ line, from, to }) => (
+  <Text wrap="truncate-end">
+    {line.slice(0, from)}
+    <Text inverse>{line.slice(from, to)}</Text>
+    {line.slice(to)}
+  </Text>
+);
+
 /**
  * Claude-Code-style composer: a full-width horizontal rule above and below the
  * input (no side borders). Purely presentational — key handling lives in the
@@ -54,7 +65,9 @@ export const PromptInput: FC<{
   focused: boolean;
   placeholder?: string;
   maxRows?: number;
-}> = ({ buffer, focused, placeholder = '', maxRows = INPUT_MAX_ROWS }) => {
+  /** Highlighted mouse-selection range (for copy). Suppresses the block caret. */
+  selection?: SelectionRange;
+}> = ({ buffer, focused, placeholder = '', maxRows = INPUT_MAX_ROWS, selection }) => {
   const boxRef = useRef<DOMElement>(null);
   const box = useAbsolutePosition(boxRef);
   const { setCursorPosition } = useCursor();
@@ -99,12 +112,17 @@ export const PromptInput: FC<{
     <Box ref={boxRef} {...frame} flexDirection="column">
       {lines.slice(start, end).map((line, i) => {
         const lineIndex = start + i;
-        const isCaretLine = focused && lineIndex === row;
+        const sel = selection ? lineSelection(buffer.value, selection, lineIndex) : undefined;
+        // While a selection is shown, suppress the block caret so the highlight
+        // reads cleanly (the real terminal cursor still marks the focus end).
+        const isCaretLine = focused && !selection && lineIndex === row;
         return (
           // Line index is a stable key within a single render's window.
           <Box key={lineIndex}>
             <Text color={theme.accent}>{i === 0 ? `${glyph.caret} ` : '  '}</Text>
-            {isCaretLine ? (
+            {sel ? (
+              <SelectionLine line={line} from={sel.from} to={sel.to} />
+            ) : isCaretLine ? (
               <CaretLine line={line} col={col} />
             ) : (
               <Text wrap="truncate-end">{line}</Text>

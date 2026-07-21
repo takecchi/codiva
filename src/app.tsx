@@ -20,6 +20,8 @@ export const App: FC<{
   messages?: Messages;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
+  /** Copy composer selection to the clipboard. Injected from index.tsx (OSC 52). */
+  onCopy?: (text: string) => void;
 }> = ({
   manager,
   cwd,
@@ -28,6 +30,7 @@ export const App: FC<{
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   onOpenPr,
+  onCopy,
 }) => {
   const { exit } = useApp();
   const [view, setView] = useState<View>({ mode: 'list' });
@@ -64,6 +67,7 @@ export const App: FC<{
             id={view.id}
             onBack={() => setView({ mode: 'list' })}
             onQuit={quit}
+            onCopy={onCopy}
           />
         ) : (
           <SessionList
@@ -78,6 +82,7 @@ export const App: FC<{
             onViewStateChange={(state) => {
               listStateRef.current = state;
             }}
+            onCopy={onCopy}
           />
         )}
       </Box>

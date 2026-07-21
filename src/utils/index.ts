@@ -1,4 +1,5 @@
 export * from './alt-screen';
+export * from './clipboard';
 export * from './config';
 export * from './exec';
 export * from './git';
