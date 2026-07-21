@@ -117,6 +117,38 @@ describe('listView', () => {
     }
   });
 
+  it('shows the last item instead of a "1 more" indicator (second-from-bottom selected)', () => {
+    // 画面が埋まった状態で下から2番目を選ぶと、従来は末尾1件が「↓ 他 1 件」に
+    // 化けていた。インジケータではなくその実項目を表示する。
+    const v = listView(10, 8, 5);
+    expect(v.end).toBe(10); // 末尾の項目まで表示
+    expect(v.showBelow).toBe(false); // 「↓ 他 1 件」は出さない
+    expect(v.hiddenBelow).toBe(0);
+    expect(8).toBeGreaterThanOrEqual(v.start);
+    expect(8).toBeLessThan(v.end);
+    expect(renderedRows(v)).toBe(5); // 描画行数は cap のまま
+  });
+
+  it('never shows an indicator that hides only one item (shows the item instead)', () => {
+    for (const total of [6, 7, 10, 15, 30]) {
+      for (let cap = 2; cap <= 9; cap++) {
+        for (let sel = 0; sel < total; sel++) {
+          const v = listView(total, sel, cap);
+          const at = `total=${total} cap=${cap} sel=${sel}`;
+          if (v.showBelow) {
+            expect(v.hiddenBelow, `${at} below`).toBeGreaterThan(1);
+          }
+          if (v.showAbove) {
+            expect(v.hiddenAbove, `${at} above`).toBeGreaterThan(1);
+          }
+          expect(sel, `${at} start`).toBeGreaterThanOrEqual(v.start);
+          expect(sel, `${at} end`).toBeLessThan(v.end);
+          expect(renderedRows(v), `${at} rows`).toBeLessThanOrEqual(cap);
+        }
+      }
+    }
+  });
+
   it('never overflows a tiny cap (drops indicators, keeps one content row)', () => {
     const v1 = listView(10, 5, 1);
     expect(v1.end - v1.start).toBe(1);
