@@ -11,6 +11,7 @@ import {
   logLines,
   logViewportRows,
   logWindow,
+  type MouseControl,
   matchCommands,
   parseSgrMouse,
   type ScrollAnchor,
@@ -75,7 +76,13 @@ export const SessionDetail: FC<{
   id: string;
   onBack: () => void;
   onQuit: () => void;
-}> = ({ manager, id, onBack, onQuit }) => {
+  /**
+   * マウスレポート制御（マウス有効環境でのみ渡る）。詳細ビューを開いている間は
+   * 捕捉を解除し、端末ネイティブのドラッグ選択でログをコピペできるようにする。
+   * 戻る（アンマウント）と再度有効化する。
+   */
+  mouse?: MouseControl;
+}> = ({ manager, id, onBack, onQuit, mouse }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -105,6 +112,14 @@ export const SessionDetail: FC<{
   const pending = session?.pendingPermission;
   const status = session?.status;
   const isTerminal = status !== undefined && isTerminalStatus(status);
+
+  // 詳細ビューにいる間はマウス捕捉を解除し、端末ネイティブのドラッグ選択で
+  // ログをそのままコピペできるようにする。一覧へ戻る（アンマウント）と再度有効化して
+  // 一覧のクリック/ホイール操作を復帰させる。マウス無効環境では `mouse` が undefined。
+  useEffect(() => {
+    mouse?.disable();
+    return () => mouse?.enable();
+  }, [mouse]);
 
   // Fetch the diff summary once the session reaches a terminal state.
   useEffect(() => {
@@ -152,9 +167,11 @@ export const SessionDetail: FC<{
   const total = lines.length;
 
   useInput((rawInput, rawKey) => {
-    // SGR マウスレポートはキー入力より先に解釈する。これをしないと（マウス有効時に）
-    // ホイールスクロールのエスケープ列が生テキストとして editText に流れ込み、
-    // 「スクロールしようとすると文字が入力される」バグになる（一覧の useInput と同じ対策）。
+    // 詳細ビューでは（コピペのため）マウス捕捉を解除しているので通常マウスレポートは
+    // 届かない。ただし解除の境界で端末が送り残したレポート断片が生テキストとして
+    // editText に流れ込む（「スクロールしようとすると文字が入力される」）のを防ぐため、
+    // キー入力より先に SGR レポートを解釈して握り潰す（一覧の useInput と同じ防御）。
+    // スクロールは PgUp/PgDn を使う。捕捉が生きている隙間ではホイールも一応効かせる。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
       if (mouse.kind === 'wheel') {

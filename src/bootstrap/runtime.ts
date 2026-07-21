@@ -1,20 +1,37 @@
-import { isFullscreenViewport, type SessionManager } from '@/core';
-import { enableMouse, enterAltScreen } from '@/utils';
+import { isFullscreenViewport, type MouseControl, type SessionManager } from '@/core';
+import { createMouseControl, enterAltScreen } from '@/utils';
+
+/** 端末セットアップの結果。`mouse` は詳細ビューが出入りで捕捉を切替えるのに使う。 */
+export interface TerminalSetup {
+  /**
+   * マウスレポートのコントローラ（起動時に有効化済み）。マウスが使えない環境
+   * （非 TTY / 低解像度 / 設定で無効）では undefined。詳細ビューはこれがあるときだけ
+   * 一時的に disable してネイティブのテキスト選択を許す。
+   */
+  mouse?: MouseControl;
+  /** 通常バッファへ戻す（マウス無効化 + alt screen 退出）。 */
+  teardown: () => void;
+}
 
 /**
  * Enter the alt screen (disabling scrollback) and, on a fullscreen TTY, mouse
- * reporting. Returns a teardown that restores the normal buffer. Low/non-TTY
- * terminals fall back to inline rendering, so nothing is entered. Decided once at
- * startup (switching buffers on a mid-run resize would corrupt the screen).
+ * reporting. Returns a mouse control handle plus a teardown that restores the
+ * normal buffer. Low/non-TTY terminals fall back to inline rendering, so nothing
+ * is entered. Decided once at startup (switching buffers on a mid-run resize
+ * would corrupt the screen).
  */
-export function setupTerminal(mouseEnabled: boolean): () => void {
+export function setupTerminal(mouseEnabled: boolean): TerminalSetup {
   const useAltScreen = process.stdout.isTTY && isFullscreenViewport(process.stdout.rows ?? 0);
   const leaveAltScreen = useAltScreen ? enterAltScreen(process.stdout) : undefined;
   // Mouse coordinates only match the output origin under the alt-screen fullscreen.
-  const disableMouse = useAltScreen && mouseEnabled ? enableMouse(process.stdout) : undefined;
-  return () => {
-    disableMouse?.();
-    leaveAltScreen?.();
+  const mouse = useAltScreen && mouseEnabled ? createMouseControl(process.stdout) : undefined;
+  mouse?.enable();
+  return {
+    mouse,
+    teardown: () => {
+      mouse?.disable();
+      leaveAltScreen?.();
+    },
   };
 }
 
