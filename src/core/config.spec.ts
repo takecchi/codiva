@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type CodivaConfig, toConfig } from '@/core/config';
+import { type CodivaConfig, resolveIgnoredFilesMode, toConfig } from '@/core/config';
 
 describe('toConfig', () => {
   it.each([
@@ -101,12 +101,23 @@ describe('toConfig', () => {
   it.each([
     [true, true],
     [false, false],
-  ])('keeps boolean copyIgnored %o', (input, expected) => {
+  ])('keeps boolean copyIgnored %o (deprecated, kept for back-compat)', (input, expected) => {
     expect(toConfig({ copyIgnored: input })).toEqual({ copyIgnored: expected });
   });
 
   it.each([['yes'], [1], [null]])('drops invalid copyIgnored: %o', (copyIgnored) => {
     expect(toConfig({ copyIgnored })).toEqual({});
+  });
+
+  it.each([['symlink'], ['copy'], ['none']] as const)(
+    'keeps valid ignoredFiles %o',
+    (ignoredFiles) => {
+      expect(toConfig({ ignoredFiles })).toEqual({ ignoredFiles });
+    },
+  );
+
+  it.each([['link'], [true], [1], [null]])('drops invalid ignoredFiles: %o', (ignoredFiles) => {
+    expect(toConfig({ ignoredFiles })).toEqual({});
   });
 
   it('collects all valid keys together', () => {
@@ -120,6 +131,7 @@ describe('toConfig', () => {
         notifications: false,
         followOrigin: false,
         autoPr: true,
+        ignoredFiles: 'copy',
         copyIgnored: false,
       }),
     ).toEqual({
@@ -131,7 +143,30 @@ describe('toConfig', () => {
       notifications: false,
       followOrigin: false,
       autoPr: true,
+      ignoredFiles: 'copy',
       copyIgnored: false,
     });
+  });
+});
+
+describe('resolveIgnoredFilesMode', () => {
+  it('defaults to symlink when nothing is set', () => {
+    expect(resolveIgnoredFilesMode({})).toBe('symlink');
+  });
+
+  it.each([['symlink'], ['copy'], ['none']] as const)('uses ignoredFiles when set: %o', (mode) => {
+    expect(resolveIgnoredFilesMode({ ignoredFiles: mode })).toBe(mode);
+  });
+
+  it('falls back to deprecated copyIgnored: true → copy', () => {
+    expect(resolveIgnoredFilesMode({ copyIgnored: true })).toBe('copy');
+  });
+
+  it('falls back to deprecated copyIgnored: false → none', () => {
+    expect(resolveIgnoredFilesMode({ copyIgnored: false })).toBe('none');
+  });
+
+  it('prefers ignoredFiles over deprecated copyIgnored', () => {
+    expect(resolveIgnoredFilesMode({ ignoredFiles: 'symlink', copyIgnored: true })).toBe('symlink');
   });
 });

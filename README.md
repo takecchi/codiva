@@ -59,12 +59,16 @@ codiva
 ```json
 {
   "language": "auto",
-  "copyIgnored": true
+  "ignoredFiles": "symlink"
 }
 ```
 
 - `language`: `"ja"` / `"en"` / `"auto"`（OS ロケール準拠）。環境変数 `CODIVA_LANG`（`ja` / `en`）が最優先です。
-- `copyIgnored`: セッション用 worktree を作るとき、`.gitignore` された未追跡ファイル（`node_modules/` や `.env` など）をリポジトリルートから複製するか。既定 `true`。git worktree は追跡対象しか引き継がないため、これにより依存の再インストールや環境変数の再設定なしにセッションを即実行できます（`false` で無効化）。
+- `ignoredFiles`: セッション用 worktree を作るとき、`.gitignore` された未追跡ファイル（`node_modules/` や `.env` など）をどう引き継ぐか。git worktree は追跡対象しか引き継がないため、これがないと依存の再インストールや環境変数の再設定が必要になります。既定 `"symlink"`。
+  - `"symlink"`（既定）: リポジトリルートへシンボリックリンクを張るだけ。複製コストがゼロで即起動できます。実体を共有するため、ビルド生成物の書き込みなどが元やほかの worktree に波及しうる点に注意。
+  - `"copy"`: リポジトリルートから実体を複製します。worktree が完全に独立し作業が絶対に重複しませんが、`node_modules/` が巨大だとコピーが重くなります。
+  - `"none"`: 何も引き継ぎません（依存や環境変数はセッション側で用意し直す）。
+  - 非推奨の `copyIgnored`（真偽値）も後方互換で解釈します（`true`→`copy` 相当、`false`→`none` 相当）。`ignoredFiles` があればそちらが優先されます。
 
 ## 開発
 

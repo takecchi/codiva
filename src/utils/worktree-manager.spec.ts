@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -208,7 +208,7 @@ describe('WorktreeManager', () => {
     });
   });
 
-  describe('copying .gitignore-d files into a new worktree', () => {
+  describe('linking/copying .gitignore-d files into a new worktree', () => {
     beforeEach(async () => {
       repo = await makeRepo(true);
       // ignore node_modules/ and .env, then leave them untracked on disk
@@ -220,23 +220,45 @@ describe('WorktreeManager', () => {
       await writeFile(join(repo, '.env'), 'SECRET=1\n');
     });
 
-    it('copies ignored files/dirs from the repo root by default', async () => {
+    it('symlinks ignored files/dirs to the repo root by default', async () => {
       const wm = new WorktreeManager(repo);
       const wt = await wm.add('with-ignored');
+      // symlink なので実体はリポジトリルート側と共有される（読むと元の内容が見える）
       expect(await readFile(join(wt.path, '.env'), 'utf8')).toBe('SECRET=1\n');
       expect(await readFile(join(wt.path, 'node_modules', 'dep', 'index.js'), 'utf8')).toBe(
         'module.exports = 1\n',
       );
+      expect((await lstat(join(wt.path, '.env'))).isSymbolicLink()).toBe(true);
+      expect((await lstat(join(wt.path, 'node_modules'))).isSymbolicLink()).toBe(true);
     });
 
-    it('does not copy .codiva (would recurse into worktrees)', async () => {
+    it('copies real files (not symlinks) when ignoredFiles is "copy"', async () => {
+      const wm = new WorktreeManager(repo, { ignoredFiles: 'copy' });
+      const wt = await wm.add('copied');
+      expect(await readFile(join(wt.path, '.env'), 'utf8')).toBe('SECRET=1\n');
+      expect(await readFile(join(wt.path, 'node_modules', 'dep', 'index.js'), 'utf8')).toBe(
+        'module.exports = 1\n',
+      );
+      expect((await lstat(join(wt.path, '.env'))).isSymbolicLink()).toBe(false);
+      expect((await lstat(join(wt.path, 'node_modules'))).isSymbolicLink()).toBe(false);
+    });
+
+    it('copy mode keeps the worktree fully independent from the repo root', async () => {
+      const wm = new WorktreeManager(repo, { ignoredFiles: 'copy' });
+      const wt = await wm.add('independent');
+      // worktree 側を書き換えても元へ波及しない（symlink との差）
+      await writeFile(join(wt.path, '.env'), 'SECRET=changed\n');
+      expect(await readFile(join(repo, '.env'), 'utf8')).toBe('SECRET=1\n');
+    });
+
+    it('does not link .codiva (would recurse into worktrees)', async () => {
       const wm = new WorktreeManager(repo);
       const wt = await wm.add('no-codiva');
       await expect(readFile(join(wt.path, '.codiva', 'state.json'), 'utf8')).rejects.toBeTruthy();
     });
 
-    it('skips copying when copyIgnored is false', async () => {
-      const wm = new WorktreeManager(repo, { copyIgnored: false });
+    it('skips linking when ignoredFiles is "none"', async () => {
+      const wm = new WorktreeManager(repo, { ignoredFiles: 'none' });
       const wt = await wm.add('bare');
       await expect(readFile(join(wt.path, '.env'), 'utf8')).rejects.toBeTruthy();
     });

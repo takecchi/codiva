@@ -1,8 +1,9 @@
-import { appendFile, cp, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, readFile, rm, symlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   CODIVA_DIR,
   type DiffStat,
+  type IgnoredFilesMode,
   ignoredCopyEntries,
   MergeConflictError,
   type Worktree,
@@ -23,13 +24,13 @@ const EXCLUDE_MARKER = '# codiva';
  * （Worktree / DiffStat / MergeConflictError / ignoredCopyEntries）は core/worktree.ts。
  */
 export class WorktreeManager {
-  private readonly copyIgnored: boolean;
+  private readonly ignoredFiles: IgnoredFilesMode;
 
   constructor(
     private readonly repoRoot: string,
     options: WorktreeOptions = {},
   ) {
-    this.copyIgnored = options.copyIgnored !== false;
+    this.ignoredFiles = options.ignoredFiles ?? 'symlink';
   }
 
   /** The base branch worktrees are cut from and merged back into. */
@@ -103,21 +104,27 @@ export class WorktreeManager {
     }
     await git(this.repoRoot, args);
     const worktreePath = join(this.repoRoot, relPath);
-    if (this.copyIgnored) {
-      await this.copyIgnoredFiles(worktreePath);
+    if (this.ignoredFiles !== 'none') {
+      await this.linkIgnoredFiles(worktreePath);
     }
     return { slug, branch, path: worktreePath };
   }
 
   /**
    * `.gitignore` された未追跡ファイル（`node_modules/`・`.env` など）をリポジトリ
-   * ルートから新しい worktree へ複製する。git worktree は追跡対象しか引き継がないため、
+   * ルートから新しい worktree へ引き継ぐ。git worktree は追跡対象しか引き継がないため、
    * これがないとセッション側で依存の再インストールや環境変数の再設定が必要になる。
    *
-   * ベストエフォート: 個々のコピー失敗（競合・権限等）は worktree 作成を巻き込まず
-   * スキップする（環境ファイルが1つ欠けても致命ではない）。
+   * モードで実体化方法を切り替える:
+   * - `'symlink'`（既定）: 元へのシンボリックリンクを張るだけ（複製コストゼロ）。実体は
+   *   共有されるため worktree 間で完全独立にはならない。
+   * - `'copy'`: 実体を複製する。worktree 完全独立で作業が絶対に重複しない代わりに、
+   *   `node_modules/` が巨大だとコピーが重い。
+   *
+   * ベストエフォート: 個々の失敗（競合・権限等）は worktree 作成を巻き込まずスキップする
+   * （環境ファイルが1つ欠けても致命ではない）。
    */
-  private async copyIgnoredFiles(worktreePath: string): Promise<void> {
+  private async linkIgnoredFiles(worktreePath: string): Promise<void> {
     const raw = await git(this.repoRoot, [
       'ls-files',
       '--others',
@@ -126,11 +133,22 @@ export class WorktreeManager {
       '--directory',
     ]).catch(() => '');
     for (const entry of ignoredCopyEntries(raw)) {
-      const from = join(this.repoRoot, entry);
-      const to = join(worktreePath, entry);
+      // `--directory` はディレクトリを末尾 `/` 付き（例 `node_modules/`）で返す。
+      // path.join は末尾スラッシュを保持し、symlink はスラッシュ終端パスに ENOENT を返すため剥がす。
+      const isDir = entry.endsWith('/');
+      const rel = isDir ? entry.slice(0, -1) : entry;
+      const from = join(this.repoRoot, rel);
+      const to = join(worktreePath, rel);
       try {
         await mkdir(dirname(to), { recursive: true });
-        await cp(from, to, { recursive: true, force: true, errorOnExist: false });
+        if (this.ignoredFiles === 'symlink') {
+          // 既存があると symlink は EEXIST になるので、cp の force 相当に合わせて消してから張る。
+          // 型ヒント（Windows 用。POSIX では無視される）はエントリ末尾 `/` でディレクトリ判定。
+          await rm(to, { recursive: true, force: true });
+          await symlink(from, to, isDir ? 'dir' : 'file');
+        } else {
+          await cp(from, to, { recursive: true, force: true, errorOnExist: false });
+        }
       } catch {
         // best-effort: 1エントリの失敗で worktree 作成全体を止めない
       }
