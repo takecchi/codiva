@@ -3,7 +3,7 @@ import { type FC, useState } from 'react';
 import { emptyBuffer, type PermissionRequest } from '@/core';
 import { useTextBufferRef } from './hooks';
 import { useMessages } from './i18n-context';
-import { editText } from './input';
+import { editText, normalizeChord } from './input';
 import { PromptInput } from './prompt-input';
 import { statusColor, theme } from './theme';
 
@@ -32,7 +32,10 @@ const ToolDialog: FC<{
   onDeny: (message: string) => void;
 }> = ({ request, onAllow, onDeny }) => {
   const m = useMessages();
-  useInput((input) => {
+  useInput((rawInput, rawKey) => {
+    // 一覧/詳細ビューと同じく chord を復号する。modifyOtherKeys / CSI-u を送る端末
+    // （Ghostty など）では y/n も生のエスケープ列で届き、素の比較が外れるため。
+    const { input } = normalizeChord(rawInput, rawKey);
     if (input === 'y' || input === 'Y') {
       onAllow();
     } else if (input === 'n' || input === 'N') {
@@ -111,10 +114,15 @@ const QuestionDialog: FC<{
     }
   };
 
-  useInput((input, key) => {
+  useInput((rawInput, rawKey) => {
     if (!current) {
       return;
     }
+    // modifyOtherKeys / CSI-u を送る端末（Ghostty/xterm 等）では Space や Enter が
+    // 生のエスケープ列（`[27;1;32~` / `[32u`）で届く。Ink はこれを素の ' ' に
+    // 解釈しないため、一覧/詳細ビューと同じく chord を復号してから扱う。復号しないと
+    // `input === ' '` が外れて複数選択のトグルができない。
+    const { input, key } = normalizeChord(rawInput, rawKey);
     // 自由記述モード: テキスト編集に専念（Enter で送信）。
     // 「選択へ戻る」は空バッファでの Backspace で行う。Esc は背後の view
     // （一覧/詳細）が先取りして戻る/フォーカス移動に使うため、ここでは使わない。
