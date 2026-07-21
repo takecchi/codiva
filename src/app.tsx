@@ -4,6 +4,7 @@ import {
   messages as catalogs,
   isFullscreenViewport,
   type Messages,
+  type MouseControl,
   type SessionManager,
 } from '@/core';
 import { type ListViewState, MessagesProvider, SessionDetail, SessionList } from '@/ui';
@@ -20,6 +21,11 @@ export const App: FC<{
   messages?: Messages;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
+  /**
+   * マウスレポート制御。詳細ビューはこれを使い、開いている間だけ捕捉を解除して
+   * 端末ネイティブのテキスト選択（コピペ）を可能にする。マウス無効環境では undefined。
+   */
+  mouse?: MouseControl;
 }> = ({
   manager,
   cwd,
@@ -28,6 +34,7 @@ export const App: FC<{
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   onOpenPr,
+  mouse,
 }) => {
   const { exit } = useApp();
   const [view, setView] = useState<View>({ mode: 'list' });
@@ -64,6 +71,7 @@ export const App: FC<{
             id={view.id}
             onBack={() => setView({ mode: 'list' })}
             onQuit={quit}
+            mouse={mouse}
           />
         ) : (
           <SessionList
