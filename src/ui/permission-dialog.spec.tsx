@@ -115,6 +115,23 @@ describe('PermissionDialog — question', () => {
     expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'Japanese' });
   });
 
+  it('shows a checkbox per option and a movable cursor in multi-select mode', async () => {
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question(true)} onAnswer={noop} onAllow={noop} onDeny={noop} />,
+    );
+    await flush();
+    // 実選択肢はチェックボックス付き、カーソルは先頭（English）に見える。
+    expect(lastFrame()).toContain('❯ [ ] English');
+    expect(lastFrame()).toContain('[ ] Japanese');
+    stdin.write(' '); // toggle English → [x]
+    await flush();
+    expect(lastFrame()).toContain('❯ [x] English');
+    stdin.write('\x1B[B'); // down → カーソルが Japanese へ動くのが見える
+    await flush();
+    expect(lastFrame()).toContain('[x] English');
+    expect(lastFrame()).toContain('❯ [ ] Japanese');
+  });
+
   it('toggles options with space in multi-select mode', async () => {
     const onAnswer = vi.fn();
     const { stdin } = render(
