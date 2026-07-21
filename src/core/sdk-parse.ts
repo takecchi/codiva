@@ -121,9 +121,19 @@ function completeWith(
   state: SessionState,
   result: { at: number; totalCostUsd?: number; resultText: string },
 ): SessionState {
+  // The SDK's success `result` text echoes the final assistant message, which is
+  // already in the log as an `assistant_text` entry (verified against real
+  // fixtures — the two strings are identical). Appending it again as a `result`
+  // line doubles the last message on screen (white assistant_text + green
+  // result). Log the result only when it carries something new, matching the
+  // restore path (transcript.ts never emits a `result` entry). assistant_text is
+  // stored trimmed, so trim the result before comparing.
+  const resultText = result.resultText.trim();
+  const lastAssistantText = state.messages.findLast((m) => m.kind === 'assistant_text')?.text;
+  const isEcho = resultText.length > 0 && resultText === lastAssistantText;
   const withLog =
-    result.resultText.length > 0
-      ? appendLog(state, 'result', result.resultText)
+    resultText.length > 0 && !isEcho
+      ? appendLog(state, 'result', resultText)
       : { messages: state.messages, logSeq: state.logSeq };
   // Drop the transient deferral bookkeeping — the turn is genuinely done now.
   const { deferredResult, activeTaskIds, ...rest } = state;
