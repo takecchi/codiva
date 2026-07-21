@@ -185,8 +185,13 @@ const QuestionDialog: FC<{
     return null;
   }
 
-  // カーソル記号（typing 中はカーソル表示を出さない）。
+  // カーソル記号（typing 中はカーソル表示を出さない）。複数選択でもチェックボックスとは
+  // 別にこのポインタを出す（`❯ [x] ラベル`）。ポインタが無いとカーソル位置が色でしか
+  // 分からず、どの行にいるのか見えない＝「トグルできない」ように見えるため。
   const marker = (i: number) => (mode === 'select' && cursor === i ? '❯' : ' ');
+  // 複数選択時はチェックボックス幅（"[x] "）ぶん、特別項目（自分で入力する/相談する）を
+  // 字下げして実選択肢と桁を揃える。
+  const pad = current.multiSelect ? '    ' : '';
   // 区切り線幅（枠内に収まる範囲でほどほどに）。
   const dividerWidth = Math.max(1, Math.min(40, columns - 4));
 
@@ -204,11 +209,13 @@ const QuestionDialog: FC<{
       <Box flexDirection="column" marginTop={1}>
         {current.options.map((opt, i) => {
           const checked = current.multiSelect && multi.has(opt.label);
-          const mk = current.multiSelect ? (checked ? '[x]' : '[ ]') : marker(i);
+          // 複数選択: `❯ [x] ラベル`（ポインタ＋チェックボックス）。単一選択: `❯ ラベル`。
+          const box = current.multiSelect ? `${checked ? '[x]' : '[ ]'} ` : '';
           return (
             <Box key={opt.label}>
               <Text color={cursor === i ? theme.accent : undefined}>
-                {mk} {opt.label}
+                {marker(i)} {box}
+                {opt.label}
               </Text>
               {opt.description ? <Text dimColor> — {opt.description}</Text> : null}
             </Box>
@@ -217,7 +224,8 @@ const QuestionDialog: FC<{
         {/* 「自分で入力する」— 実選択肢の直後（メインブロックの一部）。 */}
         <Box>
           <Text color={cursor === typeIndex ? theme.accent : undefined}>
-            {marker(typeIndex)} {m.permission.typeSomething}
+            {marker(typeIndex)} {pad}
+            {m.permission.typeSomething}
           </Text>
         </Box>
       </Box>
@@ -233,7 +241,8 @@ const QuestionDialog: FC<{
         <Text dimColor>{'─'.repeat(dividerWidth)}</Text>
         <Box>
           <Text color={cursor === chatIndex ? theme.accent : undefined}>
-            {marker(chatIndex)} {m.permission.chatAboutThis}
+            {marker(chatIndex)} {pad}
+            {m.permission.chatAboutThis}
           </Text>
         </Box>
       </Box>
