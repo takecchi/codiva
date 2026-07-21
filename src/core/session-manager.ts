@@ -40,6 +40,8 @@ export interface SessionManagerDeps {
   onPersist?: () => void;
   /** Called when the default model for new sessions changes (via /model); wired to persist the config file. */
   onModelChange?: (model: string | undefined) => void;
+  /** Called when the repo instructions change (via /prompt); wired to persist `.codiva/prompt.md`. */
+  onRepoPromptChange?: (prompt: string | undefined) => void;
   /** Optional PR lookup (via `gh`); when set, refreshPrs() polls each live session's branch. */
   lookupPr?: PrLookup;
   /**
@@ -147,6 +149,25 @@ export class SessionManager {
     }
     this.options = { ...this.options, model };
     this.deps.onModelChange?.(model);
+  }
+
+  /** The repo-wide instructions appended to new sessions' systemPrompt (undefined → none). */
+  getRepoPrompt(): string | undefined {
+    return this.options.appendSystemPrompt;
+  }
+
+  /**
+   * Set the repo-wide instructions (via /prompt) applied to sessions created from
+   * now on. Already running sessions keep the prompt they started with (systemPrompt
+   * is fixed at query start). Empty/undefined clears it. Persists via onRepoPromptChange.
+   */
+  setRepoPrompt(prompt: string | undefined): void {
+    const next = prompt && prompt.length > 0 ? prompt : undefined;
+    if (this.options.appendSystemPrompt === next) {
+      return;
+    }
+    this.options = { ...this.options, appendSystemPrompt: next };
+    this.deps.onRepoPromptChange?.(next);
   }
 
   /** Current tool-approval mode (drives the shift+tab footer indicator). */

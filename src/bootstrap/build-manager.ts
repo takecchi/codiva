@@ -14,6 +14,7 @@ import {
   notify,
   prChecks,
   saveConfig,
+  saveRepoPrompt,
   type WorktreeManager,
 } from '@/utils';
 
@@ -77,6 +78,10 @@ export function buildManager(opts: {
     onTransition,
     onPersist,
     onModelChange: createModelPersister(config),
+    // /prompt での編集を `.codiva/prompt.md` へ永続化（次回起動・新規セッションに反映）。
+    onRepoPromptChange: (prompt) => {
+      void saveRepoPrompt(repoRoot, prompt ?? '').catch(() => undefined);
+    },
     lookupPr,
     // origin 追従 / PR 自動化は既定 on。`"followOrigin": false` / `"autoPr": false` で無効化。
     followOrigin: config.followOrigin !== false,

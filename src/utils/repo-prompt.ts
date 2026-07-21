@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { toRepoPrompt } from '@/core';
 
 /**
@@ -26,4 +26,24 @@ export async function loadRepoPrompt(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * リポジトリの追加指示を書き出す（/prompt での編集を永続化）。正規化は core の
+ * `toRepoPrompt()` に委譲し、内容があれば `.codiva/prompt.md` へ（ディレクトリごと）
+ * 作成、空（指示なし）ならファイルを削除して `.codiva/` を汚さない。
+ * 末尾に改行を付けて保存する（エディタ/CLI で開いたときの体裁）。
+ */
+export async function saveRepoPrompt(
+  repoRoot: string,
+  raw: string,
+  path: string = defaultRepoPromptPath(repoRoot),
+): Promise<void> {
+  const normalized = toRepoPrompt(raw);
+  if (normalized === undefined) {
+    await rm(path, { force: true });
+    return;
+  }
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${normalized}\n`, 'utf8');
 }

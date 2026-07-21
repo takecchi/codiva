@@ -61,6 +61,38 @@ describe('slash commands', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it('/prompt opens the repo-prompt editor and saves the edited instructions', async () => {
+    const manager = makeManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('/prompt');
+    await flush();
+    stdin.write('\r'); // run the command → opens the editor
+    await flush();
+    expect(lastFrame() ?? '').toContain(messages.ja.prompt.title);
+    stdin.write('run tests then open a PR');
+    await flush();
+    stdin.write('\r'); // Enter saves
+    await flush();
+    expect(manager.getRepoPrompt()).toBe('run tests then open a PR');
+    // Editor closed — the title is gone and no session was created.
+    expect(lastFrame() ?? '').not.toContain(messages.ja.prompt.title);
+    expect(manager.getSnapshot()).toHaveLength(0);
+  });
+
+  it('/prompt editor cancels on Esc without changing the instructions', async () => {
+    const manager = makeManager();
+    manager.setRepoPrompt('keep me');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('/prompt');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    stdin.write('\x1b'); // Esc cancels
+    await flush();
+    expect(manager.getRepoPrompt()).toBe('keep me');
+    expect(lastFrame() ?? '').not.toContain(messages.ja.prompt.title);
+  });
+
   it('reports an unknown command as an error', async () => {
     const manager = makeManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

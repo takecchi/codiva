@@ -146,9 +146,12 @@ export interface TextBufferRef {
  * so a `useInput` handler can fire multiple times in the same tick; going through
  * the ref keeps each edit computed from the latest value instead of a stale one
  * (see .claude/rules/ink-components.md). Shared by both composer views.
+ *
+ * `initial` seeds the buffer once (e.g. the repo-prompt editor opens on the
+ * existing `.codiva/prompt.md` content); omitted, it starts empty like a composer.
  */
-export function useTextBufferRef(): TextBufferRef {
-  const [buffer, setBuffer] = useState<TextBuffer>(emptyBuffer());
+export function useTextBufferRef(initial?: TextBuffer): TextBufferRef {
+  const [buffer, setBuffer] = useState<TextBuffer>(() => initial ?? emptyBuffer());
   const bufferRef = useRef<TextBuffer>(buffer);
   const updateBuffer = (next: TextBuffer | ((prev: TextBuffer) => TextBuffer)) => {
     bufferRef.current = typeof next === 'function' ? next(bufferRef.current) : next;

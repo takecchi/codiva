@@ -71,6 +71,10 @@ const options = {
   そのまま渡すのは「空への追記」と等価で、追加指示が無い場合の現挙動を一切変えない。CLAUDE.md は
   `settingSources: ['project']` 経由なので systemPrompt とは独立に効き続ける（両立）。**将来ベースの
   systemPrompt を導入する場合はこの単純代入では上書きになるため、array / preset-append 形へ要変更。**
+  - **編集は `/prompt` から**: 一覧画面の `/prompt` で `ui/repo-prompt-editor.tsx`（現在値をシード）を開き、
+    保存すると `SessionManager.setRepoPrompt()` が `options.appendSystemPrompt` を差し替え（**以降の新規
+    セッション**に適用。既存の稼働中セッションは systemPrompt が query 開始時に確定済みなので不変）、
+    `onRepoPromptChange` → `utils/saveRepoPrompt()` が `.codiva/prompt.md` を書き戻す（空保存で削除）。
 - **`resume` はモデル側の会話コンテキストのみ復元する。過去メッセージはストリームに再送出されない**
   （検証済み: 復元直後の consumer には何も流れない）。そのため UI の会話ログは CLI が書く
   トランスクリプト `~/.claude/projects/<cwd の非英数字を '-' 化したもの>/<sessionId>.jsonl` から再構築する

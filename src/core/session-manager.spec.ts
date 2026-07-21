@@ -979,4 +979,59 @@ describe('SessionManager', () => {
       expect(models).toEqual(['claude-opus-4-8', 'claude-haiku-4-5']);
     });
   });
+
+  describe('repo instructions (/prompt)', () => {
+    it('seeds getRepoPrompt from the injected options and updates on setRepoPrompt', () => {
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        options: { appendSystemPrompt: 'Open a PR when done' },
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      expect(manager.getRepoPrompt()).toBe('Open a PR when done');
+      manager.setRepoPrompt('Run the tests first');
+      expect(manager.getRepoPrompt()).toBe('Run the tests first');
+    });
+
+    it('fires onRepoPromptChange only when the prompt actually changes', () => {
+      const onRepoPromptChange = vi.fn();
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        options: { appendSystemPrompt: 'Open a PR when done' },
+        onRepoPromptChange,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      manager.setRepoPrompt('Open a PR when done'); // no-op: same value
+      expect(onRepoPromptChange).not.toHaveBeenCalled();
+      manager.setRepoPrompt(''); // empty clears it
+      expect(onRepoPromptChange).toHaveBeenCalledWith(undefined);
+      expect(manager.getRepoPrompt()).toBeUndefined();
+    });
+
+    it('applies the repo prompt to sessions created afterward', async () => {
+      const prompts: (string | undefined)[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        // Real Session path (no createSession factory) so options reach the query.
+        queryFn: ((params: { options: { systemPrompt?: string } }) => {
+          prompts.push(params.options.systemPrompt);
+          return (async function* () {})();
+        }) as never,
+        now: () => 1,
+      });
+      manager.create('first');
+      await flush();
+      manager.setRepoPrompt('Open a PR when done');
+      manager.create('second');
+      await flush();
+      expect(prompts).toEqual([undefined, 'Open a PR when done']);
+    });
+  });
 });

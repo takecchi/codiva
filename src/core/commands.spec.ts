@@ -65,6 +65,7 @@ describe('matchCommands', () => {
     expect(matchCommands('/ex').map((c) => c.name)).toEqual(['exit']);
     expect(matchCommands('/h').map((c) => c.name)).toEqual(['help']);
     expect(matchCommands('/mo').map((c) => c.name)).toEqual(['model']);
+    expect(matchCommands('/pr').map((c) => c.name)).toEqual(['prompt']);
   });
   it('does not match the retired /quit alias', () => {
     expect(matchCommands('/q').map((c) => c.name)).toEqual([]);
@@ -84,6 +85,9 @@ describe('runCommand', () => {
   });
   it('resolves /model to the model command', () => {
     expect(runCommand('/model')).toEqual({ kind: 'run', command: findCommand('model') });
+  });
+  it('resolves /prompt to the prompt command', () => {
+    expect(runCommand('/prompt')).toEqual({ kind: 'run', command: findCommand('prompt') });
   });
   it('treats a bare slash as help (no false unknown)', () => {
     expect(runCommand('/')).toEqual({ kind: 'run', command: findCommand('help') });

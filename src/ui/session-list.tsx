@@ -43,6 +43,7 @@ import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
+import { RepoPromptEditor } from './repo-prompt-editor';
 import { StatusFooter } from './status-footer';
 import { glyph, statusColor, theme } from './theme';
 
@@ -131,6 +132,8 @@ export const SessionList: FC<{
   );
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
+  // Open when the user runs `/prompt`; the RepoPromptEditor then owns the keys.
+  const [promptEdit, setPromptEdit] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const rowsRef = useRef<DOMElement>(null);
   const rowsBox = useAbsolutePosition(rowsRef);
@@ -145,13 +148,15 @@ export const SessionList: FC<{
     manager,
     target?.id,
   );
-  // `/command` の解決・実行も共有フックへ。一覧は exit/help/model のみ扱う。
+  // `/command` の解決・実行も共有フックへ。一覧は exit/help/model/prompt を扱う。
   const runCommandInput = useCommandRunner(
     {
       exit: onQuit,
       help: () => setShowHelp(true),
       // `/model` はセッションを作らずモデル選択ダイアログを開く。
       model: () => setModelSelect(true),
+      // `/prompt` はリポジトリ追加指示（.codiva/prompt.md）のエディタを開く。
+      prompt: () => setPromptEdit(true),
     },
     setActionError,
     m.command.unknown,
@@ -248,9 +253,9 @@ export const SessionList: FC<{
     // で届く。Ink はこれを解釈できず生テキストとして渡すため、共通ヘルパーで
     // 実キーへ復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
     const { input, key } = normalizeChord(rawInput, rawKey);
-    // The model picker is modal: it owns the keys (its own useInput handles
-    // arrows/Enter/Esc). Ignore everything else here so nothing leaks through.
-    if (modelSelect) {
+    // The model picker and repo-prompt editor are modal: each owns the keys (its
+    // own useInput). Ignore everything here so nothing leaks through to the list.
+    if (modelSelect || promptEdit) {
       return;
     }
     if (key.tab && key.shift) {
@@ -366,11 +371,13 @@ export const SessionList: FC<{
 
   const footerHint = modelSelect
     ? m.model.help
-    : pending
-      ? m.list.helpPending
-      : focus === 'list'
-        ? m.list.helpList
-        : m.list.helpComposer;
+    : promptEdit
+      ? m.prompt.help
+      : pending
+        ? m.list.helpPending
+        : focus === 'list'
+          ? m.list.helpList
+          : m.list.helpComposer;
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -484,6 +491,15 @@ export const SessionList: FC<{
             setModelSelect(false);
           }}
           onCancel={() => setModelSelect(false)}
+        />
+      ) : promptEdit ? (
+        <RepoPromptEditor
+          initial={manager.getRepoPrompt()}
+          onSave={(text) => {
+            manager.setRepoPrompt(text);
+            setPromptEdit(false);
+          }}
+          onCancel={() => setPromptEdit(false)}
         />
       ) : pending && target ? (
         <PermissionDialog

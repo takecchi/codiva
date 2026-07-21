@@ -1,8 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { defaultRepoPromptPath, loadRepoPrompt } from '@/utils/repo-prompt';
+import { defaultRepoPromptPath, loadRepoPrompt, saveRepoPrompt } from '@/utils/repo-prompt';
 
 describe('repo prompt file I/O', () => {
   let dir: string;
@@ -33,5 +33,26 @@ describe('repo prompt file I/O', () => {
     const path = join(dir, 'prompt.md');
     await writeFile(path, '   \n', 'utf8');
     expect(await loadRepoPrompt(dir, path)).toBeUndefined();
+  });
+
+  it('saves the normalized prompt to <repo>/.codiva/prompt.md, creating the dir', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'codiva-rp-'));
+    await saveRepoPrompt(dir, '  Open a PR when done  ');
+    const path = defaultRepoPromptPath(dir);
+    expect(await readFile(path, 'utf8')).toBe('Open a PR when done\n');
+    // Round-trips back through the loader.
+    expect(await loadRepoPrompt(dir)).toBe('Open a PR when done');
+  });
+
+  it('deletes the file when saving an empty prompt', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'codiva-rp-'));
+    await saveRepoPrompt(dir, 'something');
+    await saveRepoPrompt(dir, '   \n'); // clear
+    expect(await loadRepoPrompt(dir)).toBeUndefined();
+  });
+
+  it('clearing a non-existent prompt is a no-op (does not throw)', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'codiva-rp-'));
+    await expect(saveRepoPrompt(dir, '')).resolves.toBeUndefined();
   });
 });

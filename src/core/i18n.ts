@@ -112,6 +112,15 @@ export interface Messages {
     /** 選択肢の説明文 */
     descriptions: Record<ModelId, string>;
   };
+  /** リポジトリ追加指示エディタ（repo-prompt-editor.tsx。/prompt コマンドで開く） */
+  prompt: {
+    /** エディタ見出し */
+    title: string;
+    /** エディタ下部の操作ヒント（保存/改行/キャンセル） */
+    help: string;
+    /** 空のときのプレースホルダ */
+    placeholder: string;
+  };
   /** デスクトップ通知（notify.ts） */
   notify: {
     needsInput: string;
@@ -174,6 +183,8 @@ export interface Messages {
     model: string;
     /** /diff の説明 */
     diff: string;
+    /** /prompt の説明 */
+    prompt: string;
   };
 }
 
@@ -261,6 +272,11 @@ const ja: Messages = {
       haiku: 'Haiku 4.5 ・ 手早い回答に最速',
     },
   },
+  prompt: {
+    title: 'リポジトリの追加指示（.codiva/prompt.md）',
+    help: 'Enter: 保存 ・ Shift+Enter: 改行 ・ Esc: キャンセル（空で保存すると削除）',
+    placeholder: '例）作業が終わったらテストを実行し、PR を作成してください',
+  },
   notify: {
     needsInput: '質問があります',
     needsPermission: '許可を待っています',
@@ -305,6 +321,7 @@ const ja: Messages = {
     exit: 'codiva を終了',
     model: 'モデルを切り替え',
     diff: '変更差分サマリの表示を切り替え',
+    prompt: 'リポジトリの追加指示を編集',
   },
 };
 
@@ -392,6 +409,11 @@ const en: Messages = {
       haiku: 'Haiku 4.5 · Fastest for quick answers',
     },
   },
+  prompt: {
+    title: 'Repository instructions (.codiva/prompt.md)',
+    help: 'Enter: save · Shift+Enter: newline · Esc: cancel (save empty to clear)',
+    placeholder: 'e.g. When you finish, run the tests and open a PR',
+  },
   notify: {
     needsInput: 'Needs your input',
     needsPermission: 'Awaiting permission',
@@ -432,6 +454,7 @@ const en: Messages = {
     exit: 'Quit codiva',
     model: 'Switch the model',
     diff: 'Toggle the changes summary',
+    prompt: 'Edit the repository instructions',
   },
 };
 
