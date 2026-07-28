@@ -249,6 +249,17 @@ describe('Session', () => {
     expect(session.getState().status).toBe('running');
   });
 
+  it('start() logs the initial prompt as the first user entry', () => {
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    // 詳細画面で「自分の最初の指示」が AI 応答より前に見えるよう、start でログ先頭に積む。
+    const first = session.getState().messages[0];
+    expect(first?.kind).toBe('user');
+    expect(first?.text).toBe('do the thing');
+    expect(first?.timestamp).toBe(INPUT.startedAt);
+  });
+
   it('send() injects a follow-up and resumes running', async () => {
     const fake = makeFakeQuery();
     const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });

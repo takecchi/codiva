@@ -155,6 +155,10 @@ export class Session {
       return;
     }
     this.startedOnce = true;
+    // 最初の指示もフォローアップ (send) と同じくログへ積む。dispatch しないと詳細画面で
+    // AI の応答が先頭になり「自分が何を指示したか」が見えない。復元経路は transcript から
+    // 既に user ログを持ち start() を通らないため、二重記録にはならない。
+    this.dispatch({ kind: 'user_input', text: this.state.prompt, at: this.state.startedAt });
     this.inputQueue.push(toUserMessage(this.state.prompt));
     this.ensureConsuming();
     void this.runTitleGen();
