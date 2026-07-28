@@ -19,6 +19,17 @@ import {
 // SessionManager. Unit tests for individual modules live next to them as *.spec.ts.
 // Shared fakes (worktrees, sessions, fullscreen renderer) live in ./helpers.
 
+/**
+ * Stand-in for the model catalog codiva fetches from Claude Code at startup
+ * (`fetchModelCatalog`). Shaped like real `supportedModels()` output so the
+ * picker is driven by injected data rather than a hardcoded list.
+ */
+const MODEL_CATALOG = [
+  { value: 'default', resolvedModel: 'claude-opus-4-8', displayName: 'Default (recommended)' },
+  { value: 'opus', resolvedModel: 'claude-opus-4-8', displayName: 'Opus' },
+  { value: 'claude-fable-5', resolvedModel: 'claude-fable-5', displayName: 'Fable' },
+];
+
 describe('App fullscreen layout', () => {
   it('renders a frame exactly as tall as the terminal, footer pinned to the bottom', () => {
     const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 20);
@@ -738,7 +749,9 @@ describe('App detail view (in-app connection)', () => {
 
   it('/model in the detail view switches the model for that session only', async () => {
     const { manager, out } = drivenManager();
-    const { stdin, lastFrame } = render(<App manager={manager} />);
+    const { stdin, lastFrame } = render(
+      <App manager={manager} modelCatalog={Promise.resolve(MODEL_CATALOG)} />,
+    );
     stdin.write('switch my model');
     await flush();
     stdin.write('\r');
@@ -763,7 +776,8 @@ describe('App detail view (in-app connection)', () => {
     await flush();
     expect(lastFrame()).toContain(messages.ja.model.title); // model picker open
 
-    // Cursor starts on the current model (Opus); ↓ moves to Fable, Enter applies.
+    // Rows come from the injected catalog (SDK display names), so the cursor starts
+    // on the row whose resolvedModel matches the session's model (Opus).
     stdin.write('\x1b[B'); // ↓ → Fable
     await flush();
     stdin.write('\r'); // confirm

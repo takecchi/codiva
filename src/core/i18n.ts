@@ -6,8 +6,6 @@
  * 複数形などは、型安全に保つため文字列テンプレート関数として持つ。
  */
 
-import type { ModelId } from './models';
-
 export type Lang = 'ja' | 'en';
 
 /** サポート言語の一覧（順序は UI での並びに使える）。 */
@@ -103,14 +101,10 @@ export interface Messages {
     title: string;
     /** ダイアログ下部の操作ヒント */
     help: string;
-    /** 既定モデルに付ける「推奨」ラベル */
-    recommended: string;
+    /** カタログ取得中のプレースホルダ */
+    loading: string;
     /** 選択確定後のフッタ通知（name は選んだモデルの表示名） */
     saved: (name: string) => string;
-    /** 選択肢の表示名（ブランド名。default のみ翻訳語） */
-    names: Record<ModelId, string>;
-    /** 選択肢の説明文 */
-    descriptions: Record<ModelId, string>;
   };
   /** リポジトリ追加指示エディタ（repo-prompt-editor.tsx。/prompt コマンドで開く） */
   prompt: {
@@ -268,25 +262,14 @@ const ja: Messages = {
     chatAboutThis: 'これについて相談する',
     chatMessage: 'ユーザーは選択肢を選ばず、この件について会話で相談することを選びました。',
   },
+  // モデル名・説明文はここに持たない。Claude Code のカタログ（英語）をそのまま
+  // 出すのが唯一の出所という設計判断（core/models.ts 参照）。翻訳するとモデル追加
+  // ごとにカタログ更新が必要になり、直書きの陳腐化がここへ移るだけになる。
   model: {
     title: 'モデルを選択',
     help: '↑↓: 選択 ・ Enter: 決定 ・ Esc: キャンセル',
-    recommended: '推奨',
+    loading: 'モデル一覧を取得中…',
     saved: (name) => `モデルを ${name} に変更しました（以降の新規セッションに適用）`,
-    names: {
-      default: 'デフォルト',
-      opus: 'Opus',
-      fable: 'Fable',
-      sonnet: 'Sonnet',
-      haiku: 'Haiku',
-    },
-    descriptions: {
-      default: 'CLI 既定のモデルを使用',
-      opus: 'Opus 4.8 ・ 日常的で複雑なタスクに最適',
-      fable: 'Fable 5 ・ 最難関・長時間タスク向けの最上位',
-      sonnet: 'Sonnet 5 ・ 日常タスクを効率的に',
-      haiku: 'Haiku 4.5 ・ 手早い回答に最速',
-    },
   },
   prompt: {
     title: 'リポジトリの追加指示（.codiva/prompt.md）',
@@ -415,22 +398,8 @@ const en: Messages = {
   model: {
     title: 'Select model',
     help: '↑↓: select · Enter: confirm · Esc: cancel',
-    recommended: 'recommended',
+    loading: 'Loading models…',
     saved: (name) => `Model set to ${name} (applies to new sessions)`,
-    names: {
-      default: 'Default',
-      opus: 'Opus',
-      fable: 'Fable',
-      sonnet: 'Sonnet',
-      haiku: 'Haiku',
-    },
-    descriptions: {
-      default: 'Use the CLI default model',
-      opus: 'Opus 4.8 · Best for everyday, complex tasks',
-      fable: 'Fable 5 · Most capable for your hardest, longest tasks',
-      sonnet: 'Sonnet 5 · Efficient for routine tasks',
-      haiku: 'Haiku 4.5 · Fastest for quick answers',
-    },
   },
   prompt: {
     title: 'Repository instructions (.codiva/prompt.md)',

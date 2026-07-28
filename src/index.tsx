@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
 import {
   errorMessage,
@@ -10,6 +11,7 @@ import {
 import {
   copyToClipboard,
   defaultStatePath,
+  fetchModelCatalog,
   loadConfig,
   loadRepoPrompt,
   openUrl,
@@ -72,6 +74,13 @@ async function main(): Promise<void> {
     appendSystemPrompt,
   });
 
+  // `/model` の選択肢は Claude Code のカタログを唯一の出所にする（直書きしない）。
+  // 起動をブロックしないよう await せずに投げておき、App 側で state に解決する。
+  // 実測 0.3〜2 秒で、`/model` を開くまでにはほぼ確実に landing する（間に合わなければ
+  // ダイアログが取得中を表示する）。失敗してもフォールバック一覧に落ちるだけで起動は
+  // 妨げない（fetchModelCatalog は throw しない）。
+  const modelCatalog = fetchModelCatalog(query, { cwd: repoRoot });
+
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);
   installHardExitFlush(persist.flushSync);
@@ -84,6 +93,7 @@ async function main(): Promise<void> {
       model={config.model}
       version={appVersion}
       messages={t}
+      modelCatalog={modelCatalog}
       onOpenPr={openUrl}
       onCopy={(text) => copyToClipboard(text)}
       // 詳細ビューを開いている間だけマウス捕捉を解除し、端末ネイティブの

@@ -30,7 +30,8 @@ describe('createTitleGenerator', () => {
     const generate = createTitleGenerator(fn, { cwd: '/repo' });
     expect(await generate('implement oauth login please')).toBe('Add OAuth login');
     // Uses Haiku, runs in the given cwd, and includes the prompt in the request.
-    expect(seen.model).toBe('claude-haiku-4-5');
+    // The family alias (not a version-pinned id) so it tracks the current Haiku.
+    expect(seen.model).toBe('haiku');
     expect(seen.cwd).toBe('/repo');
     expect(seen.prompt).toContain('implement oauth login please');
   });

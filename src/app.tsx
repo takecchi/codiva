@@ -4,10 +4,17 @@ import {
   messages as catalogs,
   isFullscreenViewport,
   type Messages,
+  type ModelOption,
   type MouseControl,
   type SessionManager,
 } from '@/core';
-import { type ListViewState, MessagesProvider, SessionDetail, SessionList } from '@/ui';
+import {
+  type ListViewState,
+  MessagesProvider,
+  SessionDetail,
+  SessionList,
+  useModelCatalog,
+} from '@/ui';
 
 /** どの画面を出しているか。詳細は対象セッション id を持つ。 */
 type View = { mode: 'list' } | { mode: 'detail'; id: string };
@@ -19,6 +26,12 @@ export const App: FC<{
   /** アプリのバージョン（package.json 由来）。ヘッダのワードマーク右に表示。 */
   version?: string;
   messages?: Messages;
+  /**
+   * Claude Code のモデルカタログ取得（`/model` の選択肢）。合成ルートが render 前に
+   * 開始した Promise をそのまま受ける。両ビューが使うためここで state に解決して
+   * props で配る（一覧・詳細のどちらからでも `/model` を開けるため）。
+   */
+  modelCatalog?: Promise<readonly ModelOption[]>;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
   /** Copy composer selection to the clipboard. Injected from index.tsx (OSC 52). */
@@ -35,11 +48,13 @@ export const App: FC<{
   version,
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
+  modelCatalog,
   onOpenPr,
   onCopy,
   mouse,
 }) => {
   const { exit } = useApp();
+  const models = useModelCatalog(modelCatalog);
   const [view, setView] = useState<View>({ mode: 'list' });
   // 一覧はビュー切替でアンマウントされ内部 state（選択行・フォーカス）が失われる。
   // 詳細から戻ったときに「前見ていた箇所」を復元できるよう、最新の表示状態をここに
@@ -72,6 +87,7 @@ export const App: FC<{
           <SessionDetail
             manager={manager}
             id={view.id}
+            models={models}
             onBack={() => setView({ mode: 'list' })}
             onQuit={quit}
             onCopy={onCopy}
@@ -85,6 +101,7 @@ export const App: FC<{
             onQuit={quit}
             cwd={cwd}
             model={model}
+            models={models}
             version={version}
             initialViewState={listStateRef.current}
             onViewStateChange={(state) => {
