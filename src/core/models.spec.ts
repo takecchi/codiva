@@ -148,6 +148,28 @@ describe('isCurrentModel', () => {
     expect(isCurrentModel(row('sonnet'), 'claude-haiku-4-5')).toBe(false);
   });
 
+  // The SDK reports a session's resolved model WITHOUT the context tag
+  // (`claude-opus-4-8`, per src/core/__fixtures__/*.jsonl) while the catalog rows
+  // carry it (`claude-opus-4-8[1m]`). An exact compare misses, leaving the picker
+  // with no ✔ and the caret on "Default" — so Enter would wipe the user's choice.
+  it('matches a session-reported id against a catalog row carrying a [1m] tag', () => {
+    expect(isCurrentModel(row('opus[1m]'), 'claude-opus-4-8')).toBe(true);
+  });
+
+  it('matches a bare id against a dated-snapshot resolvedModel', () => {
+    // Catalog: 'claude-haiku-4-5-20251001'; config/session: 'claude-haiku-4-5'.
+    expect(isCurrentModel(row('haiku'), 'claude-haiku-4-5')).toBe(true);
+  });
+
+  it('matches a tagged session id against an aliased row value', () => {
+    expect(isCurrentModel(row('opus[1m]'), 'opus')).toBe(true);
+  });
+
+  it('still rejects a different family sharing the tag shape', () => {
+    expect(isCurrentModel(row('opus[1m]'), 'claude-sonnet-5')).toBe(false);
+    expect(isCurrentModel(row('haiku'), 'claude-haiku-3')).toBe(false);
+  });
+
   it('never marks the default row for an explicitly configured model', () => {
     // The SDK gives the default row a resolvedModel too ('claude-opus-4-8[1m]').
     // Matching on it would show an explicit Opus choice as "Default".

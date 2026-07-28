@@ -210,7 +210,7 @@ interface SessionState {
 - `dispose()`: 全セッションを **`stop()`（quiet）**（worktree は残す）。実行中でも resumable なまま。
 - `onTransition(prev,next)`: ステータス遷移ごとに発火（デスクトップ通知に配線）。
 - `onPersist()`: 永続対象が変わった合図（合成ルートで debounce 保存に配線）。`persistableState()` が state.json 用スナップショットを組み立てる。
-- **モデル切替（`/model`）**: `SessionOptions` を可変フィールドとして保持し、`getModel()` / `setModel(model)` で公開。`setModel` は**以降の新規セッション**に適用（実行中セッションは起動時のモデルを維持）し、`onModelChange(model)` で合成ルートに通知 → `~/.codiva/config.json` の `model` にマージ保存される。選択肢は `core/models.ts`（`MODELS`）、コマンド解析は `core/commands.ts`（`parseSlashCommand`）。
+- **モデル切替（`/model`）**: `SessionOptions` を可変フィールドとして保持し、`getModel()` / `setModel(model)` で公開。`setModel` は**以降の新規セッション**に適用（実行中セッションは起動時のモデルを維持）し、`onModelChange(model)` で合成ルートに通知 → `~/.codiva/config.json` の `model` にマージ保存される。選択肢は **Claude Code のカタログ**（`Query.supportedModels()`）を唯一の出所にし、取得は `utils/model-catalog.ts`（`fetchModelCatalog`）・変換と突き合わせは `core/models.ts`（`toModelOptions` / `isCurrentModel`）が担う（詳細は [TECH_NOTES.md](./TECH_NOTES.md) の supportedModels 節）。コマンド解析は `core/commands.ts`（`parseSlashCommand`）。
 - **リポジトリ追加指示の編集（`/prompt`）**: モデル切替と同じ形。`getRepoPrompt()` / `setRepoPrompt(text)` で `SessionOptions.appendSystemPrompt` を可変管理し、`setRepoPrompt` は**以降の新規セッション**に適用（実行中セッションは起動時の指示を維持。systemPrompt は query 開始時に確定するため）、`onRepoPromptChange(text)` で合成ルートに通知 → `utils/saveRepoPrompt()` が `<repo>/.codiva/prompt.md` へ永続化（空なら削除）。UI は一覧の `/prompt` で `ui/repo-prompt-editor.tsx`（現在値をシードしたモーダル。Enter 保存 / Shift+Enter 改行 / Esc 取消。composer と同じ `input.ts` の chord モデル）を開く。起動時読込は従来どおり `loadRepoPrompt()`。
 - `restore(persisted)`: 起動時に前回セッションを再構築（worktree meta を再配線し、`Session` に `resume`/`restored` を渡す。id/slug を予約して衝突回避）。
 - **責務分割**: SessionManager はライフサイクルと配線のファサードで、以下を委譲する:

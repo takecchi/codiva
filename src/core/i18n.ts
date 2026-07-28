@@ -103,6 +103,11 @@ export interface Messages {
     help: string;
     /** カタログ取得中のプレースホルダ */
     loading: string;
+    /**
+     * 「CLI 既定を使う」行のラベル。モデル名と違いこれは codiva 自身の概念
+     * （= `--model` を渡さない）なので、SDK の英語ではなくカタログから引く。
+     */
+    defaultRow: string;
     /** 選択確定後のフッタ通知（name は選んだモデルの表示名） */
     saved: (name: string) => string;
   };
@@ -269,6 +274,7 @@ const ja: Messages = {
     title: 'モデルを選択',
     help: '↑↓: 選択 ・ Enter: 決定 ・ Esc: キャンセル',
     loading: 'モデル一覧を取得中…',
+    defaultRow: 'デフォルト（推奨）',
     saved: (name) => `モデルを ${name} に変更しました（以降の新規セッションに適用）`,
   },
   prompt: {
@@ -399,6 +405,7 @@ const en: Messages = {
     title: 'Select model',
     help: '↑↓: select · Enter: confirm · Esc: cancel',
     loading: 'Loading models…',
+    defaultRow: 'Default (recommended)',
     saved: (name) => `Model set to ${name} (applies to new sessions)`,
   },
   prompt: {

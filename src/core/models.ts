@@ -40,6 +40,9 @@ export interface ModelOption {
  * **バージョンを含む ID は置かない**（それが陳腐化の原因なので）。Claude Code が
  * カタログの `value` にも使うファミリーエイリアスだけを並べる。エイリアスは
  * 常に現行世代へ解決されるため、モデルが更新されても古びない。
+ *
+ * 既定行の `displayName` は表示に使われない（UI がカタログの `model.defaultRow` を
+ * 引くため）。ここに置いてあるのは型を満たすためだけの不活性な値。
  */
 export const FALLBACK_MODEL_OPTIONS: readonly ModelOption[] = [
   { value: DEFAULT_MODEL_VALUE, displayName: 'Default' },
@@ -108,12 +111,38 @@ export function toConfigModel(value: string): string | undefined {
 }
 
 /**
- * 選択肢が現在の設定モデルを指しているか。
+ * モデル ID を突き合わせ用に正規化する。
  *
- * `value` だけでなく `resolvedModel` も見るのは、設定に明示 ID
- * （`'claude-sonnet-5'`）が保存されていてもカタログ側はエイリアス行
- * （`value: 'sonnet'`）で来ることがあるため。これで旧バージョンの codiva が
- * 直書き ID で保存した設定もそのまま現行の行に一致する。
+ * 同じモデルが出所によって違う綴りで来るため、素の文字列比較では一致しない:
+ *
+ * | 出所 | 例 |
+ * |---|---|
+ * | セッションが報告する解決済みモデル（`system/init`） | `claude-opus-4-8` |
+ * | カタログの `resolvedModel` | `claude-opus-4-8[1m]` |
+ * | カタログの `resolvedModel`（日付付き） | `claude-haiku-4-5-20251001` |
+ * | 設定 / カタログの `value`（エイリアス） | `opus`, `opus[1m]` |
+ *
+ * コンテキストタグ（`[1m]`）と末尾の日付スナップショットを落として比較する。
+ * ファミリーやバージョンの数字は残すので `claude-haiku-4-5` と `claude-haiku-3` は
+ * 別物として扱われる。
+ */
+function normalizeModelId(id: string): string {
+  return id
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/-\d{8}$/, '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * 選択肢が現在のモデル（設定値、またはセッションが報告した解決済みモデル）を
+ * 指しているか。
+ *
+ * `value` だけでなく `resolvedModel` も見るのは、明示 ID（`'claude-sonnet-5'`）が
+ * 保存されていてもカタログ側はエイリアス行（`value: 'sonnet'`）で来ることがあるため。
+ * 比較は `normalizeModelId` を通すので、`[1m]` タグや日付スナップショットの
+ * 綴り違いでも一致する（ここを素の比較にすると ✔ が消え、カーソルが既定行に
+ * 落ちて Enter がユーザーの選択を破棄する）。
  */
 export function isCurrentModel(option: ModelOption, model: string | undefined): boolean {
   // 既定行は「未設定」専用。SDK は既定行にも `resolvedModel`（例 'claude-opus-4-8[1m]'）
@@ -125,7 +154,14 @@ export function isCurrentModel(option: ModelOption, model: string | undefined): 
   if (model === undefined) {
     return false;
   }
-  return option.value === model || option.resolvedModel === model;
+  const target = normalizeModelId(model);
+  if (target.length === 0) {
+    return false;
+  }
+  return (
+    normalizeModelId(option.value) === target ||
+    (option.resolvedModel !== undefined && normalizeModelId(option.resolvedModel) === target)
+  );
 }
 
 /**
