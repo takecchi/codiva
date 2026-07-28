@@ -9,6 +9,7 @@ export * from './i18n';
 export * from './key-sequence';
 export * from './layout';
 export * from './list-hit';
+export * from './markdown';
 export * from './math';
 export * from './model';
 export * from './models';

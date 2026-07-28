@@ -14,6 +14,8 @@
  * instead of a grab-bag of raw ANSI names scattered across components.
  */
 
+import type { MarkdownTone } from '@/core';
+
 /** Brand accent palette — identity, not state. */
 export const palette = {
   ink: '#373b3e', // charcoal — deepest neutral (logo shadow, subtle marks)
@@ -68,6 +70,20 @@ export const logColor: Record<string, string | undefined> = {
   user: 'cyan',
   system: theme.warn,
   error: statusColor.failed,
+};
+
+/**
+ * Colors for Markdown-rendered assistant text, keyed by the semantic `tone` a
+ * span carries (see `core/markdown.ts`). `core` only names the role; the concrete
+ * palette lives here so all color decisions stay in the theme. Spans with no tone
+ * fall back to the default terminal foreground.
+ */
+export const markdownColor: Record<MarkdownTone, string | undefined> = {
+  heading: theme.accent, // section titles — brand accent, bold
+  code: palette.aqua, // inline code / fenced blocks — light teal, distinct from prose
+  link: theme.accent, // link text — accent + underline (underline set on the span)
+  quote: palette.mist, // blockquote bar — dim secondary
+  marker: palette.mist, // list bullets, table separators, rules — dim structural glyphs
 };
 
 /** Glyphs that carry the Claude-Code look. Kept in one place so they stay consistent. */

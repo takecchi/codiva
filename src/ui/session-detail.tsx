@@ -18,6 +18,7 @@ import {
   type MouseControl,
   matchCommands,
   parseSgrMouse,
+  type RichSpan,
   type ScrollAnchor,
   type SessionManager,
   scrollDown,
@@ -43,7 +44,7 @@ import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
-import { glyph, logColor, statusColor, theme } from './theme';
+import { glyph, logColor, markdownColor, statusColor, theme } from './theme';
 
 /** Prefix/indent for each log kind — echoes Claude Code's transcript. Colors live in `logColor`. */
 const LOG_PREFIX: Record<LogEntry['kind'], string> = {
@@ -59,14 +60,43 @@ const LOG_PREFIX: Record<LogEntry['kind'], string> = {
 /** Kinds rendered dimmed (secondary transcript lines). */
 const LOG_DIM: Partial<Record<LogEntry['kind'], boolean>> = { tool_result: true };
 
+// Styled Markdown row: assistant text is rendered to per-span styling in core
+// (bold/italic/code/heading color …). Each span becomes a nested <Text>; the
+// `tone` maps to a theme color, everything else is a boolean Ink text prop.
+const RichLogLine: FC<{ spans: RichSpan[] }> = ({ spans }) => (
+  <Text wrap="truncate-end">
+    {spans.map((s, i) => (
+      <Text
+        // Spans are positional within one already-wrapped row (no identity of
+        // their own); the row rebuilds wholesale on any change, so the index is a
+        // stable, correct key here.
+        // biome-ignore lint/suspicious/noArrayIndexKey: positional spans, whole row re-derived per render
+        key={i}
+        color={s.tone ? markdownColor[s.tone] : undefined}
+        bold={s.bold}
+        italic={s.italic}
+        dimColor={s.dim}
+        underline={s.underline}
+        strikethrough={s.strikethrough}
+      >
+        {s.text}
+      </Text>
+    ))}
+  </Text>
+);
+
 // One physical row of the log. `line.text` already carries the kind's prefix /
 // continuation indent (built by core's logLines); truncate is only a safety net
 // against width drift — wrapping happened in core at the exact content width.
-const LogLine: FC<{ line: DisplayLine }> = ({ line }) => (
-  <Text color={logColor[line.kind]} dimColor={LOG_DIM[line.kind]} wrap="truncate-end">
-    {line.text}
-  </Text>
-);
+// Markdown-rendered rows carry `spans` and take the styled path instead.
+const LogLine: FC<{ line: DisplayLine }> = ({ line }) =>
+  line.spans && line.spans.length > 0 ? (
+    <RichLogLine spans={line.spans} />
+  ) : (
+    <Text color={logColor[line.kind]} dimColor={LOG_DIM[line.kind]} wrap="truncate-end">
+      {line.text}
+    </Text>
+  );
 
 /**
  * The in-app detail view: live log of a single session plus a follow-up

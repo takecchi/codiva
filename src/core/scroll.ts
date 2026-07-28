@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { type RichLine, type RichSpan, renderMarkdown } from './markdown';
 import { clamp } from './math';
 import type { LogEntry, LogKind } from './types';
 
@@ -51,7 +52,16 @@ export interface DisplayLine {
   key: string;
   kind: LogKind;
   text: string;
+  /**
+   * Styled segments for this row, present only when the entry was rendered from
+   * Markdown (see {@link logLines}). When set, the UI paints these spans (bold /
+   * code / heading color …) instead of the flat single-color `text`.
+   */
+  spans?: RichSpan[];
 }
+
+/** LogKinds whose text is Markdown from the assistant and gets rich rendering. */
+const MARKDOWN_KINDS: Partial<Record<LogKind, boolean>> = { assistant_text: true };
 
 const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
@@ -87,10 +97,76 @@ export function wrapDisplayLines(text: string, width: number): string[] {
   return out;
 }
 
+function sameRichStyle(a: RichSpan, b: RichSpan): boolean {
+  return (
+    a.bold === b.bold &&
+    a.italic === b.italic &&
+    a.dim === b.dim &&
+    a.underline === b.underline &&
+    a.strikethrough === b.strikethrough &&
+    a.tone === b.tone
+  );
+}
+
+/**
+ * Wrap one styled logical line to physical rows of at most `width` display cells,
+ * preserving each grapheme's styling. The styled analogue of
+ * {@link wrapDisplayLines}: same CJK-aware, per-grapheme measuring, but it packs
+ * {@link RichSpan}s instead of a plain string. Adjacent graphemes with identical
+ * styling are coalesced back into one span. An empty input yields one empty row.
+ */
+export function wrapRichLine(spans: readonly RichSpan[], width: number): RichSpan[][] {
+  const rows: RichSpan[][] = [];
+  let row: RichSpan[] = [];
+  let w = 0;
+  const flush = (): void => {
+    rows.push(row);
+    row = [];
+    w = 0;
+  };
+  const push = (segment: string, style: RichSpan): void => {
+    const last = row[row.length - 1];
+    if (last && sameRichStyle(last, style)) {
+      last.text += segment;
+    } else {
+      row.push({ ...style, text: segment });
+    }
+  };
+  for (const span of spans) {
+    const style: RichSpan = { ...span, text: '' };
+    for (const { segment } of GRAPHEMES.segment(span.text)) {
+      const cw = stringWidth(segment);
+      if (width > 0 && w + cw > width && w > 0) {
+        flush();
+      }
+      push(segment, style);
+      w += cw;
+    }
+  }
+  flush();
+  return rows;
+}
+
+/** Parse Markdown into logical lines, falling back to `undefined` on any error. */
+function safeRenderMarkdown(text: string): RichLine[] | undefined {
+  try {
+    const lines = renderMarkdown(text);
+    return lines.length > 0 ? lines : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Expand log entries into the physical rows the detail view renders. The
  * per-kind prefix comes from the UI (it owns glyphs/colors); continuation rows
  * are indented by the prefix's display width so wrapped text stays aligned.
+ *
+ * Assistant text arrives as Markdown, so those entries ({@link MARKDOWN_KINDS})
+ * are rendered to styled spans (bold/code/headings/lists) and each row carries
+ * `spans`; every other kind keeps the flat single-color path. `text` is always
+ * set (the concatenated plain text) so scroll math and the plain renderer work
+ * unchanged.
  */
 export function logLines(
   messages: LogEntry[],
@@ -101,7 +177,28 @@ export function logLines(
   for (const entry of messages) {
     const prefix = prefixFor(entry.kind);
     const indent = ' '.repeat(stringWidth(prefix));
-    const rows = wrapDisplayLines(entry.text, Math.max(1, width - stringWidth(prefix)));
+    const content = Math.max(1, width - stringWidth(prefix));
+
+    const rich = MARKDOWN_KINDS[entry.kind] ? safeRenderMarkdown(entry.text) : undefined;
+    if (rich) {
+      let i = 0;
+      for (const line of rich) {
+        for (const rowSpans of wrapRichLine(line, content)) {
+          const lead = i === 0 ? prefix : indent;
+          const spans = lead ? [{ text: lead } as RichSpan, ...rowSpans] : rowSpans;
+          out.push({
+            key: `${entry.seq}:${i}`,
+            kind: entry.kind,
+            text: spans.map((s) => s.text).join(''),
+            spans,
+          });
+          i += 1;
+        }
+      }
+      continue;
+    }
+
+    const rows = wrapDisplayLines(entry.text, content);
     for (let i = 0; i < rows.length; i += 1) {
       out.push({
         key: `${entry.seq}:${i}`,
