@@ -8,6 +8,7 @@ import {
   scrollUp,
   streamTail,
   wrapDisplayLines,
+  wrapRichLine,
 } from './scroll';
 import type { LogEntry, LogKind } from './types';
 
@@ -93,10 +94,11 @@ describe('logLines (entries → physical rows)', () => {
   const prefixFor = (kind: LogKind) => (kind === 'user' ? '> ' : '');
 
   it('expands a multi-line entry into one DisplayLine per physical row', () => {
-    const lines = logLines([{ seq: 1, kind: 'assistant_text', text: 'one\ntwo' }], 20, prefixFor);
+    // `system` is a non-Markdown kind → plain flat-text path (no spans).
+    const lines = logLines([{ seq: 1, kind: 'system', text: 'one\ntwo' }], 20, prefixFor);
     expect(lines).toEqual([
-      { key: '1:0', kind: 'assistant_text', text: 'one' },
-      { key: '1:1', kind: 'assistant_text', text: 'two' },
+      { key: '1:0', kind: 'system', text: 'one' },
+      { key: '1:1', kind: 'system', text: 'two' },
     ]);
   });
 
@@ -119,6 +121,64 @@ describe('logLines (entries → physical rows)', () => {
       prefixFor,
     );
     expect(lines.map((l) => l.key)).toEqual(['1:0', '2:0']);
+  });
+
+  it('renders assistant_text as Markdown, attaching styled spans', () => {
+    const lines = logLines(
+      [{ seq: 5, kind: 'assistant_text', text: 'hello **world**' }],
+      40,
+      prefixFor,
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.text).toBe('hello world');
+    expect(lines[0]?.spans).toEqual([{ text: 'hello ' }, { text: 'world', bold: true }]);
+  });
+
+  it('renders a Markdown heading as a bold heading-toned span', () => {
+    const lines = logLines([{ seq: 6, kind: 'assistant_text', text: '# Title' }], 40, prefixFor);
+    expect(lines[0]?.spans).toEqual([{ text: 'Title', bold: true, tone: 'heading' }]);
+  });
+
+  it('does NOT Markdown-render non-assistant kinds (flat text, no spans)', () => {
+    const lines = logLines([{ seq: 7, kind: 'user', text: '**not bold**' }], 40, prefixFor);
+    expect(lines[0]?.spans).toBeUndefined();
+    expect(lines[0]?.text).toBe('> **not bold**');
+  });
+
+  it('wraps a rich Markdown line by display width, preserving span styling', () => {
+    // width 5 → "aaa" then "aaa" (bold code carried across the wrap)
+    const lines = logLines([{ seq: 8, kind: 'assistant_text', text: '`aaaaaa`' }], 5, prefixFor);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.spans).toEqual([{ text: 'aaaaa', tone: 'code' }]);
+    expect(lines[1]?.spans).toEqual([{ text: 'a', tone: 'code' }]);
+  });
+});
+
+describe('wrapRichLine', () => {
+  it('returns one empty row for an empty line', () => {
+    expect(wrapRichLine([], 10)).toEqual([[]]);
+  });
+
+  it('keeps a short styled line on one row', () => {
+    const spans = [{ text: 'ab', bold: true }, { text: 'cd' }];
+    expect(wrapRichLine(spans, 10)).toEqual([spans]);
+  });
+
+  it('coalesces adjacent graphemes of identical style back into one span', () => {
+    expect(wrapRichLine([{ text: 'hello', tone: 'code' }], 10)).toEqual([
+      [{ text: 'hello', tone: 'code' }],
+    ]);
+  });
+
+  it('wraps across spans at the display-width boundary', () => {
+    const rows = wrapRichLine([{ text: 'abc', bold: true }, { text: 'def' }], 4);
+    expect(rows).toEqual([[{ text: 'abc', bold: true }, { text: 'd' }], [{ text: 'ef' }]]);
+  });
+
+  it('measures CJK width (2 cells) when wrapping', () => {
+    // width 4 → two double-width graphemes per row
+    const rows = wrapRichLine([{ text: 'あいう' }], 4);
+    expect(rows.map((r) => r.map((s) => s.text).join(''))).toEqual(['あい', 'う']);
   });
 });
 
