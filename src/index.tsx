@@ -79,7 +79,13 @@ async function main(): Promise<void> {
   // 実測 0.3〜2 秒で、`/model` を開くまでにはほぼ確実に landing する（間に合わなければ
   // ダイアログが取得中を表示する）。失敗してもフォールバック一覧に落ちるだけで起動は
   // 妨げない（fetchModelCatalog は throw しない）。
-  const modelCatalog = fetchModelCatalog(query, { cwd: repoRoot });
+  // 終了時に取得を打ち切るためのハンドル（取得中に /exit されたときサブプロセスと
+  // タイマーを残さない = シェルのプロンプトが返らない事故を防ぐ）。
+  const catalogAbort = new AbortController();
+  const modelCatalog = fetchModelCatalog(query, {
+    cwd: repoRoot,
+    signal: catalogAbort.signal,
+  });
 
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);
@@ -108,6 +114,7 @@ async function main(): Promise<void> {
   // abort(), so in-flight sessions are still recorded as resumable), restore the
   // terminal (leave alt screen + mouse) so the shell history is intact.
   stopPrPolling();
+  catalogAbort.abort();
   await persist.flushAsync();
   terminal.teardown();
 }

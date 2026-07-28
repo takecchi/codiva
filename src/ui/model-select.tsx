@@ -1,6 +1,12 @@
 import { Box, Text, useInput } from 'ink';
 import { type FC, useState } from 'react';
-import { currentModelIndex, isCurrentModel, type ModelOption, toConfigModel } from '@/core';
+import {
+  currentModelIndex,
+  DEFAULT_MODEL_VALUE,
+  isCurrentModel,
+  type ModelOption,
+  toConfigModel,
+} from '@/core';
 import { useMessages } from './i18n-context';
 import { glyph, theme } from './theme';
 
@@ -76,10 +82,15 @@ export const ModelSelect: FC<{
         ) : (
           rows.map((choice, i) => {
             const active = i === cursor;
+            // モデル名は SDK 由来（英語）をそのまま出すが、「CLI 既定」行は
+            // codiva 自身の概念なのでカタログから引く（フォールバック一覧でも
+            // 日本語表示が保たれる）。
+            const label =
+              choice.value === DEFAULT_MODEL_VALUE ? m.model.defaultRow : choice.displayName;
             return (
               <Box key={choice.value}>
                 <Text color={active ? 'cyan' : undefined}>
-                  {active ? glyph.caret : ' '} {choice.displayName}
+                  {active ? glyph.caret : ' '} {label}
                   {isCurrentModel(choice, current) ? ' ✔' : ''}
                 </Text>
                 {choice.description ? <Text dimColor> — {choice.description}</Text> : null}

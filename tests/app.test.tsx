@@ -25,9 +25,13 @@ import {
  * picker is driven by injected data rather than a hardcoded list.
  */
 const MODEL_CATALOG = [
-  { value: 'default', resolvedModel: 'claude-opus-4-8', displayName: 'Default (recommended)' },
-  { value: 'opus', resolvedModel: 'claude-opus-4-8', displayName: 'Opus' },
-  { value: 'claude-fable-5', resolvedModel: 'claude-fable-5', displayName: 'Fable' },
+  {
+    value: 'default',
+    resolvedModel: 'claude-opus-4-8[1m]',
+    displayName: 'Default (recommended)',
+  },
+  { value: 'opus[1m]', resolvedModel: 'claude-opus-4-8[1m]', displayName: 'Opus' },
+  { value: 'claude-fable-5[1m]', resolvedModel: 'claude-fable-5', displayName: 'Fable' },
 ];
 
 describe('App fullscreen layout', () => {
@@ -776,8 +780,9 @@ describe('App detail view (in-app connection)', () => {
     await flush();
     expect(lastFrame()).toContain(messages.ja.model.title); // model picker open
 
-    // Rows come from the injected catalog (SDK display names), so the cursor starts
-    // on the row whose resolvedModel matches the session's model (Opus).
+    // Rows come from the injected catalog (SDK display names). The session reports
+    // `claude-opus-4-8` while the catalog row is `claude-opus-4-8[1m]`, so this also
+    // covers the tag-insensitive match — the cursor must start on Opus, not Default.
     stdin.write('\x1b[B'); // ↓ → Fable
     await flush();
     stdin.write('\r'); // confirm

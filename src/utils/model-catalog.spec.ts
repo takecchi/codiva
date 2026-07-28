@@ -63,6 +63,43 @@ describe('fetchModelCatalog', () => {
     await expect(fetchModelCatalog(query, { cwd: '/repo' })).resolves.toEqual([]);
   });
 
+  it('gives up and returns [] when the SDK never answers (self-contained timeout)', async () => {
+    vi.useFakeTimers();
+    try {
+      const spy = vi.fn();
+      // Never resolves and never rejects — i.e. the SDK swallows the abort.
+      const pending = fetchModelCatalog(
+        fakeQuery(() => new Promise<unknown>(() => {}), spy),
+        { cwd: '/repo' },
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(pending).resolves.toEqual([]);
+      expect(spy.mock.calls[0]?.[0]?.options.abortController?.signal.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops early when the caller aborts (shutdown during the startup fetch)', async () => {
+    const shutdown = new AbortController();
+    const spy = vi.fn();
+    const pending = fetchModelCatalog(
+      fakeQuery(
+        () =>
+          new Promise<unknown>((_resolve, reject) => {
+            // Mirror the SDK: aborting the query rejects the pending init.
+            const signal = spy.mock.calls[0]?.[0]?.options.abortController?.signal;
+            signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          }),
+        spy,
+      ),
+      { cwd: '/repo', signal: shutdown.signal },
+    );
+    shutdown.abort();
+    await expect(pending).resolves.toEqual([]);
+    expect(spy.mock.calls[0]?.[0]?.options.abortController?.signal.aborted).toBe(true);
+  });
+
   it('aborts even when the query throws', async () => {
     const spy = vi.fn();
     await fetchModelCatalog(

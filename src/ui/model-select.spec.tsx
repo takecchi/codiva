@@ -33,7 +33,10 @@ describe('ModelSelect', () => {
     );
     const frame = lastFrame() ?? '';
     expect(frame).toContain('モデルを選択');
-    expect(frame).toContain('Default (recommended)');
+    // Model names come from the SDK verbatim, but the "CLI default" row is
+    // codiva's own concept and stays translated (see .claude/rules/i18n.md).
+    expect(frame).toContain('デフォルト（推奨）');
+    expect(frame).not.toContain('Default (recommended)');
     expect(frame).toContain('Opus');
     expect(frame).toContain('Sonnet');
     expect(frame).toContain('Haiku');
