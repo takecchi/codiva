@@ -1,6 +1,7 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ARROW_SCROLL_LINES,
   bufferOf,
   COMMANDS,
   caretIndexAtClick,
@@ -9,6 +10,7 @@ import {
   emptyBuffer,
   INPUT_MAX_ROWS,
   isCommandInput,
+  isFullscreenViewport,
   isResumable,
   isTerminalStatus,
   type LogEntry,
@@ -24,13 +26,14 @@ import {
   scrollDown,
   scrollUp,
   streamTail,
-  WHEEL_SCROLL_ROWS,
+  WHEEL_SCROLL_LINES,
 } from '@/core';
 import { CommandPalette } from './command-palette';
 import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
   useAbsolutePosition,
+  useBoxHeight,
   useCommandRunner,
   useComposerSelection,
   useLifecycleAction,
@@ -131,6 +134,12 @@ export const SessionDetail: FC<{
   const sel = useComposerSelection(onCopy);
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
+  // ログ表示域の実測高さ。ここに描く行数の上限であり、スクロール1回の移動量の基準
+  // でもある。見積り（logViewportRows）より実測を優先するのは、可視域より多く描くと
+  // Yoga が溢れた行を「上でクリップ」せず「縮小」してしまい、ログの途中の行が
+  // 虫食いで欠落するため（= 上へスクロールしても読めない状態になっていた）。
+  const logRef = useRef<DOMElement>(null);
+  const measuredLogRows = useBoxHeight(logRef);
   // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
   const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
@@ -218,6 +227,14 @@ export const SessionDetail: FC<{
     [messages, columns],
   );
   const total = lines.length;
+  // ログを描く行数 = スクロール1回の移動量の基準 = アンカーの下限。
+  // 全画面時は実測した可視高さに収める（実測が入るまでの1フレームだけ見積りで代用）。
+  // インライン描画時（端末が低くて全画面化しない）はクリップされず端末スクロールに
+  // 任せるため実測は使わず（高さ=内容なので測っても自分自身になる）、再描画コストの
+  // 上限として端末 rows を使う。
+  const viewport = isFullscreenViewport(rows)
+    ? Math.max(1, Math.floor(measuredLogRows ?? logViewportRows(rows)))
+    : Math.max(1, rows);
 
   /** Caret index for a mouse point inside the composer, or undefined if outside. */
   const composerCaretAt = (x: number, y: number): number | undefined => {
@@ -243,8 +260,8 @@ export const SessionDetail: FC<{
       if (mouse.kind === 'wheel') {
         setAnchor((a) =>
           mouse.dir === 'up'
-            ? scrollUp(a, total, WHEEL_SCROLL_ROWS)
-            : scrollDown(a, total, WHEEL_SCROLL_ROWS),
+            ? scrollUp(a, total, viewport, WHEEL_SCROLL_LINES)
+            : scrollDown(a, total, viewport, WHEEL_SCROLL_LINES),
         );
       } else if (mouse.kind === 'press') {
         // コンポーザ内のクリックはキャレット移動 + 選択アンカー。欄外は選択解除。
@@ -311,11 +328,11 @@ export const SessionDetail: FC<{
     // step is derived from the *visible* log height, not the full terminal, so a
     // page never jumps past unseen lines.
     if (key.pageUp) {
-      setAnchor((a) => scrollUp(a, total, logViewportRows(rows)));
+      setAnchor((a) => scrollUp(a, total, viewport));
       return;
     }
     if (key.pageDown) {
-      setAnchor((a) => scrollDown(a, total, logViewportRows(rows)));
+      setAnchor((a) => scrollDown(a, total, viewport));
       return;
     }
     if (confirm) {
@@ -328,6 +345,22 @@ export const SessionDetail: FC<{
     }
     if (key.tab) {
       setPanel((p) => (p === 'input' ? 'actions' : 'input'));
+      return;
+    }
+    // ↑/↓ でログを1行スクロールする。詳細ビューはログのコピペのためマウス捕捉を
+    // 解除しており（上の useEffect）、その状態の alt screen ではホイールが端末側で
+    // ↑/↓ に変換されて届く（alternate scroll mode）。これを拾わないとホイールが
+    // キャレット移動になるだけで「ログが上へスクロールできない」状態になる。
+    // 複数行を編集している最中だけはキャレット移動を優先する（ログは PgUp/PgDn で辿れる）。
+    if (
+      (key.upArrow || key.downArrow) &&
+      (panel === 'actions' || !bufferRef.current.value.includes('\n'))
+    ) {
+      setAnchor((a) =>
+        key.upArrow
+          ? scrollUp(a, total, viewport, ARROW_SCROLL_LINES)
+          : scrollDown(a, total, viewport, ARROW_SCROLL_LINES),
+      );
       return;
     }
     if (panel === 'actions') {
@@ -381,8 +414,10 @@ export const SessionDetail: FC<{
       : panel === 'actions'
         ? m.detail.helpActions
         : m.detail.helpInput;
-  const win = logWindow(lines, rows, anchor);
   const preview = session.streamingText ? streamTail(session.streamingText) : '';
+  // プレビュー行はログと同じビューポートを共有するため、その1行を差し引いて描く
+  // （溢れると上端が1行クリップされ、最新行を見ているつもりで欠けが出る）。
+  const win = logWindow(lines, Math.max(1, viewport - (preview ? 1 : 0)), anchor);
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -393,16 +428,31 @@ export const SessionDetail: FC<{
        * 「最新行が下端、溢れた古い行は上へクリップ」にする。<Static> はスクロール
        * バック側に書くため全画面レイアウトでは画面外に消えてしまい使えない。
        */}
-      <Box flexDirection="column" flexGrow={1} overflowY="hidden" justifyContent="flex-end">
-        {win.entries.map((line) => (
-          <LogLine key={line.key} line={line} />
-        ))}
-        {/* Live streaming preview, only while following the tail. */}
-        {win.atBottom && preview ? (
-          <Text color={theme.accent} dimColor wrap="truncate-end">
-            {preview}
-          </Text>
-        ) : null}
+      <Box
+        ref={logRef}
+        flexDirection="column"
+        flexGrow={1}
+        overflowY="hidden"
+        justifyContent="flex-end"
+      >
+        {/*
+         * 行の入れ物は flexShrink={0} が必須。Ink/Yoga は溢れた子を「クリップ」せず
+         * 「縮小」するため、これが無いと可視域より1行でも多く描いた瞬間にログの途中の
+         * 行が虫食いで落ちる（上へスクロールしても読めなくなる）。縮小させなければ
+         * flex-end の溢れは上端で正しくクリップされる。行数自体は logWindow が
+         * 実測した可視高さに収めている（二重の保険）。
+         */}
+        <Box flexDirection="column" flexShrink={0}>
+          {win.entries.map((line) => (
+            <LogLine key={line.key} line={line} />
+          ))}
+          {/* Live streaming preview, only while following the tail. */}
+          {win.atBottom && preview ? (
+            <Text color={theme.accent} dimColor wrap="truncate-end">
+              {preview}
+            </Text>
+          ) : null}
+        </Box>
       </Box>
 
       {/* Scrollback indicator: shown only when the view is lifted off the tail. */}

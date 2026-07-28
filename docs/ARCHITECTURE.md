@@ -248,8 +248,12 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
 - `SessionDetail`: 詳細画面。**ステータスヘッダは持たず**、コンテンツ（末尾ビューポートのログ）+ フッタ
   （追加指示コンポーザ）だけの構成。SDK セッションに**直結**し、末尾ビューポートにログを描画（`core/scroll.ts` の
   `logLines` でエントリを CJK 幅対応で折り返した**物理行**（`DisplayLine[]`）へ展開してから、
-  `logWindow`/`scrollUp`/`scrollDown` で PgUp/PgDn とマウスホイール（`WHEEL_SCROLL_ROWS`）スクロール。
-  ホイールは `parseSgrMouse` で先取り解釈し、レポート列がコンポーザへ文字入力として漏れないようにする）、
+  `logWindow`/`scrollUp`/`scrollDown` で PgUp/PgDn（半画面）と ↑/↓（1行 = `ARROW_SCROLL_LINES`）スクロール。
+  詳細ビューはコピペのためマウス捕捉を解除しており、alt screen では端末がホイールを ↑/↓ に変換して
+  送るため（alternate scroll mode）↑/↓ がホイールの受け口になる。捕捉が生きている隙間のために
+  ホイールのレポート列も `parseSgrMouse` で先取り解釈し、コンポーザへ文字入力として漏れないようにする。
+  描く行数は**実測した可視高さ**（`useBoxHeight`）に収める — Ink/Yoga は溢れた子を縮小するため、
+  多く描くと行が虫食いで欠落する）、
   `streamingText` のタイピング風プレビュー、
   下部の追加指示コンポーザ（`manager.send(id, text)`）を持つ。Tab で入力↔操作パネルを切替し、
   操作パネルで m/d = マージ/破棄。`pendingPermission` があれば `PermissionDialog` に委譲。単一 `useInput` の

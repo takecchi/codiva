@@ -592,6 +592,99 @@ describe('App detail view (in-app connection)', () => {
     expect(caretRow('alpha')).not.toContain('❯');
   });
 
+  /**
+   * Open the detail view of a session whose log holds `count` numbered lines
+   * (`log-00`, `log-01`, …), rendered at a fixed terminal size.
+   */
+  async function detailWithLog(count: number, rows = 24, columns = 80) {
+    const { manager, out } = drivenManager();
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, rows, columns);
+    stdin.write('start');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-scroll' }));
+    for (let i = 0; i < count; i++) {
+      out.push(
+        asMsg({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `log-${String(i).padStart(2, '0')}` }] },
+        }),
+      );
+    }
+    await flush();
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open the detail view
+    await flush();
+    /** Log line numbers currently visible, in render order. */
+    const visible = () => [...lastFrame().matchAll(/log-(\d+)/g)].map((match) => Number(match[1]));
+    return { app, stdin, lastFrame, visible };
+  }
+
+  /**
+   * The visible log rows must be one unbroken ascending run: Ink/Yoga *shrinks*
+   * overflowing children instead of clipping them, so an oversized window drops
+   * rows out of the middle of the log rather than scrolling it.
+   */
+  function expectUnbrokenRun(rowNumbers: readonly number[]): void {
+    const [first = -1] = rowNumbers;
+    expect(rowNumbers.length).toBeGreaterThan(0);
+    expect(rowNumbers).toEqual(rowNumbers.map((_, i) => first + i));
+  }
+
+  // Regression (詳細画面のログが上部にスクロールできない): the window was sized from
+  // the whole terminal rather than the log viewport, so every frame overflowed and
+  // rows silently vanished from the middle of the log; and the anchor could fall
+  // below one viewport, leaving the top of the log pinned to the bottom of an
+  // otherwise blank screen.
+  it('scrolls the detail log up to the very first line, dropping no rows', async () => {
+    const { app, stdin, visible } = await detailWithLog(40);
+
+    // Tail-follow: the newest line is on screen, the oldest is not.
+    const tail = visible();
+    expect(tail.at(-1)).toBe(39);
+    expect(tail).not.toContain(0);
+    expectUnbrokenRun(tail);
+
+    // PgUp until the top: the first line becomes visible and the page stays full.
+    for (let i = 0; i < 10; i++) {
+      stdin.write('\x1b[5~');
+      await flush();
+    }
+    const top = visible();
+    expect(top).toContain(0);
+    expectUnbrokenRun(top);
+    // A full page of the oldest lines, not a couple of rows on a blank screen.
+    expect(top.length).toBeGreaterThan(10);
+
+    // PgDn returns to the tail.
+    for (let i = 0; i < 10; i++) {
+      stdin.write('\x1b[6~');
+      await flush();
+    }
+    expect(visible().at(-1)).toBe(39);
+    app.unmount();
+  }, 30000);
+
+  // 詳細ビューはログのコピペのためマウス捕捉を解除しており、その状態の alt screen
+  // では端末がホイールを ↑/↓ に変換して送ってくる（alternate scroll mode）。
+  it('scrolls the detail log one line at a time with the arrow keys (wheel under alt screen)', async () => {
+    const { app, stdin, visible } = await detailWithLog(40);
+    expect(visible().at(-1)).toBe(39);
+
+    stdin.write('\x1b[A'); // ↑ → exactly one line older
+    await flush();
+    const up = visible();
+    expect(up.at(-1)).toBe(38);
+    expectUnbrokenRun(up);
+
+    stdin.write('\x1b[B'); // ↓ → back to the tail
+    await flush();
+    expect(visible().at(-1)).toBe(39);
+    app.unmount();
+  }, 30000);
+
   it('mouse-wheel reports scroll the log instead of typing into the composer', async () => {
     const { manager, out } = drivenManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);
