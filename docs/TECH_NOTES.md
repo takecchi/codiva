@@ -35,11 +35,60 @@ const q = query({
 //   interrupt(): Promise<void>          ← streaming mode のみ
 //   setPermissionMode(mode)             ← streaming mode のみ
 //   setModel(model)                     ← streaming mode のみ
+//   supportedModels(): Promise<ModelInfo[]>   ← streaming mode のみ。モデル一覧
+//   initializationResult()              ← models/commands/agents/account をまとめて取得
 //   close(): Promise<void>
 ```
 
 - **streaming input mode**（prompt に AsyncIterable を渡す）でのみ、追加メッセージ投入・interrupt・setPermissionMode が使える。エラー result 後もストリームが生き続ける。codiva は必ずこのモードを使う。
 - string prompt の単発モードはエラー時に throw して終わるため使わない。
+
+### supportedModels(): モデル一覧は SDK から取る（直書きしない）
+
+`/model` の選択肢は **`Query.supportedModels()` を唯一の出所にする**。モデル ID・表示名・
+説明文をアプリ側に直書きすると、リリースごとに陳腐化するだけでなく、**アカウント種別・
+サブスクリプション・エンタープライズの `availableModels` ポリシー・CLI バージョン**で
+実際に選べるモデルが変わるため、ユーザーが使えないモデルを出してしまう。
+
+```typescript
+// prompt は「何も yield しない AsyncIterable」で良い（init ハンドシェイクだけで完結する）。
+// モデル推論は走らないのでトークン消費もコストも無い。実測 0.3〜2 秒。
+const models = await q.supportedModels();
+```
+
+`ModelInfo` の主要フィールド:
+
+| フィールド | 内容 |
+|---|---|
+| `value` | `query({ options: { model } })` へ渡す文字列。`'default'` は「CLI 既定」の番兵 |
+| `resolvedModel` | `value` が解決される正規 ID（`'sonnet'` → `'claude-sonnet-5'`）。保存済みの明示 ID をエイリアス行に突き合わせるのに使う |
+| `displayName` / `description` | 表示用（**英語のみ**） |
+| `supportsEffort` / `supportedEffortLevels` / `supportsAdaptiveThinking` / `supportsFastMode` / `supportsAutoMode` | 能力フラグ |
+
+実測出力（SDK v0.3.214 / Claude Team / 2026-07-28）— `value` がエイリアスと
+`[1m]` 付きフル ID の混在になる点、既定行にも `resolvedModel` が付く点に注意:
+
+```jsonc
+[
+  { "value": "default",            "resolvedModel": "claude-opus-4-8[1m]", "displayName": "Default (recommended)",
+    "description": "Opus 4.8 with 1M context · Best for everyday, complex tasks",
+    "supportsEffort": true, "supportedEffortLevels": ["low","medium","high","xhigh","max"],
+    "supportsAdaptiveThinking": true, "supportsFastMode": true, "supportsAutoMode": true },
+  { "value": "opus[1m]",           "resolvedModel": "claude-opus-4-8[1m]", "displayName": "Opus" },
+  { "value": "claude-fable-5[1m]", "resolvedModel": "claude-fable-5",      "displayName": "Fable" },
+  { "value": "sonnet",             "resolvedModel": "claude-sonnet-5",     "displayName": "Sonnet" },
+  { "value": "haiku",              "resolvedModel": "claude-haiku-4-5-20251001", "displayName": "Haiku" }
+]
+```
+
+**落とし穴**: 既定行の `resolvedModel` で突き合わせてはいけない。`'default'` は
+「未設定」専用として扱う（そうしないと明示的に Opus を選んだ設定が「デフォルト」行に
+チェックされる）。`core/models.ts` の `isCurrentModel` がこれを担保している。
+
+配線: 取得は `utils/model-catalog.ts`（`fetchModelCatalog`、I/O・throw しない）、
+変換と突き合わせは `core/models.ts`（純粋）、起動時の発火は `src/index.tsx`（合成ルート）で
+await せずに投げ、`App` の `useModelCatalog` が state に解決する。取得失敗時は
+`FALLBACK_MODEL_OPTIONS`（**バージョンを含まないファミリーエイリアスのみ**）へ落ちる。
 
 ### codiva が使う Options
 

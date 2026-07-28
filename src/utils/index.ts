@@ -3,6 +3,7 @@ export * from './clipboard';
 export * from './config';
 export * from './exec';
 export * from './git';
+export * from './model-catalog';
 export * from './mouse';
 export * from './notify';
 export * from './open-url';

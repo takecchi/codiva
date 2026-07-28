@@ -1,7 +1,13 @@
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
-/** Cheap, fast model for one-shot title summarization. */
-const TITLE_MODEL = 'claude-haiku-4-5';
+/**
+ * Cheap, fast model for one-shot title summarization.
+ *
+ * Uses the *family alias* rather than a version-pinned id (`claude-haiku-4-5`):
+ * Claude Code resolves `'haiku'` to the current Haiku generation, so this never
+ * goes stale when a new version ships (same reasoning as core/models.ts).
+ */
+const TITLE_MODEL = 'haiku';
 /** Hard ceiling so a wedged subprocess never leaks; title gen is a quick call. */
 const TITLE_TIMEOUT_MS = 20_000;
 

@@ -10,6 +10,8 @@ import {
 import {
   type CommandAction,
   emptyBuffer,
+  FALLBACK_MODEL_OPTIONS,
+  type ModelOption,
   normalizeSelection,
   type RateLimitWindow,
   type RunMode,
@@ -135,6 +137,50 @@ export function useClock(ms = 1000): number {
     return () => clearInterval(timer);
   }, [ms]);
   return now;
+}
+
+/**
+ * Resolve the model catalog fetched from Claude Code into render state.
+ *
+ * The fetch is kicked off once in the composition root (`index.tsx`) *before*
+ * render, so by the time the user opens `/model` it has almost always landed.
+ * The promise identity is therefore stable and this never re-fetches.
+ *
+ * Returns `undefined` while the fetch is still in flight — `ModelSelect` shows a
+ * loading line for that state rather than a list that would mutate under the
+ * cursor when the real catalog arrives. An empty/failed result falls back to
+ * `FALLBACK_MODEL_OPTIONS` so `/model` stays usable offline.
+ */
+export function useModelCatalog(
+  catalog?: Promise<readonly ModelOption[]>,
+): readonly ModelOption[] | undefined {
+  const [models, setModels] = useState<readonly ModelOption[] | undefined>(
+    // No fetch injected (tests, and any host that opts out) → use the fallback
+    // immediately instead of parking on a loading line forever.
+    catalog ? undefined : FALLBACK_MODEL_OPTIONS,
+  );
+  useEffect(() => {
+    if (!catalog) {
+      setModels(FALLBACK_MODEL_OPTIONS);
+      return;
+    }
+    let live = true;
+    catalog
+      .then((options) => {
+        if (live) {
+          setModels(options.length > 0 ? options : FALLBACK_MODEL_OPTIONS);
+        }
+      })
+      .catch(() => {
+        if (live) {
+          setModels(FALLBACK_MODEL_OPTIONS);
+        }
+      });
+    return () => {
+      live = false;
+    };
+  }, [catalog]);
+  return models;
 }
 
 export interface TextBufferRef {

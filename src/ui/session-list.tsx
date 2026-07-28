@@ -15,6 +15,7 @@ import {
   isResumable,
   listView,
   listViewportRows,
+  type ModelOption,
   matchCommands,
   needsAttention,
   type PrMergeStatus,
@@ -97,6 +98,8 @@ export const SessionList: FC<{
   onQuit: () => void;
   cwd?: string;
   model?: string;
+  /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
+  models?: readonly ModelOption[];
   version?: string;
   /**
    * 前回この一覧を離れたときの表示状態。詳細ビュー等から戻ったときに選択行
@@ -115,6 +118,7 @@ export const SessionList: FC<{
   onQuit,
   cwd,
   model,
+  models,
   version,
   initialViewState,
   onViewStateChange,
@@ -535,6 +539,7 @@ export const SessionList: FC<{
       {modelSelect ? (
         <ModelSelect
           current={manager.getModel()}
+          models={models}
           onSelect={(model) => {
             manager.setModel(model);
             setModelSelect(false);

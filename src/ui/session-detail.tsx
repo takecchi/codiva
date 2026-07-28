@@ -17,6 +17,7 @@ import {
   logLines,
   logViewportRows,
   logWindow,
+  type ModelOption,
   type MouseControl,
   matchCommands,
   parseSgrMouse,
@@ -113,6 +114,8 @@ const LogLine: FC<{ line: DisplayLine }> = ({ line }) =>
 export const SessionDetail: FC<{
   manager: SessionManager;
   id: string;
+  /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
+  models?: readonly ModelOption[];
   onBack: () => void;
   onQuit: () => void;
   /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
@@ -123,7 +126,7 @@ export const SessionDetail: FC<{
    * 戻る（アンマウント）と再度有効化する。
    */
   mouse?: MouseControl;
-}> = ({ manager, id, onBack, onQuit, onCopy, mouse }) => {
+}> = ({ manager, id, models, onBack, onQuit, onCopy, mouse }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -492,6 +495,7 @@ export const SessionDetail: FC<{
           <ModelSelect
             // The session's live (resolved) model — pre-selects the current row.
             current={session.model}
+            models={models}
             onSelect={(model) => {
               manager.setSessionModel(session.id, model);
               setModelSelect(false);
