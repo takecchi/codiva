@@ -79,11 +79,21 @@
   ログ用の縦幅を最大化する（一覧はヘッダ=Banner + コンテンツ + フッタだが、詳細はヘッダ抜き）。
 - ログは末尾ビューポート（`justifyContent="flex-end"` + `overflowY="hidden"`）に描き、`<Static>` は使わない
   （全画面では画面外へ消えるため）。スクロールの単位は**物理行**: エントリは `core/scroll.ts` の
-  `logLines`（CJK 幅対応の折返し）で `DisplayLine[]` へ展開してから window する。PgUp/PgDn と
-  マウスホイールのスクロールは純関数 `core/scroll.ts`
-  （`logWindow`/`scrollUp`/`scrollDown`）に委譲し、移動量は可視ログ高さ（`logViewportRows`）／ホイールは
-  `WHEEL_SCROLL_ROWS` から導く。**マウスホイールのレポート列は `parseSgrMouse` で useInput 先頭で先取り解釈**
-  する（一覧と同じ）。これをしないとホイールのエスケープ列が生テキストとしてコンポーザへ入力されてしまう。
+  `logLines`（CJK 幅対応の折返し）で `DisplayLine[]` へ展開してから window する。スクロール計算は純関数
+  `core/scroll.ts`（`logWindow`/`scrollUp`/`scrollDown`）に委譲する。
+- **可視域より多くの行を描かない**。Ink/Yoga は溢れた子を「上端でクリップ」せず**縮小**するため、
+  1行でも多く描くとログの途中の行が虫食いで消える（= 上へスクロールしても読めない）。対策は2段:
+  1. 行の入れ物に `flexShrink={0}` を付けて縮小を禁じる（溢れは flex-end で上端クリップになる）。
+  2. `logWindow` に渡す行数を**実測した可視高さ**（`useBoxHeight(logRef)`。見積り `logViewportRows` は
+     初回描画までのフォールバック）に合わせる。
+  併せて `logWindow`/`scrollUp` はアンカーを**1画面ぶんで下限を打つ**。これがないと最上部で
+  数行だけが空画面の下端に張り付き、ログの先頭をページとして読めない。
+- スクロール操作は **PgUp/PgDn（半画面）** と **↑/↓（1行 = `ARROW_SCROLL_LINES`）**。詳細ビューは
+  ログのコピペのためマウス捕捉を解除している（`mouse.disable()`）ので、alt screen では端末が
+  ホイールを ↑/↓ に変換して送ってくる（alternate scroll mode）＝ ↑/↓ がホイールの受け口になる。
+  複数行を編集中のみ ↑/↓ はキャレット移動を優先する。捕捉が生きている隙間のために
+  **マウスホイールのレポート列も `parseSgrMouse` で useInput 先頭で先取り解釈**する（一覧と同じ）。
+  これをしないとホイールのエスケープ列が生テキストとしてコンポーザへ入力されてしまう。
 - 1 SDK セッション 1 ライター。詳細ビューを開いても codiva が唯一のライターであり続ける
   （外部 CLI との二重接続はしない）。マージ/破棄は一覧・詳細のどちらからでも可能。
 

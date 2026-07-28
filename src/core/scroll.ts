@@ -216,19 +216,30 @@ export function pageStep(rows: number): number {
 }
 
 /**
- * The `rows` value passed to {@link scrollUp}/{@link scrollDown} for a single
- * mouse-wheel tick. `pageStep` halves it, so this yields ~3 lines per tick — a
- * fine-grained step (terminals emit several wheel reports per physical scroll),
- * distinct from PageUp/PageDown's half-viewport jump.
+ * Lines moved per mouse-wheel notch. Fine-grained on purpose: terminals emit
+ * several wheel reports for one physical scroll, so this stays distinct from
+ * PageUp/PageDown's half-viewport jump.
  */
-export const WHEEL_SCROLL_ROWS = 6;
+export const WHEEL_SCROLL_LINES = 3;
+
+/**
+ * Lines moved per ↑/↓ press. Under the alt screen with mouse capture released,
+ * terminals translate the wheel into arrow keys (alternate scroll mode), so this
+ * doubles as the wheel step in the detail view — one row at a time.
+ */
+export const ARROW_SCROLL_LINES = 1;
 
 /**
  * Resolve an anchor into a concrete window over `lines` (physical display rows —
- * see {@link logLines}). At most ~`rows` lines are rendered (Ink would otherwise
- * render the whole, possibly huge, log); the flex-end viewport clips any that
- * don't fit. `end` is driven precisely by the anchor while `start` is just
- * "enough to fill", so a scrolled-up view is stable as new lines append.
+ * see {@link logLines}). `rows` is the viewport height: **never render more rows
+ * than fit**. Yoga shrinks overflowing children rather than clipping them, so an
+ * oversized window silently drops rows out of the middle of the log instead of
+ * scrolling it (that is what made the detail log unreadable when scrolled up).
+ *
+ * `end` is driven precisely by the anchor, so a scrolled-up view is stable as new
+ * lines append. It is floored at one full viewport: scrolling to the very top
+ * shows a full page of the oldest lines instead of collapsing to a couple of rows
+ * pinned to the bottom of an empty screen.
  */
 export function logWindow<T>(
   lines: readonly T[],
@@ -237,7 +248,7 @@ export function logWindow<T>(
 ): LogWindow<T> {
   const n = lines.length;
   const cap = Math.max(1, rows);
-  const end = anchor === 'bottom' ? n : clamp(anchor, Math.min(1, n), n);
+  const end = anchor === 'bottom' ? n : clamp(anchor, Math.min(cap, n), n);
   const start = Math.max(0, end - cap);
   return {
     entries: lines.slice(start, end),
@@ -247,21 +258,41 @@ export function logWindow<T>(
   };
 }
 
-/** New anchor after PageUp (toward older entries). Never lands back on the tail. */
-export function scrollUp(anchor: ScrollAnchor, total: number, rows: number): ScrollAnchor {
-  if (total <= 1) {
-    return 'bottom';
+/**
+ * New anchor after scrolling toward older lines. `rows` is the viewport height —
+ * it bounds how far up the anchor may go (a full page always stays on screen,
+ * matching {@link logWindow}) and supplies the default half-page `step`. Pass an
+ * explicit `step` for finer gestures (wheel notch, ↑ key).
+ */
+export function scrollUp(
+  anchor: ScrollAnchor,
+  total: number,
+  rows: number,
+  step: number = pageStep(rows),
+): ScrollAnchor {
+  const cap = Math.max(1, rows);
+  if (total <= cap) {
+    return 'bottom'; // everything already fits — nothing to scroll back to
   }
   const end = anchor === 'bottom' ? total : Math.min(anchor, total);
-  const next = Math.max(1, end - pageStep(rows));
+  const next = Math.max(cap, end - Math.max(1, step));
   return next >= total ? 'bottom' : next;
 }
 
-/** New anchor after PageDown (toward newer entries); snaps to `'bottom'` at the end. */
-export function scrollDown(anchor: ScrollAnchor, total: number, rows: number): ScrollAnchor {
+/**
+ * New anchor after scrolling toward newer lines; snaps to `'bottom'` at the end.
+ * `rows`/`step` mirror {@link scrollUp}.
+ */
+export function scrollDown(
+  anchor: ScrollAnchor,
+  total: number,
+  rows: number,
+  step: number = pageStep(rows),
+): ScrollAnchor {
   if (anchor === 'bottom') {
     return 'bottom';
   }
-  const next = anchor + pageStep(rows);
+  const cap = Math.max(1, rows);
+  const next = Math.max(cap, Math.min(anchor, total) + Math.max(1, step));
   return next >= total ? 'bottom' : next;
 }

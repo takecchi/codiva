@@ -61,6 +61,24 @@ describe('logWindow (scrolled up, numeric anchor)', () => {
     expect(w.atBottom).toBe(true);
     expect(w.entries).toHaveLength(5);
   });
+
+  // Regression: an anchor below one viewport used to render only `anchor` rows
+  // pinned to the bottom of an otherwise blank screen, so the top of the log was
+  // never shown as a readable page.
+  it('floors the window at one full viewport so the top of the log fills the screen', () => {
+    const w = logWindow(entries(40), 20, 3);
+    expect(w.entries).toHaveLength(20);
+    expect(w.entries[0]?.seq).toBe(0);
+    expect(w.entries.at(-1)?.seq).toBe(19);
+    expect(w.hiddenAbove).toBe(0);
+    expect(w.hiddenBelow).toBe(20);
+  });
+
+  it('never renders more rows than the viewport (Yoga shrinks overflow instead of clipping)', () => {
+    for (const anchor of [1, 5, 20, 33, 40] as const) {
+      expect(logWindow(entries(40), 20, anchor).entries.length).toBeLessThanOrEqual(20);
+    }
+  });
 });
 
 describe('wrapDisplayLines', () => {
@@ -194,17 +212,18 @@ describe('scrollUp / scrollDown', () => {
     expect(a).toBe(30);
   });
 
-  it('scrollUp keeps going and never reaches the tail', () => {
+  it('scrollUp stops at the top with a full viewport still on screen', () => {
     let a: ScrollAnchor = scrollUp('bottom', 40, 20); // 30
-    a = scrollUp(a, 40, 20); // 20
-    a = scrollUp(a, 40, 20); // 10
-    a = scrollUp(a, 40, 20); // max(1, 0) = 1
-    expect(a).toBe(1);
+    a = scrollUp(a, 40, 20); // 20 (= one viewport: the top)
+    expect(a).toBe(20);
+    // Already at the top — further scrolling is a no-op, not a collapse to 1 row.
+    expect(scrollUp(a, 40, 20)).toBe(20);
   });
 
-  it('scrollUp on a tiny log stays at bottom', () => {
+  it('scrollUp on a log that already fits stays at bottom', () => {
     expect(scrollUp('bottom', 1, 20)).toBe('bottom');
     expect(scrollUp('bottom', 0, 20)).toBe('bottom');
+    expect(scrollUp('bottom', 20, 20)).toBe('bottom');
   });
 
   it('scrollDown snaps back to bottom when it reaches the end', () => {
@@ -220,6 +239,21 @@ describe('scrollUp / scrollDown', () => {
     const up = scrollUp('bottom', 100, 20); // 90
     const down = scrollDown(up, 100, 20); // 100 >= total → bottom
     expect(down).toBe('bottom');
+  });
+
+  it('an explicit step overrides the half-page default (wheel notch / arrow key)', () => {
+    expect(scrollUp('bottom', 100, 20, 3)).toBe(97);
+    expect(scrollUp('bottom', 100, 20, 1)).toBe(99);
+    expect(scrollDown(97, 100, 20, 3)).toBe('bottom');
+    expect(scrollDown(90, 100, 20, 1)).toBe(91);
+  });
+
+  it('a one-line step still lands on the top boundary, never below it', () => {
+    let a: ScrollAnchor = 21;
+    a = scrollUp(a, 40, 20, 1); // 20 → the top
+    expect(a).toBe(20);
+    expect(scrollUp(a, 40, 20, 1)).toBe(20);
+    expect(scrollDown(a, 40, 20, 1)).toBe(21); // and back down one line
   });
 });
 
