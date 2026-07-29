@@ -574,6 +574,37 @@ describe('App detail view (in-app connection)', () => {
     expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
   });
 
+  // 詳細ビューの `/exit` はアプリ終了ではなく「セッションを閉じて一覧へ戻る」
+  // （終了は一覧ビューの `/exit` = commands.test.tsx でカバー）。
+  it('/exit in the detail view returns to the list without quitting the app', async () => {
+    const { manager, out } = drivenManager();
+    const dispose = vi.spyOn(manager, 'dispose');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('close me');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-exit' }));
+    await flush();
+
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+    expect(lastFrame()).toContain('追加の指示を入力');
+
+    stdin.write('/exit');
+    await flush();
+    // パレットの説明はビュー固有（「終了」ではなく「一覧へ戻る」）。
+    expect(lastFrame()).toContain(messages.ja.command.exitDetail);
+    expect(lastFrame()).not.toContain(messages.ja.command.exit);
+
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
+    expect(dispose).not.toHaveBeenCalled(); // アプリは終了していない
+  });
+
   it('restores list selection and focus after returning from the detail view', async () => {
     const { manager, out } = drivenManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

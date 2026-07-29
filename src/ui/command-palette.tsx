@@ -13,7 +13,13 @@ import { glyph, theme } from './theme';
 export const CommandPalette: FC<{
   title: string;
   commands: readonly CommandSpec[];
-}> = ({ title, commands }) => {
+  /**
+   * ビュー固有の説明文（キーはコマンド名）。同じコマンドが画面によって違う意味を
+   * 持つ場合に使う（詳細ビューの `/exit` は終了ではなく一覧へ戻る）。文字列は
+   * 呼び出し側がカタログから引いて渡す（i18n 規約: .tsx に直書きしない）。
+   */
+  describeOverrides?: Readonly<Record<string, string>>;
+}> = ({ title, commands, describeOverrides }) => {
   const m = useMessages();
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.dim} paddingX={1}>
@@ -28,7 +34,7 @@ export const CommandPalette: FC<{
             <Box width={12}>
               <Text color={theme.accent}>/{c.name}</Text>
             </Box>
-            <Text dimColor>{c.describe(m)}</Text>
+            <Text dimColor>{describeOverrides?.[c.name] ?? c.describe(m)}</Text>
           </Box>
         ))
       )}

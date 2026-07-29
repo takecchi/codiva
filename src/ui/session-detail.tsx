@@ -116,8 +116,11 @@ export const SessionDetail: FC<{
   id: string;
   /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
   models?: readonly ModelOption[];
+  /**
+   * 一覧へ戻る。Esc と `/exit` の両方がここへ来る（詳細ビューの `/exit` は
+   * アプリ終了ではなく「このセッションを閉じる」。終了は一覧の `/exit`）。
+   */
   onBack: () => void;
-  onQuit: () => void;
   /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
   onCopy?: (text: string) => void;
   /**
@@ -126,7 +129,7 @@ export const SessionDetail: FC<{
    * 戻る（アンマウント）と再度有効化する。
    */
   mouse?: MouseControl;
-}> = ({ manager, id, models, onBack, onQuit, onCopy, mouse }) => {
+}> = ({ manager, id, models, onBack, onCopy, mouse }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -205,10 +208,13 @@ export const SessionDetail: FC<{
     };
   }, [manager, id, isTerminal]);
 
-  // `/diff` は詳細ビュー固有（変更差分サマリのトグル）。他は両ビュー共通。
+  // 詳細ビューでは `/exit`（+ Esc）は「セッションを閉じて一覧へ戻る」。ここでアプリを
+  // 終了させないのは、詳細画面はセッション1件の作業空間であり、抜けたい先が一覧である
+  // ことがほとんどだから（アプリ終了は一覧の `/exit`）。説明文も下の describeOverrides で
+  // 差し替える。`/diff` は詳細ビュー固有（変更差分サマリのトグル）。他は両ビュー共通。
   const runCommandInput = useCommandRunner(
     {
-      exit: onQuit,
+      exit: onBack,
       help: () => setShowHelp(true),
       // `/model` opens the picker; the pick applies to THIS session only.
       model: () => setModelSelect(true),
@@ -218,6 +224,9 @@ export const SessionDetail: FC<{
     setActionError,
     m.command.unknown,
   );
+  // 詳細ビューの `/exit` は一覧へ戻る動作なので、パレット/ヘルプの説明も差し替える
+  // （既定は「codiva を終了」= 一覧ビューの意味）。
+  const commandDescribes = useMemo(() => ({ exit: m.command.exitDetail }), [m.command.exitDetail]);
 
   // Expand entries into physical rows once per (messages, width) — the scroll
   // model (anchor/steps/hidden counts) works in rows, so multi-line messages
@@ -488,7 +497,11 @@ export const SessionDetail: FC<{
           </Text>
         ) : null}
         {showHelp && !pending ? (
-          <CommandPalette title={m.command.helpTitle} commands={COMMANDS} />
+          <CommandPalette
+            title={m.command.helpTitle}
+            commands={COMMANDS}
+            describeOverrides={commandDescribes}
+          />
         ) : null}
 
         {modelSelect ? (
@@ -537,6 +550,7 @@ export const SessionDetail: FC<{
               <CommandPalette
                 title={m.command.paletteTitle}
                 commands={matchCommands(buffer.value)}
+                describeOverrides={commandDescribes}
               />
             ) : null}
             <PromptInput

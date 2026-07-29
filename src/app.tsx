@@ -89,7 +89,6 @@ export const App: FC<{
             id={view.id}
             models={models}
             onBack={() => setView({ mode: 'list' })}
-            onQuit={quit}
             onCopy={onCopy}
             mouse={mouse}
           />
