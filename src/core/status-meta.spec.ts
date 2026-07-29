@@ -16,6 +16,7 @@ const ALL_STATUSES: SessionStatus[] = [
   'completed',
   'interrupted',
   'rate_limited',
+  'needs_login',
   'failed',
   'conflict',
   'archived',
@@ -37,6 +38,7 @@ describe('STATUS_META', () => {
     ['completed', true],
     ['interrupted', true],
     ['rate_limited', true],
+    ['needs_login', true],
     ['failed', true],
     ['conflict', true],
     ['archived', true],
@@ -47,9 +49,14 @@ describe('STATUS_META', () => {
   it.each([
     ['awaiting_permission', true],
     ['awaiting_input', true],
+    // An expired login never clears on its own — flag it like a prompt so the
+    // user sees the row needs them (unlike rate_limited, which resolves itself).
+    ['needs_login', true],
     ['running', false],
     ['completed', false],
     ['creating', false],
+    ['rate_limited', false],
+    ['interrupted', false],
   ] as const)('needsAttention(%s) = %s', (status, expected) => {
     expect(needsAttention(status)).toBe(expected);
   });
@@ -63,6 +70,7 @@ describe('STATUS_META', () => {
     ['completed', false],
     ['interrupted', false],
     ['rate_limited', false],
+    ['needs_login', false],
     ['failed', false],
     ['conflict', false],
     ['archived', false],
@@ -78,6 +86,9 @@ describe('STATUS_META', () => {
     ['completed', 'completed'],
     ['interrupted', 'interrupted'],
     ['rate_limited', 'interrupted'],
+    // By the next launch the user may well have logged back in, and the state
+    // says nothing about the work itself — come back as a resumable session.
+    ['needs_login', 'interrupted'],
     ['failed', 'failed'],
     ['conflict', undefined],
     ['archived', undefined],
@@ -91,6 +102,7 @@ describe('STATUS_META', () => {
     ['completed', 'completed'],
     ['interrupted', 'interrupted'],
     ['rate_limited', 'rateLimited'],
+    ['needs_login', 'needsLogin'],
     ['failed', 'failed'],
     ['running', undefined],
     ['creating', undefined],
@@ -104,6 +116,8 @@ describe('STATUS_META', () => {
     // "Cut off, resume to continue" states offer the explicit resume action.
     ['interrupted', true],
     ['rate_limited', true],
+    // needs_login resumes once the user has logged in again.
+    ['needs_login', true],
     // completed can receive follow-ups but wasn't cut off — no resume action.
     ['completed', false],
     ['running', false],

@@ -21,6 +21,13 @@ export interface StatusMeta {
    */
   active: boolean;
   /**
+   * 「中断されて再開待ち」か。一覧/詳細に明示的な再開（continue）アクションを出す。
+   * クリーンに完了したわけではないが resume で続行できる状態が該当する
+   * (`interrupted` / `rate_limited` / `needs_login`)。`completed` は追加指示を
+   * 受けられるが「中断」ではないため false。
+   */
+  resumable: boolean;
+  /**
    * 復元時に丸める先の状態。undefined は「永続対象外」を意味する
    * (creating = worktree 未作成、conflict/archived = 復元しない)。
    */
@@ -30,12 +37,19 @@ export interface StatusMeta {
 }
 
 export const STATUS_META: Record<SessionStatus, StatusMeta> = {
-  creating: { terminal: false, attention: false, active: true },
-  running: { terminal: false, attention: false, active: true, restoreAs: 'interrupted' },
+  creating: { terminal: false, attention: false, active: true, resumable: false },
+  running: {
+    terminal: false,
+    attention: false,
+    active: true,
+    resumable: false,
+    restoreAs: 'interrupted',
+  },
   awaiting_permission: {
     terminal: false,
     attention: true,
     active: false,
+    resumable: false,
     restoreAs: 'interrupted',
     notifyKey: 'needsPermission',
   },
@@ -43,6 +57,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: false,
     attention: true,
     active: false,
+    resumable: false,
     restoreAs: 'interrupted',
     notifyKey: 'needsInput',
   },
@@ -50,6 +65,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: false,
     active: false,
+    resumable: false,
     restoreAs: 'completed',
     notifyKey: 'completed',
   },
@@ -57,6 +73,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: false,
     active: false,
+    resumable: true,
     restoreAs: 'interrupted',
     notifyKey: 'interrupted',
   },
@@ -66,18 +83,33 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: false,
     active: false,
+    resumable: true,
     restoreAs: 'interrupted',
     notifyKey: 'rateLimited',
+  },
+  // Claude's credentials expired. `attention: true` — unlike a rate limit this
+  // never clears on its own: the user must log in again (`claude` → /login)
+  // before the session can go anywhere, so the list flags it like a prompt.
+  // Restored as `interrupted` because by the next launch the user may well have
+  // logged back in (the state says nothing about the work itself).
+  needs_login: {
+    terminal: true,
+    attention: true,
+    active: false,
+    resumable: true,
+    restoreAs: 'interrupted',
+    notifyKey: 'needsLogin',
   },
   failed: {
     terminal: true,
     attention: false,
     active: false,
+    resumable: false,
     restoreAs: 'failed',
     notifyKey: 'failed',
   },
-  conflict: { terminal: true, attention: false, active: false },
-  archived: { terminal: true, attention: false, active: false },
+  conflict: { terminal: true, attention: false, active: false, resumable: false },
+  archived: { terminal: true, attention: false, active: false, resumable: false },
 };
 
 /** 終端状態（これ以上 SDK ストリームが状態を進めない）か。 */
@@ -99,11 +131,12 @@ export function isActiveStatus(status: SessionStatus): boolean {
 }
 
 /**
- * 「中断されて再開待ち」か。通信断で止まった `interrupted`、および使用量制限で
- * 止まった `rate_limited` が該当する。どちらも「クリーンに完了したわけではないが
- * resume で続行できる」状態なので、一覧/詳細に明示的な再開（continue）アクションを
- * 出す。`completed` は追加指示を受けられるが「中断」ではないため対象外。
+ * 「中断されて再開待ち」か。通信断で止まった `interrupted`、使用量制限で止まった
+ * `rate_limited`、認証切れで止まった `needs_login` が該当する。いずれも
+ * 「クリーンに完了したわけではないが resume で続行できる」状態なので、一覧/詳細に
+ * 明示的な再開（continue）アクションを出す。`completed` は追加指示を受けられるが
+ * 「中断」ではないため対象外。
  */
 export function isResumable(status: SessionStatus): boolean {
-  return status === 'interrupted' || status === 'rate_limited';
+  return STATUS_META[status].resumable;
 }

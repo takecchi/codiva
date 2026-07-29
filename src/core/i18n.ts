@@ -72,6 +72,8 @@ export interface Messages {
     completed: string;
     interrupted: string;
     rateLimited: string;
+    /** 認証切れで停止（`claude` へのログインが必要）。 */
+    needsLogin: string;
     failed: string;
     conflict: string;
     archived: string;
@@ -129,6 +131,8 @@ export interface Messages {
     failed: string;
     /** 通信断でセッションが中断された（再開可能）ときの通知。 */
     interrupted: string;
+    /** 認証切れで停止した（ログインが必要な）ときの通知。 */
+    needsLogin: string;
   };
   /**
    * 中断されたセッションの再開（continue）。通信断で `interrupted` になった、または
@@ -137,10 +141,26 @@ export interface Messages {
   resume: {
     /** 再開時に Claude へ送る指示文（中断箇所からの続行を促す）。ログにユーザー発話として残る。 */
     instruction: string;
+    /**
+     * 認証切れ（`needs_login`）から再開するときに Claude へ送る指示文。
+     * 「接続が切れた」ではなく「認証が切れた → 再ログイン済み」を伝える。
+     */
+    authInstruction: string;
     /** 一覧で再開可能なセッションを選択中のフッタヒント。 */
     listHint: string;
     /** 詳細ビューの操作パネルに出す再開アクションのラベル。 */
     action: string;
+  };
+  /**
+   * 認証切れ（`needs_login`）の案内。Claude の OAuth セッションが失効すると
+   * セッションは何もできないので、「別ターミナルで `claude` にログインし直して
+   * r で再開する」という手順そのものを提示する。
+   */
+  auth: {
+    /** 一覧で needs_login 行を選択中のフッタヒント（再開キー r を含む）。 */
+    listHint: string;
+    /** ログイン手順の案内文（一覧・詳細で共有）。 */
+    hint: string;
   };
   /** 起動バナー（banner.tsx） */
   banner: {
@@ -249,6 +269,7 @@ const ja: Messages = {
     completed: '完了',
     interrupted: '中断',
     rateLimited: 'レート制限',
+    needsLogin: 'ログイン必要',
     failed: '失敗',
     conflict: 'コンフリクト',
     archived: '保管済み',
@@ -289,11 +310,19 @@ const ja: Messages = {
     rateLimited: 'レート制限に達しました',
     failed: '失敗しました',
     interrupted: '接続が中断されました（再開できます）',
+    needsLogin: 'Claude のログインが必要です',
   },
   resume: {
     instruction: '接続が切れて中断しました。中断したところから作業を続けてください。',
+    authInstruction:
+      '認証切れで中断しました。ログインし直したので、中断したところから作業を続けてください。',
     listHint: '↑↓: 選択 ・ r: 再開 ・ Enter/→: 詳細 ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     action: '再開（続行）',
+  },
+  auth: {
+    listHint: '認証切れ ・ 別ターミナルで claude にログイン後 r: 再開 ・ Tab/Esc: 入力へ',
+    // 詳細ビュー用。r は操作パネル（Tab で開く）のキーなので手順に Tab を含める。
+    hint: 'Claude の認証が切れています。別のターミナルで claude を起動して /login し、Tab → r で再開してください。',
   },
   banner: {
     subtitle: '並列 Claude Code セッションを git worktree 上で実行',
@@ -383,6 +412,7 @@ const en: Messages = {
     completed: 'Completed',
     interrupted: 'Interrupted',
     rateLimited: 'Rate limited',
+    needsLogin: 'Login required',
     failed: 'Failed',
     conflict: 'Conflict',
     archived: 'Archived',
@@ -420,13 +450,21 @@ const en: Messages = {
     rateLimited: 'Rate limit reached',
     failed: 'Failed',
     interrupted: 'Connection interrupted (resumable)',
+    needsLogin: 'Claude login required',
   },
   resume: {
     instruction:
       'The connection dropped and this session was interrupted. Continue from where you left off.',
+    authInstruction:
+      'This session stopped because authentication expired. I have logged back in — continue from where you left off.',
     listHint:
       '↑↓: select · r: resume · Enter/→: open detail · m: merge · d: discard · Tab/Esc: input',
     action: 'Resume (continue)',
+  },
+  auth: {
+    listHint:
+      'Login expired · log in to claude in another terminal, then r: resume · Tab/Esc: input',
+    hint: 'Claude authentication expired. Run `claude` in another terminal, use /login, then Tab → r to resume.',
   },
   banner: {
     subtitle: 'Parallel Claude Code sessions in git worktrees',

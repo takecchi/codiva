@@ -112,6 +112,7 @@ codiva/
  running ──(最後の task_notification で全タスク完了 & 保留結果あり)──▶ completed
  running ──(result subtype がエラー系)───────▶ failed
  running ──(レート制限に到達)─────────────────▶ rate_limited # rate_limit_event(rejected) / error='rate_limit' / usage-limit result・throw
+ running ──(認証切れ)───────────────────────▶ needs_login  # assistant error='authentication_failed' / is_error 付き result / auth 文言の errors[]・throw
  awaiting_input ──(追加指示送信)─────────────▶ running
  completed ──(追加指示送信)─────────────────▶ running   # 完了後の追加作業も許す
  running ──(通信断で query が throw / エラー result & sdkSessionId あり)──▶ interrupted # 接続中断。resumable
@@ -119,6 +120,8 @@ codiva/
  completed ──(マージ or 破棄)────────────────▶ archived
  running/awaiting_* ──(アプリ終了 → 保存)────▶ interrupted # メモリ上は状態不変。保存時に丸める（restorableStatus）
  rate_limited ──(アプリ終了 → 保存)──────────▶ interrupted # 制限は一時的。復元時は resumable な interrupted に丸める
+ needs_login ──(再ログイン後 追加指示 / 再開アクション)──▶ running # 認証が戻れば同じ SDK 会話を resume
+ needs_login ──(アプリ終了 → 保存)───────────▶ interrupted # 次回起動時には再ログイン済みかもしれない
  interrupted ──(追加指示送信 / 再開アクションで resume)───────▶ running # 生存中セッションもその場で再開（consume ループ再起動）
 ```
 
@@ -131,7 +134,9 @@ codiva/
 が（通信断で終了した）consume ループを `resume: sdkSessionId` 付きで**再起動**し、同じ SDK 会話を続行する
 （生存中セッションでもその場で再開でき、アプリ再起動を待たなくてよい）。通信断遷移時はデスクトップ通知
 （`notify.interrupted`）で中断をユーザーに知らせる。判定ヘルパは `core/status-meta.ts` の `isResumable`
-（`interrupted` / `rate_limited`）。再開時に送る指示文は i18n の `resume.instruction`。
+（`STATUS_META[status].resumable` = `interrupted` / `rate_limited` / `needs_login`）。再開時に送る指示文は
+`core/resume.ts` の `resumeInstruction(status, m)`（既定は `resume.instruction`、認証切れは
+`resume.authInstruction`）。
 
 **サブエージェント（Task ツール）の完了ゲート**: サブエージェントが **バックグラウンド実行**されると、
 その tool_result は即座に返り本体ターンは続行するため、サブエージェントがまだ稼働中でも**トップレベルの
@@ -149,6 +154,47 @@ idle だが、エラー扱い（`failed`）にはせず「制限が解けるの�
 検知元は SDK の `rate_limit_event`（`rate_limit_info.status === 'rejected'`）、assistant メッセージの
 `error === 'rate_limit'`、および usage-limit を示す `result`／throw されたエラー文言（`isRateLimitError`。
 SDK の `USAGE_LIMIT_ERROR_PREFIXES` に追従）。制限は一時的なので保存時は `interrupted` に丸める。
+
+`needs_login` は「Claude の認証が切れて止まった」セッションを表す。作業自体の失敗ではなく、ユーザーが
+別ターミナルで `claude` に `/login` し直せば resume できるので、`failed` とは区別する。
+
+**とくに `completed` にしてはいけない**。CLI は認証エラーを次の2メッセージで報告する（実バイナリで確認）:
+
+```jsonc
+// 1) CLI が合成する assistant メッセージ（型付きの error フィールドが本体）
+{"type":"assistant","error":"authentication_failed",
+ "message":{"content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]}}
+// 2) それを畳み込む result。subtype は "success" のまま is_error が立つ
+{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error",
+ "result":"Failed to authenticate: OAuth session expired and could not be refreshed"}
+```
+
+`subtype === 'success'` だけを見て完了扱いにすると「何も作業していないのに緑の Completed」になり、
+auto-PR まで走ってしまう（本 issue の不具合）。そのため result 処理は **`subtype === 'success' && !is_error`
+のみを完了**とし、それ以外は文言分類（認証 → レート制限 → 通信断 → `failed`）へ流す。エラー系 subtype は
+`result` を持たず `errors: string[]` で理由を運ぶ（`SDKResultSuccess` / `SDKResultError`）ので両方を読む。
+
+検知の優先順は次の通り:
+
+1. **assistant メッセージの型付き `error`**（`core/errors.ts` の `isAuthErrorKind` = `authentication_failed`
+   / `oauth_org_not_allowed`）。`SDKAssistantMessageError` として型定義されており文言・ロケールに依存しない
+   ため、これを一次シグナルにする（既存の `error === 'rate_limit'` フックと同じ位置）。
+   `billing_error`（残高不足）は再ログインで直らないので対象外＝ `failed` のまま。
+2. **`is_error` 付き result**、および認証文言を含む `result` / `errors[]` / throw された例外
+   （`isAuthError`。CLI の実文言 = OAuth 失効・トークン失効・APIキー不正・クラウド資格情報失効・
+   `/login` 指示・re-authenticate を網羅する二次シグナル）。
+
+認証切れは待っても直らないので、レート制限・通信断より**先に**判定する（`Session.consume` の throw 経路も
+同様。`Failed to authenticate through the broker: request timed out` のような文言を通信断と誤分類しない）。
+再開可能な状態へ落ちるときは保留中の許可を deny して解決しておく（宙ぶらりんの tool_use は後の resume を
+失敗させ得る。`stop()` と同じ理由）。同じ失敗が assistant と result の2回届くため `toNeedsLogin` は
+冪等（同一 detail なら同一参照を返す）。
+
+`attention: true`（一覧に ● を出す）なのは、`rate_limited` と違い放置しても解決せずユーザーの操作が
+必須だから。UI は「別ターミナルで `claude` にログインして再開」という手順そのものを出す
+（i18n `auth.hint` / `auth.listHint`）。保存時は `interrupted` に丸める（次回起動時には再ログイン済みかも
+しれない）。なお `auth_status` メッセージは CLI の対話的 `/login` UI 用で、`--enable-auth-status`
+オプトイン時のみ流れる（この SDK 版の型にも無い）ため API 認証エラーの検知には使えない。
 
 `rate_limit_event` は `rejected` でセッションを `rate_limited` にする一方、`allowed` / `allowed_warning`
 も含めて **アカウント全体の claude.ai サブスクリプション使用状況**（5時間枠・週次枠など）を運んでくる。

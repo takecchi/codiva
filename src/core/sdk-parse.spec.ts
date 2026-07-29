@@ -352,6 +352,15 @@ describe('applySdkMessage over rate-limit signals', () => {
     expect(state.totalCostUsd).toBe(0.5);
   });
 
+  it('classifies an error result that carries its reason in errors[] rather than result', () => {
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      errors: ['fetch failed'],
+    });
+    expect(state.status).toBe('interrupted');
+  });
+
   it('a connection-error result is interrupted (resumable), not failed', () => {
     const state = sdk(running, {
       type: 'result',
@@ -363,6 +372,120 @@ describe('applySdkMessage over rate-limit signals', () => {
     expect(state.error).toBeUndefined();
     expect(state.totalCostUsd).toBe(0.25);
     expect(state.messages.at(-1)).toMatchObject({ kind: 'system', text: 'Connection error.' });
+  });
+});
+
+describe('applySdkMessage over authentication failures', () => {
+  const running: SessionState = { ...initialState(BASE), status: 'running' };
+  const AUTH = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+
+  /**
+   * The wire shape the CLI actually produces for an aged-out login: a synthesized
+   * assistant message flagged with the typed `error` kind, carrying the reason as
+   * its text — immediately followed by the `result` that rolls it up.
+   */
+  const authAssistant = {
+    type: 'assistant',
+    error: 'authentication_failed',
+    message: {
+      role: 'assistant',
+      stop_reason: 'stop_sequence',
+      content: [{ type: 'text', text: AUTH }],
+    },
+  };
+  const authResult = {
+    type: 'result',
+    subtype: 'success',
+    is_error: true,
+    api_error_status: null,
+    terminal_reason: 'api_error',
+    result: AUTH,
+    total_cost_usd: 0,
+  };
+
+  it("an assistant message with error 'authentication_failed' flips to needs_login", () => {
+    // The primary signal: typed, so it works whatever wording the CLI uses.
+    const state = sdk(running, authAssistant);
+    expect(state.status).toBe('needs_login');
+    expect(state.error).toBe(AUTH);
+    expect(state.finishedAt).toBeGreaterThan(0);
+    expect(state.streamingText).toBeUndefined();
+    // The reason is logged once, and NOT as a normal assistant_text line.
+    expect(state.messages).toEqual([{ seq: 1, kind: 'error', text: AUTH, timestamp: undefined }]);
+  });
+
+  it("treats 'oauth_org_not_allowed' as needing a login too", () => {
+    const state = sdk(running, {
+      type: 'assistant',
+      error: 'oauth_org_not_allowed',
+      message: { content: [{ type: 'text', text: 'Your organization has disabled access' }] },
+    });
+    expect(state.status).toBe('needs_login');
+  });
+
+  it('a `success` result flagged is_error is NOT a completion — an expired login is needs_login', () => {
+    // The regression this state exists for: the CLI reports an expired OAuth
+    // session with subtype 'success' + is_error, which used to show up as a
+    // green "Completed" badge for a session that never ran.
+    const state = sdk(running, authResult);
+    expect(state.status).toBe('needs_login');
+    expect(state.error).toBe(AUTH);
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'error', text: AUTH });
+  });
+
+  it('logs the failure once when both the assistant message and its result arrive', () => {
+    // The two messages describe the same failure, so the roll-up result must not
+    // append a second log line (it only records the cost the result carries).
+    const first = sdk(running, authAssistant, 10);
+    const second = sdk(first, authResult, 11);
+    expect(second.status).toBe('needs_login');
+    expect(second.messages).toBe(first.messages);
+    expect(second.messages.filter((msg) => msg.text === AUTH)).toHaveLength(1);
+    expect(second.finishedAt).toBe(first.finishedAt);
+  });
+
+  it('an error-subtype result carrying an auth failure in errors[] is needs_login, not failed', () => {
+    // The error result variants carry `errors: string[]`, not `result`.
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      errors: [AUTH],
+      total_cost_usd: 0.125,
+    });
+    expect(state.status).toBe('needs_login');
+    expect(state.totalCostUsd).toBe(0.125);
+  });
+
+  it('an is_error success with an unclassifiable message still fails (never completes)', () => {
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      result: 'Credit balance is too low',
+    });
+    expect(state.status).toBe('failed');
+    expect(state.error).toBe('Credit balance is too low');
+  });
+
+  it('a plain success result is unaffected (is_error absent or false)', () => {
+    expect(sdk(running, { type: 'result', subtype: 'success', result: 'done' }).status).toBe(
+      'completed',
+    );
+    expect(
+      sdk(running, { type: 'result', subtype: 'success', is_error: false, result: 'done' }).status,
+    ).toBe('completed');
+  });
+
+  it('does not mistake Claude reporting on auth work for a real auth failure', () => {
+    // A successful turn whose text merely mentions authentication must still
+    // complete — only the SDK's own is_error flag routes result text to a stop.
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'Fixed the login flow: the OAuth session now refreshes before it expires.',
+    });
+    expect(state.status).toBe('completed');
   });
 });
 

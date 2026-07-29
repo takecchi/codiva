@@ -193,6 +193,43 @@ describe('reduce classifies aborted rate-limit errors', () => {
   });
 });
 
+describe('reduce classifies aborted auth errors', () => {
+  const running: SessionState = { ...initialState(BASE), status: 'running' };
+
+  it('an aborted event carrying an expired login is needs_login, not failed', () => {
+    const error = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+    const state = reduce(running, { kind: 'aborted', error, at: 5000 });
+    expect(state.status).toBe('needs_login');
+    expect(state.finishedAt).toBe(5000);
+    // The reason is kept so the detail view can show what the CLI reported.
+    expect(state.error).toBe(error);
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'error', text: error });
+  });
+
+  it('drops a pending permission that can never resolve now', () => {
+    const pending: SessionState = {
+      ...running,
+      status: 'awaiting_permission',
+      pendingPermission: { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' },
+      streamingText: 'half',
+    };
+    const state = reduce(pending, { kind: 'aborted', error: 'invalid x-api-key', at: 7 });
+    expect(state.status).toBe('needs_login');
+    expect(state.pendingPermission).toBeUndefined();
+    expect(state.streamingText).toBeUndefined();
+  });
+
+  it('an auth error wins over the rate-limit / connection classifiers', () => {
+    // Auth is checked first: waiting or retrying never fixes an expired login.
+    const state = reduce(running, {
+      kind: 'aborted',
+      error: 'Failed to authenticate through the broker: request timed out',
+      at: 5000,
+    });
+    expect(state.status).toBe('needs_login');
+  });
+});
+
 describe('interrupted event (connection drop)', () => {
   const running: SessionState = {
     ...initialState(BASE),

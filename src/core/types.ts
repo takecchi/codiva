@@ -7,6 +7,7 @@ export type SessionStatus =
   | 'completed' // a turn finished successfully (idle, can receive more input)
   | 'interrupted' // app was closed mid-flight (running/awaiting_*); idle & resumable, not a real completion
   | 'rate_limited' // stopped because a usage/rate limit was hit; idle & resumable once the limit resets
+  | 'needs_login' // stopped because Claude could not authenticate; needs `claude` /login, then resumable
   | 'failed' // query errored or was aborted
   | 'conflict' // a merge into base hit conflicts; needs manual resolution
   | 'archived'; // merged or discarded; kept for reference

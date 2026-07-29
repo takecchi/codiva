@@ -1,10 +1,11 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { isConnectionError } from './errors';
+import { isAuthError, isAuthErrorKind, isConnectionError } from './errors';
 import {
   appendLog,
   isRateLimitError,
   progressOf,
   toInterrupted,
+  toNeedsLogin,
   toRateLimited,
 } from './status-reducer';
 import type { SessionState, TaskStatus, TodoItem } from './types';
@@ -47,6 +48,14 @@ function asString(v: unknown): string {
       .join('');
   }
   return v == null ? '' : JSON.stringify(v);
+}
+
+/**
+ * Flatten an error `result`'s `errors: string[]` into one string. The error result
+ * variants have no `result` field, so this is the only description they carry.
+ */
+function joinErrors(errors: unknown): string {
+  return Array.isArray(errors) ? errors.map((e) => String(e)).join('\n') : '';
 }
 
 /** One-line log summary for a tool_use block. Shared with `transcript.ts` (history restore). */
@@ -368,6 +377,16 @@ function reduceSdk(
     if (message.error === 'rate_limit') {
       return toRateLimited(state, at, 'rate limit reached');
     }
+    // Claude could not authenticate. This typed `error` kind is the primary auth
+    // signal: the CLI flags the (virtual) assistant message it synthesizes for the
+    // failure, and the human-readable reason is its text content. Catching it here
+    // means we don't depend on the wording — the `result` that rolls this up is
+    // then recognized as the same failure and stays a no-op (see toNeedsLogin).
+    if (isAuthErrorKind(message.error)) {
+      const inner = message.message as { content?: unknown } | undefined;
+      const text = asString(inner?.content).trim();
+      return toNeedsLogin(state, at, text || String(message.error));
+    }
     return reduceAssistant(state, message);
   }
 
@@ -382,8 +401,18 @@ function reduceSdk(
   if (type === 'result') {
     const cost =
       typeof message.total_cost_usd === 'number' ? message.total_cost_usd : state.totalCostUsd;
-    if (message.subtype === 'success') {
-      const resultText = asString(message.result);
+    const subtype = String(message.subtype ?? 'error');
+    // `result` is only carried by the success variant; the error variants carry
+    // `errors[]` instead (SDKResultSuccess vs SDKResultError), so read both.
+    const resultText = asString(message.result) || joinErrors(message.errors);
+    // `subtype: 'success'` on its own does NOT mean the turn succeeded — the CLI
+    // also reports API-level stops (an expired login, a refused request) with a
+    // success subtype plus `is_error: true`, putting the message in `result` (its
+    // `terminal_reason` is then `api_error`). Trusting the subtype alone is what
+    // made an expired OAuth session show up as a green "Completed" for a session
+    // that never did any work.
+    const isError = message.is_error === true;
+    if (subtype === 'success' && !isError) {
       // A sub-agent (Task) is still running: this top-level `result` arrived
       // because the Task was backgrounded and returned its tool_result early. The
       // session is NOT actually done — hold the result and stay `running` until
@@ -398,8 +427,16 @@ function reduceSdk(
       }
       return completeWith(state, { at, totalCostUsd: cost, resultText });
     }
-    const error = String(message.subtype ?? 'error');
-    const resultText = asString(message.result);
+    // For an `is_error` success the subtype carries no information, so the result
+    // text is the only description of what stopped the turn.
+    const error = subtype === 'success' ? resultText || 'error' : subtype;
+    // An expired/invalid login is neither a completion nor a failure of the task:
+    // checked first because — unlike a rate limit or a dropped connection — it
+    // never clears by itself, so retrying or waiting is the wrong advice. The user
+    // logs in again and resumes (see isAuthError / needs_login).
+    if (isAuthError(error) || isAuthError(resultText)) {
+      return { ...toNeedsLogin(state, at, resultText || error), totalCostUsd: cost };
+    }
     // A usage/rate-limit stop is not a real failure — surface it distinctly so
     // the user can wait for the reset and resume rather than treating it as an error.
     if (isRateLimitError(error) || isRateLimitError(resultText)) {

@@ -8,7 +8,7 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncQueue } from './async-queue';
-import { errorMessage, isConnectionError } from './errors';
+import { errorMessage, isAuthError, isConnectionError } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
 import { applySdkMessage } from './sdk-parse';
 import { accrueActive, initialState, reduce } from './status-reducer';
@@ -375,22 +375,33 @@ export class Session {
     } catch (err) {
       if (!this.abortController.signal.aborted) {
         const error = errorMessage(err);
-        // A connection drop mid-flight is not a failure: mark the session
+        // An expired login is checked first: the CLI's auth errors can *mention* a
+        // timeout ("Failed to authenticate through the broker: request timed out"),
+        // and treating that as a dropped connection would silently offer a plain
+        // resume when what's needed is a login. It goes through `aborted`, which
+        // the reducer classifies as `needs_login`.
+        const auth = isAuthError(error);
+        // A connection drop mid-flight is not a failure either: mark the session
         // `interrupted` (idle & resumable) so a follow-up / the resume action
         // continues the same SDK conversation. Require an sdkSessionId — without
-        // one there's nothing to resume, so it's a genuine early failure. A
-        // pending permission from the dead turn can never resolve now; drop it so
-        // the resumed turn starts clean. Rate-limit throws fall through to
-        // `aborted`, which the reducer classifies as `rate_limited`.
-        if (isConnectionError(error) && this.state.sdkSessionId) {
-          if (this.pending) {
-            this.pending.resolve({ behavior: 'deny', message: 'connection interrupted' });
-            this.pending = undefined;
-          }
-          this.dispatch({ kind: 'interrupted', error, at: this.now() });
-        } else {
-          this.dispatch({ kind: 'aborted', error, at: this.now() });
+        // one there's nothing to resume, so it's a genuine early failure.
+        // Rate-limit throws fall through to `aborted` too, which the reducer
+        // classifies as `rate_limited`.
+        const dropped = !auth && isConnectionError(error) && this.state.sdkSessionId !== undefined;
+        // Both leave a *resumable* session, so a pending permission from the dead
+        // turn (which can never resolve now) must be denied rather than left
+        // dangling: a transcript ending on an unanswered tool_use can make the
+        // later `resume` error out (same reasoning as `stop()`).
+        if ((auth || dropped) && this.pending) {
+          const message = auth ? 'authentication expired' : 'connection interrupted';
+          this.pending.resolve({ behavior: 'deny', message });
+          this.pending = undefined;
         }
+        this.dispatch(
+          dropped
+            ? { kind: 'interrupted', error, at: this.now() }
+            : { kind: 'aborted', error, at: this.now() },
+        );
       }
     } finally {
       // The loop has exited (stream end, abort, or throw). Release the guard so a
