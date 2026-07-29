@@ -9,7 +9,6 @@ import {
   type DisplayLine,
   emptyBuffer,
   INPUT_MAX_ROWS,
-  isCommandInput,
   isFullscreenViewport,
   isResumable,
   isTerminalStatus,
@@ -212,7 +211,7 @@ export const SessionDetail: FC<{
   // 終了させないのは、詳細画面はセッション1件の作業空間であり、抜けたい先が一覧である
   // ことがほとんどだから（アプリ終了は一覧の `/exit`）。説明文も下の describeOverrides で
   // 差し替える。`/diff` は詳細ビュー固有（変更差分サマリのトグル）。他は両ビュー共通。
-  const runCommandInput = useCommandRunner(
+  const commands = useCommandRunner(
     {
       exit: onBack,
       help: () => setShowHelp(true),
@@ -392,9 +391,9 @@ export const SessionDetail: FC<{
         updateBuffer(enter.buffer);
         return;
       }
-      // A leading `/` is a command (e.g. /model), not a follow-up instruction.
-      if (isCommandInput(enter.text)) {
-        runCommandInput(enter.text);
+      // A leading `/` is a command (e.g. /model), not a follow-up instruction — and
+      // so is a bare word that exactly matches a command this view implements.
+      if (commands.run(enter.text)) {
         updateBuffer(emptyBuffer());
         return;
       }
@@ -426,6 +425,8 @@ export const SessionDetail: FC<{
       : panel === 'actions'
         ? m.detail.helpActions
         : m.detail.helpInput;
+  // コマンドとして解決される入力か（`/` 付き、または詳細で使える名前と完全一致）。
+  const commandPreview = commands.preview(buffer.value);
   const preview = session.streamingText ? streamTail(session.streamingText) : '';
   // プレビュー行はログと同じビューポートを共有するため、その1行を差し引いて描く
   // （溢れると上端が1行クリップされ、最新行を見ているつもりで欠けが出る）。
@@ -546,10 +547,12 @@ export const SessionDetail: FC<{
           </DialogBox>
         ) : (
           <Box ref={composerRef} flexDirection="column">
-            {isCommandInput(buffer.value) ? (
+            {/* Enter の判定（`commands.preview`）と同じ条件で出す。スラッシュ無しの
+                `exit` でも確定前に何が起きるか見えるようにするため。 */}
+            {commandPreview !== null ? (
               <CommandPalette
                 title={m.command.paletteTitle}
-                commands={matchCommands(buffer.value)}
+                commands={matchCommands(commandPreview)}
                 describeOverrides={commandDescribes}
               />
             ) : null}

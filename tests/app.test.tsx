@@ -605,6 +605,38 @@ describe('App detail view (in-app connection)', () => {
     expect(dispose).not.toHaveBeenCalled(); // アプリは終了していない
   });
 
+  // スラッシュ無しのコマンド名はそのビューが実装しているものだけコマンド扱い。
+  // 詳細ビューの `exit` は一覧へ戻り、`clear`（詳細では未実装）は追加指示として送る。
+  it('a bare `exit` in the detail view returns to the list, a bare `clear` is sent as an instruction', async () => {
+    const { manager, out } = drivenManager();
+    const send = vi.spyOn(manager, 'send');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('close me');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-bare' }));
+    await flush();
+
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    stdin.write('clear'); // 詳細に clear ハンドラは無い → 通常の追加指示
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(send).toHaveBeenCalledWith(expect.any(String), 'clear');
+    expect(lastFrame()).toContain('追加の指示を入力'); // 詳細のまま
+
+    stdin.write('exit'); // 詳細の exit = 一覧へ戻る
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
+  });
+
   it('restores list selection and focus after returning from the detail view', async () => {
     const { manager, out } = drivenManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

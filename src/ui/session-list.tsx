@@ -9,7 +9,6 @@ import {
   formatDuration,
   formatModel,
   INPUT_MAX_ROWS,
-  isCommandInput,
   isFullscreenViewport,
   isPrCellHit,
   isResumable,
@@ -161,7 +160,7 @@ export const SessionList: FC<{
     target?.id,
   );
   // `/command` の解決・実行も共有フックへ。一覧は exit/help/model/prompt を扱う。
-  const runCommandInput = useCommandRunner(
+  const commands = useCommandRunner(
     {
       exit: onQuit,
       help: () => setShowHelp(true),
@@ -402,10 +401,10 @@ export const SessionList: FC<{
         setFocus('list');
         return;
       }
-      // 先頭が `/` はコマンド。通常の指示（manager.create）と分岐する。
-      // `/model` はコマンドレジストリ経由でモデル選択ダイアログを開く。
-      if (isCommandInput(enter.text)) {
-        runCommandInput(enter.text);
+      // 先頭が `/`、またはコマンド名そのもの（`exit` 等）はコマンド。通常の指示
+      // （manager.create）と分岐する。`/model` はコマンドレジストリ経由でモデル
+      // 選択ダイアログを開く。判定と実行は useCommandRunner に集約。
+      if (commands.run(enter.text)) {
         updateBuffer(emptyBuffer());
         return;
       }
@@ -418,6 +417,10 @@ export const SessionList: FC<{
       updateBuffer(edit.buffer);
     }
   });
+
+  // 入力がコマンドとして解決されるか（`/` 付き、または `exit` のような完全一致）。
+  // null なら通常の指示。Enter と同じ判定を使うのでパレットの内容が実行結果と一致する。
+  const commandPreview = commands.preview(buffer.value);
 
   const footerHint = modelSelect
     ? m.model.help
@@ -564,8 +567,13 @@ export const SessionList: FC<{
         />
       ) : (
         <Box ref={composerRef} flexDirection="column">
-          {focus === 'composer' && isCommandInput(buffer.value) ? (
-            <CommandPalette title={m.command.paletteTitle} commands={matchCommands(buffer.value)} />
+          {/* パレットの出す条件は Enter の判定と同じ（`toCommandInput`）にする。
+              スラッシュ無しの `exit` が無言で終了しないよう、確定前に何が起きるかを見せる。 */}
+          {focus === 'composer' && commandPreview !== null ? (
+            <CommandPalette
+              title={m.command.paletteTitle}
+              commands={matchCommands(commandPreview)}
+            />
           ) : null}
           <PromptInput
             buffer={buffer}

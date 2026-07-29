@@ -6,6 +6,7 @@ import {
   matchCommands,
   parseCommand,
   runCommand,
+  toCommandInput,
 } from './commands';
 import { messages } from './i18n';
 
@@ -19,6 +20,37 @@ describe('isCommandInput', () => {
     [' /help', false], // leading space is a normal instruction, not a command
   ] as const)('%s → %s', (value, expected) => {
     expect(isCommandInput(value)).toBe(expected);
+  });
+});
+
+describe('toCommandInput', () => {
+  it.each([
+    ['/exit', '/exit'], // already a command input — passes through
+    ['/help me now', '/help me now'],
+    ['exit', '/exit'], // bare command name counts as the command
+    ['EXIT', '/exit'], // case-insensitive
+    ['  exit  ', '/exit'], // surrounding whitespace/newlines only
+    ['exit\n', '/exit'],
+    ['help', '/help'],
+    ['?', null], // aliases are NOT promoted — a lone `?` stays sendable text
+    ['changes', null],
+    ['exit したあとの挙動を直して', null], // trailing text → a normal instruction
+    ['exit exit', null],
+    ['please exit', null],
+    ['exitcode', null],
+    ['', null],
+    ['   ', null],
+  ] as const)('%o → %o', (value, expected) => {
+    expect(toCommandInput(value)).toBe(expected);
+  });
+
+  it('every canonical name resolves bare, no alias does (registry stays in sync)', () => {
+    for (const command of COMMANDS) {
+      expect(toCommandInput(command.name)).toBe(`/${command.name}`);
+      for (const alias of command.aliases ?? []) {
+        expect(toCommandInput(alias)).toBeNull();
+      }
+    }
   });
 });
 
