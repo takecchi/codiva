@@ -530,6 +530,62 @@ describe('App end-to-end (real Session, driven query)', () => {
 
     expect(lastFrame()).toContain('合計 $0.0123');
   });
+
+  it('shows ログイン必要 (not 完了) when the login expired, and guides the user to log in', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('do it');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-auth' }));
+    // How the CLI actually reports an aged-out login: a synthesized assistant
+    // message flagged `authentication_failed`, then a `result` whose subtype is
+    // still 'success' with `is_error` set. Reading the subtype alone showed the
+    // whole thing as a green 完了.
+    const text = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+    out.push(
+      asMsg({
+        type: 'assistant',
+        error: 'authentication_failed',
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      }),
+    );
+    out.push(
+      asMsg({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        terminal_reason: 'api_error',
+        result: text,
+      }),
+    );
+    await flush();
+
+    expect(manager.get('1')?.status).toBe('needs_login');
+    expect(lastFrame()).toContain('ログイン必要');
+    expect(lastFrame()).not.toContain('完了');
+
+    // 一覧で選択すると、ログインし直して r で再開する手順がフッタに出る。
+    stdin.write('\t');
+    await flush();
+    expect(lastFrame()).toContain('claude にログイン');
+    expect(lastFrame()).toContain('r: 再開');
+
+    // 詳細ビューでも手順を出す（操作パネルを開いていなくても見える）。
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain('/login');
+  });
 });
 
 describe('App detail view (in-app connection)', () => {

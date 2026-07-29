@@ -397,6 +397,46 @@ describe('Session', () => {
     expect(session.getState().messages.at(-1)?.text).toBe('continue');
   });
 
+  it('an expired login marks the session needs_login, even before init', async () => {
+    // Unlike a connection drop, this needs no sdkSessionId to be meaningful: the
+    // fix is the same (log in again) whether or not the query got that far.
+    const error = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+    const queryFn = (() => {
+      const gen = {
+        next: async () => {
+          throw new Error(error);
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        interrupt: async () => {},
+      };
+      return gen as unknown as Query;
+    }) as unknown as QueryFn;
+    const session = new Session({ queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    await tick();
+    expect(session.getState().status).toBe('needs_login');
+    expect(session.getState().error).toBe(error);
+  });
+
+  it('an auth error that mentions a timeout is needs_login, not interrupted', async () => {
+    // The CLI's auth failures can mention a timeout; classifying that as a dropped
+    // connection would offer a plain resume when a login is what's needed.
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield { type: 'system', subtype: 'init', session_id: 'sdk-a' } as unknown as SDKMessage;
+        throw new Error('Failed to authenticate through the broker: request timed out');
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const session = new Session({ queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    await tick();
+    expect(session.getState().status).toBe('needs_login');
+  });
+
   it('a connection error before init has no session to resume, so it fails', async () => {
     // Without an sdkSessionId there is nothing to resume — a connection drop this
     // early is a genuine early failure, not a resumable interruption.

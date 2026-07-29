@@ -38,6 +38,10 @@ export const statusColor = {
   completed: '#35c46b', // green — success
   interrupted: '#c9a227', // muted gold — stopped mid-run, resumable (not a clean finish)
   rateLimited: '#c678dd', // violet — stopped by a usage/rate limit, resumable once it resets
+  // bright lemon — blocked on you logging in again; deliberately brighter/cooler
+  // than interrupted's muted gold and awaitingPermission's amber so the three
+  // "stopped, needs something" states stay tellable apart at a glance.
+  needsLogin: '#f7d94c',
   failed: '#f0524b', // red — error
   conflict: '#d9663d', // burnt orange — merge conflict, needs manual resolution
   external: '#a878f0', // violet — handed off to the claude CLI

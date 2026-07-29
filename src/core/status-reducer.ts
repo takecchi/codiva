@@ -1,4 +1,5 @@
 import { USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
+import { isAuthError } from './errors';
 import { makeTitle } from './slug';
 import { isActiveStatus } from './status-meta';
 import type {
@@ -150,6 +151,43 @@ export function toInterrupted(state: SessionState, at: number, detail: string): 
   };
 }
 
+/**
+ * Transition into the `needs_login` state: the turn stopped because Claude could
+ * not authenticate (expired OAuth session / bad credentials — see `isAuthError`).
+ * This is neither a completion nor a failure of the work: the user logs in again
+ * (`claude` → `/login`) and resumes, so the state is idle & resumable and the UI
+ * points at the login step. Records the reason in the log. Shared with
+ * `sdk-parse.ts` (an auth failure can surface as an SDK `result` / `auth_status`
+ * message as well as a thrown error caught by `Session.consume`).
+ *
+ * Transient bookkeeping (a `pendingPermission` from a turn that can never resolve
+ * now, deferred sub-agent results) is dropped so the resumed turn starts clean —
+ * same reasoning as `toInterrupted`.
+ */
+export function toNeedsLogin(state: SessionState, at: number, detail: string): SessionState {
+  // The same auth failure reaches us twice: first as the flagged assistant message
+  // the CLI synthesizes for it, then as the `result` that rolls that message up
+  // (same text). Treat the second one as a no-op so the log doesn't grow a
+  // duplicate line — and so subscribers see a stable reference (no repaint).
+  if (state.status === 'needs_login' && state.error === detail) {
+    return state;
+  }
+  const withLog = appendLog(state, 'error', detail);
+  const { pendingPermission, deferredResult, activeTaskIds, ...rest } = state;
+  void pendingPermission;
+  void deferredResult;
+  void activeTaskIds;
+  return {
+    ...rest,
+    status: 'needs_login',
+    finishedAt: at,
+    error: detail,
+    streamingText: undefined,
+    messages: withLog.messages,
+    logSeq: withLog.logSeq,
+  };
+}
+
 /** Pure reducer: the single source of truth for session state transitions. */
 export function reduce(state: SessionState, event: CodivaEvent): SessionState {
   switch (event.kind) {
@@ -239,6 +277,14 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
 
     case 'aborted': {
       const error = event.error ?? 'aborted';
+      // An expired login can surface as a thrown error (caught in consume) —
+      // classify it as needs_login so the user is told to log in rather than
+      // being shown a dead-end "failed" (or, worse, a green "completed").
+      // Checked before the limit/connection classifiers: an auth failure is
+      // never fixed by waiting or retrying.
+      if (isAuthError(error)) {
+        return toNeedsLogin(state, event.at, error);
+      }
       // A rate/usage limit can surface as a thrown error (caught in consume) —
       // classify it as rate_limited rather than a generic failure.
       if (isRateLimitError(error)) {

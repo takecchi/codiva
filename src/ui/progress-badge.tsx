@@ -24,6 +24,8 @@ export function badgeFor(state: SessionState, m: Messages): { label: string; col
       return { label: b.interrupted, color: statusColor.interrupted };
     case 'rate_limited':
       return { label: b.rateLimited, color: statusColor.rateLimited };
+    case 'needs_login':
+      return { label: b.needsLogin, color: statusColor.needsLogin };
     case 'failed':
       return { label: b.failed, color: statusColor.failed };
     case 'conflict':

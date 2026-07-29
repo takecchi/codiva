@@ -27,6 +27,7 @@ describe('notificationFor', () => {
     ['completed', '完了しました'],
     ['interrupted', '接続が中断されました（再開できます）'],
     ['rate_limited', 'レート制限に達しました'],
+    ['needs_login', 'Claude のログインが必要です'],
     ['failed', '失敗しました'],
   ])('notifies on transition into %s', (status, label) => {
     const spec = notificationFor(withStatus('running'), withStatus(status), m);

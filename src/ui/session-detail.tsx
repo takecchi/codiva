@@ -22,6 +22,7 @@ import {
   matchCommands,
   parseSgrMouse,
   type RichSpan,
+  resumeInstruction,
   type ScrollAnchor,
   type SessionManager,
   scrollDown,
@@ -169,13 +170,13 @@ export const SessionDetail: FC<{
   const pending = session?.pendingPermission;
   const status = session?.status;
   const isTerminal = status !== undefined && isTerminalStatus(status);
-  // A session cut off by a dropped connection (or a rate limit) can be resumed:
-  // sending a follow-up restarts the SDK query with `resume`. Surfaced as an
-  // explicit action so the user can continue without typing.
+  // A session cut off by a dropped connection (a rate limit, an expired login)
+  // can be resumed: sending a follow-up restarts the SDK query with `resume`.
+  // Surfaced as an explicit action so the user can continue without typing.
   const resumable = status !== undefined && isResumable(status);
   const resume = () => {
-    if (session && resumable) {
-      manager.send(session.id, m.resume.instruction);
+    if (session && status !== undefined && resumable) {
+      manager.send(session.id, resumeInstruction(status, m));
       setPanel('input');
       setAnchor('bottom');
     }
@@ -491,6 +492,11 @@ export const SessionDetail: FC<{
           </Box>
         ) : null}
 
+        {/* 認証切れはアプリ内では解決できない（別ターミナルでの再ログインが必要）ので、
+            操作パネルを開いているかに関係なく手順を常に出す。 */}
+        {status === 'needs_login' ? (
+          <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
+        ) : null}
         {actionError ? (
           <Text color={statusColor.failed}>
             {m.action.actionErrorLabel}: {actionError}

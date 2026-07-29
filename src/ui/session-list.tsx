@@ -20,6 +20,7 @@ import {
   needsAttention,
   type PrMergeStatus,
   parseSgrMouse,
+  resumeInstruction,
   rowLineAtPoint,
   type SessionManager,
   showsBranchColumn,
@@ -45,7 +46,7 @@ import { useMessages } from './i18n-context';
 import { editText, normalizeChord, resolveEnter } from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
-import { ProgressBadge } from './progress-badge';
+import { badgeFor, ProgressBadge } from './progress-badge';
 import { PromptInput } from './prompt-input';
 import { RepoPromptEditor } from './repo-prompt-editor';
 import { StatusFooter } from './status-footer';
@@ -368,11 +369,12 @@ export const SessionList: FC<{
         setConfirm('discard');
         return;
       }
-      // Resume a session that was cut off (connection interrupted / rate limited):
-      // sends a "continue" instruction, which restarts the SDK query with `resume`
-      // so Claude picks up where it left off. Only meaningful for resumable rows.
+      // Resume a session that was cut off (connection interrupted / rate limited /
+      // login expired): sends a "continue" instruction, which restarts the SDK
+      // query with `resume` so Claude picks up where it left off. Only meaningful
+      // for resumable rows.
       if ((input === 'r' || input === 'R') && target && isResumable(target.status)) {
-        manager.send(target.id, m.resume.instruction);
+        manager.send(target.id, resumeInstruction(target.status, m));
         return;
       }
       if (key.escape) {
@@ -426,10 +428,14 @@ export const SessionList: FC<{
       : pending
         ? m.list.helpPending
         : focus === 'list'
-          ? // 中断された（再開可能な）行を選択中は再開キー（r）を含むヒントに切り替える。
-            target && isResumable(target.status)
-            ? m.resume.listHint
-            : m.list.helpList
+          ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
+            // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
+            // 含むヒントに切り替える。
+            target?.status === 'needs_login'
+            ? m.auth.listHint
+            : target && isResumable(target.status)
+              ? m.resume.listHint
+              : m.list.helpList
           : m.list.helpComposer;
 
   return (
@@ -463,15 +469,9 @@ export const SessionList: FC<{
                     {isSel ? `${glyph.caret} ` : '  '}
                   </Text>
                   <Box width={2}>
-                    <Text
-                      color={
-                        s.status === 'awaiting_input'
-                          ? statusColor.awaitingInput
-                          : statusColor.awaitingPermission
-                      }
-                    >
-                      {attention ? glyph.attention : ' '}
-                    </Text>
+                    {/* 注意グリフはその状態のバッジ色で塗る（許可待ち=amber、質問=pink、
+                        ログイン必要=lemon）。状態を増やしても色分岐を足さなくて済む。 */}
+                    <Text color={badgeFor(s, m).color}>{attention ? glyph.attention : ' '}</Text>
                   </Box>
                   {/* title/branch は固定幅だと広い端末でも切り詰められる。flexGrow で
                       残り幅を title:branch = 3:2 で分配し、狭いときは minWidth まで縮む。 */}
