@@ -190,8 +190,10 @@ export interface Messages {
     unknown: (name: string) => string;
     /** /help の説明 */
     help: string;
-    /** /exit の説明 */
+    /** /exit の説明（一覧ビュー = アプリ終了） */
     exit: string;
+    /** /exit の説明（詳細ビュー = 一覧へ戻る。ビューで意味が変わるため別キー） */
+    exitDetail: string;
     /** /model の説明 */
     model: string;
     /** /diff の説明 */
@@ -330,6 +332,7 @@ const ja: Messages = {
     unknown: (name) => (name ? `不明なコマンド: /${name}` : '不明なコマンドです'),
     help: 'コマンド一覧を表示',
     exit: 'codiva を終了',
+    exitDetail: '詳細を閉じて一覧へ戻る',
     model: 'モデルを切り替え',
     diff: '変更差分サマリの表示を切り替え',
     prompt: 'リポジトリの追加指示を編集',
@@ -459,6 +462,7 @@ const en: Messages = {
     unknown: (name) => (name ? `Unknown command: /${name}` : 'Unknown command'),
     help: 'Show available commands',
     exit: 'Quit codiva',
+    exitDetail: 'Close the session view (back to the list)',
     model: 'Switch the model',
     diff: 'Toggle the changes summary',
     prompt: 'Edit the repository instructions',

@@ -75,6 +75,10 @@
 - ビュー切替は `App` の `View` state（`{mode:'list'}` | `{mode:'detail', id}`）。Enter/→ で `onOpen(id)`、
   Esc で `onBack`。詳細ビューは単一 `useInput` の state machine（panel = input | actions）で、
   タイピング（追加指示）と操作キー（m/d = マージ/破棄）の衝突を防ぐ。
+- **`/exit` は画面で意味が変わる**。一覧は終了（`onQuit`）、詳細は Esc と同じ「一覧へ戻る」（`onBack`）。
+  詳細から誤ってアプリを落とさないため。同じコマンドの説明文も変わるので、パレットへは
+  `CommandPalette` の `describeOverrides`（キー=コマンド名）でビュー固有の文言を渡す
+  （詳細は `m.command.exitDetail`）。文字列は必ずカタログから引く（[i18n.md](./i18n.md)）。
 - 詳細ビューは**ステータスヘッダを持たない**。コンテンツ（ログ）+ フッタ（コンポーザ）だけにし、
   ログ用の縦幅を最大化する（一覧はヘッダ=Banner + コンテンツ + フッタだが、詳細はヘッダ抜き）。
 - ログは末尾ビューポート（`justifyContent="flex-end"` + `overflowY="hidden"`）に描き、`<Static>` は使わない
