@@ -46,6 +46,25 @@ export function isCommandInput(value: string): boolean {
   return value.startsWith('/');
 }
 
+/**
+ * スラッシュを打ち忘れた入力（`exit` など）をコマンド入力に正規化する。
+ *
+ * `/` 付きならそのまま返す。`/` なしでも **コマンドの正式名と完全一致** するなら
+ * `/name` 形式に直して返す。コマンドでなければ null（呼び出し側は通常の指示として扱う）。
+ *
+ * 完全一致に限るのが要点で、`exit したあとの挙動を直して` のように後続テキストが
+ * ある入力は指示である可能性が高いため対象外。別名（`?` = help、`changes` = diff）も
+ * 対象外にしている: `?` の 1 文字だけをセッションへ送りたいことは十分あり得るのに、
+ * 昇格させるとその入力手段が失われる（正式名は `/` 無しでも意図が明らかなので許す）。
+ */
+export function toCommandInput(value: string): string | null {
+  if (isCommandInput(value)) {
+    return value;
+  }
+  const name = value.trim().toLowerCase();
+  return COMMANDS.some((c) => c.name === name) ? `/${name}` : null;
+}
+
 /** 解析済みコマンド: 名前（小文字）と残り引数（トリム済み）。 */
 export interface ParsedCommand {
   /** `/` を除いた最初の語（小文字）。`/` のみなら空文字。 */

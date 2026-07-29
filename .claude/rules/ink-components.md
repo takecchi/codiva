@@ -75,6 +75,11 @@
 - ビュー切替は `App` の `View` state（`{mode:'list'}` | `{mode:'detail', id}`）。Enter/→ で `onOpen(id)`、
   Esc で `onBack`。詳細ビューは単一 `useInput` の state machine（panel = input | actions）で、
   タイピング（追加指示）と操作キー（m/d = マージ/破棄）の衝突を防ぐ。
+- **スラッシュ無しでもコマンド名と完全一致すればコマンド**（`core/commands.ts` の `toCommandInput`）。
+  正式名のみ（別名 `?`/`changes` は昇格させない = 1文字の `?` を送れる余地を残す）。判定と実行・
+  パレット表示は `useCommandRunner` が返す `run`/`preview` を共有して**必ず同じ条件**にする
+  （予告なく終了させない）。そのビューがハンドラを持たないコマンド名は昇格させず、通常の指示として
+  流す（`clear` が詳細で無言に消えないため）。
 - **`/exit` は画面で意味が変わる**。一覧は終了（`onQuit`）、詳細は Esc と同じ「一覧へ戻る」（`onBack`）。
   詳細から誤ってアプリを落とさないため。同じコマンドの説明文も変わるので、パレットへは
   `CommandPalette` の `describeOverrides`（キー=コマンド名）でビュー固有の文言を渡す

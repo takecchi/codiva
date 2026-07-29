@@ -61,6 +61,41 @@ describe('slash commands', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  // スラッシュ無しでも実行されるなら、確定前にパレットで予告する（無言で終了しない）。
+  it('previews a bare command in the palette, but not when text follows it', async () => {
+    const { stdin, lastFrame } = render(<App manager={makeManager()} />);
+    stdin.write('exit');
+    await flush();
+    expect(lastFrame() ?? '').toContain(messages.ja.command.exit);
+    stdin.write(' の挙動を直して'); // 後続テキスト → ただの指示に戻る
+    await flush();
+    expect(lastFrame() ?? '').not.toContain(messages.ja.command.paletteTitle);
+  });
+
+  it('a bare `exit` (no slash) exits too', async () => {
+    const manager = makeManager();
+    const dispose = vi.spyOn(manager, 'dispose');
+    const { stdin } = render(<App manager={manager} />);
+    stdin.write('exit');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(manager.getSnapshot()).toHaveLength(0);
+  });
+
+  it('`exit` followed by text stays a normal instruction', async () => {
+    const manager = makeManager();
+    const dispose = vi.spyOn(manager, 'dispose');
+    const { stdin } = render(<App manager={manager} />);
+    stdin.write('exit の挙動を直して');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(manager.getSnapshot()).toHaveLength(1);
+  });
+
   it('/prompt opens the repo-prompt editor and saves the edited instructions', async () => {
     const manager = makeManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

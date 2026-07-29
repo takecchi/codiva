@@ -11,6 +11,7 @@ import {
   type CommandAction,
   emptyBuffer,
   FALLBACK_MODEL_OPTIONS,
+  isCommandInput,
   type ModelOption,
   normalizeSelection,
   type RateLimitWindow,
@@ -21,6 +22,7 @@ import {
   type SessionState,
   selectionText,
   type TextBuffer,
+  toCommandInput,
 } from '@/core';
 
 /**
@@ -209,25 +211,63 @@ export function useTextBufferRef(initial?: TextBuffer): TextBufferRef {
   return { buffer, bufferRef, updateBuffer };
 }
 
+export interface CommandRunner {
+  /**
+   * Dispatch the submitted text. Returns whether it was consumed as a command;
+   * `false` means the caller should treat it as a normal instruction.
+   */
+  run: (text: string) => boolean;
+  /**
+   * The same resolution without side effects, for the palette: the normalized
+   * command input (`/name ...`) or null when the text is a normal instruction.
+   * Sharing it with `run` keeps the preview honest — whatever the palette shows
+   * is exactly what Enter will do.
+   */
+  preview: (value: string) => string | null;
+}
+
 /**
- * Resolve a `/command` typed in a composer and dispatch its effect. Known actions
+ * Resolve a command typed in a composer and dispatch its effect. Known actions
  * run the matching handler (a view supplies only the ones it implements — e.g.
  * `/diff` is detail-only); an unknown name surfaces via `onError`. Clears the
  * error on any recognized command. Shared by the list and detail composers.
+ *
+ * Slash-prefixed text is always a command (an unknown name becomes an error, not
+ * a prompt). A bare command name (`exit`) counts as one too, but only when this
+ * view implements it — otherwise typing `clear` in the detail view would vanish
+ * with no feedback at all instead of reaching the session as an instruction.
  */
 export function useCommandRunner(
   handlers: Partial<Record<CommandAction, () => void>>,
   onError: (message: string | undefined) => void,
   unknownLabel: (name: string) => string,
-): (text: string) => void {
-  return (text: string) => {
-    const result = runCommand(text);
-    if (result.kind === 'unknown') {
-      onError(unknownLabel(result.name));
-      return;
+): CommandRunner {
+  /** Command input this view would act on, or null → normal instruction. */
+  const resolve = (text: string): string | null => {
+    const command = toCommandInput(text);
+    if (command === null || isCommandInput(text)) {
+      return command;
     }
-    onError(undefined);
-    handlers[result.command.action]?.();
+    const result = runCommand(command);
+    // Bare names only resolve to commands this view implements.
+    return result.kind === 'run' && handlers[result.command.action] ? command : null;
+  };
+  return {
+    preview: resolve,
+    run: (text: string) => {
+      const command = resolve(text);
+      if (command === null) {
+        return false;
+      }
+      const result = runCommand(command);
+      if (result.kind === 'unknown') {
+        onError(unknownLabel(result.name));
+        return true;
+      }
+      onError(undefined);
+      handlers[result.command.action]?.();
+      return true;
+    },
   };
 }
 
