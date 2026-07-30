@@ -52,6 +52,7 @@
 | `<repo>/.git/info/exclude` | `# codiva` + `.codiva/` を追記 | `WorktreeManager` |
 | `~/.codiva/config.json` | ユーザー設定 | `utils/config.ts` |
 | `~/.claude/projects/<cwd の非英数字を '-' 化>/<sessionId>.jsonl` | CLI のトランスクリプト（**読み取り専用**） | Claude CLI |
+| `~/.claude.json` / `~/.claude/.credentials.json` / Keychain `Claude Code-credentials` | 学習データ利用の判定に使う Claude Code の状態・OAuth トークン（**読み取り専用**。`utils/privacy.ts`） | Claude CLI |
 | `scripts/fixtures/*.jsonl` | spike の生ログ（gitignore） | `scripts/spike.ts` |
 
 - 設定・状態の読み込みは**壊れていても throw しない**（`{}` / 空状態へフォールバック）。
@@ -79,3 +80,6 @@
   `fireAndForget`（**argv 渡し**でシェル注入を防ぐ）。失敗は握り潰す best-effort。
 - クリップボードは OSC 52（`utils/clipboard.ts`）。SSH 越しでも動くのでネイティブ依存を足さない。
   tmux 内での DCS パススルー包み（`wrapForTmux`）は通知の OSC と共用（`utils/terminal-mode.ts`）。
+- **Claude Code の認証情報・非公開 API を触るのは `utils/privacy.ts` だけ**（学習データ利用の判定）。
+  読み取り専用・失敗は必ず `'unknown'` に丸めて黙る・設定 `privacyWarning: false` で完全に無効化できる、
+  の 3 点を崩さない（アカウント設定を codiva から書き換えない）。

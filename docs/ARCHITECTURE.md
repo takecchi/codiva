@@ -63,6 +63,7 @@ codiva/
 │   │   ├── worktree.ts        # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
 │   │   ├── list-hit.ts        # 一覧のマウス当たり判定（純粋）
 │   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatDuration/clamp/…）
+│   │   ├── privacy.ts        # 学習データ利用（grove）の判定（JSON→TrainingOptIn・純粋）
 │   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts
 │   │   ├── scroll.ts / text-buffer.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
 │   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
@@ -86,6 +87,7 @@ codiva/
 │       ├── exec.ts / terminal-mode.ts  # fireAndForget / toggleEscape（共通 I/O ラッパ）
 │       ├── config.ts          # ~/.codiva/config.json の読み書き
 │       ├── repo-prompt.ts     # <repo>/.codiva/prompt.md の読み書き（loadRepoPrompt / saveRepoPrompt）
+│       ├── privacy.ts        # 学習データ利用の状態取得（~/.claude.json キャッシュ → 非公開 API）
 │       ├── notify.ts / open-url.ts / pr.ts / title.ts / transcript.ts
 │       ├── alt-screen.ts / mouse.ts    # alt screen / SGR マウスの有効化・無効化
 │       └── state-store.ts     # <repo>/.codiva/state.json の読み書き + prune
@@ -509,6 +511,42 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   これを捕えて `session.markConflict(files)` → reducer が `status: 'conflict'` + `conflictFiles` を立てる。
   **自動解消はしない**（`-X ours/theirs` 等でコードを無言に捨てない）。UI はバッジ表示のみで、解消は人手。
   `conflict` は詳細ビューでも終端状態扱い（差分・操作を表示）で、破棄や再マージは一覧/詳細から可能。
+
+## 学習データ利用（grove）の警告
+
+codiva は並列セッションで大量のコードを Claude へ流すため、claude.ai の「Help improve our AI models」
+（= モデル学習へのデータ提供。Anthropic 内部名 **grove**）が ON のまま気付かずに使い続けるのを防ぐ。
+**警告するだけで、codiva 側の挙動は変えない**（勝手に無効化はしない = ユーザーのアカウント設定を
+アプリが書き換えない）。
+
+- **判定は 2 段構え**（`utils/privacy.ts` の `fetchTrainingOptIn`。安いほうから試す）:
+  0. **認証方式の門番**: API キー / Bedrock / Vertex / 独自 `ANTHROPIC_BASE_URL` のときは claude.ai の
+     設定と無関係（かつ API 利用は学習対象外）なので、**キャッシュも読まずに** `'unknown'`。
+     過去に claude.ai へログインした残骸で誤警告しないため、この門番が最初に来る。
+  1. `~/.claude.json` の `groveConfigCache[accountUuid]`（Claude Code が書くキャッシュ。ネットワークも
+     認証情報も不要。7 日より古い値は使わない）。キーは `oauthAccount.accountUuid` と一致させ、
+     **アカウントが読めないときに限り**単一エントリを流用する（切替後に前アカウントの値を使わない）。
+  2. `GET https://api.anthropic.com/api/claude_code_grove`（Keychain `Claude Code-credentials`（macOS）
+     または `~/.claude/.credentials.json` の OAuth トークンを使う）。
+- **キャッシュの信頼は非対称**: `'off'` はそのまま採用してここで終える（安い）が、**`'on'` は必ず
+  問い合わせで確認する**。claude.ai 側で OFF にしてもこのキャッシュは書き換わらないため、
+  信用すると「言われた通り切ったのに警告が出続ける」ことになる。確認が取れなかったときだけ
+  キャッシュの `'on'` に据え置く。
+- **判定は `'on' | 'off' | 'unknown'`**（`core/privacy.ts`）。警告は **`'on'` と確定したときだけ**出す。
+  レスポンスの `domain_excluded === true`（意味は未検証）も `'unknown'` に倒す。
+- **起動をブロックしない / 終了を止めない**: 合成ルート（`index.tsx`）が render 前に投げ、
+  `useTrainingOptIn` が解決したらバナーに注意行が増える。終了時は `AbortController` で打ち切る。
+  `security`（Keychain）呼び出しには `signal` と `timeout`（2 秒）を必ず渡す — 生きた子プロセスが
+  イベントループを掴むと、終了してもシェルのプロンプトが返らなくなる。abort 済みシグナルでは
+  `addEventListener('abort')` が発火しないので、問い合わせ前に `signal.aborted` を先手チェックする。
+- **失敗はすべて `'unknown'`**（非公開エンドポイントなので仕様変更で壊れうる。壊れたときは
+  「黙る」= 誤った警告を出さない）。設定 `privacyWarning: false` で判定自体を走らせない。
+- **描くのは `bannerLines` の行ではなく、その外の `PrivacySection`**。ヘッダのドラッグ選択は
+  `bannerText(lines)` への caret index で、当たり判定が「行 index = 表示行」を前提にしている
+  （`core/banner-lines.ts` の `bannerCaretAt`）。警告はコピー対象ではないうえ `⚠` は `theme.ts` が
+  持つ記号なので、選択可能なテキスト塊（`textRef` の Box）の**外**に置いて行構成を揺らさない。
+
+エンドポイントの実測（User-Agent 要件など）は [TECH_NOTES.md](./TECH_NOTES.md#学習データ利用grove-の検知実測-2026-07-30) を参照。
 
 ## 設計判断
 

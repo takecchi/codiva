@@ -83,6 +83,17 @@ describe('toConfig', () => {
   it.each([
     [true, true],
     [false, false],
+  ])('keeps boolean privacyWarning %o', (input, expected) => {
+    expect(toConfig({ privacyWarning: input })).toEqual({ privacyWarning: expected });
+  });
+
+  it.each([['yes'], [1], [null]])('drops invalid privacyWarning: %o', (privacyWarning) => {
+    expect(toConfig({ privacyWarning })).toEqual({});
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
   ])('keeps boolean followOrigin %o', (input, expected) => {
     expect(toConfig({ followOrigin: input })).toEqual({ followOrigin: expected });
   });
@@ -129,6 +140,7 @@ describe('toConfig', () => {
         permissionMode: 'acceptEdits',
         maxBudgetUsd: 2.5,
         notifications: false,
+        privacyWarning: false,
         followOrigin: false,
         autoPr: true,
         ignoredFiles: 'copy',
@@ -141,6 +153,7 @@ describe('toConfig', () => {
       permissionMode: 'acceptEdits',
       maxBudgetUsd: 2.5,
       notifications: false,
+      privacyWarning: false,
       followOrigin: false,
       autoPr: true,
       ignoredFiles: 'copy',

@@ -7,8 +7,11 @@ import {
   bannerText,
   lineSelection,
   type SelectionRange,
+  shouldWarnTraining,
+  type TrainingOptIn,
 } from '@/core';
-import { palette, statusColor } from './theme';
+import { useMessages } from './i18n-context';
+import { glyph, palette, statusColor } from './theme';
 
 // codiva mascot. Each glyph is rendered in its own <Text>, so you can paint it
 // one character at a time via paint() below.
@@ -138,6 +141,31 @@ const BannerRow: FC<{ line: BannerLine; sel?: { from: number; to: number } }> = 
 };
 
 /**
+ * 学習データ利用（claude.ai の「Help improve our AI models」）が ON と分かったときだけ
+ * 出す注意セクション。`'off'` / `'unknown'`（未ログイン・API キー利用・取得失敗）では
+ * 何も描かないので、判定できない環境ではバナーの見た目が変わらない。
+ *
+ * `bannerLines` の行としてではなく **選択可能なテキスト塊（textRef）の外**に描く。
+ * 理由は 2 つ: (1) 警告はドラッグでコピーする対象ではない（ヘッダ選択の用途は cwd の
+ * 取り出し）、(2) `⚠` は `theme.ts` が持つ記号で、純粋な core に持ち込みたくない。
+ * 外に置くので `bannerCaretAt` の「行 index = 表示行」も揺らさない。
+ */
+const PrivacySection: FC<{ optIn?: TrainingOptIn }> = ({ optIn }) => {
+  const m = useMessages();
+  if (!shouldWarnTraining(optIn)) {
+    return null;
+  }
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={statusColor.awaitingPermission}>
+        {`${glyph.warning} ${m.banner.privacy.warning}`}
+      </Text>
+      <Text dimColor>{`  ${m.banner.privacy.hint}`}</Text>
+    </Box>
+  );
+};
+
+/**
  * Borderless startup header echoing Claude Code's banner: the mascot on the left
  * and identity / subtitle / model / cwd on the right (vertically centered against
  * it). Purely presentational — the text is composed by `bannerLines` in core, and
@@ -154,7 +182,12 @@ export const Banner: FC<{
    * ずれて、クリック位置が 1〜2 行手前の行に当たる）。
    */
   textRef?: RefObject<DOMElement | null>;
-}> = ({ lines, selection, textRef }) => {
+  /**
+   * 学習データ利用の状態（`utils/privacy.ts` 由来）。`'on'` のときだけ注意行を出す。
+   * 未解決・判定不能は undefined / `'unknown'` で、その場合は何も描かない。
+   */
+  trainingOptIn?: TrainingOptIn;
+}> = ({ lines, selection, textRef, trainingOptIn }) => {
   const value = selection ? bannerText(lines) : undefined;
   const rows = lines.map((line, row) => ({
     key: `banner-line-${row}-${bannerLineText(line).slice(0, 8)}`,
@@ -186,6 +219,7 @@ export const Banner: FC<{
             <BannerRow key={r.key} line={r.line} sel={r.sel} />
           ))}
         </Box>
+        <PrivacySection optIn={trainingOptIn} />
       </Box>
     </Box>
   );

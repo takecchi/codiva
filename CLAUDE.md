@@ -74,11 +74,12 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 設定 | `core/config.ts`（検証）/ `utils/config.ts`（`~/.codiva/config.json`） |
 | 永続・復元 | `core/persistence.ts` / `utils/state-store.ts`（`.codiva/state.json`）/ `core/transcript.ts` + `utils/transcript.ts`（CLI トランスクリプト） |
 | 通知 | `core/notify.ts`（判定・純粋）/ `utils/notify.ts`（OS I/O） |
+| 学習データ利用の警告 | `core/privacy.ts`（判定・純粋）/ `utils/privacy.ts`（キャッシュ+非公開 API）/ `ui/banner.tsx` |
 | モデル選択 | `core/models.ts` / `utils/model-catalog.ts` / `ui/model-select.tsx` |
 | 起動・副作用の配線 | `src/index.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / runtime） |
 | 共有 UI フック | `ui/hooks.ts`（`useSessions` / `useCommandRunner` / `useLifecycleAction` / `useTextBufferRef` / `useComposerSelection` …） |
 
-> 落とし穴: `config.ts` / `notify.ts` / `mouse.ts` / `transcript.ts` / `repo-prompt.ts` / `worktree*.ts` は
+> 落とし穴: `config.ts` / `notify.ts` / `mouse.ts` / `transcript.ts` / `repo-prompt.ts` / `privacy.ts` / `worktree*.ts` は
 > **core と utils に同名で存在する**（純粋版と I/O 版）。import 元が `@/core` か `@/utils` かを必ず確認する。
 
 ## 絶対に崩さない不変条件

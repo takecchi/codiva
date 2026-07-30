@@ -211,6 +211,16 @@ export interface Messages {
        */
       plan: (plan: string, organization?: string) => string;
     };
+    /**
+     * 学習データ利用（claude.ai の「Help improve our AI models」）が ON と判定された
+     * ときだけ出す注意行。判定できないときは何も出さない（`core/privacy.ts`）。
+     */
+    privacy: {
+      /** 見出し（ON である事実と影響）。 */
+      warning: string;
+      /** 変更方法の案内（URL を含む）。 */
+      hint: string;
+    };
   };
   /** 下部モード行（status-footer.tsx） */
   footer: {
@@ -386,6 +396,10 @@ const ja: Messages = {
       plan: (plan, organization) =>
         organization ? `プラン: ${plan} (${organization})` : `プラン: ${plan}`,
     },
+    privacy: {
+      warning: '学習データ利用が ON です（会話がモデル改善に使われる場合があります）',
+      hint: '変更: https://claude.ai/settings/data-privacy-controls',
+    },
   },
   footer: {
     autoMode: '自動モード',
@@ -545,6 +559,10 @@ const en: Messages = {
       },
       plan: (plan, organization) =>
         organization ? `plan: ${plan} (${organization})` : `plan: ${plan}`,
+    },
+    privacy: {
+      warning: 'Model-improvement data sharing is ON (conversations may be used for training)',
+      hint: 'Change it at https://claude.ai/settings/data-privacy-controls',
     },
   },
   footer: {

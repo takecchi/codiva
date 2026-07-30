@@ -417,3 +417,51 @@ Claude Code のステータスラインと同じ「プラン種別 + リミッ�
   `overage` 枠には `utilization: 3.49` が付いた）。つまり「% 使用」は常に取れるとは限らないので、
   UI は `utilization` が無い枠にゲージを描かず残り時間だけ出す（0% と誤読させない）。
 - **idle なセッション（何も送っていない probe）には届かない**。だからポーリングと併用する。
+
+## 学習データ利用（grove）の検知（実測 2026-07-30 / Claude Code 2.1.220）
+
+claude.ai の「Help improve our AI models」（モデル学習へのデータ提供。設定画面は
+<https://claude.ai/settings/data-privacy-controls>）の ON/OFF を codiva から判定するための実測。
+Anthropic 内部の呼び名は **grove**。
+
+### 出所は 2 つ（どちらも `grove_enabled` を運ぶ）
+
+| 出所 | 形 | 備考 |
+|---|---|---|
+| `~/.claude.json` の `groveConfigCache[<accountUuid>]` | `{ grove_enabled: boolean \| null, timestamp: number }` | Claude Code が取得時に書くキャッシュ。**未取得のアカウントには存在しない**（実測: 本開発機では未生成だった）。`accountUuid` は同ファイルの `oauthAccount.accountUuid` |
+| `GET https://api.anthropic.com/api/claude_code_grove` | `{ grove_enabled, domain_excluded, notice_is_grace_period, notice_reminder_frequency }` | Claude Code の `/privacy-settings` が使う非公開エンドポイント。更新は `PATCH /api/oauth/account/settings`（codiva は**読み取りのみ**） |
+
+- `grove_enabled` は `true` / `false` のほか **`null`** がありうる（ポリシーで選択肢が無いアカウント）。
+  `null` は「不明」として扱い、警告を出さない。
+
+### 認証と User-Agent（重要）
+
+- 認証は Claude Code の OAuth アクセストークン（`Authorization: Bearer <token>`）。置き場所は
+  macOS が **Keychain の generic password `Claude Code-credentials`**（`security find-generic-password
+  -s 'Claude Code-credentials' -w` で JSON が取れる。中身は `{ claudeAiOauth: { accessToken, … } }`）、
+  それ以外は `~/.claude/.credentials.json`。
+- **User-Agent が `claude-cli` で始まらないと 403 `permission_error`**（実測）。
+
+  | User-Agent | 結果 |
+  |---|---|
+  | `claude-cli/2.1.220 (external, cli)` | 200 |
+  | `claude-cli` のみ / `claude-cli/0.0.0 (external, cli)` | 200 |
+  | `codiva/0.2.9` / `curl/8.0` / 未指定 | 403 |
+
+  `anthropic-beta` ヘッダは不要（有無で結果は変わらない）。
+- 非公開 API なので**いつ壊れてもよい前提**で実装する: 失敗・403・タイムアウトはすべて
+  `'unknown'` に丸め、警告を出さない（誤警告を出さない側に倒す）。実装は `utils/privacy.ts`、
+  判定は純粋な `core/privacy.ts`。
+
+### 未検証: `domain_excluded`
+
+- 本開発機のアカウントでは `null` だった。Claude Code の設定ダイアログは `domainExcluded` が真のとき
+  トグル操作（tab）を無効化する実装になっており、「ドメイン側で対象外」を意味すると読める。
+- 意味が確定するまで codiva は **`domain_excluded === true` を `'unknown'` に倒す**（対象外なのに
+  「学習に使われます」と警告するのを避ける）。非 null の実データが採れたらここに追記して判定を見直す。
+
+### キャッシュの信頼は非対称にする（実装上の教訓）
+
+- claude.ai の Web 側で設定を変えても `~/.claude.json` の `groveConfigCache` は書き換わらない。
+  キャッシュの `'on'` を信用すると、ユーザーが警告に従って OFF にしたあとも最大 7 日間
+  警告が出続ける。**`'off'` はキャッシュを採用、`'on'` は必ず API で確認**（確認できなければ据え置き）。

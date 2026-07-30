@@ -35,7 +35,7 @@ ui/  ──▶ core/ ◀── utils/
 - **バレル `index.ts`**: 各フォルダ（core/ui/utils）に置き、`export * from './x'`。フォルダ内部モジュールはバレルを import しない（循環回避）。公開したくない補助は `internal/` に置き再エクスポートしない。
 - モノレポ化しない（単一パッケージ）。Turbo / workspaces / SWR / Storybook は入れない。
 - **同名モジュールが core と utils に併存する**（`config` / `notify` / `mouse` / `transcript` /
-  `repo-prompt` / `worktree`）。純粋な判定・変換が core、実 I/O が utils という対なので、
+  `repo-prompt` / `privacy` / `worktree`）。純粋な判定・変換が core、実 I/O が utils という対なので、
   import 元が `@/core` か `@/utils` かを必ず確認する（取り違えるとレイヤ違反になる）。
 
 セッションの状態・遷移・永続化の不変条件は [session-domain.md](./session-domain.md)、

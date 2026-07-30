@@ -8,6 +8,7 @@ export * from './mouse';
 export * from './notify';
 export * from './open-url';
 export * from './pr';
+export * from './privacy';
 export * from './repo-prompt';
 export * from './sdk-probe';
 export * from './state-store';

@@ -23,6 +23,7 @@ import {
   type SessionState,
   selectionText,
   type TextBuffer,
+  type TrainingOptIn,
   toCommandInput,
 } from '@/core';
 
@@ -198,6 +199,37 @@ export function useModelCatalog(
     };
   }, [catalog]);
   return models;
+}
+
+/**
+ * 学習データ利用（claude.ai の「Help improve our AI models」）の判定結果を描画 state へ。
+ *
+ * 取得は合成ルート（`index.tsx`）が render 前に始める。キャッシュに当たれば即答だが、
+ * 非公開エンドポイントへ問い合わせるときは数百 ms かかるため、**起動はブロックしない**
+ * （解決したらバナーに注意行が増える）。`fetchTrainingOptIn` は throw しないが、
+ * 万一の rejection でも警告を出さない側（'unknown'）へ倒す。
+ */
+export function useTrainingOptIn(probe?: Promise<TrainingOptIn>): TrainingOptIn {
+  const [optIn, setOptIn] = useState<TrainingOptIn>('unknown');
+  useEffect(() => {
+    if (!probe) {
+      return;
+    }
+    let live = true;
+    probe
+      .then((value) => {
+        if (live) {
+          setOptIn(value);
+        }
+      })
+      .catch(() => {
+        // 判定できないだけ。警告は出さない。
+      });
+    return () => {
+      live = false;
+    };
+  }, [probe]);
+  return optIn;
 }
 
 export interface TextBufferRef {

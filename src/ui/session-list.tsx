@@ -28,6 +28,7 @@ import {
   rowLineAtPoint,
   type SessionManager,
   showsBranchColumn,
+  type TrainingOptIn,
   totalCostUsd,
 } from '@/core';
 import { Banner } from './banner';
@@ -117,6 +118,11 @@ export const SessionList: FC<{
   onViewStateChange?: (state: ListViewState) => void;
   /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
   onCopy?: (text: string) => void;
+  /**
+   * 学習データ利用の状態。`'on'` のときだけバナーに注意行が出る（`ui/banner.tsx`）。
+   * 判定は合成ルートで行い、ここは受け渡すだけ。
+   */
+  trainingOptIn?: TrainingOptIn;
 }> = ({
   manager,
   onOpen,
@@ -129,6 +135,7 @@ export const SessionList: FC<{
   initialViewState,
   onViewStateChange,
   onCopy,
+  trainingOptIn,
 }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
@@ -604,7 +611,12 @@ export const SessionList: FC<{
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
-      <Banner lines={headerLines} selection={headerSel.selection} textRef={headerRef} />
+      <Banner
+        lines={headerLines}
+        selection={headerSel.selection}
+        textRef={headerRef}
+        trainingOptIn={trainingOptIn}
+      />
 
       {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる。
           高さを実測し、その行数に収まるぶんだけ内部スクロールして描画する。 */}
