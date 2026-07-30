@@ -94,6 +94,17 @@ describe('toConfig', () => {
   it.each([
     [true, true],
     [false, false],
+  ])('keeps boolean updateCheck %o', (input, expected) => {
+    expect(toConfig({ updateCheck: input })).toEqual({ updateCheck: expected });
+  });
+
+  it.each([['yes'], [1], [null]])('drops invalid updateCheck: %o', (updateCheck) => {
+    expect(toConfig({ updateCheck })).toEqual({});
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
   ])('keeps boolean followOrigin %o', (input, expected) => {
     expect(toConfig({ followOrigin: input })).toEqual({ followOrigin: expected });
   });
@@ -141,6 +152,7 @@ describe('toConfig', () => {
         maxBudgetUsd: 2.5,
         notifications: false,
         privacyWarning: false,
+        updateCheck: false,
         followOrigin: false,
         autoPr: true,
         ignoredFiles: 'copy',
@@ -154,6 +166,7 @@ describe('toConfig', () => {
       maxBudgetUsd: 2.5,
       notifications: false,
       privacyWarning: false,
+      updateCheck: false,
       followOrigin: false,
       autoPr: true,
       ignoredFiles: 'copy',

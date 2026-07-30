@@ -11,7 +11,7 @@ import {
   type TrainingOptIn,
 } from '@/core';
 import { useMessages } from './i18n-context';
-import { glyph, palette, statusColor } from './theme';
+import { glyph, palette, statusColor, theme } from './theme';
 
 // codiva mascot. Each glyph is rendered in its own <Text>, so you can paint it
 // one character at a time via paint() below.
@@ -61,6 +61,8 @@ const LOGO_ROWS = LOGO.map((line, row) => ({
  */
 function toneStyle(tone: BannerTone, inverse: boolean): { color?: string; dimColor?: boolean } {
   switch (tone) {
+    case 'accent':
+      return { color: theme.accent };
     case 'warn':
       return { color: statusColor.awaitingPermission };
     case 'error':

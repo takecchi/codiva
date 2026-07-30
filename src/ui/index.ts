@@ -14,3 +14,4 @@ export * from './session-detail';
 export * from './session-list';
 export * from './status-footer';
 export * from './theme';
+export * from './update-dialog';

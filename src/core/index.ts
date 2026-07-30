@@ -39,5 +39,6 @@ export * from './text-buffer';
 export * from './text-selection';
 export * from './transcript';
 export * from './types';
+export * from './update';
 export * from './usage';
 export * from './worktree';

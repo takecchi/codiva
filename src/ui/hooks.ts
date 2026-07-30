@@ -25,6 +25,8 @@ import {
   type TextBuffer,
   type TrainingOptIn,
   toCommandInput,
+  type UpdateCheck,
+  type UpdateInfo,
 } from '@/core';
 
 /**
@@ -155,6 +157,52 @@ export function useClock(ms = 1000): number {
     return () => clearInterval(timer);
   }, [ms]);
   return now;
+}
+
+/**
+ * Resolve the startup update check into render state.
+ *
+ * The check is kicked off in the composition root (`index.tsx`) *before* render
+ * and never awaited, so a slow/offline registry can't delay startup. Until it
+ * lands (and forever, if no check was injected) this returns `undefined` and the
+ * banner simply shows no update line.
+ *
+ * Only the "there is a newer version" case is surfaced here: "already latest"
+ * and "couldn't reach the registry" must not add a banner line — the user asked
+ * for an update *notification*, not a status readout. `/update` is where the
+ * distinction is spelled out.
+ *
+ * `clear` を返すのは、更新を適用したあとに案内を引っ込めるため。適用後も実行中の
+ * プロセスは旧版なので通知自体は嘘ではないが、「/update で更新」と誘い続けるのは
+ * 混乱するので、以降の案内はダイアログの「再起動してください」に一本化する。
+ */
+export function useUpdateCheck(initial?: Promise<UpdateCheck>): {
+  info: UpdateInfo | undefined;
+  clear: () => void;
+} {
+  const [info, setInfo] = useState<UpdateInfo | undefined>(undefined);
+  useEffect(() => {
+    // Promise が差し替わったら前の結果を持ち越さない（別のチェック結果なので）。
+    setInfo(undefined);
+    if (!initial) {
+      return;
+    }
+    let live = true;
+    initial
+      .then((check) => {
+        if (live) {
+          // 「最新」「確認できず」でも既存の案内を消す（古い判定を残さない）。
+          setInfo(check.kind === 'available' ? check.info : undefined);
+        }
+      })
+      // 取得失敗はバナーに何も出さない（起動画面にエラーを増やさない）。
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [initial]);
+  const clear = useCallback(() => setInfo(undefined), []);
+  return { info, clear };
 }
 
 /**

@@ -10,13 +10,16 @@ import {
 } from '@/core';
 import {
   copyToClipboard,
+  createUpdateService,
   defaultStatePath,
+  detectInstallKind,
   fetchModelCatalog,
   fetchTrainingOptIn,
   fetchUsageSnapshot,
   loadConfig,
   loadRepoPrompt,
   openUrl,
+  packageRootFrom,
   WorktreeManager,
 } from '@/utils';
 import { App } from './app';
@@ -32,8 +35,12 @@ import {
 
 // バージョンは package.json を唯一の出所にする。エントリ（src/index.tsx / dist/index.js）
 // から見た相対位置は dev/ビルド後どちらも `../package.json` なので createRequire で読む。
-const pkg = createRequire(import.meta.url)('../package.json') as { version?: string };
+const pkg = createRequire(import.meta.url)('../package.json') as {
+  name?: string;
+  version?: string;
+};
 const appVersion = pkg.version;
+const appName = pkg.name;
 
 async function main(): Promise<void> {
   // 表示言語を決定: CODIVA_LANG > 設定ファイル(~/.codiva/config.json) > OS ロケール。
@@ -111,6 +118,23 @@ async function main(): Promise<void> {
     config.privacyWarning === false
       ? undefined
       : fetchTrainingOptIn({ signal: privacyAbort.signal });
+  // アップデート通知。起動ごとに npm レジストリの `latest` を 1 回だけ問い合わせる
+  // （await しないので起動はブロックしない。3 秒でタイムアウトし、失敗しても throw
+  // しない）。設定 `"updateCheck": false` で通信を完全に止められる。
+  // インストール経路はここで 1 回だけ判定する（判定不能なら codiva は `npm install`
+  // を実行せず、手動コマンドの提示だけに留める）。
+  const updateAbort = new AbortController();
+  const updatePackageRoot = packageRootFrom(import.meta.url);
+  const updater =
+    config.updateCheck !== false && appName !== undefined && appVersion !== undefined
+      ? createUpdateService({
+          pkg: appName,
+          current: appVersion,
+          packageRoot: updatePackageRoot,
+          install: detectInstallKind(updatePackageRoot),
+          signal: updateAbort.signal,
+        })
+      : undefined;
 
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);
@@ -126,6 +150,7 @@ async function main(): Promise<void> {
       messages={t}
       modelCatalog={modelCatalog}
       trainingOptIn={trainingOptIn}
+      updater={updater}
       onOpenPr={openUrl}
       onCopy={(text) => copyToClipboard(text)}
       // 詳細ビューを開いている間だけマウス捕捉を解除し、端末ネイティブの
@@ -143,6 +168,7 @@ async function main(): Promise<void> {
   stopUsagePolling();
   probeAbort.abort();
   privacyAbort.abort();
+  updateAbort.abort();
   await persist.flushAsync();
   terminal.teardown();
 }

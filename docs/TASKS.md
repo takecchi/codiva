@@ -289,6 +289,47 @@ UI なし。すべてユニットテストで駆動する。
 > 来ないため実機では残り時間のみ表示。ゲージ表示経路はテストで担保）。フッタの折り返しは実装中に
 > 実測で発覚し、Yoga の flex 縮小任せをやめて幅ベースの段階的縮退へ変更した。体感確認はユーザー環境で。
 
+## Phase 12: アップデート通知 / `/update`
+
+> npm 配信された自分自身の更新を検知して通知し、**確定できる経路のときだけ**適用する。
+> 「検知・提示は自動、インストールは確認と経路判定を挟む」方針（PR 自動化と同じ）。
+
+- [x] `core/update.ts`（純粋）: semver precedence 比較（`parseVersion` / `compareVersions` /
+      `isUpdateAvailable`。prerelease 規則まで）、`UpdateCheck` union への変換 `resolveUpdateCheck`
+      （**「最新」と「確認できなかった」を型で区別**）、`InstallKind` → 更新コマンド（`updateCommandFor` は
+      argv 配列 / `updateCommandLine` は表示用）、`canSelfUpdate`、DI 境界 `UpdateService`、
+      ダイアログ状態 `UpdateViewState`
+- [x] `utils/update.ts`（I/O）: `fetchLatestVersion`（`registry.npmjs.org/<pkg>/latest` を 1 回・
+      **3 秒タイムアウト・throw しない**・unref タイマー・外部 signal で打ち切り）、`installKindFor`
+      （パス比較のみ・env は引数で注入）、`packageRootFrom`、`runUpdate`（`execFile` でシェルなし。
+      失敗は stderr 最終行）、`createUpdateService`
+- [x] `/update` コマンド: `CommandAction` + `COMMANDS` + i18n（ja/en）+ 一覧ビューのハンドラ配線。
+      キーは単一 `useInput` で処理（`UpdateDialog` は presentational）。非同期の決着は世代カウンタで無効化
+- [x] ヘッダ通知: `core/banner-lines.ts` に `updateLatest` と `accent` トーンを追加
+      （**更新があるときだけ 1 行増える**。文字組みは純関数側、色は `ui/theme.ts`）。
+      `App` が `useUpdateCheck(updater?.initial)` で解決、合成ルートは await しない
+- [x] 設定 `updateCheck`（既定 on。`false` で起動時の通信を完全停止）
+- [x] 安全側の作り込み（レビュー指摘の反映）:
+      **モーダル相互排他**（`pending` に `!update`。`PermissionDialog` は自前 useInput を持ち、Ink は
+      1 チャンクを全ハンドラへ配るため、更新確認の `y` が未読ツールの許可を兼ねてしまう）/
+      モーダル中は**マウスレポートも飲む**（クリックで focus が list に移る経路を塞ぐ）/
+      `installing` 中も **Esc は通す**（Ctrl+C を拾わないので全キーを飲むと最長 3 分操作不能）/
+      **実行は `global` のみ**（`local` は利用者の package.json・lockfile・symlink された node_modules を
+      作り替えるため提示のみ）/ **Windows は実行しない**（`npm.cmd` はシェル無しで spawn できず、
+      シェル経由は禁止）/ `npm root -g` で `unknown` を拾い直す（homebrew・prefix 変更・pnpm/yarn global）/
+      `npm install -g` の cwd をホーム固定（リポジトリの `.npmrc` で宛先を変えられない）/
+      npx マーカーは**パス要素の完全一致**（`bunx-tools` の誤検出を防ぐ）/ 稼働中セッション数の警告 /
+      適用後はバナーの案内を引っ込める
+- [x] テスト: `core/update.spec.ts`（テーブル駆動）/ `utils/update.spec.ts`（fetch・経路判定・
+      `npm root -g`・install の seam を注入）/ `tests/update.test.tsx`（バナー・y/n ゲート・
+      local と npx と unknown で **install を呼ばない**・オフライン表示・実行中の Esc・
+      キーとマウスレポートが composer に漏れない）
+
+> 実績メモ: 全 1197 テスト緑・lint / typecheck / build 緑。semver 比較は本物の `semver` パッケージとの
+> 差分テスト（約 1000 万ペア）で不一致 0 件を確認済み。実 npm での更新適用と、マウスクリックでの
+> モーダル排他は手動確認が必要（当たり判定がレイアウト実測に依存し ink-testing-library では
+> 再現できない。テストはホイール/レポート漏れまでを固定）。
+
 ---
 
 ## Phase 12: 学習データ利用（grove）の警告

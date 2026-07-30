@@ -125,6 +125,9 @@ describe('runCommand', () => {
   it('resolves /clear to the clear command', () => {
     expect(runCommand('/clear')).toEqual({ kind: 'run', command: findCommand('clear') });
   });
+  it('resolves /update to the update command', () => {
+    expect(runCommand('/update')).toEqual({ kind: 'run', command: findCommand('update') });
+  });
   it('treats a bare slash as help (no false unknown)', () => {
     expect(runCommand('/')).toEqual({ kind: 'run', command: findCommand('help') });
   });

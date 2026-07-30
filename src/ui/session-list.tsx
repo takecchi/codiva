@@ -8,11 +8,14 @@ import {
   bannerText,
   bufferOf,
   COMMANDS,
+  canSelfUpdate,
   caretIndexAtClick,
   emptyBuffer,
+  errorMessage,
   formatDuration,
   formatModel,
   INPUT_MAX_ROWS,
+  isActiveStatus,
   isFullscreenViewport,
   isPrCellHit,
   isResumable,
@@ -30,6 +33,11 @@ import {
   showsBranchColumn,
   type TrainingOptIn,
   totalCostUsd,
+  type UpdateCheck,
+  type UpdateInfo,
+  type UpdateRun,
+  type UpdateService,
+  type UpdateViewState,
 } from '@/core';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
@@ -57,6 +65,7 @@ import { PromptInput } from './prompt-input';
 import { RepoPromptEditor } from './repo-prompt-editor';
 import { StatusFooter } from './status-footer';
 import { glyph, statusColor, theme } from './theme';
+import { UpdateDialog } from './update-dialog';
 
 /** Open a PR web URL in the browser (fire-and-forget). */
 export type OpenPr = (url: string) => void;
@@ -109,6 +118,21 @@ export const SessionList: FC<{
   models?: readonly ModelOption[];
   version?: string;
   /**
+   * 起動時チェックで見つかった新しいバージョン。バナーの 1 行だけに使う
+   * （`undefined` = 最新 / 未確認 / チェック無効。いずれも何も出さない）。
+   */
+  updateInfo?: UpdateInfo;
+  /**
+   * アップデート機能の実装（合成ルートが注入）。未注入なら `/update` は
+   * 「確認できませんでした」を出すだけで、ネットワークにも npm にも触らない。
+   */
+  updater?: UpdateService;
+  /**
+   * 更新の適用に成功したとき（= 次回起動から新版）に呼ぶ。バナーの「更新できます」を
+   * 引っ込めるために親が使う。
+   */
+  onUpdateApplied?: () => void;
+  /**
    * 前回この一覧を離れたときの表示状態。詳細ビュー等から戻ったときに選択行
    * （= スクロール位置）とフォーカスを復元する。未指定（初回起動）なら選択は
    * 末尾（最新セッション）に置き、一番下までスクロールされた状態で開く。
@@ -132,6 +156,9 @@ export const SessionList: FC<{
   model,
   models,
   version,
+  updateInfo,
+  updater,
+  onUpdateApplied,
   initialViewState,
   onViewStateChange,
   onCopy,
@@ -168,6 +195,10 @@ export const SessionList: FC<{
   // Open when the user runs `/prompt`; the RepoPromptEditor then owns the keys.
   const [promptEdit, setPromptEdit] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  // `/update` のダイアログ状態（null = 閉じている）。非同期の決着が「閉じた後」や
+  // 「開き直した後」に届いても勝手に再表示しないよう、世代カウンタで無効化する。
+  const [update, setUpdate] = useState<UpdateViewState | null>(null);
+  const updateGen = useRef(0);
   const rowsRef = useRef<DOMElement>(null);
   const rowsBox = useAbsolutePosition(rowsRef);
   const composerRef = useRef<DOMElement>(null);
@@ -184,6 +215,74 @@ export const SessionList: FC<{
     manager,
     target?.id,
   );
+  /** ダイアログを閉じる（進行中の非同期結果は世代を進めて捨てる）。 */
+  const closeUpdate = () => {
+    updateGen.current += 1;
+    setUpdate(null);
+  };
+
+  /**
+   * 世代を進めてから状態を差し替える更新器を作る。返された `settle` は、その間に
+   * 閉じられた/開き直されたら何もしない（stale な結果でダイアログが蘇らない）。
+   */
+  const beginUpdateStep = (initial: UpdateViewState): ((next: UpdateViewState) => void) => {
+    updateGen.current += 1;
+    const gen = updateGen.current;
+    setUpdate(initial);
+    return (next) => {
+      if (updateGen.current === gen) {
+        setUpdate(next);
+      }
+    };
+  };
+
+  /** `/update`: 毎回レジストリへ問い合わせ直す（起動時の結果はキャッシュしない）。 */
+  const checkUpdate = () => {
+    const settle = beginUpdateStep({ kind: 'checking' });
+    const pending: Promise<UpdateCheck> = updater
+      ? updater.check()
+      : // 未注入（テスト・機能を切っているホスト）では通信せず「確認できなかった」。
+        Promise.resolve({ kind: 'unavailable' });
+    pending
+      .then((check) => settle({ kind: 'result', check }))
+      .catch(() => settle({ kind: 'result', check: { kind: 'unavailable' } }));
+  };
+
+  /** 更新コマンドを実行する（y で確認済み。`canSelfUpdate` な経路のときだけ来る）。 */
+  const installUpdate = (info: UpdateInfo) => {
+    const settle = beginUpdateStep({ kind: 'installing', info });
+    // detail は空文字なら「理由不明」としてカタログの文言で出す（ここで英語の
+    // 固定文を作らない。npm の stderr は外部由来なのでそのまま見せる）。
+    const pending: Promise<UpdateRun> = updater
+      ? updater.install(info)
+      : Promise.resolve({ ok: false, detail: '' });
+    pending
+      .then((run) => {
+        if (run.ok) {
+          settle({ kind: 'installed', info });
+          // バナーの「更新できます」を消す（実行中プロセスは旧版のままなので、
+          // 案内はダイアログの「再起動してください」に一本化する）。
+          onUpdateApplied?.();
+          return;
+        }
+        settle({ kind: 'failed', detail: run.detail });
+      })
+      .catch((err) => settle({ kind: 'failed', detail: errorMessage(err) }));
+  };
+
+  // 稼働中セッション数。更新は codiva 自身のファイルを置き換えるので、走っている
+  // セッション（= SDK サブプロセス）がある間の適用は避けたい。ブロックはせず
+  // 確認ダイアログで件数を警告する。
+  const activeSessions = sessions.filter((s) => isActiveStatus(s.status)).length;
+
+  /** ダイアログが y/n を待っているときの対象（それ以外は undefined = 任意キーで閉じる）。 */
+  const updatePrompt =
+    update?.kind === 'result' &&
+    update.check.kind === 'available' &&
+    canSelfUpdate(update.check.info.install)
+      ? update.check.info
+      : undefined;
+
   // `/command` の解決・実行も共有フックへ。一覧は exit/help/model/prompt を扱う。
   const commands = useCommandRunner(
     {
@@ -196,6 +295,8 @@ export const SessionList: FC<{
       // `/clear` は完了したセッションを一覧から消去する（worktree/履歴は残す）。
       // 実行中セッションは残るため確認は不要（core 側で終端状態のみ対象にする）。
       clear: () => manager.clear(),
+      // `/update` は npm レジストリを見て、更新があれば y/n を挟んで適用する。
+      update: checkUpdate,
     },
     setActionError,
     m.command.unknown,
@@ -207,7 +308,13 @@ export const SessionList: FC<{
   }, [selected, focus, onViewStateChange]);
   // The dialog owns the keys only while the list side has focus, so the
   // composer is never hijacked mid-typing by a session that starts asking.
-  const pending = focus === 'list' ? target?.pendingPermission : undefined;
+  //
+  // `!update` は必須のガード: `PermissionDialog` は**自前の `useInput`** を持ち、Ink は
+  // 1 つの入力チャンクを**マウント中の全ハンドラへ配る**。アップデートダイアログと
+  // 同時にマウントされると、更新確認の `y` が未読のツール実行の許可も兼ねてしまう
+  // （このビューがキーを飲んでも、相手のハンドラは独立に反応する）。モーダルは
+  // 相互排他にしておく（規約: ink-components.md）。
+  const pending = focus === 'list' && !update ? target?.pendingPermission : undefined;
 
   // 一覧の内部スクロール: rows ボックスは flexGrow で残り高さを占めるので、その
   // 実測高さぶんだけ項目を描画し、選択が常に見えるようウィンドウを動かす。全画面
@@ -277,6 +384,7 @@ export const SessionList: FC<{
     totalCostUsd: totalCostUsd(sessions),
     rateLimits,
     account,
+    updateLatest: updateInfo?.latest,
     now,
   });
   const headerText = bannerText(headerLines);
@@ -407,6 +515,12 @@ export const SessionList: FC<{
     // SGR マウスレポートはキー入力より先に解釈する（バッファへ混入させない）。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
+      // モーダル表示中はマウスも飲む。クリックを通すと `setFocus('list')` で背後の
+      // 許可ダイアログが立ち上がり（`pending` の条件が focus 依存）、モーダルの
+      // 相互排他が崩れる。ホイールでの選択移動も同じ経路なので一律で無視する。
+      if (update) {
+        return;
+      }
       if (mouse.kind === 'wheel') {
         // 一覧はスクロール窓を選択行から導く（別途スクロール位置を持たない）ので、
         // ホイールは選択を 1 行ずつ動かして窓をスクロールさせる（矢印キーと同義）。
@@ -453,6 +567,32 @@ export const SessionList: FC<{
     // it doesn't also edit/navigate underneath).
     if (showHelp) {
       setShowHelp(false);
+      return;
+    }
+    // `/update` のダイアログはモーダル扱い（キーを一切下へ漏らさない）。独立した
+    // useInput は持たず、y/n 確認と同じくここで処理する（1画面 1 useInput）。
+    if (update) {
+      // `npm install` 中は Esc だけ通す。ここで全キーを飲むと、Ctrl+C を拾わない
+      // （`exitOnCtrlC: false`）この TUI では `/exit` すら打てず、最長
+      // `INSTALL_TIMEOUT_MS` のあいだ操作不能になる。Esc はダイアログを閉じるだけで
+      // npm 自体は走り続ける（世代カウンタで結果表示だけを捨てる）。y の取り違えで
+      // 二重実行しないよう、y/n は受け付けない。
+      if (update.kind === 'installing') {
+        if (key.escape) {
+          closeUpdate();
+        }
+        return;
+      }
+      if (updatePrompt) {
+        if (input === 'y' || input === 'Y') {
+          installUpdate(updatePrompt);
+        } else if (input === 'n' || input === 'N' || key.escape) {
+          closeUpdate();
+        }
+        return;
+      }
+      // 確認を伴わない表示（確認中・最新・失敗・完了・手動案内）は任意キーで閉じる。
+      closeUpdate();
       return;
     }
     if (busy) {
@@ -724,6 +864,10 @@ export const SessionList: FC<{
             />
           </DialogBox>
         ) : null}
+        {/* `/update` は確認ダイアログと同じ位置（コンポーザ直上）に出す。
+            マージ/破棄の確認とは排他ではないが、キーはモーダルとして先に飲むので
+            同時に両方が操作されることはない。 */}
+        {update ? <UpdateDialog state={update} activeSessions={activeSessions} /> : null}
       </Box>
 
       {showHelp && !pending ? (
