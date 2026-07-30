@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
 import { type PermissionPolicy, type QueryFn, Session } from '@/core/session';
 import { initialState } from '@/core/status-reducer';
+import { SHARED_IGNORED_FILES_NOTICE } from '@/core/system-prompt';
 import type { CreateSessionInput } from '@/core/types';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -510,6 +511,38 @@ describe('Session', () => {
     // No repo prompt configured → systemPrompt is omitted (preserves default behavior).
     expect(seen?.systemPrompt).toBeUndefined();
   });
+
+  it.each([
+    ['symlink', true],
+    ['copy', false],
+    ['none', false],
+  ] as const)(
+    'injects the shared-ignored-files notice only for ignoredFiles=%s',
+    async (ignoredFiles, expected) => {
+      let seen: Options | undefined;
+      const queryFn = (({ options }: { options: Options }) => {
+        seen = options;
+        const gen = (async function* () {})() as unknown as Query & {
+          interrupt: () => Promise<void>;
+        };
+        gen.interrupt = async () => {};
+        return gen;
+      }) as unknown as QueryFn;
+      const session = new Session({
+        queryFn,
+        input: INPUT,
+        now: () => 1,
+        options: { ignoredFiles, appendSystemPrompt: 'Open a PR when done' },
+      });
+      session.start();
+      await tick();
+      // systemPrompt は SDK 側が union（string | string[] | preset）なので文字列に絞ってから見る。
+      const systemPrompt = typeof seen?.systemPrompt === 'string' ? seen.systemPrompt : '';
+      expect(systemPrompt.includes(SHARED_IGNORED_FILES_NOTICE)).toBe(expected);
+      // The repo prompt rides along regardless of the worktree mode, and stays last.
+      expect(systemPrompt.endsWith('Open a PR when done')).toBe(true);
+    },
+  );
 
   it('works with all optional deps defaulted (now/policy/onChange)', async () => {
     const fake = makeFakeQuery();

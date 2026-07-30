@@ -25,6 +25,11 @@
   `'copy'`（完全独立）/ `'none'`。列挙結果のフィルタは純関数 `ignoredCopyEntries()` で、
   **`.codiva/` と `.git` は必ず除外**（再帰・内部状態破壊の防止）。実体化は entry 単位の
   ベストエフォート（1件失敗しても worktree 作成を止めない）。
+- **`'symlink'` のときは「実体が共有である」ことをセッションにも伝える**（`core/system-prompt.ts` の
+  `SHARED_IGNORED_FILES_NOTICE` が systemPrompt に載る）。依存更新やビルドはリンク越しに
+  メインチェックアウトと他セッションへ波及するため、エージェント側で**書き込む前にそのパスだけ
+  リンクを切って独立させる**手順を渡す。codiva 自身がリンクを張り替えることはしない
+  （何が書き込み対象になるかは指示内容次第で、全部コピーすると symlink モードの利点が消える）。
 - マージは `checkout <base>` → `merge --no-ff <branch>`。**競合したら
   競合ファイルを収集して `merge --abort` し `MergeConflictError` を投げる**（base ツリーを汚さない）。
   `-X ours/theirs` 等での**自動解消は禁止**（コードを無言に捨てる）。UI は `conflict` バッジまで。

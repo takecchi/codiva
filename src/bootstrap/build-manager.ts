@@ -3,7 +3,9 @@ import {
   type CodivaConfig,
   type Messages,
   notificationFor,
+  resolveIgnoredFilesMode,
   SessionManager,
+  type SessionOptions,
   type SessionState,
 } from '@/core';
 import {
@@ -38,6 +40,32 @@ function createModelPersister(config: CodivaConfig): (model: string | undefined)
 }
 
 /**
+ * 設定ファイル + リポジトリ追加指示 → セッションへ渡す knobs（`SessionOptions`）。
+ *
+ * `buildManager` から切り出して spec で固定してある: ここは SDK・fs を触らない純粋な
+ * 対応付けなので、配線の取り違え（項目の渡し忘れ）だけを安く検出できるようにしたい。
+ *
+ * `ignoredFiles` は `WorktreeManager` に渡すものと同じ設定値で、`'symlink'` のときだけ
+ * 「ignore 済みパスの実体は元リポジトリと共有」という注意書きが systemPrompt に載る
+ * （`core/system-prompt.ts`）。解決は合成レイヤの2箇所（`index.tsx` の `WorktreeManager`
+ * 生成とここ）で行うが、どちらも同じ config から `resolveIgnoredFilesMode()` で導くので
+ * 必ず一致する。
+ */
+export function sessionOptionsFrom(
+  config: CodivaConfig,
+  appendSystemPrompt?: string,
+): SessionOptions {
+  return {
+    model: config.model,
+    effort: config.effort,
+    permissionMode: config.permissionMode,
+    maxBudgetUsd: config.maxBudgetUsd,
+    appendSystemPrompt,
+    ignoredFiles: resolveIgnoredFilesMode(config),
+  };
+}
+
+/**
  * Assemble the SessionManager and its injected I/O seams (SDK query, title
  * generation, desktop notifications, PR automation). `onPersist` is supplied by
  * the caller (the persist controller); everything else is wired from config here.
@@ -68,13 +96,7 @@ export function buildManager(opts: {
     worktrees,
     queryFn: query,
     generateTitle: createTitleGenerator(query, { cwd: repoRoot }),
-    options: {
-      model: config.model,
-      effort: config.effort,
-      permissionMode: config.permissionMode,
-      maxBudgetUsd: config.maxBudgetUsd,
-      appendSystemPrompt,
-    },
+    options: sessionOptionsFrom(config, appendSystemPrompt),
     onTransition,
     onPersist,
     onModelChange: createModelPersister(config),

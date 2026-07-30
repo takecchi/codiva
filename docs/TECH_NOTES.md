@@ -102,7 +102,7 @@ const options = {
   settingSources: ['project'],   // 対象リポジトリの CLAUDE.md / settings を読ませる
   // Phase 6 で公開済み（設定ファイル ~/.codiva/config.json 由来、SessionOptions 経由で注入）:
   model, effort, maxBudgetUsd,   // それぞれ存在時のみ付与
-  systemPrompt,                  // <repo>/.codiva/prompt.md の内容。存在時のみ付与（下記メモ参照）
+  systemPrompt,                  // composeSystemPrompt() の結果。中身があるときのみ付与（下記メモ参照）
   resume: sdkSessionId,          // 復元時のみ付与。モデル側の会話コンテキストを引き継いで継続
 };
 ```
@@ -124,6 +124,41 @@ const options = {
     保存すると `SessionManager.setRepoPrompt()` が `options.appendSystemPrompt` を差し替え（**以降の新規
     セッション**に適用。既存の稼働中セッションは systemPrompt が query 開始時に確定済みなので不変）、
     `onRepoPromptChange` → `utils/saveRepoPrompt()` が `.codiva/prompt.md` を書き戻す（空保存で削除）。
+- **`systemPrompt` の組み立て**: 純関数 `core/system-prompt.ts` の `composeSystemPrompt()` が
+  「worktree の環境説明」→「リポジトリ追加指示」の順で連結する（両方無ければ `undefined` = 付与しない）。
+  - **環境説明 = 共有 symlink の注意書き（`SHARED_IGNORED_FILES_NOTICE`）**: `ignoredFiles: 'symlink'`
+    のときだけ載る。実測（このリポジトリ自身のセッション worktree）で `node_modules` / `dist` /
+    `coverage` が元リポジトリを指すリンクになっており、worktree 内で `npm run build` すると
+    **メインチェックアウトの `dist/` を書き換えてしまう**（他セッションのビルド結果も踏む）。
+    エージェントは「自分の worktree の中だから安全」と判断するのでこれは防げず、環境として
+    伝えるしかない。必須要素は「書き込む前に該当パスだけリンクを切る」「`rm -rf <path>/` や
+    `<path>/*` はリンクを辿って共有先を消すので禁止」「読むだけ・触らない作業では何もしない」の
+    3点で、`system-prompt.spec.ts` が意味アンカー（`test -L` / `readlink` / `rm -rf` 等）で固定する。
+    言語・ツールチェイン非依存にするため対象は `node_modules` 等の名前ではなく **`test -L` の結果**で
+    判定させる。AI 向けプロンプトなので英語（i18n カタログ対象外。`utils/title.ts` と同じ扱い）。
+  - **切り離し手順の実測**（macOS BSD / GNU coreutils 両方で確認）: 渡している手順は
+    `target="$(readlink <path>)" && rm <path> && cp -Rp "$target/." <path>`。
+    - `cp -RL`（リンクを全て実体化）は**採用しない**。ツリー内に循環リンク（`packages/*` を
+      指す相互リンクや `..` を指すリンク）や壊れたリンクがあると **exit 1 で途中終了し、
+      半端なコピーが残る**（BSD: `directory causes a cycle` / GNU: `cannot copy cyclic
+      symbolic link`）。`"$target/."` なら**最上位リンクだけを辿る**ので、内部の symlink は
+      symlink のまま残り、循環・壊れたリンク込みでも exit 0（実測）。
+    - `mv <path> <path>.bak` で退避する形も**採用しない**。前回の失敗で `<path>.bak`
+      （ディレクトリを指すリンク）が残っていると `mv` が**その中＝共有先へ移動**してしまう。
+      加えて `<path>.bak` は `.gitignore` のディレクトリパターン（`node_modules/`）に
+      マッチせず untracked として現れる。`readlink` 方式なら一時名が不要。
+    - `-p` を付けるのはモードの保全のため（`.env` の 600 が umask で 644 に落ちるのを防ぐ）。
+    - `rm <path>`（`-r` なし・末尾スラッシュなし）はリンクだけを消す。逆に `rm -rf <path>/` は
+      **リンクを辿って共有先のディレクトリごと消える**（BSD / GNU 両方で実測）ので、
+      注意書きで明示的に禁じている。
+  - **symlink は `.gitignore` の末尾スラッシュパターンに載らない**（実測。使い捨てリポジトリで再現）:
+    `.gitignore` の `node_modules/` は**ディレクトリにしかマッチせず symlink にはマッチしない**ため、
+    symlink モードの worktree では `git check-ignore node_modules` が exit 1 で、`git status` に
+    `?? node_modules` として現れる。`git add -A` すると **mode 120000（symlink）でステージされ**、
+    コミット→マージすると絶対パス入りのリンクが base ブランチに入る。注意書きで
+    「`git add -A` / `git add .` を使わずパス指定でステージする」ことを明示している。
+    副作用として `diffStat().uncommitted`（一覧の表示用）にもリンクが混ざる（表示のみ。
+    auto-PR はコミット済み差分だけを見るので誤発火はしない）。
 - **`resume` はモデル側の会話コンテキストのみ復元する。過去メッセージはストリームに再送出されない**
   （検証済み: 復元直後の consumer には何も流れない）。そのため UI の会話ログは CLI が書く
   トランスクリプト `~/.claude/projects/<cwd の非英数字を '-' 化したもの>/<sessionId>.jsonl` から再構築する
