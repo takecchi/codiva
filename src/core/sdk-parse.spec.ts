@@ -489,6 +489,246 @@ describe('applySdkMessage over authentication failures', () => {
   });
 });
 
+describe('applySdkMessage over mid-response API errors', () => {
+  const running: SessionState = { ...initialState(BASE), status: 'running', sdkSessionId: 'sdk-1' };
+  const CUT = 'API Error: Connection closed mid-response. The response above may be incomplete.';
+
+  /**
+   * The wire shape the CLI actually produces when the response stream dies after
+   * some content was already delivered: it finalizes the partial answer as an
+   * assistant message flagged `error: 'server_error'` whose text is the notice,
+   * then rolls it up into a `success` result flagged `is_error` with
+   * `terminal_reason: 'api_error'` and `api_error_status: null` (no HTTP response).
+   */
+  const cutAssistant = {
+    type: 'assistant',
+    error: 'server_error',
+    message: { role: 'assistant', content: [{ type: 'text', text: CUT }] },
+  };
+  const cutResult = {
+    type: 'result',
+    subtype: 'success',
+    is_error: true,
+    api_error_status: null,
+    terminal_reason: 'api_error',
+    result: CUT,
+    total_cost_usd: 0.75,
+  };
+
+  it('a truncated response is interrupted (resumable), not a completion', () => {
+    // The regression: the notice used to be logged as ordinary assistant text and
+    // the roll-up result showed a green "Completed" for a half-written answer.
+    const state = sdk({ ...running, streamingText: 'half a sen' }, cutAssistant);
+    expect(state.status).toBe('interrupted');
+    expect(state.finishedAt).toBeGreaterThan(0);
+    expect(state.streamingText).toBeUndefined();
+    // Not a failure: `error` stays unset and the notice is a system line.
+    expect(state.error).toBeUndefined();
+    expect(state.messages).toEqual([{ seq: 1, kind: 'system', text: CUT, timestamp: undefined }]);
+  });
+
+  it('logs the interruption once when both the assistant message and its result arrive', () => {
+    const first = sdk(running, cutAssistant, 10);
+    const second = sdk(first, cutResult, 11);
+    expect(second.status).toBe('interrupted');
+    expect(second.messages).toBe(first.messages);
+    expect(second.messages.filter((msg) => msg.text === CUT)).toHaveLength(1);
+    // The result still contributes the turn's cost.
+    expect(second.totalCostUsd).toBe(0.75);
+  });
+
+  it('the roll-up result alone is enough (the assistant message may not be seen)', () => {
+    const state = sdk(running, cutResult);
+    expect(state.status).toBe('interrupted');
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'system', text: CUT });
+  });
+
+  it("an assistant message with error 'overloaded' is interrupted too", () => {
+    const state = sdk(running, {
+      type: 'assistant',
+      error: 'overloaded',
+      message: { content: [{ type: 'text', text: 'API Error: The API is at capacity' }] },
+    });
+    expect(state.status).toBe('interrupted');
+  });
+
+  it('falls back to the error kind when the flagged message carries no text', () => {
+    const state = sdk(running, { type: 'assistant', error: 'server_error', message: {} });
+    expect(state.status).toBe('interrupted');
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'system', text: 'server_error' });
+  });
+
+  it('an api_error result with an unfamiliar wording is still interrupted', () => {
+    // terminal_reason + api_error_status are the wording-independent signals: a
+    // 5xx (or no HTTP response) means the turn can simply be resumed.
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 529,
+      terminal_reason: 'api_error',
+      result: 'API Error: Please wait a moment and try again.',
+    });
+    expect(state.status).toBe('interrupted');
+  });
+
+  it('logs it once even when other messages land in between', () => {
+    // The dead stream can leave a tool_use dangling, whose synthesized tool_result
+    // arrives between the notice and the roll-up result — the dedup must not key on
+    // "the previous log line".
+    const first = sdk(running, cutAssistant, 10);
+    const between = sdk(
+      first,
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'aborted' }] } },
+      11,
+    );
+    const state = sdk(between, cutResult, 12);
+    expect(state.status).toBe('interrupted');
+    expect(state.messages.filter((msg) => msg.text === CUT)).toHaveLength(1);
+    expect(state.finishedAt).toBe(first.finishedAt);
+  });
+
+  it('an error-subtype result is not resumable just because it ended on an api_error', () => {
+    // `api_error_status` only exists on the *success* result variant, so its absence
+    // here says nothing — a hard 400 must stay `failed` rather than inviting a
+    // resume that hits the same error forever.
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      terminal_reason: 'api_error',
+      errors: ['API Error: 400 duplicate tool_use ID in conversation history.'],
+    });
+    expect(state.status).toBe('failed');
+  });
+
+  it('does not downgrade an already-diagnosed auth stop to a plain interruption', () => {
+    // The CLI reports an expired login with `terminal_reason: 'api_error'` too. The
+    // typed assistant error kind already identified it, so the roll-up result must
+    // not turn it into "press r to resume" — no retry fixes an expired login.
+    const loggedOut = sdk(
+      running,
+      {
+        type: 'assistant',
+        error: 'authentication_failed',
+        message: { content: [{ type: 'text', text: 'API Error: subscription lapsed' }] },
+      },
+      10,
+    );
+    expect(loggedOut.status).toBe('needs_login');
+    const state = sdk(
+      loggedOut,
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        api_error_status: null,
+        terminal_reason: 'api_error',
+        result: 'API Error: subscription lapsed',
+      },
+      11,
+    );
+    expect(state.status).toBe('needs_login');
+  });
+
+  it('an api_error result with a 4xx status stays a real failure', () => {
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 400,
+      terminal_reason: 'api_error',
+      result: 'API Error: 400 duplicate tool_use ID in conversation history.',
+    });
+    expect(state.status).toBe('failed');
+  });
+
+  it('does not mistake Claude reporting on this very bug for an interruption', () => {
+    // A clean turn completes whatever its text says — only the SDK's own is_error
+    // flag routes result text through the classifiers.
+    const state = sdk(running, {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'Fixed: a connection closed mid-response now marks the session interrupted.',
+    });
+    expect(state.status).toBe('completed');
+  });
+
+  it('a sub-agent hitting the same error does not stop the session', () => {
+    // The sub-agent's failure comes back to the main turn as a failed tool_result,
+    // which Claude can retry or work around — the top-level turn is still alive.
+    const state = sdk(running, { ...cutAssistant, parent_tool_use_id: 'toolu_1' });
+    expect(state.status).toBe('running');
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'assistant_text', text: CUT });
+  });
+
+  it("an assistant 'max_output_tokens' notice does not stop the session", () => {
+    // The CLI recovers from it by continuing the turn, so it must stay running and
+    // be logged as ordinary assistant text.
+    const notice = "API Error: Claude's response exceeded the 32000 output token maximum.";
+    const state = sdk(running, {
+      type: 'assistant',
+      error: 'max_output_tokens',
+      message: { content: [{ type: 'text', text: notice }] },
+    });
+    expect(state.status).toBe('running');
+    expect(state.messages.at(-1)).toMatchObject({ kind: 'assistant_text', text: notice });
+  });
+
+  it('logs an api_retry without changing the status', () => {
+    const state = sdk(running, {
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 2,
+      max_retries: 10,
+      retry_delay_ms: 5000,
+      error_status: null,
+      error: 'server_error',
+    });
+    expect(state.status).toBe('running');
+    expect(state.messages.at(-1)).toMatchObject({
+      kind: 'system',
+      text: 'api retry 2/10: server_error',
+    });
+  });
+
+  it('includes the HTTP status in the retry line when the request got a response', () => {
+    const state = sdk(running, {
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 1,
+      max_retries: 10,
+      error_status: 529,
+      error: 'overloaded',
+    });
+    expect(state.messages.at(-1)).toMatchObject({ text: 'api retry 1/10: overloaded 529' });
+  });
+
+  it('rewrites the retry line per attempt instead of stacking one line each', () => {
+    // Up to max_retries messages arrive per request; appending each would push the
+    // conversation out of the log viewport.
+    const retry = (attempt: number) => ({
+      type: 'system',
+      subtype: 'api_retry',
+      attempt,
+      max_retries: 10,
+      error_status: null,
+      error: 'server_error',
+    });
+    let state = sdk(running, retry(1));
+    state = sdk(state, retry(2));
+    state = sdk(state, retry(3));
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ seq: 1, text: 'api retry 3/10: server_error' });
+    // A following log line ends the run, so the next burst starts a new line.
+    const resumedText = { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } };
+    const after = sdk(sdk(state, resumedText), retry(1));
+    expect(after.messages).toHaveLength(3);
+    expect(after.messages.at(-1)).toMatchObject({ seq: 3, text: 'api retry 1/10: server_error' });
+  });
+});
+
 describe('applySdkMessage gates completion on in-flight sub-agent tasks', () => {
   const running: SessionState = { ...initialState(BASE), status: 'running' };
   const taskStarted = (task_id: string, extra: Record<string, unknown> = {}) => ({

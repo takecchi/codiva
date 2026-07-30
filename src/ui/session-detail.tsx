@@ -174,8 +174,12 @@ export const SessionDetail: FC<{
   // Surfaced as an explicit action so the user can continue without typing.
   const resumable = status !== undefined && isResumable(status);
   const resume = () => {
-    if (session && status !== undefined && resumable) {
-      manager.send(session.id, resumeInstruction(status, m));
+    if (!session || status === undefined) {
+      return;
+    }
+    // 多重送信の防止は `manager.resume`（ストアの現在値で判定）に任せる — ここの
+    // `status` はスロットルされた購読値なので、送信直後の連打を弾けない。
+    if (manager.resume(session.id, resumeInstruction(status, m))) {
       setPanel('input');
       setAnchor('bottom');
     }
@@ -355,6 +359,12 @@ export const SessionDetail: FC<{
       }
       return;
     }
+    // 一押し再開。操作パネル（Tab）の `r` と違い、入力欄にフォーカスがあるままでも
+    // 効く chord にしてある — 中断されたセッションを開いてすぐ復帰させられるように。
+    if (key.ctrl && (input === 'r' || input === 'R')) {
+      resume();
+      return;
+    }
     if (key.tab) {
       setPanel((p) => (p === 'input' ? 'actions' : 'input'));
       return;
@@ -494,10 +504,18 @@ export const SessionDetail: FC<{
         ) : null}
 
         {/* 認証切れはアプリ内では解決できない（別ターミナルでの再ログインが必要）ので、
-            操作パネルを開いているかに関係なく手順を常に出す。 */}
-        {status === 'needs_login' ? (
-          <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
-        ) : null}
+            操作パネルを開いているかに関係なく手順を常に出す。それ以外の中断状態
+            （通信断・レート制限）は一押し再開キーを同じ位置に出す — Ctrl+R は操作パネルを
+            開かずに効くので、パネル内の `r` だけでは気づけない。 */}
+        {/* `flexShrink={0}`: Yoga は溢れた子を縮小するので、付けないと低い端末で案内が
+            高さ0に潰れて消える。縮む役は flexGrow のログ領域（内部スクロールで収まる）。 */}
+        <Box flexShrink={0}>
+          {status === 'needs_login' ? (
+            <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
+          ) : resumable ? (
+            <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
+          ) : null}
+        </Box>
         {actionError ? (
           <Text color={statusColor.failed}>
             {m.action.actionErrorLabel}: {actionError}

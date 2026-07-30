@@ -19,6 +19,7 @@ import {
   needsAttention,
   type PrMergeStatus,
   parseSgrMouse,
+  resumableSessions,
   resumeInstruction,
   rowLineAtPoint,
   type SessionManager,
@@ -142,6 +143,10 @@ export const SessionList: FC<{
   const [sel, setSel] = useState(
     () => initialViewState?.selected ?? Math.max(0, sessions.length - 1),
   );
+  // 一括再開（Ctrl+A）の確認中フラグ。単体の再開（Ctrl+R）は1件だけなので確認なしで
+  // 即送るが、一括は全中断セッションへ同時に指示を投げる = 誤爆が課金に直結するため
+  // y/n を挟む。
+  const [confirmResumeAll, setConfirmResumeAll] = useState(false);
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
   // Open when the user runs `/prompt`; the RepoPromptEditor then owns the keys.
@@ -206,6 +211,34 @@ export const SessionList: FC<{
       return;
     }
     onOpen(target.id);
+  };
+
+  // 中断されて再開待ちのセッション（通信断 / レート制限 / 認証切れ）。件数はヒントと
+  // 一括再開の確認文に、集合はそのまま一括送信に使う。
+  const resumables = resumableSessions(sessions);
+  // 認証切れは別ターミナルでのログインが前提なので、一括再開の確認文で件数を明示する
+  // （「ログインし直した」という指示文を、まだログアウトのままのセッションへ黙って
+  // 投げると transcript に嘘が残る）。
+  const authStalled = resumables.filter((s) => s.status === 'needs_login').length;
+  const targetResumable = target !== undefined && isResumable(target.status);
+
+  /**
+   * 選択中のセッションを中断箇所から再開する。フォーカスに関係なく効く Ctrl+R と、
+   * 一覧フォーカスの `r` の共通実装。多重送信の防止は `manager.resume`（ストアの
+   * 現在値で判定）に任せる — ここの `target` はスロットルされた購読値なので、
+   * キーの連打を弾く判断には使えない。
+   */
+  const resumeSelected = () => {
+    if (target) {
+      manager.resume(target.id, resumeInstruction(target.status, m));
+    }
+  };
+
+  /** 再開待ちの全セッションをまとめて再開する（Ctrl+A → y の確認後）。 */
+  const resumeAll = () => {
+    for (const s of resumables) {
+      manager.resume(s.id, resumeInstruction(s.status, m));
+    }
   };
 
   /** Open the selected session's PR in the browser, if it has one. */
@@ -338,6 +371,30 @@ export const SessionList: FC<{
       }
       return;
     }
+    if (confirmResumeAll) {
+      if (input === 'y' || input === 'Y') {
+        resumeAll();
+        setConfirmResumeAll(false);
+      } else if (input === 'n' || input === 'N' || key.escape) {
+        setConfirmResumeAll(false);
+      }
+      return;
+    }
+    // 一押し再開。フォーカスゾーンに関係なく効く chord にしてあるのが要点で、
+    // 中断されたセッションを復帰させるのに「Tab で一覧へ → r」の2手を踏ませない
+    // （入力欄は既定フォーカスなので、そこから直接復帰できる必要がある）。印字キーを
+    // 潰さずに済むので入力中に打っても文字が化けない。
+    if (key.ctrl && (input === 'r' || input === 'R')) {
+      resumeSelected();
+      return;
+    }
+    // 一括再開。回線が落ちる・蓋を閉じると走っていたセッションが揃って中断されるため、
+    // 1件ずつ選び直させない。件数を見せて y/n で確認する。1件だけのときは Ctrl+R で
+    // 済むので出さない（案内 `resume.allHint` の条件と必ず一致させる）。
+    if (key.ctrl && (input === 'a' || input === 'A') && resumables.length > 1) {
+      setConfirmResumeAll(true);
+      return;
+    }
     if (key.tab) {
       setFocus((f) => (f === 'composer' ? 'list' : 'composer'));
       return;
@@ -372,8 +429,8 @@ export const SessionList: FC<{
       // login expired): sends a "continue" instruction, which restarts the SDK
       // query with `resume` so Claude picks up where it left off. Only meaningful
       // for resumable rows.
-      if ((input === 'r' || input === 'R') && target && isResumable(target.status)) {
-        manager.send(target.id, resumeInstruction(target.status, m));
+      if ((input === 'r' || input === 'R') && targetResumable) {
+        resumeSelected();
         return;
       }
       if (key.escape) {
@@ -524,16 +581,42 @@ export const SessionList: FC<{
         )}
       </Box>
 
-      {actionError ? (
-        <Text color={statusColor.failed}>
-          {m.action.actionErrorLabel}: {actionError}
-        </Text>
-      ) : null}
-      {confirm ? (
-        <DialogBox>
-          <ConfirmPrompt kind={confirm} busy={busy} />
-        </DialogBox>
-      ) : null}
+      {/* 再開キーの案内はフッタではなく独立した行に出す — Ctrl+R/Ctrl+A はフォーカスに
+          関係なく効くので、フォーカス依存のフッタヒントに混ぜると入力欄にいる間だけ
+          消えてしまい「中断したのにどう戻すか分からない」状態になる。認証切れは
+          「別ターミナルでログイン → Ctrl+R」の手順そのものを出す（詳細ビューと同じ）。
+          `flexShrink={0}` は必須: Yoga は溢れた子を縮小するので、付けないと低い端末で
+          この案内自体が高さ0に潰れて消える（入力欄の枠も巻き込まれる）。縮む役は
+          flexGrow のセッション一覧（内部スクロールで収まる）に任せる。 */}
+      <Box flexDirection="column" flexShrink={0}>
+        {target?.status === 'needs_login' ? (
+          <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
+        ) : targetResumable ? (
+          <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
+        ) : null}
+        {resumables.length > 1 ? (
+          <Text color={statusColor.interrupted}>{m.resume.allHint(resumables.length)}</Text>
+        ) : null}
+        {actionError ? (
+          <Text color={statusColor.failed}>
+            {m.action.actionErrorLabel}: {actionError}
+          </Text>
+        ) : null}
+        {confirm ? (
+          <DialogBox>
+            <ConfirmPrompt kind={confirm} busy={busy} />
+          </DialogBox>
+        ) : confirmResumeAll ? (
+          <DialogBox>
+            <ConfirmPrompt
+              kind="resumeAll"
+              busy={false}
+              count={resumables.length}
+              authCount={authStalled}
+            />
+          </DialogBox>
+        ) : null}
+      </Box>
 
       {showHelp && !pending ? (
         <CommandPalette title={m.command.helpTitle} commands={COMMANDS} />

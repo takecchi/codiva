@@ -1,5 +1,12 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { isAuthError, isAuthErrorKind, isConnectionError } from './errors';
+import {
+  isAuthError,
+  isAuthErrorKind,
+  isConnectionError,
+  isTransientApiErrorKind,
+  isTransientApiStatus,
+} from './errors';
+import { isResumable } from './status-meta';
 import {
   appendLog,
   isRateLimitError,
@@ -211,6 +218,38 @@ function onTaskSettled(
   return { ...state, activeTaskIds: nextActive };
 }
 
+/** Log-line prefix for `system/api_retry`; also the key for coalescing them. */
+const API_RETRY_PREFIX = 'api retry';
+
+/**
+ * `system/api_retry`: an API request failed with a retryable error and the CLI is
+ * about to retry it after a delay. Informational only (state doesn't change), but
+ * worth a log line: without it a flaky connection looks exactly like the session
+ * hanging, and when the retries do run out the `interrupted` notice arrives with no
+ * trace of what led up to it. `error_status` is null for connection-level failures
+ * that never got an HTTP response, so it is only shown when present.
+ *
+ * Retries arrive in bursts (up to `max_retries` per request), so consecutive ones
+ * *rewrite* the same log line (keeping its seq) instead of appending one per attempt
+ * — a flaky connection must not push the actual conversation out of the viewport.
+ */
+function onApiRetry(state: SessionState, message: Record<string, unknown>): SessionState {
+  const attempt = typeof message.attempt === 'number' ? message.attempt : undefined;
+  const max = typeof message.max_retries === 'number' ? message.max_retries : undefined;
+  const of = attempt !== undefined && max !== undefined ? ` ${attempt}/${max}` : '';
+  const kind = typeof message.error === 'string' ? message.error : 'error';
+  const status = typeof message.error_status === 'number' ? ` ${message.error_status}` : '';
+  const text = `${API_RETRY_PREFIX}${of}: ${kind}${status}`;
+  // Matching on our own prefix is enough to tell "the previous line is a retry
+  // counter" — no other producer writes it.
+  const last = state.messages.at(-1);
+  if (last?.kind === 'system' && last.text.startsWith(API_RETRY_PREFIX)) {
+    return { ...state, messages: [...state.messages.slice(0, -1), { ...last, text }] };
+  }
+  const withLog = appendLog(state, 'system', text);
+  return { ...state, messages: withLog.messages, logSeq: withLog.logSeq };
+}
+
 function reduceAssistant(state: SessionState, message: Record<string, unknown>): SessionState {
   const inner = message.message as { content?: unknown; model?: unknown } | undefined;
   const content = Array.isArray(inner?.content) ? inner.content : [];
@@ -358,6 +397,12 @@ function reduceSdk(
     if (message.subtype === 'task_notification') {
       return onTaskSettled(state, message, at);
     }
+    // A retryable API failure (the connection dropped, the upstream is at
+    // capacity): the CLI is retrying, so the session stays running — we only note
+    // it in the log.
+    if (message.subtype === 'api_retry') {
+      return onApiRetry(state, message);
+    }
     return state;
   }
 
@@ -386,6 +431,25 @@ function reduceSdk(
       const inner = message.message as { content?: unknown } | undefined;
       const text = asString(inner?.content).trim();
       return toNeedsLogin(state, at, text || String(message.error));
+    }
+    // The API call failed transiently — most often the response stream was cut
+    // partway (`API Error: Connection closed mid-response. The response above may
+    // be incomplete.`). Whatever content had already arrived was delivered as
+    // ordinary assistant messages before this one; this flagged message carries
+    // only the notice, and it ends the turn with a truncated answer. So land on
+    // `interrupted` (resumable) rather than logging the notice as ordinary
+    // assistant text and letting the roll-up result show a green "Completed".
+    //
+    // Only for the top-level turn (`parent_tool_use_id` null): the same failure
+    // inside a sub-agent (Task) is reported to the main turn as a failed
+    // tool_result, which Claude can retry or work around — the session keeps
+    // running and its own `result` decides the end state. (The auth check above
+    // needs no such guard: credentials are global, so a sub-agent hitting an
+    // expired login means the whole session is stuck.)
+    if (isTransientApiErrorKind(message.error) && message.parent_tool_use_id == null) {
+      const inner = message.message as { content?: unknown } | undefined;
+      const text = asString(inner?.content).trim();
+      return toInterrupted(state, at, text || String(message.error));
     }
     return reduceAssistant(state, message);
   }
@@ -430,6 +494,17 @@ function reduceSdk(
     // For an `is_error` success the subtype carries no information, so the result
     // text is the only description of what stopped the turn.
     const error = subtype === 'success' ? resultText || 'error' : subtype;
+    // The stop was already diagnosed while the turn was ending: the CLI flags the
+    // assistant message it synthesizes for an expired login / a usage limit / a cut
+    // response with a *typed* error kind, which is more precise than any wording
+    // check. This result only rolls that up, so keep the diagnosis and take nothing
+    // from it but the cost — re-classifying from its text would downgrade a "log in
+    // again" (or a "wait for the reset") to a dead-end `failed` whenever the CLI's
+    // phrasing isn't one we recognize. Only the resumable stops qualify: `failed`
+    // and `completed` are not set from a flagged assistant message.
+    if (isResumable(state.status)) {
+      return cost === state.totalCostUsd ? state : { ...state, totalCostUsd: cost };
+    }
     // An expired/invalid login is neither a completion nor a failure of the task:
     // checked first because — unlike a rate limit or a dropped connection — it
     // never clears by itself, so retrying or waiting is the wrong advice. The user
@@ -445,6 +520,19 @@ function reduceSdk(
     // A dropped connection surfaced as an error result — resumable, not a real
     // failure (same treatment as the thrown-error path in Session.consume).
     if (isConnectionError(error) || isConnectionError(resultText)) {
+      return { ...toInterrupted(state, at, resultText || error), totalCostUsd: cost };
+    }
+    // Structured fallback for the same class of stop: the CLI ends an API-error
+    // turn with `terminal_reason: 'api_error'` and reports the HTTP status in
+    // `api_error_status` — explicitly `null` when there was no HTTP response at all
+    // (a dropped connection). A transient status (no response / 5xx) means the turn
+    // can simply be resumed, so it lands on `interrupted` even when the wording is
+    // one we don't recognize — the CLI has many phrasings for this ("Server error
+    // mid-response", "Please wait a moment and try again", …) and they change.
+    // (An expired login is reported with `terminal_reason: 'api_error'` too, but it
+    // can't reach here: the typed assistant kind already moved the session to
+    // needs_login, which the roll-up guard above returns on.)
+    if (message.terminal_reason === 'api_error' && isTransientApiStatus(message.api_error_status)) {
       return { ...toInterrupted(state, at, resultText || error), totalCostUsd: cost };
     }
     const withLog = appendLog(state, 'error', error);

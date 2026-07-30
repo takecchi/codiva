@@ -59,6 +59,12 @@ export interface Messages {
     actionErrorLabel: string;
     mergePrompt: string;
     discardPrompt: string;
+    /**
+     * 一括再開の確認文。`n` = 対象件数、`auth` = そのうち認証切れの件数。
+     * 認証切れには「ログインし直した」という指示文を送るので、まだログインして
+     * いないなら先にログインするよう促す（0 件なら触れない）。
+     */
+    resumeAllPrompt: (n: number, auth: number) => string;
     confirmRun: string;
     busySuffix: string;
   };
@@ -150,6 +156,14 @@ export interface Messages {
     listHint: string;
     /** 詳細ビューの操作パネルに出す再開アクションのラベル。 */
     action: string;
+    /**
+     * 再開可能なセッションを見ているときに常時出す一押し再開の案内（一覧・詳細共通）。
+     * フォーカスや操作パネルの状態に関係なく効くキーなので、フッタヒントではなく
+     * 独立した行として出す（認証切れの `auth.hint` と同じ扱い）。
+     */
+    oneKeyHint: string;
+    /** 再開可能なセッションが2件以上あるときに出す一括再開の案内（件数入り）。 */
+    allHint: (n: number) => string;
   };
   /**
    * 認証切れ（`needs_login`）の案内。Claude の OAuth セッションが失効すると
@@ -259,6 +273,10 @@ const ja: Messages = {
     actionErrorLabel: '操作エラー',
     mergePrompt: 'ベースへマージします。',
     discardPrompt: 'worktree とブランチを破棄します。',
+    resumeAllPrompt: (n, auth) =>
+      auth > 0
+        ? `中断中の ${n} 件を続きから再開します（認証切れ ${auth} 件を含む — 先に別ターミナルで claude にログインしてください）。`
+        : `中断中の ${n} 件を続きから再開します。`,
     confirmRun: '実行しますか？',
     busySuffix: '…実行中',
   },
@@ -318,13 +336,15 @@ const ja: Messages = {
     instruction: '接続が切れて中断しました。中断したところから作業を続けてください。',
     authInstruction:
       '認証切れで中断しました。ログインし直したので、中断したところから作業を続けてください。',
-    listHint: '↑↓: 選択 ・ r: 再開 ・ Enter/→: 詳細 ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
+    listHint:
+      '↑↓: 選択 ・ r/Ctrl+R: 再開 ・ Enter/→: 詳細 ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     action: '再開（続行）',
+    oneKeyHint: 'Ctrl+R: 中断したところから再開',
+    allHint: (n) => `Ctrl+A: 中断中の ${n} 件をまとめて再開`,
   },
   auth: {
-    listHint: '認証切れ ・ 別ターミナルで claude にログイン後 r: 再開 ・ Tab/Esc: 入力へ',
-    // 詳細ビュー用。r は操作パネル（Tab で開く）のキーなので手順に Tab を含める。
-    hint: 'Claude の認証が切れています。別のターミナルで claude を起動して /login し、Tab → r で再開してください。',
+    listHint: '認証切れ ・ 別ターミナルで claude にログイン後 Ctrl+R: 再開 ・ Tab/Esc: 入力へ',
+    hint: 'Claude の認証が切れています。別のターミナルで claude を起動して /login し、Ctrl+R で再開してください。',
   },
   banner: {
     subtitle: '並列 Claude Code セッションを git worktree 上で実行',
@@ -403,6 +423,10 @@ const en: Messages = {
     actionErrorLabel: 'Action error',
     mergePrompt: 'Merge into the base branch.',
     discardPrompt: 'Discard the worktree and branch.',
+    resumeAllPrompt: (n, auth) =>
+      auth > 0
+        ? `Resume all ${n} interrupted sessions from where they stopped (${auth} need a login first — log in to claude in another terminal).`
+        : `Resume all ${n} interrupted sessions from where they stopped.`,
     confirmRun: 'Proceed?',
     busySuffix: '…running',
   },
@@ -461,13 +485,15 @@ const en: Messages = {
     authInstruction:
       'This session stopped because authentication expired. I have logged back in — continue from where you left off.',
     listHint:
-      '↑↓: select · r: resume · Enter/→: open detail · m: merge · d: discard · Tab/Esc: input',
+      '↑↓: select · r/Ctrl+R: resume · Enter/→: open detail · m: merge · d: discard · Tab/Esc: input',
     action: 'Resume (continue)',
+    oneKeyHint: 'Ctrl+R: resume from where it stopped',
+    allHint: (n) => `Ctrl+A: resume all ${n} interrupted sessions`,
   },
   auth: {
     listHint:
-      'Login expired · log in to claude in another terminal, then r: resume · Tab/Esc: input',
-    hint: 'Claude authentication expired. Run `claude` in another terminal, use /login, then Tab → r to resume.',
+      'Login expired · log in to claude in another terminal, then Ctrl+R: resume · Tab/Esc: input',
+    hint: 'Claude authentication expired. Run `claude` in another terminal, use /login, then press Ctrl+R to resume.',
   },
   banner: {
     subtitle: 'Parallel Claude Code sessions in git worktrees',
