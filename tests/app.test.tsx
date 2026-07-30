@@ -785,9 +785,15 @@ describe('App detail view (in-app connection)', () => {
 
   /**
    * Open the detail view of a session whose log holds `count` numbered lines
-   * (`log-00`, `log-01`, …), rendered at a fixed terminal size.
+   * (`log-00`, `log-01`, …), rendered at a fixed terminal size. `textFor` lets a
+   * test emit multi-line Markdown per entry instead of a single line.
    */
-  async function detailWithLog(count: number, rows = 24, columns = 80) {
+  async function detailWithLog(
+    count: number,
+    rows = 24,
+    columns = 80,
+    textFor: (i: number) => string = (i) => `log-${String(i).padStart(2, '0')}`,
+  ) {
     const { manager, out } = drivenManager();
     const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, rows, columns);
     stdin.write('start');
@@ -799,7 +805,7 @@ describe('App detail view (in-app connection)', () => {
       out.push(
         asMsg({
           type: 'assistant',
-          message: { content: [{ type: 'text', text: `log-${String(i).padStart(2, '0')}` }] },
+          message: { content: [{ type: 'text', text: textFor(i) }] },
         }),
       );
     }
@@ -855,6 +861,36 @@ describe('App detail view (in-app connection)', () => {
       await flush();
     }
     expect(visible().at(-1)).toBe(39);
+    app.unmount();
+  }, 30000);
+
+  /**
+   * Regression（詳細ログの上端に「表示できるのに空いている」隙間ができる）:
+   * Ink の `measureText('')` は **高さ 0** を返すので、空文字の `<Text>` は行として
+   * 場所を取らない。ところがスクロール計算（`core/scroll.ts`）は Markdown の段落間の
+   * 空行も 1 物理行として数えるため、可視域に含まれる空行のぶんだけ実際の描画が短く
+   * なり、末尾寄せ（`justifyContent="flex-end"`）のビューポート上端にその行数ぶんの
+   * 空白が残っていた（同時に段落の区切りも消えて行が詰まって見えていた）。
+   */
+  it('keeps blank log rows one row tall so no gap opens above the log', async () => {
+    const { app, lastFrame } = await detailWithLog(
+      12,
+      24,
+      80,
+      // 段落 2 つ = 「本文 / 空行 / 本文」の 3 物理行になる Markdown。
+      (i) => `para-${String(i).padStart(2, '0')}-a\n\npara-${String(i).padStart(2, '0')}-b`,
+    );
+    const frame = lastFrame().split('\n');
+    // ログ領域 = 上パディング 1 行の下から、コンポーザ上ボーダー手前の余白の直前まで。
+    const border = frame.findIndex((line) => line.includes('─'));
+    const region = frame.slice(1, border - 1);
+    expect(region.length).toBeGreaterThan(10); // sanity: ログ領域が取れている
+    const leadingBlanks = region.findIndex((line) => line.trim().length > 0);
+    // 上端の空白は 0〜1 行だけ（可視域の先頭行がちょうど段落間の空行のときの 1 行）。
+    // 修正前はここが空行の本数ぶん（数行〜十数行）膨らんでいた。
+    expect(leadingBlanks).toBeLessThanOrEqual(1);
+    // 段落の区切り（空行）自体は 1 行として残っている。
+    expect(region.some((line) => line.trim().length === 0)).toBe(true);
     app.unmount();
   }, 30000);
 
