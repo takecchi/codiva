@@ -348,7 +348,7 @@ export class Session {
           abortController: this.abortController,
           settingSources: ['project'],
           // Stream partial assistant text so the detail view shows a live preview
-          // (reduced into state.streamingText). See status-reducer reduceStreamEvent.
+          // (reduced into state.streamingText). See sdk-parse reduceStreamEvent.
           includePartialMessages: true,
           // リポジトリ追加指示を systemPrompt として注入する。SDK は systemPrompt 省略時に
           // 空文字("")へ写像する（claude_code プリセットは使わない）ため、ここに文字列を

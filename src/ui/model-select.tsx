@@ -89,7 +89,7 @@ export const ModelSelect: FC<{
               choice.value === DEFAULT_MODEL_VALUE ? m.model.defaultRow : choice.displayName;
             return (
               <Box key={choice.value}>
-                <Text color={active ? 'cyan' : undefined}>
+                <Text color={active ? theme.accent : undefined}>
                   {active ? glyph.caret : ' '} {label}
                   {isCurrentModel(choice, current) ? ' ✔' : ''}
                 </Text>

@@ -275,7 +275,7 @@ git merge --no-ff codiva/<slug>
 ## テスト戦略
 
 - `core/` は SDK 非依存でテストする: `Session` に `queryFn` を DI し、テストでは「SDKMessage の配列を順に yield し、canUseTool を任意タイミングで発火させる」フェイクを注入。
-- **テスト配置**: 単体テストは実装の隣に co-located `*.spec.ts`（`src/core/slug.spec.ts` 等）。App 全体を通す機能/統合テストは `tests/*.test.ts`。vitest の include は `src/**/*.spec.{ts,tsx}` と `tests/**/*.test.{ts,tsx}` の両方。coverage は `**/*.spec.*` と `**/__fixtures__/**` を除外。
+- **テスト配置**: 単体テストは実装の隣に co-located `*.spec.ts`（`src/core/slug.spec.ts` 等）。App 全体を通す機能/統合テストは `tests/*.test.tsx`。vitest の include は `src/**/*.spec.{ts,tsx}` と `tests/**/*.test.{ts,tsx}` の両方。coverage は `**/*.spec.*` と `**/__fixtures__/**` を除外。
 - **フィクスチャは Phase 1 スパイクで収集した実メッセージ JSONL を使う**（`src/core/__fixtures__/`）。手書きの想定メッセージでテストを書かない。
   - **`__fixtures__/` に昇格する前に必ずサニタイズする**。`system/init` は環境情報の塊（`cwd` の絶対パス・`memory_paths`・接続中 MCP サーバ名・`skills`/`slash_commands`/`agents` 等）を含むので、テストが使う `session_id` 等だけ残して環境フィンガープリントを削り、`/Users/<name>` 等の個人パスも置換する（reducer が読むのは init の `session_id` のみ）。生ログ置き場 `scripts/fixtures/` は `.gitignore` 済み。
 - `status-reducer` は純関数なのでテーブルドリブンでテスト。
@@ -294,7 +294,7 @@ git merge --no-ff codiva/<slug>
 
 ## スパイク結果（Phase 1 実測 / SDK v0.3.214, claude-fable-5, 2026-07-18）
 
-`scripts/spike.ts` を basic / followup / interrupt の3シナリオで実行。実メッセージは `tests/fixtures/session-{basic,followup,interrupt}.jsonl` に保存済み（reducer テストの正データ）。以下は実測結論。**想定と違った点を太字にした。**
+`scripts/spike.ts` を basic / followup / interrupt の3シナリオで実行（のちに subagent シナリオを追加）。実メッセージは `src/core/__fixtures__/session-{basic,followup,interrupt,subagent}.jsonl` に保存済み（reducer / sdk-parse テストの正データ）。以下は実測結論。**想定と違った点を太字にした。**
 
 ### 観測されたメッセージ型
 
