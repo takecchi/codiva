@@ -5,6 +5,7 @@ import {
   bufferOf,
   caretIndexAtClick,
   caretIndexForColumn,
+  clearBuffer,
   cursorRowCol,
   emptyBuffer,
   indexAtRowCol,
@@ -50,6 +51,17 @@ describe('text-buffer editing', () => {
   it('backspace at start is a no-op (same reference)', () => {
     const b = bufferOf('abc', 0);
     expect(backspace(b)).toBe(b);
+  });
+
+  it('clearBuffer drops everything and resets the caret', () => {
+    const b = clearBuffer(bufferOf('複数行\nの下書き', 2));
+    expect(b.value).toBe('');
+    expect(b.cursor).toBe(0);
+  });
+
+  it('clearBuffer on an empty buffer is a no-op (same reference)', () => {
+    const b = emptyBuffer();
+    expect(clearBuffer(b)).toBe(b);
   });
 
   it('newline inserts a line break at the caret', () => {
