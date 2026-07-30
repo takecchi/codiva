@@ -77,6 +77,15 @@ codiva
   - `"copy"`: リポジトリルートから実体を複製します。worktree が完全に独立し作業が絶対に重複しませんが、`node_modules/` が巨大だとコピーが重くなります。
   - `"none"`: 何も引き継ぎません（依存や環境変数はセッション側で用意し直す）。
   - 非推奨の `copyIgnored`（真偽値）も後方互換で解釈します（`true`→`copy` 相当、`false`→`none` 相当）。`ignoredFiles` があればそちらが優先されます。
+- `notifications`: 質問・許可要求・完了などのタイミングでデスクトップ通知を出すか。既定 `true`（`false` で無効化）。
+
+### デスクトップ通知
+
+セッションが「質問あり」「許可要求」「完了」「失敗」などの状態に変わったタイミングで通知します（同じ状態が続いている間は鳴りません）。
+
+通知は可能なかぎり**ターミナル自身に出させます**（Ghostty / WezTerm / foot / iTerm2 / kitty の通知エスケープシーケンスを利用）。そのため通知をクリックすると codiva を動かしているターミナルが前面に来ます。tmux 内でも動きますが、`set -g allow-passthrough on` が必要です。SSH 越しの場合、`TERM` から判別できる Ghostty / kitty / foot と、`LC_TERMINAL` を転送する iTerm2 では手元のターミナルに通知が出ます。
+
+上記に該当しないターミナル（macOS 標準の Terminal.app、Windows Terminal など）では OS のコマンド（macOS は `osascript`、Linux は `notify-send`）にフォールバックします。**macOS のこのフォールバック経路では通知が「スクリプトエディタ」名義になり、クリックするとスクリプトエディタが開きます**（`osascript` から出した通知の仕様上の制約です）。ターミナル側の通知設定（Ghostty の `desktop-notifications` など）を無効にしている場合も通知は出ません。
 
 ### リポジトリ追加指示（`.codiva/prompt.md`）
 

@@ -414,9 +414,15 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 - **コスト表示**: reducer は `result.total_cost_usd` を `state.totalCostUsd` として既に保持。UI 用の導出だけ
   `core/cost.ts`（`totalCostUsd()` 合計 / `formatUsd()` 整形）に純粋関数で追加。一覧はバナーに合計、詳細は各行。
 - **デスクトップ通知**: 発火判定は純粋な `core/notify.ts` の `notificationFor(prev,next,messages)`
-  （**状態遷移時のみ**返す＝連続更新で鳴り続けない）。実 I/O は `utils/notify.ts`（darwin=`osascript`,
-  linux=`notify-send`。文字列は **argv 渡し**で注入防止。missing binary 等は握り潰す best-effort）。
-  `SessionManager.onTransition` に配線し、`config.notifications:false` で合成ルートが無効化。
+  （**状態遷移時のみ**返す＝連続更新で鳴り続けない）。実 I/O は `utils/notify.ts` で 2 経路あり、
+  **端末に出させる方を優先**する: (1) OSC 通知（`buildNotifySequence`。OSC 777 / 9 / 99 を
+  `detectNotifyProtocol` で使い分け）→ 通知が**端末アプリ名義**になるのでクリックでその端末が
+  前面に来る、(2) 非対応端末・非 TTY 向けのフォールバックとして OS コマンド（darwin=`osascript`,
+  linux=`notify-send`。文字列は **argv 渡し**で注入防止）。macOS で (1) を優先するのは
+  `osascript` の通知が **Script Editor 名義**になり、クリックするとスクリプトエディタが開いて
+  しまうため（詳細は [TECH_NOTES.md](./TECH_NOTES.md)「デスクトップ通知の実装メモ」）。
+  どちらも missing binary 等は握り潰す best-effort。`SessionManager.onTransition` に配線し、
+  `config.notifications:false` で合成ルートが無効化。
 - **セッション復元**: 永続スナップショットの型・変換・検証は純粋な `core/persistence.ts`
   （`toPersistedSession` / `restoredSessionState` / `fromPersistedJson`）。ファイル I/O は
   `utils/state-store.ts`（`<repo>/.codiva/state.json`。破損時は空へフォールバック、起動時に存在しない

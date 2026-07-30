@@ -64,6 +64,18 @@
 - 端末モード（alt screen / SGR マウス）は `utils/alt-screen.ts` / `utils/mouse.ts` で
   **冪等な enter/leave**（共通化は `utils/terminal-mode.ts` の `toggleEscape`）。
   クラッシュで端末を壊さないよう `process.on('exit')` に leave を保険登録する。
-- 通知・URL オープンは `utils/exec.ts` の `fireAndForget`（**argv 渡し**でシェル注入を防ぐ）。
-  失敗は握り潰す best-effort。
+- **デスクトップ通知は OSC（端末自身に出させる）を優先**する（`utils/notify.ts`）。
+  `osascript` の `display notification` は **Script Editor 名義**になり、クリックすると
+  スクリプトエディタが開いてしまう（バンドルを持たないプロセスの通知は AppleScript の
+  代表バンドルに紐づく）。OSC なら通知が端末アプリ名義になり、クリックでその端末が前面に来る。
+  対応方言は端末ごとに違う（OSC 777 / 9 / 99）ので `detectNotifyProtocol` で判定し、
+  **確実に対応している端末だけ**を列挙する（OSC は解釈されたか分からず、誤判定すると
+  通知が無音で消える＝動いていた OS 通知まで失う）。非対応端末・非 TTY は OS コマンドへ
+  フォールバックする。判定は `TERM_PROGRAM` / `TERM` **だけに頼らない**（tmux が
+  `TERM_PROGRAM` を上書きし `TERM` も screen-* に化けるため、tmux 内で必ず漏れる）。
+  端末自前の変数（`GHOSTTY_BIN_DIR` / `WEZTERM_PANE` / `KITTY_WINDOW_ID` / `LC_TERMINAL` …）
+  も見る。
+- 外部コマンド起動（OS 通知フォールバック・URL オープン）は `utils/exec.ts` の
+  `fireAndForget`（**argv 渡し**でシェル注入を防ぐ）。失敗は握り潰す best-effort。
 - クリップボードは OSC 52（`utils/clipboard.ts`）。SSH 越しでも動くのでネイティブ依存を足さない。
+  tmux 内での DCS パススルー包み（`wrapForTmux`）は通知の OSC と共用（`utils/terminal-mode.ts`）。

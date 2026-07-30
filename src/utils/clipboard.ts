@@ -1,4 +1,4 @@
-import type { WritableLike } from './terminal-mode';
+import { type WritableLike, wrapForTmux } from './terminal-mode';
 
 /**
  * Write text to the system clipboard with an OSC 52 escape sequence. Unlike
@@ -11,7 +11,6 @@ import type { WritableLike } from './terminal-mode';
 
 const ESC = '\x1b';
 const BEL = '\x07';
-const ST = `${ESC}\\`;
 
 /**
  * OSC 52 caps the whole sequence around 100 KB and several terminals silently
@@ -36,16 +35,6 @@ function safeUtf8Truncate(buf: Buffer, maxBytes: number): Buffer {
     end -= 1;
   }
   return buf.subarray(0, end);
-}
-
-/**
- * When running inside tmux, an OSC sequence must be wrapped in a DCS passthrough
- * (`ESC P tmux; … ESC \`) with every inner ESC doubled, or tmux swallows it
- * instead of forwarding it to the outer terminal. Requires `allow-passthrough on`
- * (default since tmux 3.3).
- */
-function wrapForTmux(seq: string): string {
-  return `${ESC}Ptmux;${seq.split(ESC).join(`${ESC}${ESC}`)}${ST}`;
 }
 
 /**
