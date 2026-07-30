@@ -66,6 +66,36 @@ describe('editText (Japanese input)', () => {
   });
 });
 
+// Ctrl+U（書きかけを一括で捨てる）。macOS の Cmd+Delete は端末がアプリへ送らないので、
+// 全端末で確実に届く ctrl chord を正式なキーにしている。
+describe('editText clear-all (Ctrl+U)', () => {
+  it.each([
+    ['lowercase u', 'u'],
+    ['uppercase U (Ctrl+Shift+U)', 'U'],
+  ])('clears the whole buffer with %s', (_desc, input) => {
+    const edit = editText(bufferOf('書きかけの指示\n2行目', 3), input, key({ ctrl: true }));
+    expect(edit.changed).toBe(true);
+    expect(edit.buffer.value).toBe('');
+    expect(edit.buffer.cursor).toBe(0);
+  });
+
+  it('reports no change when the buffer is already empty', () => {
+    const edit = editText(emptyBuffer(), 'u', key({ ctrl: true }));
+    expect(edit.changed).toBe(false);
+  });
+
+  it('leaves the buffer alone for a plain u (no ctrl)', () => {
+    const edit = editText(bufferOf('fix '), 'u', key());
+    expect(edit.buffer.value).toBe('fix u');
+  });
+
+  it('does not swallow other ctrl chords (Ctrl+R stays the view’s)', () => {
+    const edit = editText(bufferOf('fix '), 'r', key({ ctrl: true }));
+    expect(edit.changed).toBe(false);
+    expect(edit.buffer.value).toBe('fix ');
+  });
+});
+
 // まとめ読み・ペーストのチャンクはキー名なしの生テキストで届くため、制御文字が
 // バッファへ混入しないことを editText の挿入経路で保証する。
 describe('editText input sanitization', () => {
