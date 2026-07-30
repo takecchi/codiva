@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  compactRateLimitWindows,
+  hasRateLimitDetail,
+  mergeEventWindow,
   type RateLimitWindow,
   rateLimitLabelKey,
   resetCountdown,
@@ -133,5 +136,113 @@ describe('resetCountdown', () => {
   });
   it('clamps a past reset to zero', () => {
     expect(resetCountdown(0, 10 * MIN)).toEqual({ days: 0, hours: 0, minutes: 0 });
+  });
+});
+
+describe('hasRateLimitDetail', () => {
+  it.each([
+    ['a percentage', { type: 'five_hour', status: 'allowed', utilization: 1 }, true],
+    ['a reset time', { type: 'five_hour', status: 'allowed', resetsAt: 1000 }, true],
+    ['neither', { type: 'five_hour', status: 'allowed' }, false],
+  ])('%s → %s', (_label, window, expected) => {
+    expect(hasRateLimitDetail(window as RateLimitWindow)).toBe(expected);
+  });
+});
+
+describe('compactRateLimitWindows', () => {
+  const w = (
+    type: RateLimitWindow['type'],
+    status: RateLimitWindow['status'] = 'allowed',
+  ): RateLimitWindow => ({ type, status, utilization: 10 });
+
+  it('keeps display order and caps the count for the one-line footer', () => {
+    const shown = compactRateLimitWindows([w('overage'), w('seven_day'), w('five_hour')]);
+    expect(shown.map((x) => x.type)).toEqual(['five_hour', 'seven_day']);
+  });
+
+  it('floats a rejected window to the front so it is never the row that gets cut', () => {
+    const shown = compactRateLimitWindows([
+      w('five_hour'),
+      w('seven_day'),
+      w('overage', 'rejected'),
+    ]);
+    expect(shown.map((x) => x.type)).toEqual(['overage', 'five_hour']);
+  });
+
+  it('floats a warning window too', () => {
+    const shown = compactRateLimitWindows([w('five_hour'), w('seven_day', 'allowed_warning')], 1);
+    expect(shown.map((x) => x.type)).toEqual(['seven_day']);
+  });
+
+  it('drops windows with nothing to show', () => {
+    const empty: RateLimitWindow = { type: 'seven_day', status: 'allowed' };
+    const shown = compactRateLimitWindows([w('five_hour'), empty]);
+    expect(shown.map((x) => x.type)).toEqual(['five_hour']);
+  });
+
+  it.each([0, -1])('returns nothing for max=%s', (max) => {
+    expect(compactRateLimitWindows([w('five_hour')], max)).toEqual([]);
+  });
+});
+
+describe('mergeEventWindow', () => {
+  const polled: RateLimitWindow = {
+    type: 'five_hour',
+    status: 'allowed',
+    utilization: 42,
+    resetsAt: 1000,
+  };
+
+  it('takes the event as-is when there was nothing before', () => {
+    const event: RateLimitWindow = { type: 'five_hour', status: 'allowed', resetsAt: 1000 };
+    expect(mergeEventWindow(undefined, event)).toBe(event);
+  });
+
+  it('keeps the polled percentage when the event omits utilization (same window)', () => {
+    // The real five_hour event carries resetsAt + status but no utilization; without
+    // this the gauge would vanish at the start of every turn.
+    const event: RateLimitWindow = { type: 'five_hour', status: 'allowed_warning', resetsAt: 1000 };
+    expect(mergeEventWindow(polled, event)).toEqual({
+      type: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 42,
+      resetsAt: 1000,
+    });
+  });
+
+  it('drops the old percentage once the window rolled over', () => {
+    const event: RateLimitWindow = { type: 'five_hour', status: 'allowed', resetsAt: 9999 };
+    expect(mergeEventWindow(polled, event)).toEqual({
+      type: 'five_hour',
+      status: 'allowed',
+      utilization: undefined,
+      resetsAt: 9999,
+    });
+  });
+
+  it("prefers the event's own utilization over the carried one", () => {
+    const event: RateLimitWindow = {
+      type: 'five_hour',
+      status: 'allowed',
+      utilization: 7,
+      resetsAt: 1000,
+    };
+    expect(mergeEventWindow(polled, event).utilization).toBe(7);
+  });
+
+  it('keeps the reference when nothing displayable moved (no re-render)', () => {
+    const event: RateLimitWindow = { type: 'five_hour', status: 'allowed', resetsAt: 1000 };
+    expect(mergeEventWindow(polled, event)).toBe(polled);
+  });
+
+  it('carries the percentage when either side has no reset time (cannot tell)', () => {
+    const noReset: RateLimitWindow = { type: 'overage', status: 'allowed', utilization: 3.5 };
+    const event: RateLimitWindow = { type: 'overage', status: 'rejected' };
+    expect(mergeEventWindow(noReset, event)).toEqual({
+      type: 'overage',
+      status: 'rejected',
+      utilization: 3.5,
+      resetsAt: undefined,
+    });
   });
 });

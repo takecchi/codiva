@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import {
+  type AccountSummary,
   type CommandAction,
   emptyBuffer,
   FALLBACK_MODEL_OPTIONS,
@@ -72,6 +73,20 @@ export function useRateLimit(manager: SessionManager): RateLimitWindow[] {
     (onChange) => manager.subscribe(onChange),
     () => manager.getRateLimits(),
     () => manager.getRateLimits(),
+  );
+}
+
+/**
+ * Subscribe to the authenticated claude.ai account (plan name / organization) the
+ * SDK probe reported. Undefined until the first probe answers, and for logins that
+ * report no plan at all (API keys, Bedrock/Vertex). The manager keeps the same
+ * object reference unless a field actually changes, so this is re-render safe.
+ */
+export function useAccount(manager: SessionManager): AccountSummary | undefined {
+  return useSyncExternalStore(
+    (onChange) => manager.subscribe(onChange),
+    () => manager.getAccount(),
+    () => manager.getAccount(),
   );
 }
 

@@ -189,6 +189,123 @@ describe('SessionManager', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('folds a polled usage snapshot into the account-wide state', () => {
+    const { manager } = makeManager();
+    const listener = vi.fn();
+    manager.subscribe(listener);
+    expect(manager.getAccount()).toBeUndefined();
+
+    manager.applyUsage({
+      account: { plan: 'Claude Team', organization: 'Example Inc' },
+      usage: {
+        plan: 'team',
+        limitsAvailable: true,
+        windows: [
+          { type: 'seven_day', utilization: 48 },
+          { type: 'five_hour', utilization: 12, resetsAt: 1000 },
+        ],
+      },
+    });
+
+    expect(manager.getAccount()).toEqual({ plan: 'Claude Team', organization: 'Example Inc' });
+    // Sorted like event-derived windows: the 5-hour window leads.
+    expect(manager.getRateLimits().map((w) => w.type)).toEqual(['five_hour', 'seven_day']);
+    expect(manager.getRateLimits()[0]).toEqual({
+      type: 'five_hour',
+      status: 'allowed',
+      utilization: 12,
+      resetsAt: 1000,
+    });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a polled window fill in what the event omitted, keeping the event status', async () => {
+    const { manager, created } = makeManager();
+    manager.create('task');
+    await flush();
+    // The real five_hour event carries a reset time but no utilization.
+    created[0]?.emitRateLimit({
+      status: 'allowed_warning',
+      rateLimitType: 'five_hour',
+      resetsAt: 1000,
+    });
+    manager.applyUsage({
+      usage: { limitsAvailable: true, windows: [{ type: 'five_hour', utilization: 42 }] },
+    });
+    expect(manager.getRateLimits()[0]).toEqual({
+      type: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 42,
+      resetsAt: 1000_000,
+    });
+  });
+
+  it("keeps the polled percentage when the next turn's event omits it", async () => {
+    const { manager, created } = makeManager();
+    manager.create('task');
+    await flush();
+    // Poll first: on some accounts this is the only source of a percentage.
+    manager.applyUsage({
+      usage: {
+        limitsAvailable: true,
+        windows: [{ type: 'five_hour', utilization: 42, resetsAt: 1000_000 }],
+      },
+    });
+    // Then a turn starts: the real five_hour event has resetsAt but no utilization.
+    created[0]?.emitRateLimit({ status: 'allowed', rateLimitType: 'five_hour', resetsAt: 1000 });
+    expect(manager.getRateLimits()[0]).toEqual({
+      type: 'five_hour',
+      status: 'allowed',
+      utilization: 42,
+      resetsAt: 1000_000,
+    });
+  });
+
+  it('drops the polled percentage once the window has rolled over', async () => {
+    const { manager, created } = makeManager();
+    manager.create('task');
+    await flush();
+    manager.applyUsage({
+      usage: {
+        limitsAvailable: true,
+        windows: [{ type: 'five_hour', utilization: 42, resetsAt: 1000_000 }],
+      },
+    });
+    // A later window (different reset time) — the old percentage no longer applies.
+    created[0]?.emitRateLimit({ status: 'allowed', rateLimitType: 'five_hour', resetsAt: 5000 });
+    expect(manager.getRateLimits()[0]).toEqual({
+      type: 'five_hour',
+      status: 'allowed',
+      utilization: undefined,
+      resetsAt: 5000_000,
+    });
+  });
+
+  it('ignores a usage snapshot that changes nothing (stable reference, no re-render)', () => {
+    const { manager } = makeManager();
+    const snapshot = {
+      account: { plan: 'Claude Team' },
+      usage: {
+        limitsAvailable: true,
+        windows: [{ type: 'five_hour' as const, utilization: 12, resetsAt: 1000 }],
+      },
+    };
+    manager.applyUsage(snapshot);
+    const first = manager.getRateLimits();
+    const listener = vi.fn();
+    manager.subscribe(listener);
+    manager.applyUsage(snapshot);
+    expect(manager.getRateLimits()).toBe(first);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('keeps the previous account when a probe reports nothing', () => {
+    const { manager } = makeManager();
+    manager.applyUsage({ account: { plan: 'Claude Team' } });
+    manager.applyUsage({});
+    expect(manager.getAccount()).toEqual({ plan: 'Claude Team' });
+  });
+
   it('avoids slug collisions across concurrent creates', async () => {
     const { manager } = makeManager();
     manager.create('feature');

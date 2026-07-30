@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import type { AccountSummary } from './account';
 import { formatUsd } from './cost';
 import type { Messages } from './i18n';
 import { type RateLimitWindow, rateLimitLabelKey, resetCountdown } from './rate-limit';
@@ -32,6 +33,8 @@ export interface BannerInput {
   totalCostUsd?: number;
   /** claude.ai サブスクリプションの使用リミット枠（SDK 由来。空なら非表示）。 */
   rateLimits?: readonly RateLimitWindow[];
+  /** ログイン中のアカウント（プラン名・組織名）。SDK probe 由来で、無ければ行を出さない。 */
+  account?: AccountSummary;
   /** リセットまでの残り時間を算出する基準時刻（ms）。 */
   now: number;
 }
@@ -62,8 +65,8 @@ function usageDetail(m: Messages, window: RateLimitWindow, now: number): string 
 
 /**
  * The header's text block, one entry per rendered row: wordmark / subtitle /
- * model / cwd, then the claude.ai usage section (blank spacer + heading + one row
- * per window) when the SDK reports limits.
+ * model / plan / cwd, then the claude.ai usage section (blank spacer + heading +
+ * one row per window) when the SDK reports limits.
  *
  * Rows are emitted as an explicit list — including the blank spacer, rather than a
  * `marginTop` on the usage box — so row index === line index. Mouse hit-testing
@@ -89,6 +92,17 @@ export function bannerLines(m: Messages, input: BannerInput): BannerLine[] {
   lines.push({
     segments: [{ text: m.banner.model(input.model ?? m.banner.defaultModel), tone: 'dim' }],
   });
+  // プラン名は SDK 由来の表示文字列なのでそのまま出す（i18n の例外）。取れなければ行を出さない。
+  if (input.account?.plan) {
+    lines.push({
+      segments: [
+        {
+          text: m.banner.usage.plan(input.account.plan, input.account.organization),
+          tone: 'dim',
+        },
+      ],
+    });
+  }
   if (input.cwd) {
     lines.push({ segments: [{ text: input.cwd, tone: 'dim' }] });
   }

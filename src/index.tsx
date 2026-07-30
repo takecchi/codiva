@@ -12,6 +12,7 @@ import {
   copyToClipboard,
   defaultStatePath,
   fetchModelCatalog,
+  fetchUsageSnapshot,
   loadConfig,
   loadRepoPrompt,
   openUrl,
@@ -25,6 +26,7 @@ import {
   restoreSessions,
   setupTerminal,
   startPrPolling,
+  startUsagePolling,
 } from './bootstrap';
 
 // バージョンは package.json を唯一の出所にする。エントリ（src/index.tsx / dist/index.js）
@@ -81,10 +83,22 @@ async function main(): Promise<void> {
   // 妨げない（fetchModelCatalog は throw しない）。
   // 終了時に取得を打ち切るためのハンドル（取得中に /exit されたときサブプロセスと
   // タイマーを残さない = シェルのプロンプトが返らない事故を防ぐ）。
-  const catalogAbort = new AbortController();
+  const probeAbort = new AbortController();
   const modelCatalog = fetchModelCatalog(query, {
     cwd: repoRoot,
-    signal: catalogAbort.signal,
+    signal: probeAbort.signal,
+  });
+
+  // プラン（Pro / Max / Team …）と使用リミット枠をステータスバーに出すための取得。
+  // `rate_limit_event` はセッションがターンを回している間しか届かないので、待機中も
+  // 表示を保つために定期ポーリングで補う（1回ごとに短命な probe サブプロセスを
+  // 1本。推論は走らないのでトークン消費は無い）。取れない環境では自動で止まる。
+  const stopUsagePolling = startUsagePolling({
+    fetch: () => fetchUsageSnapshot(query, { cwd: repoRoot, signal: probeAbort.signal }),
+    apply: (snapshot) => manager.applyUsage(snapshot),
+    // カタログ取得の後にずらす（どちらも probe サブプロセスを立てるので、起動直後に
+    // 2本同時に走らせない）。失敗しても取得は行う。
+    after: modelCatalog,
   });
 
   await restoreSessions(manager, statePath);
@@ -114,7 +128,8 @@ async function main(): Promise<void> {
   // abort(), so in-flight sessions are still recorded as resumable), restore the
   // terminal (leave alt screen + mouse) so the shell history is intact.
   stopPrPolling();
-  catalogAbort.abort();
+  stopUsagePolling();
+  probeAbort.abort();
   await persist.flushAsync();
   terminal.teardown();
 }

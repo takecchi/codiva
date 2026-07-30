@@ -1,3 +1,4 @@
+export * from './account';
 export * from './ansi';
 export * from './async-queue';
 export * from './banner-lines';
@@ -6,6 +7,7 @@ export * from './config';
 export * from './cost';
 export * from './errors';
 export * from './format';
+export * from './gauge';
 export * from './i18n';
 export * from './key-sequence';
 export * from './layout';
@@ -36,4 +38,5 @@ export * from './text-buffer';
 export * from './text-selection';
 export * from './transcript';
 export * from './types';
+export * from './usage';
 export * from './worktree';

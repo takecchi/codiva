@@ -261,6 +261,46 @@ auto-PR まで走ってしまう（本 issue の不具合）。そのため resu
 `getRateLimits()` は表示順にソートした安定参照を返し、`Banner` が `useRateLimit` で購読して
 「現在のセッション 5% 使用 ・ 4時間45分後にリセット」のように描画する（枠が無い＝API キー利用時は非表示）。
 
+#### プラン表示と使用状況ポーリング（ステータスバー）
+
+`rate_limit_event` は **セッションがターンを回している間しか届かない**ので、起動直後や全セッションが
+待機中のときは何も出せない。そこで Claude Code のステータスライン相当の表示を作るため、SDK の
+control channel を叩く **probe** を第2の情報源として足している。
+
+```
+                    ┌─ Session.onRateLimit ──▶ rate_limit_event（ターン開始ごと・status を持つ）─┐
+アカウント横断の情報 ─┤                                                                          ├─▶ SessionManager
+                    └─ bootstrap/usage-poller ─▶ utils/usage-probe（5分ごと・plan と utilization）┘
+```
+
+- **probe の作り**（`utils/sdk-probe.ts`）: `query()` を streaming-input で開き、**何も送らないまま**
+  control channel の応答（`supportedModels()` / `accountInfo()` /
+  `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`）だけを読んで即 abort する。
+  推論は走らないのでトークン消費はゼロ。`fetchModelCatalog` もこの共通基盤に載せ替えた。
+- **プラン名の出所は `accountInfo()` だけ**（`core/account.ts` の `toAccountSummary`）。
+  `subscriptionType`（例 `'Claude Team'`）は SDK 由来の表示文字列なのでそのまま出す
+  （i18n の例外。モデル名と同じ扱い）。組織名は Team / Enterprise のときだけ付く。
+- **usage 応答の解釈は `core/usage.ts` だけ**（`toUsageSnapshot`）。実測（TECH_NOTES 参照）で
+  **`rate_limits_available: true` でも `rate_limits: null` があり得る**ため、「available」を根拠に
+  枠を描かない。枠が無ければイベント側の情報だけで表示する。
+- **2つの情報源の合流は `mergeUsageWindow`**（純関数）。usage 応答には `status` が無く、実際の
+  `five_hour` イベントには `utilization` が無いので、どちらも他方の上位集合ではない。フィールド単位で
+  合流し、`status` は最後にイベントが言った値を引き継ぐ。表示に影響が無ければ **同一参照を返す**
+  （`useRateLimit` / `useAccount` の再描画抑制がこれに依存）。
+- **ポーリング間隔は 5 分**（`bootstrap/usage-poller.ts`）。枠自体が 5時間／7日単位で、リセットまでの
+  カウントダウンは `useClock` がローカルで毎秒進め、稼働中セッションはターンごとにイベントを押してくる
+  ——ので、ポーリングは「待機中を埋める」役でよい。1回ごとにサブプロセスが1本立つため秒単位にはしない。
+  **2回連続で何も取れなければ停止**する（API キー / Bedrock / Vertex ログインでは永久に取れないため）。
+- 表示先は `StatusFooter`（一覧・詳細の両方）。プラン名 + 上位2枠を
+  `プラン名 · 5時間 ████░░░░ 50% 残り45分` の形で右端に出す。バーのセル数計算は `core/gauge.ts`
+  （`gaugeCells`）、記号は `theme.ts`（`glyph.gaugeFilled` / `gaugeEmpty`）。**`utilization` が
+  無い枠にバーは描かない**（0% と読めてしまうため、残り時間だけ出す）。
+- **フッタはどの幅でも1行**に保つ（折り返すとログの行を奪い、レイアウト崩れに見える）。
+  縮小は Yoga に任せず `core/layout.ts` の `usageFooterPlan(columns)` が段階的に内容を落とす
+  （2枠 → 1枠 → ゲージを落とす → プラン名を落とす → 出さない）。フッタ内の縮小優先度は
+  「モード表示（縮まない） < 使用状況（縮まない・内容量で調整） < ヒント（唯一縮む）」。
+  閾値は `status-footer.spec.tsx` が**実際の描画幅**（自前 stdout で 30〜200 桁）で検証している。
+
 `SessionState`（UI が購読する不変スナップショット）:
 
 ```typescript
@@ -351,7 +391,7 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
 
 - `App`: 全画面レイアウトの root と Ctrl+C の安全網。**list ⇔ detail のビュー切替**を `View` state で持ち、
   一覧で Enter/→ すると `onOpen(id)` で詳細へ、詳細で Esc すると `onBack` で一覧へ戻る。
-- `Banner`: 起動時ヘッダ（マスコット + ワードマーク / サブタイトル / モデル / cwd + 使用状況）。枠なしで
+- `Banner`: 起動時ヘッダ（マスコット + ワードマーク / サブタイトル / モデル / プラン / cwd + 使用状況）。枠なしで
   一覧上部に表示。**純粋に presentational** で、表示行は core の `bannerLines()`（`core/banner-lines.ts`）が
   組む（`BannerLine[]` = 1 要素 1 表示行。色は `BannerTone` という抽象で受け取り、実際の色は `theme.ts`）。
   ヘッダのテキストはドラッグで範囲選択してコピーできる（cwd の絶対パスを取り出す用途）。当たり判定は

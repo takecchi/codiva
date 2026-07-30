@@ -1,11 +1,12 @@
+import { type AccountSummary, sameAccountSummary } from './account';
 import { errorMessage } from './errors';
 import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
 import { PrCoordinator } from './pr-coordinator';
 import {
+  mergeEventWindow,
   type RateLimitInfoJson,
   type RateLimitType,
   type RateLimitWindow,
-  sameRateLimitWindow,
   sortRateLimitWindows,
   toRateLimitWindow,
 } from './rate-limit';
@@ -25,6 +26,7 @@ import { makeSlug, makeTitle, uniqueSlug } from './slug';
 import { isResumable, isTerminalStatus } from './status-meta';
 import { accrueActive, initialState, reduce } from './status-reducer';
 import type { CreateSessionInput, LogEntry, SessionState } from './types';
+import { mergeUsageWindow, type UsageSnapshot } from './usage';
 import type { DiffStat, Worktree } from './worktree';
 
 export interface SessionManagerDeps {
@@ -104,6 +106,11 @@ export class SessionManager {
    */
   private readonly rateLimits = new Map<RateLimitType, RateLimitWindow>();
   private rateLimitSnapshot: RateLimitWindow[] = [];
+  /**
+   * The authenticated account (plan name / organization) from the SDK probe.
+   * Account-wide and transient, like the usage windows — never persisted.
+   */
+  private account: AccountSummary | undefined;
   private seq = 0;
   private mode: RunMode = 'auto';
   private readonly now: () => number;
@@ -197,6 +204,45 @@ export class SessionManager {
     return this.rateLimitSnapshot;
   }
 
+  /**
+   * The authenticated account (plan name / organization), or undefined until the
+   * SDK probe answers — and for logins that report nothing (API keys, 3P providers).
+   */
+  getAccount(): AccountSummary | undefined {
+    return this.account;
+  }
+
+  /**
+   * Fold a polled `/usage` snapshot (see `utils/usage-probe`) into the account-wide
+   * state: the plan name, plus any utilization windows the endpoint reported.
+   *
+   * Complements `rate_limit_event`, which only arrives while a session runs a turn:
+   * polling keeps the status line current when everything is idle. Merged per
+   * window (the endpoint has no `status`, events sometimes have no `utilization`)
+   * and notifies at most once, only when something displayable actually moved.
+   */
+  applyUsage(snapshot: { account?: AccountSummary; usage?: UsageSnapshot }): void {
+    let changed = false;
+    const account = snapshot.account;
+    if (account && !sameAccountSummary(this.account, account)) {
+      this.account = account;
+      changed = true;
+    }
+    for (const window of snapshot.usage?.windows ?? []) {
+      const prev = this.rateLimits.get(window.type);
+      const merged = mergeUsageWindow(prev, window);
+      if (merged !== prev) {
+        this.rateLimits.set(window.type, merged);
+        changed = true;
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    this.rateLimitSnapshot = sortRateLimitWindows([...this.rateLimits.values()]);
+    this.store.notify();
+  }
+
   /** Fold a session's `rate_limit_event` into the account-wide snapshot. */
   private onRateLimit(info: RateLimitInfoJson): void {
     const window = toRateLimitWindow(info);
@@ -204,10 +250,15 @@ export class SessionManager {
       return;
     }
     const prev = this.rateLimits.get(window.type);
-    if (prev && sameRateLimitWindow(prev, window)) {
+    // Merge rather than replace: the event is authoritative on status/resetsAt but
+    // may omit `utilization`, which would otherwise wipe the polled percentage at
+    // the start of every turn (mergeEventWindow keeps it while the window instance
+    // is unchanged, and returns `prev` itself when nothing displayable moved).
+    const merged = mergeEventWindow(prev, window);
+    if (merged === prev) {
       return; // unchanged — don't rebuild the snapshot or re-render
     }
-    this.rateLimits.set(window.type, window);
+    this.rateLimits.set(window.type, merged);
     this.rateLimitSnapshot = sortRateLimitWindows([...this.rateLimits.values()]);
     this.store.notify();
   }
