@@ -22,7 +22,7 @@ import type {
 } from './session-ports';
 import { SessionStore } from './session-store';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
-import { isTerminalStatus } from './status-meta';
+import { isResumable, isTerminalStatus } from './status-meta';
 import { accrueActive, initialState, reduce } from './status-reducer';
 import type { CreateSessionInput, LogEntry, SessionState } from './types';
 import type { DiffStat, Worktree } from './worktree';
@@ -378,6 +378,27 @@ export class SessionManager {
   // ── UI passthroughs ────────────────────────────────────────────────
   send(id: string, text: string): void {
     this.sessions.get(id)?.send(text);
+  }
+
+  /**
+   * Resume a cut-off session (`isResumable` — interrupted / rate_limited /
+   * needs_login) by sending `instruction`; returns whether it was sent. A session
+   * that isn't (or is no longer) cut off is left alone.
+   *
+   * The status check belongs here rather than in the views because the store is
+   * the only *synchronously* fresh view of it: `send` flips the session to
+   * `running` immediately, while the UI's subscription is ~100ms throttled, so a
+   * held-down / auto-repeating resume key would otherwise queue the same "continue
+   * from where you left off" instruction several times — double-billing the turn
+   * and leaving duplicate user turns in the transcript for Claude to read.
+   */
+  resume(id: string, instruction: string): boolean {
+    const state = this.store.get(id);
+    if (state === undefined || !isResumable(state.status)) {
+      return false;
+    }
+    this.send(id, instruction);
+    return true;
   }
   answer(id: string, answers: Record<string, string>): void {
     this.sessions.get(id)?.answerPending(answers);

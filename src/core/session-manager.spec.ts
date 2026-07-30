@@ -45,8 +45,13 @@ class FakeSession implements SessionHandle {
   start() {
     this.started = true;
   }
+  /** When true, send() advances to `running` — like the real Session.send (synchronously). */
+  sendMovesToRunning = false;
   send(text: string) {
     this.calls.push(`send:${text}`);
+    if (this.sendMovesToRunning) {
+      this.drive('running');
+    }
   }
   answerPending(answers: Record<string, string>) {
     this.calls.push(`answer:${JSON.stringify(answers)}`);
@@ -356,6 +361,57 @@ describe('SessionManager', () => {
     // Only the session is told to switch; the global default (new sessions) is untouched.
     expect(created[0]?.calls).toContain('setModel:claude-opus-4-8');
     expect(manager.getModel()).toBeUndefined();
+  });
+
+  describe('resume() (one-key recovery)', () => {
+    it('sends the instruction to a cut-off session', async () => {
+      const { manager, created } = makeManager();
+      const id = manager.create('a');
+      await flush();
+      const session = created[0];
+      if (!session) {
+        throw new Error('no session');
+      }
+      session.drive('interrupted');
+      expect(manager.resume(id, 'continue')).toBe(true);
+      expect(session.calls).toEqual(['send:continue']);
+    });
+
+    it('is a no-op for a session that is not cut off', async () => {
+      const { manager, created } = makeManager();
+      const id = manager.create('a');
+      await flush();
+      created[0]?.drive('running');
+      // 実行中・完了済みを勝手に走らせない（completed は追加指示で continue できるが
+      // それは「再開」ではないので、このキーの対象外）。
+      expect(manager.resume(id, 'continue')).toBe(false);
+      created[0]?.drive('completed');
+      expect(manager.resume(id, 'continue')).toBe(false);
+      expect(created[0]?.calls).toEqual([]);
+    });
+
+    it('ignores a repeated resume: the second press finds the session already running', async () => {
+      // 一押し再開キーの連打・オートリピート対策。UI の購読はスロットルされるので、
+      // 「もう再開済み」の判定はストアの現在値を持つここでしかできない。
+      const { manager, created } = makeManager();
+      const id = manager.create('a');
+      await flush();
+      const session = created[0];
+      if (!session) {
+        throw new Error('no session');
+      }
+      session.drive('interrupted');
+      // 本物の Session.send は同期的に running へ進める。
+      session.sendMovesToRunning = true;
+      expect(manager.resume(id, 'continue')).toBe(true);
+      expect(manager.resume(id, 'continue')).toBe(false);
+      expect(session.calls).toEqual(['send:continue']);
+    });
+
+    it('is a no-op for an unknown id', () => {
+      const { manager } = makeManager();
+      expect(manager.resume('nope', 'continue')).toBe(false);
+    });
   });
 
   it('ignores UI actions for unknown session ids', async () => {

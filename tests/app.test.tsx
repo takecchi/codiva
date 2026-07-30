@@ -7,6 +7,7 @@ import { messages } from '@/core/i18n';
 import type { QueryFn } from '@/core/session';
 import { SessionManager } from '@/core/session-manager';
 import type { WorktreeService } from '@/core/session-ports';
+import type { SessionState } from '@/core/types';
 import {
   flush,
   makeManager,
@@ -579,7 +580,7 @@ describe('App end-to-end (real Session, driven query)', () => {
     stdin.write('\t');
     await flush();
     expect(lastFrame()).toContain('claude にログイン');
-    expect(lastFrame()).toContain('r: 再開');
+    expect(lastFrame()).toContain('Ctrl+R: 再開');
 
     // 詳細ビューでも手順を出す（操作パネルを開いていなくても見える）。
     stdin.write('\r');
@@ -640,7 +641,7 @@ describe('App end-to-end (real Session, driven query)', () => {
     // 一覧で選択すると再開操作が出る（同じ SDK 会話を resume できる）。
     stdin.write('\t');
     await flush();
-    expect(lastFrame()).toContain('r: 再開');
+    expect(lastFrame()).toContain('Ctrl+R: 再開');
   });
 });
 
@@ -1034,5 +1035,200 @@ describe('App detail view (in-app connection)', () => {
     stdin.write('\r');
     await flush();
     expect(lastFrame()).not.toContain('M src/foo.ts');
+  });
+});
+
+describe('App one-key resume', () => {
+  /**
+   * A manager whose sessions sit in a cut-off status and record their `send()`
+   * calls. `send` flips the session to `running` and reports it, exactly like the
+   * real `Session.send` (synchronously, before the UI's throttled subscription
+   * catches up) — that is what makes the repeated-keypress tests meaningful.
+   * `statusOf` decides each session's status from its 1-based index so a mixed set
+   * (interrupted + needs_login) can be built.
+   */
+  function stalledManager(
+    statusOf: SessionState['status'] | ((i: number) => SessionState['status']),
+  ) {
+    const sends: { id: string; text: string }[] = [];
+    const manager = new SessionManager({
+      worktrees,
+      queryFn: (() => {
+        throw new Error('unused');
+      }) as never,
+      now: () => 0,
+      createSession: ({ input, onChange }) => {
+        const session = noopSession(input);
+        const status = typeof statusOf === 'function' ? statusOf(Number(input.id)) : statusOf;
+        session.state = { ...session.state, status, sdkSessionId: `sdk-${input.id}` };
+        session.send = (text: string) => {
+          sends.push({ id: input.id, text });
+          session.state = { ...session.state, status: 'running' };
+          onChange(session.state);
+        };
+        return session;
+      },
+    });
+    return { manager, sends };
+  }
+
+  /** Create `n` sessions through the composer (each lands in the stalled status). */
+  async function seed(stdin: { write: (s: string) => void }, n: number) {
+    for (let i = 0; i < n; i++) {
+      stdin.write(`task-${i}`);
+      await flush();
+      stdin.write('\r');
+      await flush();
+    }
+  }
+
+  it('resumes the selected session with a single key from the composer', async () => {
+    const { manager, sends } = stalledManager('interrupted');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await seed(stdin, 1);
+
+    // 既定フォーカスは入力欄。そこに Ctrl+R の案内が出ていて、Tab を挟まずに効く。
+    expect(lastFrame()).toContain(messages.ja.resume.oneKeyHint);
+    stdin.write('\x12'); // Ctrl+R
+    await flush();
+    expect(sends).toEqual([{ id: '1', text: messages.ja.resume.instruction }]);
+  });
+
+  it('tells Claude the login was renewed when resuming a needs_login session', async () => {
+    const { manager, sends } = stalledManager('needs_login');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await seed(stdin, 1);
+
+    // 認証切れは「別ターミナルでログイン → Ctrl+R」の手順そのものを出す。
+    expect(lastFrame()).toContain('/login');
+    stdin.write('\x12');
+    await flush();
+    expect(sends).toEqual([{ id: '1', text: messages.ja.resume.authInstruction }]);
+  });
+
+  it('does nothing when the selected session is not cut off', async () => {
+    const { manager, sends } = stalledManager('running');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await seed(stdin, 1);
+
+    expect(lastFrame()).not.toContain(messages.ja.resume.oneKeyHint);
+    stdin.write('\x12');
+    await flush();
+    expect(sends).toEqual([]);
+  });
+
+  it('resumes from the detail view without opening the actions panel', async () => {
+    const { manager, sends } = stalledManager('interrupted');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await seed(stdin, 1);
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open the detail view (composer has focus there)
+    await flush();
+
+    expect(lastFrame()).toContain(messages.ja.resume.oneKeyHint);
+    stdin.write('\x12');
+    await flush();
+    expect(sends).toEqual([{ id: '1', text: messages.ja.resume.instruction }]);
+  });
+
+  it('resumes every cut-off session at once after confirming (Ctrl+A → y)', async () => {
+    // 回線が落ちる・蓋を閉じると走っていたセッションが揃って中断されるので、
+    // 1件ずつ押し直させない。
+    const { manager, sends } = stalledManager('interrupted');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await seed(stdin, 3);
+
+    expect(lastFrame()).toContain(messages.ja.resume.allHint(3));
+    stdin.write('\x01'); // Ctrl+A
+    await flush();
+    // 一括は課金に直結するので件数を見せて確認する（単体の Ctrl+R は確認なし）。
+    expect(lastFrame()).toContain(messages.ja.action.resumeAllPrompt(3, 0));
+    expect(sends).toEqual([]);
+    stdin.write('y');
+    await flush();
+    expect(sends.map((s) => s.id)).toEqual(['1', '2', '3']);
+    expect(sends.every((s) => s.text === messages.ja.resume.instruction)).toBe(true);
+  });
+
+  it('cancels the bulk resume on n (nothing is sent)', async () => {
+    const { manager, sends } = stalledManager('interrupted');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await seed(stdin, 2);
+    stdin.write('\x01');
+    await flush();
+    stdin.write('n');
+    await flush();
+    expect(lastFrame()).not.toContain(messages.ja.action.resumeAllPrompt(2, 0));
+    expect(sends).toEqual([]);
+  });
+  it('ignores a held-down resume key: the instruction is sent once', async () => {
+    // ストア購読は ~100ms スロットルなので、送信直後もビュー側の status は
+    // `interrupted` に見える。連打・オートリピートで同じ指示を積むと二重課金＋
+    // transcript にユーザー発話が二重に残る。
+    const { manager, sends } = stalledManager('interrupted');
+    const { stdin } = render(<App manager={manager} />);
+    await seed(stdin, 1);
+    stdin.write('\x12');
+    stdin.write('\x12');
+    stdin.write('\x12');
+    await flush();
+    expect(sends).toHaveLength(1);
+  });
+
+  it('still resumes with r from the list focus (the pre-existing key)', async () => {
+    const { manager, sends } = stalledManager('interrupted');
+    const { stdin } = render(<App manager={manager} />);
+    await seed(stdin, 1);
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('r');
+    stdin.write('r'); // 連打しても1回だけ
+    await flush();
+    expect(sends).toEqual([{ id: '1', text: messages.ja.resume.instruction }]);
+  });
+
+  it('sends each bulk-resumed session the instruction that matches its status, once', async () => {
+    // 認証切れには「ログインし直した」版を送る（通信断の文言では嘘になる）。
+    const { manager, sends } = stalledManager((i) => (i === 2 ? 'needs_login' : 'interrupted'));
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await seed(stdin, 3);
+    stdin.write('\x01'); // Ctrl+A
+    await flush();
+    // 認証切れが混ざるので、確認文でログインを先に済ませるよう促す（枠内で折り返す
+    // ため、行に分断されない断片で判定する）。
+    expect(lastFrame()).toContain('認証切れ 1 件を含む');
+    stdin.write('y');
+    stdin.write('y'); // 連打しても各セッション1回だけ
+    await flush();
+    expect(sends).toEqual([
+      { id: '1', text: messages.ja.resume.instruction },
+      { id: '2', text: messages.ja.resume.authInstruction },
+      { id: '3', text: messages.ja.resume.instruction },
+    ]);
+  });
+
+  it('keeps the hint, composer and footer visible on a short terminal', async () => {
+    // 案内行を足したぶん、Yoga が「溢れた子を縮小する」経路に入りやすくなる。
+    // flexShrink={0} が無いと案内自体が高さ0に潰れ、入力欄の枠も崩れる。
+    const { manager } = stalledManager('interrupted');
+    for (let i = 0; i < 3; i++) {
+      manager.create(`task-${i}`);
+    }
+    await flush();
+    const { app, lastFrame } = renderFullscreen(<App manager={manager} />, 16, 100);
+    const frame = lastFrame();
+    expect(frame.split('\n')).toHaveLength(16);
+    expect(frame).toContain(messages.ja.resume.oneKeyHint);
+    expect(frame).toContain(messages.ja.resume.allHint(3));
+    expect(frame).toContain(messages.ja.list.promptPlaceholder);
+    // 最下段はフッタ（モード行）— 案内行を足しても押し出されない。
+    expect(
+      frame
+        .split('\n')
+        .filter((l) => l.trim() !== '')
+        .at(-1),
+    ).toContain('shift+tab');
+    app.unmount();
   });
 });

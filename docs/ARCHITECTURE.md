@@ -139,6 +139,27 @@ codiva/
 `core/resume.ts` の `resumeInstruction(status, m)`（既定は `resume.instruction`、認証切れは
 `resume.authInstruction`）。
 
+**復帰はワンプッシュ**（`Ctrl+R`）。中断の原因（通信断・レート制限・認証切れ）に関わらず、一覧でも詳細でも
+**フォーカス／操作パネルの状態に関係なく**効く chord にしてある。フォーカス依存のキー（一覧リストの `r`、
+詳細の操作パネルの `r`）は「Tab で移動 → r」の2手が必要で、既定フォーカスが入力欄である以上それは
+「楽なリカバリ」にならない。印字キーを潰さない chord なので、入力中に打っても文字が化けない。
+案内（`resume.oneKeyHint` / 認証切れは `auth.hint`）はフッタではなく**独立した行**として出す —
+フッタヒントはフォーカスで切り替わるので、入力欄にいる間だけ復帰方法が消えてしまう。
+
+**一括再開は `Ctrl+A`**（一覧のみ、2件以上のときだけ、y/n 確認あり）。回線が落ちる・蓋を閉じると走って
+いたセッションが揃って中断されるため、1件ずつ選び直させない。対象は `core/resume.ts` の
+`resumableSessions(sessions)`（純関数）で、件数を `resume.allHint(n)` / `action.resumeAllPrompt(n, auth)`
+に出す。単体の `Ctrl+R` が確認なしで即送るのに対し一括は確認を挟む（全中断セッションへ同時に指示 =
+誤爆が課金に直結するため）。確認文には**認証切れの件数**も出す — `needs_login` には「ログインし直した」
+という指示文を送るので、まだログアウトのままだと transcript に嘘が残る。
+自動リトライはしない（勝手に走り出さない・意図せず課金が進まないことを優先）。
+
+**多重送信の防止は `SessionManager.resume(id, instruction)`** に置く（View ではなく core 側）。UI の
+ストア購読は ~100ms スロットルなので、送信直後もビュー側の status は `interrupted` のまま見える —
+キーの連打・オートリピートで同じ指示が2回積まれると二重課金＋ログ二重化になる。`resume()` は
+**ストアの現在値**（`send` が同期的に `running` へ進める）で `isResumable` を確かめてから送り、送ったかを
+返す。View（`Ctrl+R` / 一覧の `r` / 一括）はすべてこれを経由する。
+
 **応答途中の API エラー（`API Error: Connection closed mid-response.`）**: ストリーミング中に接続が切れると
 CLI は「そこまでの部分応答を確定させて」ターンを終える。ワイヤ上は `error: 'server_error'` を立てた
 assistant メッセージ（本文が `API Error: Connection closed mid-response. The response above may be
