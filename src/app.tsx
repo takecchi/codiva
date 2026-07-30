@@ -8,6 +8,7 @@ import {
   type MouseControl,
   type SessionManager,
   type TrainingOptIn,
+  type UpdateService,
 } from '@/core';
 import {
   type ListViewState,
@@ -16,6 +17,7 @@ import {
   SessionList,
   useModelCatalog,
   useTrainingOptIn,
+  useUpdateCheck,
 } from '@/ui';
 
 /** どの画面を出しているか。詳細は対象セッション id を持つ。 */
@@ -40,6 +42,13 @@ export const App: FC<{
    * （`'on'` のときだけ）。設定 `privacyWarning: false` では未指定になる。
    */
   trainingOptIn?: Promise<TrainingOptIn>;
+  /**
+   * アップデート機能（npm レジストリの確認と `npm install` の実行）。合成ルートが
+   * 注入する。`initial` は起動時に投げたチェックで、ここで state に解決してバナーへ
+   * 渡す（一覧が再マウントされても再取得しない）。未注入なら通知も /update も無害に
+   * 何もしない。
+   */
+  updater?: UpdateService;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
   /** Copy composer selection to the clipboard. Injected from index.tsx (OSC 52). */
@@ -58,6 +67,7 @@ export const App: FC<{
   messages = catalogs.ja,
   modelCatalog,
   trainingOptIn,
+  updater,
   onOpenPr,
   onCopy,
   mouse,
@@ -65,6 +75,7 @@ export const App: FC<{
   const { exit } = useApp();
   const models = useModelCatalog(modelCatalog);
   const training = useTrainingOptIn(trainingOptIn);
+  const { info: updateInfo, clear: clearUpdateInfo } = useUpdateCheck(updater?.initial);
   const [view, setView] = useState<View>({ mode: 'list' });
   // 一覧はビュー切替でアンマウントされ内部 state（選択行・フォーカス）が失われる。
   // 詳細から戻ったときに「前見ていた箇所」を復元できるよう、最新の表示状態をここに
@@ -112,6 +123,9 @@ export const App: FC<{
             model={model}
             models={models}
             version={version}
+            updateInfo={updateInfo}
+            updater={updater}
+            onUpdateApplied={clearUpdateInfo}
             initialViewState={listStateRef.current}
             onViewStateChange={(state) => {
               listStateRef.current = state;

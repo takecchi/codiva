@@ -10,7 +10,7 @@ import { caretIndexForColumn, indexAtRowCol } from './text-buffer';
  * is composed here (pure), so tones stay abstract — `ui/theme.ts` is still the only
  * place that knows actual colors (see .claude/rules/ink-components.md).
  */
-export type BannerTone = 'normal' | 'dim' | 'warn' | 'error';
+export type BannerTone = 'normal' | 'dim' | 'accent' | 'warn' | 'error';
 
 /** A styled run of text within one header line. */
 export interface BannerSegment {
@@ -35,9 +35,18 @@ export interface BannerInput {
   rateLimits?: readonly RateLimitWindow[];
   /** ログイン中のアカウント（プラン名・組織名）。SDK probe 由来で、無ければ行を出さない。 */
   account?: AccountSummary;
+  /**
+   * npm に出ている新しいバージョン（起動時チェックの結果）。undefined なら
+   * 「最新」「未確認」「チェック無効」のいずれかで、その区別はここでは出さない
+   * （更新が無いときにヘッダを 1 行増やさないため）。
+   */
+  updateLatest?: string;
   /** リセットまでの残り時間を算出する基準時刻（ms）。 */
   now: number;
 }
+
+/** 新しいバージョンがあることを示す記号（翻訳対象ではない）。 */
+const UPDATE_MARK = '↑';
 
 /** Semantic tone for a usage window: error when rejected, warn on warning, else dim. */
 function usageTone(status: RateLimitWindow['status']): BannerTone {
@@ -105,6 +114,17 @@ export function bannerLines(m: Messages, input: BannerInput): BannerLine[] {
   }
   if (input.cwd) {
     lines.push({ segments: [{ text: input.cwd, tone: 'dim' }] });
+  }
+  // 更新があるときだけ 1 行増える。dim ではなくアクセント色にするのは、起動直後に
+  // 一度気付いてほしい情報だから（ただし枠は付けず 1 行に留める）。記号は翻訳対象では
+  // ないのでここに置く（`usageDetail` の ' · ' と同じ扱い）。
+  if (input.updateLatest) {
+    lines.push({
+      segments: [
+        { text: `${UPDATE_MARK} ${m.update.available(input.updateLatest)}`, tone: 'accent' },
+        { text: ` · ${m.update.availableHint}`, tone: 'dim' },
+      ],
+    });
   }
 
   const windows = input.rateLimits ?? [];

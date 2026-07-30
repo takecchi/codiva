@@ -15,5 +15,6 @@ export * from './state-store';
 export * from './terminal-mode';
 export * from './title';
 export * from './transcript';
+export * from './update';
 export * from './usage-probe';
 export * from './worktree-manager';

@@ -103,6 +103,33 @@ describe('bannerLines', () => {
     }
   });
 
+  it('更新があるときだけ cwd 行の後ろに 1 行足す', () => {
+    const lines = rows(
+      bannerLines(m, {
+        sessionCount: 0,
+        model: 'sonnet',
+        cwd: '/tmp/repo',
+        updateLatest: '0.3.0',
+        now: NOW,
+      }),
+    );
+    expect(lines).toHaveLength(5);
+    expect(lines[4]).toContain(m.update.available('0.3.0'));
+    expect(lines[4]).toContain(m.update.availableHint);
+  });
+
+  it('更新が無ければ行を増やさない（最新でも未確認でも同じ = 行 index をずらさない）', () => {
+    const base = { sessionCount: 0, model: 'sonnet', cwd: '/tmp/repo', now: NOW };
+    expect(rows(bannerLines(m, base))).toHaveLength(4);
+    expect(rows(bannerLines(m, { ...base, updateLatest: undefined }))).toHaveLength(4);
+  });
+
+  it('更新行はアクセント色 + dim の 2 セグメントで組む（色は theme が決める）', () => {
+    const lines = bannerLines(m, { sessionCount: 0, updateLatest: '0.3.0', now: NOW });
+    const update = lines[lines.length - 1];
+    expect(update?.segments.map((s) => s.tone)).toEqual(['accent', 'dim']);
+  });
+
   it('使用リミットが無ければ使用状況節を出さない', () => {
     const lines = rows(bannerLines(m, { sessionCount: 0, now: NOW }));
     expect(lines.join('\n')).not.toContain('Usage');

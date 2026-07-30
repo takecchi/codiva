@@ -106,4 +106,5 @@ export const glyph = {
   merged: '⑂', // PR already merged (fork mark)
   mergeable: '✓', // PR can be merged cleanly
   conflicting: '✗', // PR has conflicts, cannot merge
+  update: '↑', // a newer version is available on npm
 } as const;

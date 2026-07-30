@@ -222,6 +222,41 @@ export interface Messages {
       hint: string;
     };
   };
+  /** アップデート通知（banner.tsx の 1 行 + /update ダイアログ） */
+  update: {
+    /** バナー行: 新しいバージョンが出ている。 */
+    available: (latest: string) => string;
+    /** バナー行に添える案内（`/update` を促す）。 */
+    availableHint: string;
+    /** /update ダイアログの見出し。 */
+    title: string;
+    /** レジストリへの問い合わせ中。 */
+    checking: string;
+    /** すでに最新だった。 */
+    upToDate: (current: string) => string;
+    /** 最新バージョンを取得できなかった（オフライン・レジストリ障害など）。 */
+    unavailable: string;
+    /** 更新があり、実行してよいか尋ねる（実行するコマンドを見せる）。 */
+    confirm: (latest: string, command: string) => string;
+    /** 更新はあるが codiva 側で実行しない（インストール経路が不確実）ので手順を出す。 */
+    manual: (latest: string, command: string) => string;
+    /** npx 実行中: インストールが無いので次回起動でそのまま最新になる。 */
+    npx: (latest: string) => string;
+    /** 更新コマンドの実行中。 */
+    installing: string;
+    /** 実行中の閉じ方（更新自体は続く）。 */
+    installingHint: string;
+    /** 稼働中セッションがある状態で更新するときの警告。 */
+    activeWarning: (count: number) => string;
+    /** 更新完了（再起動を促す）。 */
+    installed: (latest: string) => string;
+    /** 更新コマンドが失敗した（detail は npm の stderr 由来）。 */
+    failed: (detail: string) => string;
+    /** 失敗したが理由が取れなかった。 */
+    failedUnknown: string;
+    /** ダイアログの閉じ方（任意キー）。 */
+    dismiss: string;
+  };
   /** 下部モード行（status-footer.tsx） */
   footer: {
     autoMode: string;
@@ -262,6 +297,8 @@ export interface Messages {
     prompt: string;
     /** /clear の説明 */
     clear: string;
+    /** /update の説明 */
+    update: string;
   };
 }
 
@@ -401,6 +438,25 @@ const ja: Messages = {
       hint: '変更: https://claude.ai/settings/data-privacy-controls',
     },
   },
+  update: {
+    available: (latest) => `新しいバージョン v${latest} が利用できます`,
+    availableHint: '/update で更新',
+    title: 'アップデート',
+    checking: '最新バージョンを確認中…',
+    upToDate: (current) => `v${current} は最新です`,
+    unavailable: '最新バージョンを確認できませんでした（オフラインの可能性があります）',
+    confirm: (latest, command) => `v${latest} に更新します: ${command}`,
+    manual: (latest, command) => `v${latest} が利用できます。手動で実行してください: ${command}`,
+    npx: (latest) => `v${latest} が利用できます。npx 実行なので次回起動時に最新が使われます`,
+    installing: '更新中… (npm install)',
+    installingHint: 'Esc で閉じる（更新はそのまま続きます）',
+    activeWarning: (count) =>
+      `稼働中のセッションが ${count} 件あります。更新はセッション終了後を推奨します`,
+    installed: (latest) => `v${latest} に更新しました。codiva を再起動すると反映されます`,
+    failed: (detail) => `更新に失敗しました: ${detail}`,
+    failedUnknown: '更新に失敗しました',
+    dismiss: '任意のキーで閉じる',
+  },
   footer: {
     autoMode: '自動モード',
     confirmMode: '確認モード',
@@ -431,6 +487,7 @@ const ja: Messages = {
     diff: '変更差分サマリの表示を切り替え',
     prompt: 'リポジトリの追加指示を編集',
     clear: '完了したセッションを一覧から消去（履歴は残る）',
+    update: 'codiva の更新を確認して適用',
   },
 };
 
@@ -565,6 +622,25 @@ const en: Messages = {
       hint: 'Change it at https://claude.ai/settings/data-privacy-controls',
     },
   },
+  update: {
+    available: (latest) => `Update available: v${latest}`,
+    availableHint: 'run /update',
+    title: 'Update',
+    checking: 'Checking for the latest version…',
+    upToDate: (current) => `v${current} is the latest version`,
+    unavailable: 'Could not check the latest version (you may be offline)',
+    confirm: (latest, command) => `Update to v${latest}: ${command}`,
+    manual: (latest, command) => `v${latest} is available. Run it yourself: ${command}`,
+    npx: (latest) => `v${latest} is available. Running via npx, so the next run picks it up`,
+    installing: 'Updating… (npm install)',
+    installingHint: 'press Esc to close (the update keeps running)',
+    activeWarning: (count) =>
+      `${count} session(s) still running — updating after they finish is recommended`,
+    installed: (latest) => `Updated to v${latest}. Restart codiva to use it`,
+    failed: (detail) => `Update failed: ${detail}`,
+    failedUnknown: 'Update failed',
+    dismiss: 'press any key to close',
+  },
   footer: {
     autoMode: 'auto mode on',
     confirmMode: 'confirm mode on',
@@ -595,6 +671,7 @@ const en: Messages = {
     diff: 'Toggle the changes summary',
     prompt: 'Edit the repository instructions',
     clear: 'Clear finished sessions from the list (history is kept)',
+    update: 'Check for a codiva update and apply it',
   },
 };
 

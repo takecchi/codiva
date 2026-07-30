@@ -64,7 +64,7 @@ codiva/
 │   │   ├── list-hit.ts        # 一覧のマウス当たり判定（純粋）
 │   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatDuration/clamp/…）
 │   │   ├── privacy.ts        # 学習データ利用（grove）の判定（JSON→TrainingOptIn・純粋）
-│   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts
+│   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts / update.ts
 │   │   ├── scroll.ts / text-buffer.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
 │   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
 │   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（sdk-parse テスト用）
@@ -77,6 +77,7 @@ codiva/
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
 │   │   ├── repo-prompt-editor.tsx # /prompt のリポジトリ追加指示エディタ（モーダル・composer を置換）
 │   │   ├── dialog-box.tsx / confirm-prompt.tsx  # 共有 presentational（角丸枠・y/n 確認行）
+│   │   ├── update-dialog.tsx  # /update の表示（presentational・useInput を持たない）
 │   │   ├── status-footer.tsx / permission-dialog.tsx / model-select.tsx / command-palette.tsx / progress-badge.tsx
 │   │   ├── hooks.ts           # useSessions / useClock / useTextBufferRef / useCommandRunner / useLifecycleAction
 │   │   └── input.ts           # キー→テキストバッファ操作の対応（editText/resolveEnter/normalizeChord）
@@ -450,7 +451,7 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 純粋ロジックは core、副作用は utils／合成ルートという分離をそのまま踏襲する。
 
 - **設定ファイル拡張**: `~/.codiva/config.json` に `model` / `effort` / `permissionMode` / `maxBudgetUsd` /
-  `notifications` / `mouse` / `followOrigin` / `autoPr` を追加。検証変換は `core/config.ts` の `toConfig()` に
+  `notifications` / `updateCheck` / `mouse` / `followOrigin` / `autoPr` を追加。検証変換は `core/config.ts` の `toConfig()` に
   集約し、不正値は静かに既定へ落とす。合成ルート（`index.tsx`）が `SessionOptions` に束ねて `SessionManager`
   へ注入する。`followOrigin` / `autoPr` は真偽値（既定 on。`false` 明示で無効）。
 - **コスト表示**: reducer は `result.total_cost_usd` を `state.totalCostUsd` として既に保持。UI 用の導出だけ
@@ -547,6 +548,51 @@ codiva は並列セッションで大量のコードを Claude へ流すため�
   持つ記号なので、選択可能なテキスト塊（`textRef` の Box）の**外**に置いて行構成を揺らさない。
 
 エンドポイントの実測（User-Agent 要件など）は [TECH_NOTES.md](./TECH_NOTES.md#学習データ利用grove-の検知実測-2026-07-30) を参照。
+## アップデート通知 / `/update`
+
+npm 配信された自分自身の更新を検知して知らせ、安全に確定できる経路のときだけ適用する。
+「検知は自動、確定操作は人手」という PR 自動化と同じ方針。
+
+- **純粋ロジック（`core/update.ts`）**: semver の precedence 比較（`compareVersions` /
+  `isUpdateAvailable`。prerelease 規則まで実装）、結果 union（`UpdateCheck` =
+  `available` / `up-to-date` / `unavailable`）への変換（`resolveUpdateCheck`）、インストール経路
+  （`InstallKind` = `global` / `local` / `npx` / `unknown`）から更新コマンドを組む
+  `updateCommandFor`（**argv 配列**で返す）/ `updateCommandLine`、自己更新の可否 `canSelfUpdate`。
+  DI 境界 `UpdateService`（`initial` / `check()` / `install()`）とダイアログ状態 `UpdateViewState` もここ。
+- **I/O（`utils/update.ts`）**: `fetchLatestVersion` が `https://registry.npmjs.org/<pkg>/latest` を
+  1 回だけ引く（全 packument 21KB ではなく 2.3KB。認証不要。**3 秒でタイムアウトし throw しない**。
+  タイマーは unref、外部 `AbortSignal` でも打ち切れる）。`installKindFor` は
+  `packageRoot` / `execPath` / `cwd` / `platform` を**引数で受けるパス比較のみ**（`notifyCommand(spec, platform)`
+  と同じ方針でテスト可能）。`runUpdate` が `execFile`（シェルなし）で `npm install` を実行し、失敗は
+  stderr の最終行を `ok: false` で返す。`createUpdateService` がこれらを束ねる。
+- **経路判定の安全側**: npx / dlx / bunx のキャッシュ（**パス要素の完全一致**で判定。部分一致だと
+  `bunx-tools` のような無関係なディレクトリを誤検出する）は `npx`、volta / asdf 配下・Windows・
+  それ以外の判別不能は `unknown`。**実行するのは `global` だけ**（`canSelfUpdate`）で、`unknown` /
+  `local` / `npx` は実行すべきコマンドの提示に留める。静的判定が `unknown` のときだけ
+  `npm root -g` を 1 本起こして `global` へ格上げする（homebrew の Cellar・`npm config set prefix`・
+  pnpm/yarn global を拾うため。標準的な配置ではサブプロセス 0 本）。`npm install -g` の cwd は
+  ホームに固定する（対象リポジトリの `.npmrc` に宛先を書き換えられないため）。
+- **配線**: 合成ルート（`index.tsx`）が起動時に `createUpdateService` を作り、**await せずに**
+  `initial` を投げる（`modelCatalog` と同じ扱い。終了時に `updateAbort.abort()`）。`App` は
+  `useUpdateCheck(updater?.initial)` で state に解決し、`available` のときだけ
+  `bannerLines` の `updateLatest` へ渡す（最新・未確認では**ヘッダに行を増やさない**）。
+  ヘッダの文字組みは純粋な `core/banner-lines.ts`、色は `accent` トーン →`ui/theme.ts` の
+  `theme.accent`（`.tsx` に生の色名を書かない）。`/update` は `useCommandRunner` の
+  `update` ハンドラ → 毎回 `check()` し直し、`UpdateDialog` を出す。
+- **キー処理**: `UpdateDialog` は presentational で `useInput` を持たない。キーは一覧ビューの
+  単一ハンドラが `confirm` / `confirmResumeAll` と同じ位置で処理する（更新可能なら y/n、
+  それ以外は任意キーで閉じる）。非同期の決着は**世代カウンタ**で無効化し、閉じた後・開き直した
+  後に stale な結果でダイアログが蘇らないようにする。
+- **モーダルの相互排他は必須**: `PermissionDialog` は**自前の `useInput`** を持ち、Ink は 1 つの入力
+  チャンクを**マウント中の全ハンドラへ配る**。同時に出ていると更新確認の `y` が未読のツール実行の
+  許可も兼ねてしまう（このビューがキーを飲んでも相手は独立に反応する）。`pending` の導出に
+  `!update` を入れて構造的に禁じ、さらにモーダル中は**マウスレポートも飲む**
+  （クリックで `focus` が list に移ると許可ダイアログが立つ経路を塞ぐ）。
+- **実行中に操作不能にしない**: `installing` 中も **Esc は通す**。codiva は Ctrl+C を拾わず
+  （`exitOnCtrlC: false`）終了は `/exit` だけなので、全キーを飲むと `npm install` が終わるまで
+  最長 `INSTALL_TIMEOUT_MS` のあいだ何もできなくなる。Esc はダイアログを閉じるだけで npm は続行する。
+- **設定**: `updateCheck`（既定 on）。`false` で起動時の通信を完全に止める（`/update` は
+  `unavailable` を返すだけになる）。
 
 ## 設計判断
 
@@ -562,6 +608,9 @@ codiva は並列セッションで大量のコードを Claude へ流すため�
 | PR は draft で作り、緑になってから ready 化 | チェックは PR が無いと走らない（鶏卵）。完成前に push→draft で足場を作り、`gh pr checks` が緑になった時点で ready へ。確定操作は自動でも“レビュー可能”状態までに留める |
 | origin 追従は作成時のみ（稼働中は pull しない） | 稼働中 worktree へ取り込むと未コミット変更と競合し得る。作成時に `origin/<base>` から切る安全な部分集合に限定 |
 | PR 自動化は `PrAutomation` として DI・best-effort | `gh` 未導入/未認証/オフラインでもセッションを壊さない。core は `gh` を直接知らず、`utils/pr.ts` に隔離 |
+| 自己更新は経路を判定できたときだけ実行する | `npm i -g` は npx キャッシュ・volta 配下・別 prefix では宛先が違い、環境を壊す。判定不能（`unknown`）なら**コマンドの提示だけ**に留め、誤爆のコストを「自動化されない」に限定する |
+| 更新チェックは `latest` の 1 リクエスト・3 秒で打ち切り・await しない | 起動を絶対にブロックしない。オフライン/レジストリ障害でも `unavailable` に落ちるだけで TUI を壊さない。全 packument（21KB）ではなく `/latest`（2.3KB）を引く |
+| 「最新だった」と「確認できなかった」を型で区別する | オフラインを「最新です」と表示すると嘘になる。`UpdateCheck` の union で UI が取り違えられないようにする |
 | UI 文字列はカタログ集約 + 設定で言語切替 | 日本語/英語の利用者が混在する。ハードコードを排し、追加言語も `Lang`/`messages` 拡張だけで済む |
 | セッション = SDK `query()` 1本（サブプロセス1本） | SDK の設計単位に素直。プロセス分離により1セッションのクラッシュが他に波及しない |
 | streaming input を常用（単発 prompt を使わない） | 追加指示（F-6）と質問への回答（F-7）を同一機構で実現でき、セッションを開いたまま維持できる |

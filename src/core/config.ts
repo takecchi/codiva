@@ -30,6 +30,13 @@ export interface CodivaConfig {
    */
   privacyWarning?: boolean;
   /**
+   * 起動時に npm レジストリを見て新しいバージョンを通知する。未設定は有効（true）。
+   * `false` にすると起動時の通信を一切やめる（`/update` も「確認できませんでした」に
+   * なる）。通信は `latest` の 1 リクエスト（実測 2.3KB・3 秒でタイムアウト）で、
+   * 送るのはパッケージ名だけ。バージョンや利用状況は送らない。
+   */
+  updateCheck?: boolean;
+  /**
    * マウスサポート（クリックでキャレット移動・行選択、入力欄のドラッグで範囲選択→
    * クリップボードへコピー）。未設定は有効（true）。有効中は端末の通常ドラッグ選択は
    * 奪われるが、入力欄はアプリ側の選択コピー（OSC 52）で代替する（Shift+ドラッグで
@@ -84,6 +91,7 @@ interface CodivaConfigJson {
   maxBudgetUsd?: unknown;
   notifications?: unknown;
   privacyWarning?: unknown;
+  updateCheck?: unknown;
   mouse?: unknown;
   followOrigin?: unknown;
   autoPr?: unknown;
@@ -174,6 +182,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const privacyWarning = toBoolean(raw.privacyWarning);
   if (privacyWarning !== undefined) {
     config.privacyWarning = privacyWarning;
+  }
+  const updateCheck = toBoolean(raw.updateCheck);
+  if (updateCheck !== undefined) {
+    config.updateCheck = updateCheck;
   }
   const mouse = toBoolean(raw.mouse);
   if (mouse !== undefined) {
