@@ -247,6 +247,23 @@ function toUserMessage(text: string): SDKUserMessage {
 - 再描画スロットリング: コアからの onChange を UI 側で ~100ms デバウンス。`useSyncExternalStore` の getSnapshot が返す参照が変わらなければ再描画されない点を利用する。
 - **alt screen（代替スクリーンバッファ）**: 全画面レイアウトでも通常バッファのままだとシェルの過去出力がスクロールバックに残り、上へスクロールできてしまう。起動時に `\x1b[?1049h` で alt screen に入り、終了時に `\x1b[?1049l` で抜ける（`utils/alt-screen.ts`）。alt screen にはスクロールバックが存在しないため vim / htop と同様にスクロールがロックされ、終了すると元の画面が復元される。enter するのは「TTY かつ起動時の rows が `MIN_FULLSCREEN_ROWS` 以上」のときだけ（インライン描画フォールバック時はスクロールバックに頼るため通常バッファのまま）。終了時の残存 worktree 案内は leave 後に書き、通常バッファに残す。クラッシュ時の取り残し防止に `process.on('exit')` で leave を保険登録する。
 
+## デスクトップ通知の実装メモ
+
+- **macOS の `osascript display notification` は「Script Editor」名義になる**（実測 / macOS 15）。通知センターは通知を**アプリバンドル単位**で管理し、`osascript` は自前のバンドルを持たないため AppleScript の代表バンドル `com.apple.ScriptEditor2` に紐づく。通知クリックは「送信元アプリのアクティベート」なので、codiva の完了通知を押すと**スクリプトエディタが開く**（同じ症状の報告: [opencode#23446](https://github.com/anomalyco/opencode/issues/23446)）。`-sender` 相当の指定は `osascript` には無く、`tell application id "…" to display notification` で端末アプリ名義にする手は TCC（自動化）許可プロンプトが必要になる。
+- **対策は端末自身に通知を出させる OSC シーケンス**（`utils/notify.ts` の `buildNotifySequence`）。端末エミュレータが投函するので通知は端末アプリ名義になり、クリックでその端末が前面に来る＝復帰動線として正しく機能する。OSC 52（クリップボード）と同じく SSH / コンテナ越しでも動く。方言が 3 つあるので端末ごとに使い分ける:
+
+  | 方言 | 形 | 対応端末 |
+  |---|---|---|
+  | OSC 777 | `ESC ] 777 ; notify ; <title> ; <body> BEL` | Ghostty / WezTerm / foot |
+  | OSC 9 | `ESC ] 9 ; <body> BEL`（**本文 1 つだけ**。タイトルは端末名） | iTerm2 |
+  | OSC 99 | `ESC ] 99 ; i=<id>:d=0:p=title:e=1 ; <base64> ST` + `d=1:p=body` | kitty |
+
+- 判定は環境変数（`detectNotifyProtocol`）。**OSC は投げっぱなしで解釈されたか分からない**（無視されれば無音で消える＝動いていた OS 通知まで失う）ため、**対応が確実な端末だけ**を列挙し、それ以外は従来の OS コマンド（`osascript` / `notify-send`）へフォールバックする。非 TTY のときもエスケープは書かない（ゴミが残るだけ）。意図的に外したもの:
+  - **Windows Terminal**: 通知用 OSC 777 は [microsoft/terminal#20012](https://github.com/microsoft/terminal/pull/20012) で実装されたが `allowOSC777` 設定が既定 false。OSC 9 の方は ConEmu 方言の数値サブコマンド（`9;4` プログレス等）専用で `9;<text>` の通知ではない。
+  - **urxvt**: OSC 777 は「第1フィールドの名前の perl 拡張へ丸投げ」する汎用口で、`notify` 拡張は同梱されていない（`perl-ext-common` での追加読み込みが必要）。
+- **tmux は `TERM_PROGRAM` を `tmux` で上書きする**（tmux 3.2 で `TERM_PROGRAM`/`TERM_PROGRAM_VERSION` を export するようになった）。`TERM` も screen-* に化けるため、`TERM_PROGRAM`/`TERM` だけ見ると **tmux 内では必ず判定漏れして Script Editor 名義に戻る**。端末が自前で撒く変数（`GHOSTTY_BIN_DIR` / `GHOSTTY_RESOURCES_DIR` / `WEZTERM_PANE` / `WEZTERM_EXECUTABLE` / `KITTY_WINDOW_ID` / `ITERM_SESSION_ID`）は tmux サーバ起動時の環境として残るので、これらも判定に使う。iTerm2 の `LC_TERMINAL=iTerm2` は **ssh が既定で転送する**（`SendEnv LC_*`）ので、リモートの codiva からでも手元の iTerm2 に通知が出る。tmux 内では OSC を DCS パススルーで包む（`utils/terminal-mode.ts` の `wrapForTmux`。`allow-passthrough on` が必要）。
+- 文字列は制御文字を空白へ潰し 120 文字で切る。ESC / BEL がシーケンスの終端子なので、セッションタイトル（LLM がリポジトリ内容から作る＝非信頼入力）にそれらが混ざるとシーケンスが途中で切れて壊れる。C0 / DEL だけでなく **C1（U+0080–U+009F）も落とす**: UTF-8 のまま U+009C を ST、U+009B を CSI として解釈する端末があるため。OSC 777 の title 内 `;` はフィールド境界と誤読されるので `,` へ置換（body は最終フィールドなので不要）、OSC 9 は本文が `9;4;70` のような数値サブコマンドに化けないよう `;` を全部置換する。OSC 99 は payload を base64（`e=1`）にして `;` / 非 ASCII をそのまま運び、id は `<pid>-<連番>`（同じ id は上書き・連結されるため、1 端末で codiva を 2 つ動かしても衝突しないように pid を混ぜる）。
+
 ## git worktree の実装メモ
 
 ```bash
