@@ -34,13 +34,10 @@ import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
   useAbsolutePosition,
-  useAccount,
   useBoxHeight,
-  useClock,
   useCommandRunner,
   useDragSelection,
   useLifecycleAction,
-  useRateLimit,
   useRunMode,
   useSessions,
   useTextBufferRef,
@@ -153,13 +150,6 @@ export const SessionDetail: FC<{
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
-  // ステータスバーの使用状況（プラン・リミット枠）。詳細ビューでも一覧と同じものを
-  // 出す（バナーが無い画面なので、ここが唯一の可視点になる）。
-  const account = useAccount(manager);
-  const rateLimits = useRateLimit(manager);
-  // 詳細ビューが時刻に依存するのはリセットまでのカウントダウン（分単位）だけなので
-  // 一覧のような毎秒更新は不要。ログ全体の再描画コストを避けて 30 秒間隔にする。
-  const now = useClock(30_000);
   const { rows, columns } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
@@ -621,13 +611,7 @@ export const SessionDetail: FC<{
           </Box>
         )}
 
-        <StatusFooter
-          mode={mode}
-          hint={footerHint}
-          account={account}
-          usage={rateLimits}
-          now={now}
-        />
+        <StatusFooter mode={mode} hint={footerHint} />
       </Box>
     </Box>
   );

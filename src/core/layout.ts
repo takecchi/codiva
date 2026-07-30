@@ -35,52 +35,6 @@ export function showsBranchColumn(columns: number): boolean {
 }
 
 /**
- * ステータスバー（`ui/status-footer.tsx`）の使用状況表示を、端末幅に応じてどこまで
- * 出すかの計画。フッタは**どの幅でも1行**に収める必要があるため（折り返すとログの
- * 行を奪い、レイアウト崩れに見える）、幅が足りないぶんは情報量の少ない要素から
- * 落とす。優先度は「5時間枠 > プラン名 > 2つ目の枠 > ゲージ」。
- */
-export interface UsageFooterPlan {
-  /** 表示する枠の数（0 なら使用状況を出さない）。 */
-  windows: number;
-  /** ゲージ（`████░░░░`）を出すか。落とすと `% 使用` と残り時間だけになる。 */
-  showBars: boolean;
-  /** プラン名（`Claude Team`）を出すか。 */
-  showPlan: boolean;
-}
-
-/**
- * これ未満の幅ではモード表示とヒントだけで埋まるため、使用状況をまるごと省く。
- */
-export const MIN_USAGE_FOOTER_COLUMNS = 50;
-
-/**
- * 端末桁数から使用状況表示の内容を決める純関数（`showsBranchColumn` と同じ発想の
- * 段階的縮退）。
- *
- * 閾値は**最長ケースの実描画幅**で決めている: ja カタログ（CJK は 2 セル）+ 長い
- * プラン名（`Claude Enterprise`）+ 長いラベル（`今週Sonnet`）+ 3桁% + 複数日の
- * 残り時間。典型ケースに合わせると `Claude Team`+`今週` では収まるのに
- * `Claude Enterprise`+`今週Sonnet` で数字の途中が黙って切れる（実際に起きた）。
- * `status-footer.spec.tsx` が最長ケースで幅超過ゼロを検証している。
- */
-export function usageFooterPlan(columns: number): UsageFooterPlan {
-  if (columns >= 116) {
-    return { windows: 2, showBars: true, showPlan: true };
-  }
-  if (columns >= 80) {
-    return { windows: 1, showBars: true, showPlan: true };
-  }
-  if (columns >= 62) {
-    return { windows: 1, showBars: true, showPlan: false };
-  }
-  if (columns >= MIN_USAGE_FOOTER_COLUMNS) {
-    return { windows: 1, showBars: false, showPlan: false };
-  }
-  return { windows: 0, showBars: false, showPlan: false };
-}
-
-/**
  * ヘッダ（`ui/banner.tsx`）の使用状況ゲージ以外に 1 行が使う幅の見積り（ja の最長ケース）:
  * マスコット 15 + 余白 2 + 一覧のパディング 2 + 行頭のインデント 2 + 見出し 16
  * （`現在のセッション`）+ 余白 2 + 使用率 4 + 余白 2 + 残り時間 21（`3日23時間後にリセット`）。
@@ -94,7 +48,7 @@ const BANNER_GAUGE_STEPS = [20, 12, 8] as const;
  * 端末桁数からヘッダの使用状況ゲージの幅（セル）を決める純関数。`0` はゲージを出さない
  * （使用率と残り時間だけにする）。
  *
- * フッタの `usageFooterPlan` と同じ段階的縮退だが、こちらは**枠を落とさずゲージだけを
+ * `showsBranchColumn` と同じ幅ベースの段階的縮退だが、こちらは**枠を落とさずゲージだけを
  * 縮める** — ヘッダは枠を並べて比べる場所なので、行数を減らすより 1 行を短くするほうが
  * 情報が残る。ゲージを縮めないと最長ケースで 87 桁必要になり、80 桁の端末でヘッダ全体が
  * 縮められてマスコットが折り返す（実際に起きた）。
