@@ -9,6 +9,19 @@ import type { CreateSessionInput, SessionState } from '@/core/types';
 /** Resolve after `ms` so background provisioning/state updates settle between steps. */
 export const flush = (ms = 150): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// 制御文字を正規表現リテラルに直接書くと Biome の noControlCharactersInRegex に触れるので組み立てる。
+const SGR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+/**
+ * Drop SGR (color/style) escapes from a frame. Necessary whenever a test derives a
+ * *column* from `lastFrame()` (e.g. to synthesize a mouse report): with colors
+ * enabled the raw string index includes escape sequences, so the click would land
+ * somewhere else entirely.
+ */
+export function stripAnsi(frame: string): string {
+  return frame.replace(SGR, '');
+}
+
 /** A no-op WorktreeService that reports predictable slugs/paths for the fakes. */
 export const fakeWorktrees: WorktreeService = {
   baseBranch: async () => 'main',

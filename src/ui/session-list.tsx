@@ -2,6 +2,10 @@ import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useRef, useState } from 'react';
 import {
   activeElapsedMs,
+  type BannerLine,
+  bannerCaretAt,
+  bannerLines,
+  bannerText,
   bufferOf,
   COMMANDS,
   caretIndexAtClick,
@@ -35,7 +39,7 @@ import {
   useBoxHeight,
   useClock,
   useCommandRunner,
-  useComposerSelection,
+  useDragSelection,
   useLifecycleAction,
   useRateLimit,
   useRunMode,
@@ -135,7 +139,10 @@ export const SessionList: FC<{
   const { columns, rows: termRows } = useWindowSize();
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
   // コンポーザのマウス範囲選択（ドラッグで選択→離すとクリップボードへコピー）。
-  const composerSel = useComposerSelection(onCopy);
+  const composerSel = useDragSelection(onCopy);
+  // ヘッダ（バナー）のマウス範囲選択。cwd の絶対パスをコピーしたいケースが主目的。
+  // コンポーザとは別インスタンスにする（caret index の基準テキストが違う）。
+  const headerSel = useDragSelection(onCopy);
   const [focus, setFocus] = useState<'composer' | 'list'>(initialViewState?.focus ?? 'composer');
   // 初回は末尾（最新）を選択して一番下までスクロールした状態で開く。戻ってきた
   // ときは前回の選択行を復元する（選択行から listView がスクロール窓を導くため、
@@ -156,6 +163,9 @@ export const SessionList: FC<{
   const rowsBox = useAbsolutePosition(rowsRef);
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
+  // ヘッダのテキスト欄（マスコットの右）。左上を実測してマウス座標から文字位置を逆算する。
+  const headerRef = useRef<DOMElement>(null);
+  const headerBox = useAbsolutePosition(headerRef);
 
   // 一覧は常に作成順（上が古い・下が新しい）。archived になっても位置は動かさない。
   const selected = Math.min(sel, Math.max(0, sessions.length - 1));
@@ -248,6 +258,55 @@ export const SessionList: FC<{
     }
   };
 
+  // ヘッダの表示行。描画（Banner）と当たり判定（bannerCaretAt）で同じ配列を使う —
+  // 行 index = 表示行という前提を共有しているので、片方だけ差し替えると選択がズレる。
+  const headerLines = bannerLines(m, {
+    cwd,
+    model,
+    version,
+    sessionCount: sessions.length,
+    totalCostUsd: totalCostUsd(sessions),
+    rateLimits,
+    now,
+  });
+  const headerText = bannerText(headerLines);
+
+  // 選択を始めた時点のヘッダ内容を固定して持つ。選択範囲は「このテキストへの caret
+  // index」なので、途中でヘッダの文言が変わると（合計コストの増加・セッション数・
+  // 使用状況のカウントダウン）行の長さがズレて別の文字を指してしまう。固定しておけば
+  // コピー結果は常に「選択した瞬間の文字列」になる。
+  const headerSnapRef = useRef<{ lines: readonly BannerLine[]; text: string } | undefined>(
+    undefined,
+  );
+  // 現在のヘッダと食い違ったらハイライトを捨てる（ズレた位置を光らせ続けない）。
+  // ドラッグ中は触らない（アンカーを失うと選択が中断する）。deps 配列を付けずに毎描画で
+  // 比較するのは、`headerSel` の参照が描画ごとに変わり deps に載せると即クリアされてしまうため。
+  useEffect(() => {
+    const snap = headerSnapRef.current;
+    if (snap && snap.text !== headerText && !headerSel.dragging()) {
+      headerSnapRef.current = undefined;
+      headerSel.clear();
+    }
+  });
+
+  /**
+   * Caret index for a mouse point inside the header's text block, or undefined when
+   * it's outside: the mascot, a row above/below the text, or — for a press — right of
+   * that row's last character (an empty area must not silently swallow clicks).
+   * Drags pass `'clamp'` instead, so overshooting the end still selects to the end.
+   */
+  const headerCaretAt = (
+    lines: readonly BannerLine[],
+    x: number,
+    y: number,
+    beyondEnd: 'reject' | 'clamp' = 'reject',
+  ): number | undefined => {
+    if (!headerBox) {
+      return undefined;
+    }
+    return bannerCaretAt(lines, y - headerBox.top, x - headerBox.left, beyondEnd);
+  };
+
   /**
    * Caret index for a mouse point inside the composer, or undefined if the point
    * is outside it. `contentTop` skips the top border; the `-2` drops the `❯ ` /
@@ -265,16 +324,34 @@ export const SessionList: FC<{
     );
   };
 
-  /** Route a mouse press to the composer caret (starting a selection) or a row. */
+  /**
+   * Route a mouse press to the composer caret (starting a selection), the header
+   * text (starting a header selection), or a session row.
+   */
   const handlePress = (x: number, y: number) => {
     const index = composerCaretAt(x, y);
     if (index !== undefined) {
       updateBuffer(bufferOf(bufferRef.current.value, index));
       setFocus('composer');
       composerSel.begin(index); // anchor a possible drag-selection at the click
+      headerSnapRef.current = undefined;
+      headerSel.clear();
       return;
     }
     composerSel.clear(); // a press outside the composer drops any highlight
+    // ヘッダは装飾なので一覧より弱い: 低い端末でヘッダが潰れてテキストが一覧の行に
+    // 重なった場合、その行のクリックは行選択（と PR セル）に渡す。ヘッダの選択が
+    // 行クリックを黙って食う方が体感の害が大きい。
+    const headerIndex = rowsBox && y >= rowsBox.top ? undefined : headerCaretAt(headerLines, x, y);
+    if (headerIndex !== undefined) {
+      // ヘッダのドラッグはフォーカスも選択行も動かさない — パス（cwd）をコピーしたい
+      // だけの操作で、タイピング位置や一覧の選択を奪われると邪魔になる。
+      headerSnapRef.current = { lines: headerLines, text: headerText };
+      headerSel.begin(headerIndex);
+      return;
+    }
+    headerSnapRef.current = undefined;
+    headerSel.clear();
     if (rowsBox) {
       // rows ボックス内の行 → セッションインデックス（可視ウィンドウ view.start.. へ写像）。
       const rowLine = rowLineAtPoint(y, rowsBox.top, view.showAbove, view.end - view.start);
@@ -292,15 +369,27 @@ export const SessionList: FC<{
     }
   };
 
-  /** Drag inside the composer extends the selection (live highlight). */
+  /**
+   * Drag extends whichever selection the press anchored (live highlight). Only one
+   * can be active at a time, so the press decides which region owns the drag.
+   */
   const handleDrag = (x: number, y: number) => {
-    if (!composerSel.dragging()) {
+    if (composerSel.dragging()) {
+      const index = composerCaretAt(x, y);
+      if (index !== undefined) {
+        updateBuffer(bufferOf(bufferRef.current.value, index));
+        composerSel.extend(index);
+      }
       return;
     }
-    const index = composerCaretAt(x, y);
-    if (index !== undefined) {
-      updateBuffer(bufferOf(bufferRef.current.value, index));
-      composerSel.extend(index);
+    if (headerSel.dragging()) {
+      // 当たり判定はドラッグ開始時に固定した行で行う（途中で文言が変わっても、
+      // アンカーと終点が同じテキストの index として揃う）。
+      const snap = headerSnapRef.current;
+      const index = snap ? headerCaretAt(snap.lines, x, y, 'clamp') : undefined;
+      if (index !== undefined) {
+        headerSel.extend(index);
+      }
     }
   };
 
@@ -319,7 +408,18 @@ export const SessionList: FC<{
         handleDrag(mouse.x, mouse.y);
       } else if (mouse.kind === 'release') {
         // 離した時点で 1 回だけコピー（ドラッグごとに送らない）。ハイライトは残す。
+        // アンカーの無い側は no-op なので、両方に release を渡して構わない。
         composerSel.end(bufferRef.current.value);
+        // ヘッダはドラッグ開始時に固定したテキストからコピーする。表示が変わっていた
+        // ならハイライトは残さない（ズレた位置を光らせたままにしない）。
+        const snap = headerSnapRef.current;
+        if (snap) {
+          headerSel.end(snap.text);
+          if (snap.text !== headerText) {
+            headerSnapRef.current = undefined;
+            headerSel.clear();
+          }
+        }
       }
       return;
     }
@@ -329,6 +429,7 @@ export const SessionList: FC<{
     const { input, key } = normalizeChord(rawInput, rawKey);
     // 何かキーが来たらマウス選択のハイライトは消す（タイピング/カーソル移動で解除）。
     composerSel.clear();
+    headerSel.clear();
     // The model picker and repo-prompt editor are modal: each owns the keys (its
     // own useInput). Ignore everything here so nothing leaks through to the list.
     if (modelSelect || promptEdit) {
@@ -500,15 +601,7 @@ export const SessionList: FC<{
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
-      <Banner
-        cwd={cwd}
-        model={model}
-        version={version}
-        sessionCount={sessions.length}
-        totalCostUsd={totalCostUsd(sessions)}
-        rateLimits={rateLimits}
-        now={now}
-      />
+      <Banner lines={headerLines} selection={headerSel.selection} textRef={headerRef} />
 
       {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる。
           高さを実測し、その行数に収まるぶんだけ内部スクロールして描画する。 */}
