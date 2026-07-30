@@ -95,6 +95,10 @@ npm run build      # tsup で dist/index.js に単一ファイルバンドル
 
 設計ドキュメントは [`docs/`](./docs) を参照してください（[PRD](./docs/PRD.md) / [ARCHITECTURE](./docs/ARCHITECTURE.md) / [TECH_NOTES](./docs/TECH_NOTES.md)）。
 
+コーディング規約は [`.claude/rules/`](./.claude/rules)（レイヤ構成・命名・i18n・Ink・セッションドメイン・SDK 連携・git/IO・テスト）、
+スラッシュコマンド追加などの定型作業の手順は [`.claude/skills/`](./.claude/skills) にまとめてあります。
+全体の索引と「やりたいこと → 触るファイル」の地図は [`CLAUDE.md`](./CLAUDE.md) にあります。
+
 ## リリース
 
 npm への配信は **npm Trusted Publishing（OIDC）** を利用し、GitHub Actions からトークンレスで行います。GitHub 上で Release を publish するだけで、バージョン同期・npm 配信・main へのバージョン更新コミットが自動実行されます。初回の手順・GitHub / npm の設定は [`docs/RELEASE.md`](./docs/RELEASE.md) を参照してください。
