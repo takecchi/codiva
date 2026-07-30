@@ -8,7 +8,9 @@ import {
   logViewportRows,
   MIN_BRANCH_COLUMN_COLUMNS,
   MIN_FULLSCREEN_ROWS,
+  MIN_USAGE_FOOTER_COLUMNS,
   showsBranchColumn,
+  usageFooterPlan,
 } from './layout';
 
 describe('isFullscreenViewport', () => {
@@ -178,5 +180,34 @@ describe('listViewportRows', () => {
   it('never returns less than 1 row', () => {
     expect(listViewportRows(10)).toBe(1);
     expect(listViewportRows(0)).toBe(1);
+  });
+});
+
+describe('usageFooterPlan', () => {
+  it.each([
+    // 段階的縮退: 幅が減るごとに情報量の少ない要素から落ちる。
+    [200, { windows: 2, showBars: true, showPlan: true }],
+    [100, { windows: 2, showBars: true, showPlan: true }],
+    [99, { windows: 1, showBars: true, showPlan: true }],
+    [76, { windows: 1, showBars: true, showPlan: true }],
+    [75, { windows: 1, showBars: true, showPlan: false }],
+    [60, { windows: 1, showBars: true, showPlan: false }],
+    [59, { windows: 1, showBars: false, showPlan: false }],
+    [MIN_USAGE_FOOTER_COLUMNS, { windows: 1, showBars: false, showPlan: false }],
+    [MIN_USAGE_FOOTER_COLUMNS - 1, { windows: 0, showBars: false, showPlan: false }],
+    [0, { windows: 0, showBars: false, showPlan: false }],
+  ])('幅 %s', (columns, expected) => {
+    expect(usageFooterPlan(columns)).toEqual(expected);
+  });
+
+  it('狭くなるほど内容は単調に減る（幅を狭めて情報が増えることはない）', () => {
+    let prev = usageFooterPlan(200);
+    for (let columns = 200; columns >= 0; columns--) {
+      const plan = usageFooterPlan(columns);
+      expect(plan.windows).toBeLessThanOrEqual(prev.windows);
+      expect(Number(plan.showBars)).toBeLessThanOrEqual(Number(prev.showBars));
+      expect(Number(plan.showPlan)).toBeLessThanOrEqual(Number(prev.showPlan));
+      prev = plan;
+    }
   });
 });

@@ -365,3 +365,55 @@ observed した tool_use: `TaskCreate`, `TaskUpdate`, `AskUserQuestion`, `Write`
 - `todos`: TaskCreate/TaskUpdate から構築（上記1）。`progress = {done, total}`。
 - `status`: `system/init`→running、`AskUserQuestion`(canUseTool)→awaiting_input、その他 canUseTool→awaiting_permission、`result/success`→completed、`result/error_*`→failed。
 - ログ: `assistant` の text ブロック、tool_use の1行要約、`result.result`。
+
+## プラン / 使用状況の取得（実測 / SDK v0.3.214, Claude Team, 2026-07-30）
+
+Claude Code のステータスラインと同じ「プラン種別 + リミットまでの使用状況」を出すために、
+`accountInfo()` と実験的な usage 要求を probe（何も送らない streaming-input セッション）から
+読んだ実測結果。**推論は走らないのでトークン消費はゼロ**（実測 1〜2 秒）。
+
+### `Query.accountInfo()` — プラン名の唯一の出所
+
+```jsonc
+{ "email": "…", "organization": "THE PHAGE",
+  "subscriptionType": "Claude Team", "apiProvider": "firstParty" }
+```
+
+- `subscriptionType` は **表示用の文字列**（`'Claude Team'`。usage 側は `'team'` と小文字なので
+  `core/account.ts` の `normalizePlanName` で綴りを揃える）。SDK 由来の表示文字列なので翻訳しない。
+- `apiProvider` が `'firstParty'` のときだけ claude.ai のサブスク制限が効く（Bedrock / Vertex /
+  API キーには無い）。
+- **idle な probe でも即答する**（init ハンドシェイクだけで完結。`supportedModels()` と同じ）。
+
+### `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` — 枠は来ないことがある
+
+```jsonc
+{ "session": { "total_cost_usd": 0, "model_usage": {} },
+  "subscription_type": "team",
+  "rate_limits_available": true,
+  "rate_limits": null,            // ← available=true でも null
+  "behaviors": { "day": { … }, "week": { … } } }
+```
+
+- **`rate_limits_available: true` でも `rate_limits: null` があり得る**（Team アカウントで3回連続再現）。
+  「available」を根拠に枠を描いてはいけない。`core/usage.ts` は null を「枠なし」として扱い、
+  `rate_limit_event` 側の情報だけで表示する。
+- 枠が来る場合の形は SDK 型宣言のとおり `{ utilization: number|null, resets_at: ISO文字列|null }`。
+  **`resets_at` は ISO 8601 文字列**で、`rate_limit_event` の `resetsAt`（Unix 秒）とは単位が違う。
+- `behaviors` はローカルの transcript スキャン由来の統計（`/usage` ダイアログと同じ）。codiva は使わない。
+- **ターンを回した直後のセッションでは `ProcessTransport is not ready for writing` で失敗した**ので、
+  実セッションに相乗りせず専用 probe で読む（`utils/usage-probe.ts`）。
+
+### `rate_limit_event`（実セッション、1ターン実行時の実測）
+
+```jsonc
+{ "type": "rate_limit_event",
+  "rate_limit_info": { "status": "allowed", "resetsAt": 1785414600, "rateLimitType": "five_hour",
+                       "overageStatus": "allowed", "overageResetsAt": 1785542400, "isUsingOverage": false } }
+```
+
+- **`system/init` の直後**（assistant 出力より前）に届く = ターン開始ごとに最新化される。
+- **`five_hour` には `utilization` が付かないことがある**（このアカウントでは付かなかった。
+  `overage` 枠には `utilization: 3.49` が付いた）。つまり「% 使用」は常に取れるとは限らないので、
+  UI は `utilization` が無い枠にゲージを描かず残り時間だけ出す（0% と誤読させない）。
+- **idle なセッション（何も送っていない probe）には届かない**。だからポーリングと併用する。

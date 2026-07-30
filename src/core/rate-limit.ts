@@ -158,6 +158,67 @@ export function sortRateLimitWindows(windows: readonly RateLimitWindow[]): RateL
   });
 }
 
+/**
+ * Whether two readings describe the **same window instance** — i.e. the same
+ * 5-hour / 7-day period, so numbers from one may be carried over to the other.
+ * A different reset time means the period rolled over and the old percentage is
+ * stale. An absent reset time on either side is treated as "same": we can't tell,
+ * and dropping a known percentage is the worse failure (the gauge disappears).
+ */
+function sameWindowInstance(a: RateLimitWindow, b: { resetsAt?: number }): boolean {
+  return a.resetsAt === undefined || b.resetsAt === undefined || a.resetsAt === b.resetsAt;
+}
+
+/**
+ * Fold a fresh `rate_limit_event` reading into what we already knew about that
+ * window.
+ *
+ * The event is authoritative on `status` and `resetsAt`, but it does **not always
+ * carry `utilization`** (the real `five_hour` event doesn't — see docs/TECH_NOTES.md).
+ * Without this merge, the percentage obtained from the polled `/usage` snapshot
+ * would be wiped at the start of every turn and the gauge would flicker away.
+ * A percentage is only carried over while the window instance is unchanged.
+ *
+ * Returns `prev` unchanged when nothing displayable moved, keeping the manager's
+ * snapshot reference stable (the UI's re-render suppression depends on it).
+ */
+export function mergeEventWindow(
+  prev: RateLimitWindow | undefined,
+  next: RateLimitWindow,
+): RateLimitWindow {
+  if (!prev) {
+    return next;
+  }
+  const utilization =
+    next.utilization ?? (sameWindowInstance(prev, next) ? prev.utilization : undefined);
+  const merged: RateLimitWindow = { ...next, utilization };
+  return sameRateLimitWindow(prev, merged) ? prev : merged;
+}
+
+/** Whether a window carries anything worth rendering (a percentage or a reset time). */
+export function hasRateLimitDetail(window: RateLimitWindow): boolean {
+  return window.utilization !== undefined || window.resetsAt !== undefined;
+}
+
+/**
+ * Pick the windows for the one-line status footer (the banner shows them all).
+ *
+ * Keeps display order but floats anything that is not plain `allowed` to the
+ * front, so a rejected/warning window is never the row that gets cut off by
+ * `max`. Windows with no numbers at all are dropped (an empty label would just
+ * take space away from the ones that mean something).
+ */
+export function compactRateLimitWindows(
+  windows: readonly RateLimitWindow[],
+  max = 2,
+): RateLimitWindow[] {
+  const shown = sortRateLimitWindows(windows).filter(hasRateLimitDetail);
+  return [
+    ...shown.filter((w) => w.status !== 'allowed'),
+    ...shown.filter((w) => w.status === 'allowed'),
+  ].slice(0, Math.max(0, max));
+}
+
 /** Days/hours/minutes remaining until `resetsAtMs`, clamped at zero (never negative). */
 export interface ResetCountdown {
   days: number;

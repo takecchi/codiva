@@ -38,6 +38,30 @@ describe('bannerLines', () => {
     expect(rows(bannerLines(m, { sessionCount: 0, now: NOW }))).toHaveLength(3);
   });
 
+  it('プラン名はモデル行と cwd 行の間に入る', () => {
+    const lines = rows(
+      bannerLines(m, {
+        sessionCount: 0,
+        model: 'sonnet',
+        cwd: '/tmp/repo',
+        account: { plan: 'Claude Team', organization: 'Acme' },
+        now: NOW,
+      }),
+    );
+    expect(lines[2]).toBe('model: sonnet');
+    expect(lines[3]).toBe(m.banner.usage.plan('Claude Team', 'Acme'));
+    expect(lines[4]).toBe('/tmp/repo');
+  });
+
+  it('プランが取れないときはプラン行を作らない（行 index をずらさない）', () => {
+    const base = rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo', now: NOW }));
+    for (const account of [undefined, {}, { organization: 'Acme' }]) {
+      expect(
+        rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo', account, now: NOW })),
+      ).toEqual(base);
+    }
+  });
+
   const headCases: {
     name: string;
     input: Parameters<typeof bannerLines>[1];

@@ -34,10 +34,13 @@ import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
   useAbsolutePosition,
+  useAccount,
   useBoxHeight,
+  useClock,
   useCommandRunner,
   useDragSelection,
   useLifecycleAction,
+  useRateLimit,
   useRunMode,
   useSessions,
   useTextBufferRef,
@@ -150,6 +153,11 @@ export const SessionDetail: FC<{
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
+  // ステータスバーの使用状況（プラン・リミット枠）。詳細ビューでも一覧と同じものを
+  // 出す（バナーが無い画面なので、ここが唯一の可視点になる）。
+  const account = useAccount(manager);
+  const rateLimits = useRateLimit(manager);
+  const now = useClock(1000);
   const { rows, columns } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
@@ -611,7 +619,13 @@ export const SessionDetail: FC<{
           </Box>
         )}
 
-        <StatusFooter mode={mode} hint={footerHint} />
+        <StatusFooter
+          mode={mode}
+          hint={footerHint}
+          account={account}
+          usage={rateLimits}
+          now={now}
+        />
       </Box>
     </Box>
   );

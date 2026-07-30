@@ -32,6 +32,47 @@ export function showsBranchColumn(columns: number): boolean {
 }
 
 /**
+ * ステータスバー（`ui/status-footer.tsx`）の使用状況表示を、端末幅に応じてどこまで
+ * 出すかの計画。フッタは**どの幅でも1行**に収める必要があるため（折り返すとログの
+ * 行を奪い、レイアウト崩れに見える）、幅が足りないぶんは情報量の少ない要素から
+ * 落とす。優先度は「5時間枠 > プラン名 > 2つ目の枠 > ゲージ」。
+ */
+export interface UsageFooterPlan {
+  /** 表示する枠の数（0 なら使用状況を出さない）。 */
+  windows: number;
+  /** ゲージ（`████░░░░`）を出すか。落とすと `% 使用` と残り時間だけになる。 */
+  showBars: boolean;
+  /** プラン名（`Claude Team`）を出すか。 */
+  showPlan: boolean;
+}
+
+/**
+ * これ未満の幅ではモード表示とヒントだけで埋まるため、使用状況をまるごと省く。
+ * （表示可否の閾値は実測ベース: ja カタログ + 2桁% + 「残り2日0時間」で最も長くなる。）
+ */
+export const MIN_USAGE_FOOTER_COLUMNS = 46;
+
+/**
+ * 端末桁数から使用状況表示の内容を決める純関数（`showsBranchColumn` と同じ発想の
+ * 段階的縮退）。閾値は `status-footer.spec.tsx` が実際の描画幅で検証している。
+ */
+export function usageFooterPlan(columns: number): UsageFooterPlan {
+  if (columns >= 100) {
+    return { windows: 2, showBars: true, showPlan: true };
+  }
+  if (columns >= 76) {
+    return { windows: 1, showBars: true, showPlan: true };
+  }
+  if (columns >= 60) {
+    return { windows: 1, showBars: true, showPlan: false };
+  }
+  if (columns >= MIN_USAGE_FOOTER_COLUMNS) {
+    return { windows: 1, showBars: false, showPlan: false };
+  }
+  return { windows: 0, showBars: false, showPlan: false };
+}
+
+/**
  * 詳細ビューでログ以外に消費される固定の縦幅の見積り: 上下パディング 2 +
  * コンポーザ上の余白 1 + 入力欄 3（上下ボーダー付き） + フッタ 1 +
  * スクロールヒント 1（スクロール中のみ）。

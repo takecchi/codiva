@@ -247,6 +247,38 @@ UI なし。すべてユニットテストで駆動する。
 > 実績メモ: 全500テスト緑・lint/typecheck/build 緑。core/utils カバレッジは 80% 要件を満たす。
 > 手動受け入れ（実 `gh` + リモート）は未実施 — CI/認証環境での確認は別途必要。
 
+## Phase 11: プラン / 使用状況のステータスバー
+
+> Claude Code のステータスライン相当（プラン種別 + リミットまでの使用状況）を codiva でも出す。
+> `rate_limit_event` はターン実行中しか届かないので、control channel を叩く probe を第2の情報源に足す。
+
+- [x] **SDK 実測（spike）**: `accountInfo()` / 実験的 usage 要求 / 実セッションの `rate_limit_event` を採取。
+      結論を `docs/TECH_NOTES.md` に追記（**`rate_limits_available: true` でも `rate_limits: null`**、
+      **`five_hour` イベントに `utilization` が付かない**、idle probe には event が来ない）
+- [x] **probe 基盤の共通化**: `utils/sdk-probe.ts`（`idlePrompt` / `runSdkProbe`。timeout・abort・
+      サブプロセス後始末を一箇所に）。`utils/model-catalog.ts` をこの上に載せ替え
+- [x] **取得**: `utils/usage-probe.ts`（`fetchUsageSnapshot` = 1 probe で `accountInfo()` と usage を
+      `allSettled` で読む / `hasUsageData`）
+- [x] **純粋ロジック**: `core/account.ts`（`toAccountSummary` / `normalizePlanName` / `sameAccountSummary`）、
+      `core/usage.ts`（`toUsageSnapshot` / `mergeUsageWindow`）、`core/gauge.ts`（`gaugeCells`）、
+      `core/rate-limit.ts` に `compactRateLimitWindows` / `hasRateLimitDetail`
+- [x] **状態**: `SessionManager.applyUsage()` / `getAccount()`（イベント由来の枠とフィールド単位で合流し、
+      変化が無ければ同一参照を維持）
+- [x] **ポーリング**: `bootstrap/usage-poller.ts`（即時 + 5分間隔、多重実行を抑止、2回連続で空なら停止）。
+      合成ルート `src/index.tsx` で配線し、終了時に停止 + probe を abort
+- [x] **UI**: `StatusFooter` に使用状況セグメント（一覧・詳細の両方）、ヘッダにプラン行
+      （行を組むのは `core/banner-lines.ts` = モデル行と cwd 行の間。`Banner` は presentational のまま）。
+      i18n `banner.usage.plan` / `footer.usage.*` を ja/en 対で追加。`theme.glyph.gaugeFilled` / `gaugeEmpty`
+- [x] **狭い端末での1行維持**: `core/layout.ts` の `usageFooterPlan(columns)` で段階的縮退
+      （2枠 → 1枠 → ゲージ落とし → プラン名落とし → 非表示）。実測（自前 stdout で 30〜200 桁）で
+      閾値を決め、`status-footer.spec.tsx` が折り返しゼロ・幅超過ゼロを検証
+- [x] テスト: account / usage / gauge / rate-limit / usage-probe / usage-poller / session-manager /
+      status-footer / `tests/app.test.tsx`（両ビューのステータスバー）
+
+> 実績メモ: lint/typecheck/test/build 緑。実測は Claude Team アカウントで採取（`utilization` が
+> 来ないため実機では残り時間のみ表示。ゲージ表示経路はテストで担保）。フッタの折り返しは実装中に
+> 実測で発覚し、Yoga の flex 縮小任せをやめて幅ベースの段階的縮退へ変更した。体感確認はユーザー環境で。
+
 ---
 
 ## 各 Phase 共通の完了チェック

@@ -385,6 +385,34 @@ describe('App (list view)', () => {
     expect(lastFrame()).toContain('最初のセッション');
   });
 
+  it('shows the polled plan + usage in the status bar of both views', async () => {
+    // The wiring index.tsx sets up: usage poller → manager.applyUsage → both views.
+    const manager = makeManager();
+    manager.applyUsage({
+      account: { plan: 'Claude Team', organization: 'Example Inc' },
+      usage: {
+        limitsAvailable: true,
+        windows: [{ type: 'five_hour', utilization: 50, resetsAt: Date.now() + 45 * 60_000 }],
+      },
+    });
+    manager.create('task');
+    await flush();
+
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 120);
+    // 一覧: バナーのプラン行 + ステータスバーのゲージ。
+    expect(lastFrame()).toContain('プラン: Claude Team (Example Inc)');
+    expect(lastFrame()).toContain('████░░░░');
+
+    // 詳細（バナーが無い画面）でもステータスバーに出続ける。
+    stdin.write('\t');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain('Claude Team');
+    expect(lastFrame()).toContain('50%');
+    app.unmount();
+  });
+
   it('renders in English when the en catalog is injected', () => {
     // The path index.tsx uses: resolved catalog → App messages prop → provider → components.
     const { lastFrame } = render(<App manager={makeManager()} messages={messages.en} />);

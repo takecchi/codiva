@@ -204,6 +204,12 @@ export interface Messages {
       used: (pct: number) => string;
       /** リセットまでの残り時間（日・時・分）。 */
       resetsIn: (days: number, hours: number, minutes: number) => string;
+      /**
+       * プラン行（`accountInfo()` 由来）。プラン名は SDK 由来の表示文字列なので
+       * そのまま渡す（i18n の例外。モデル名と同じ扱い）。組織名は Team /
+       * Enterprise のときだけ付く。
+       */
+      plan: (plan: string, organization?: string) => string;
     };
   };
   /** 下部モード行（status-footer.tsx） */
@@ -211,6 +217,16 @@ export interface Messages {
     autoMode: string;
     confirmMode: string;
     cycleHint: string;
+    /** ステータスバーの使用状況セグメント（枠の短縮見出し。キーは RateLimitLabelKey と一致）。 */
+    usage: {
+      session: string;
+      week: string;
+      weekOpus: string;
+      weekSonnet: string;
+      overage: string;
+      /** 使用率が不明な枠（SDK が utilization を送らない）で残り時間だけ出すときの前置き。 */
+      resetsInShort: (days: number, hours: number, minutes: number) => string;
+    };
   };
   /** スラッシュコマンド（commands.ts / command-palette.tsx） */
   command: {
@@ -367,12 +383,27 @@ const ja: Messages = {
               : `${minutes}分`;
         return `${when}後にリセット`;
       },
+      plan: (plan, organization) =>
+        organization ? `プラン: ${plan} (${organization})` : `プラン: ${plan}`,
     },
   },
   footer: {
     autoMode: '自動モード',
     confirmMode: '確認モード',
     cycleHint: '(shift+tab で切替)',
+    usage: {
+      session: '5時間',
+      week: '今週',
+      weekOpus: '今週Opus',
+      weekSonnet: '今週Sonnet',
+      overage: '追加',
+      resetsInShort: (days, hours, minutes) =>
+        days > 0
+          ? `残り${days}日${hours}時間`
+          : hours > 0
+            ? `残り${hours}時間${minutes}分`
+            : `残り${minutes}分`,
+    },
   },
   command: {
     paletteTitle: 'コマンド',
@@ -512,12 +543,27 @@ const en: Messages = {
           days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
         return `resets in ${when}`;
       },
+      plan: (plan, organization) =>
+        organization ? `plan: ${plan} (${organization})` : `plan: ${plan}`,
     },
   },
   footer: {
     autoMode: 'auto mode on',
     confirmMode: 'confirm mode on',
     cycleHint: '(shift+tab to cycle)',
+    usage: {
+      session: '5h',
+      week: 'week',
+      weekOpus: 'week Opus',
+      weekSonnet: 'week Sonnet',
+      overage: 'overage',
+      resetsInShort: (days, hours, minutes) =>
+        days > 0
+          ? `${days}d ${hours}h left`
+          : hours > 0
+            ? `${hours}h ${minutes}m left`
+            : `${minutes}m left`,
+    },
   },
   command: {
     paletteTitle: 'Commands',

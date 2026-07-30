@@ -36,6 +36,7 @@ import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
   useAbsolutePosition,
+  useAccount,
   useBoxHeight,
   useClock,
   useCommandRunner,
@@ -133,6 +134,7 @@ export const SessionList: FC<{
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
   const rateLimits = useRateLimit(manager);
+  const account = useAccount(manager);
   const now = useClock(1000);
   // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
@@ -267,6 +269,7 @@ export const SessionList: FC<{
     sessionCount: sessions.length,
     totalCostUsd: totalCostUsd(sessions),
     rateLimits,
+    account,
     now,
   });
   const headerText = bannerText(headerLines);
@@ -759,7 +762,7 @@ export const SessionList: FC<{
           />
         </Box>
       )}
-      <StatusFooter mode={mode} hint={footerHint} />
+      <StatusFooter mode={mode} hint={footerHint} account={account} usage={rateLimits} now={now} />
     </Box>
   );
 };
