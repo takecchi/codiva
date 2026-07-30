@@ -571,6 +571,30 @@ describe('Session', () => {
     expect(session.getState().status).toBe('awaiting_permission');
   });
 
+  it('denies a dangling permission prompt when the stream ends the turn mid-decision', async () => {
+    // A mid-response API error (here: the stream cut, reported as a flagged
+    // assistant message) ends the turn while a prompt is still open. The pending
+    // canUseTool promise can never be answered, so it must be denied — otherwise
+    // the transcript ends on a dangling tool_use and the later resume can error out.
+    const policy: PermissionPolicy = (name) => (name === 'Bash' ? 'ask' : 'allow');
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1, policy });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    const decision = fake.call('Bash', { command: 'ls' });
+    expect(session.getState().status).toBe('awaiting_permission');
+    fake.emit({
+      type: 'assistant',
+      error: 'server_error',
+      message: { content: [{ type: 'text', text: 'API Error: Connection closed mid-response.' }] },
+    });
+    await tick();
+    expect(session.getState().status).toBe('interrupted');
+    expect(session.getState().pendingPermission).toBeUndefined();
+    await expect(decision).resolves.toMatchObject({ behavior: 'deny' });
+  });
+
   it('a restored session stays idle until send(), then resumes with the SDK session id', async () => {
     let seen: Options | undefined;
     const queryFn = (({ options }: { options: Options }) => {

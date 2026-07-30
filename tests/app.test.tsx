@@ -586,6 +586,62 @@ describe('App end-to-end (real Session, driven query)', () => {
     await flush();
     expect(lastFrame()).toContain('/login');
   });
+
+  it('shows 中断 (not 完了) when the response stream was cut mid-answer', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('do it');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-cut' }));
+    // 途中まで答えてから接続が切れたときの実際の並び: 部分応答 → `server_error` を
+    // 立てた合成 assistant メッセージ → subtype が success のままの is_error 付き
+    // result。subtype だけ見ると成功なので、尻切れの回答が緑の 完了 になっていた。
+    out.push(
+      asMsg({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'まず調査すると' }] },
+      }),
+    );
+    const text = 'API Error: Connection closed mid-response. The response above may be incomplete.';
+    out.push(
+      asMsg({
+        type: 'assistant',
+        error: 'server_error',
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      }),
+    );
+    out.push(
+      asMsg({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        api_error_status: null,
+        terminal_reason: 'api_error',
+        result: text,
+      }),
+    );
+    await flush();
+
+    expect(manager.get('1')?.status).toBe('interrupted');
+    expect(lastFrame()).toContain('中断');
+    expect(lastFrame()).not.toContain('完了');
+
+    // 一覧で選択すると再開操作が出る（同じ SDK 会話を resume できる）。
+    stdin.write('\t');
+    await flush();
+    expect(lastFrame()).toContain('r: 再開');
+  });
 });
 
 describe('App detail view (in-app connection)', () => {

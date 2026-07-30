@@ -116,6 +116,7 @@ codiva/
  awaiting_input ──(追加指示送信)─────────────▶ running
  completed ──(追加指示送信)─────────────────▶ running   # 完了後の追加作業も許す
  running ──(通信断で query が throw / エラー result & sdkSessionId あり)──▶ interrupted # 接続中断。resumable
+ running ──(応答途中で API エラー)───────────▶ interrupted # assistant error='server_error'/'overloaded' / terminal_reason='api_error' & 一時的な status
  * ──(query の throw / abort)──────────────▶ failed  # 通信断以外（or sdkSessionId 無し）
  completed ──(マージ or 破棄)────────────────▶ archived
  running/awaiting_* ──(アプリ終了 → 保存)────▶ interrupted # メモリ上は状態不変。保存時に丸める（restorableStatus）
@@ -125,11 +126,11 @@ codiva/
  interrupted ──(追加指示送信 / 再開アクションで resume)───────▶ running # 生存中セッションもその場で再開（consume ループ再起動）
 ```
 
-`interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は2つ:
+`interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は3つ:
 (1) **通信断**（`Session.consume` の for-await が throw、または接続断を示すエラー `result`。`core/errors.ts`
 の `isConnectionError` で判定し、resume 元となる `sdkSessionId` がある場合のみ。無い＝init 前の早期失敗は
-`failed`）。(2) **アプリ終了時の丸め**（`restorableStatus` が実行中/入力待ちを保存時に `interrupted` にする。
-`stop()` はメモリ上の状態を変えない）。いずれも `completed` と同じく idle で resumable。追加指示または
+`failed`）。(2) **応答途中の API エラー**（後述）。(3) **アプリ終了時の丸め**（`restorableStatus` が実行中/
+入力待ちを保存時に `interrupted` にする。`stop()` はメモリ上の状態を変えない）。いずれも `completed` と同じく idle で resumable。追加指示または
 **再開アクション（一覧/詳細の `r`）** で resume できる — 送信すると `SessionManager.send` → `Session.send`
 が（通信断で終了した）consume ループを `resume: sdkSessionId` 付きで**再起動**し、同じ SDK 会話を続行する
 （生存中セッションでもその場で再開でき、アプリ再起動を待たなくてよい）。通信断遷移時はデスクトップ通知
@@ -137,6 +138,39 @@ codiva/
 （`STATUS_META[status].resumable` = `interrupted` / `rate_limited` / `needs_login`）。再開時に送る指示文は
 `core/resume.ts` の `resumeInstruction(status, m)`（既定は `resume.instruction`、認証切れは
 `resume.authInstruction`）。
+
+**応答途中の API エラー（`API Error: Connection closed mid-response.`）**: ストリーミング中に接続が切れると
+CLI は「そこまでの部分応答を確定させて」ターンを終える。ワイヤ上は `error: 'server_error'` を立てた
+assistant メッセージ（本文が `API Error: Connection closed mid-response. The response above may be
+incomplete.`）→ それを集約する `result`（`subtype: 'success'` + `is_error: true` +
+`terminal_reason: 'api_error'` + `api_error_status: null`）の2連で届く。応答は途中で切れているのに
+`subtype` だけ見ると成功なので、素直に扱うと**尻切れの回答が緑の「Completed」になる**。判定は2段構え:
+
+1. **assistant メッセージの型付き `error` 種別**（`isTransientApiErrorKind` = `server_error` / `overloaded`）。
+   文言・ロケールに依存しないのでこれが主シグナル。`max_output_tokens` は CLI がターンを継続して回復する
+   ため対象外、`invalid_request` / `billing_error` は再試行で直らないので `failed` のまま。対象は
+   **トップレベルターンのみ**（`parent_tool_use_id` が null）— サブエージェント内の同種エラーは失敗した
+   tool_result として本体ターンへ返り Claude が回避できるので、セッションは止めない。
+2. **result の `terminal_reason: 'api_error'` + `api_error_status`**（`isTransientApiStatus`。明示的な
+   `null`＝HTTP 応答すら無い接続断、5xx/408/429 が一時的）。CLI の文言は多数（`Server error
+   mid-response` / `Response stalled mid-stream` / `Please wait a moment and try again` …）で変わりうる
+   ため、`isConnectionError` の文字列一致は最後の保険として残す。**フィールドが無い（`undefined`）場合は
+   一時的扱いにしない** — `api_error_status` は success バリアントにしか存在せず、`error_during_execution`
+   の result では欠落が何も意味しないので、欠落を「HTTP 応答無し」と読むと 400 まで resumable になる。
+
+どちらも `toInterrupted` に落ちる。同じ失敗が assistant → result の2回届くため:
+
+- `toInterrupted` は **最後の `system` ログが同文なら no-op**（`status === 'interrupted'` の間だけ）。
+  間に別のログ（宙ぶらりんの tool_use に対する tool_result 等）が挟まっても重複しない。
+- result 側は **すでに resumable な状態（`isResumable` = interrupted / rate_limited / needs_login）なら
+  コストだけ拾って再分類しない**。型付きシグナルの方が文言判定より正確なので、CLI の言い回しが未知な
+  ときに「ログインし直し」を `failed` の袋小路へ落とさない。
+
+加えて `system/api_retry`（CLI が再試行する時に流れる）を system ログへ1行残す — 出さないと不安定な回線が
+「ただ止まっている」ようにしか見えず、再試行が尽きた時の中断通知に前後の文脈が残らない。連続する再試行は
+**同じ行を書き換える**（1リクエストで最大 `max_retries` 件来るので、追記すると会話がビューポートから
+押し出される）。ダイアログ保留中に中断した場合は `Session.commit` が canUseTool の Promise を deny して
+解決する（未応答の tool_use で transcript が終わると後の resume が失敗しうる）。
 
 **サブエージェント（Task ツール）の完了ゲート**: サブエージェントが **バックグラウンド実行**されると、
 その tool_result は即座に返り本体ターンは続行するため、サブエージェントがまだ稼働中でも**トップレベルの

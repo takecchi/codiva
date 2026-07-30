@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   accrueActive,
   activeElapsedMs,
+  appendLog,
   initialState,
   reduce,
   toInterrupted,
@@ -267,6 +268,42 @@ describe('interrupted event (connection drop)', () => {
     expect(state.pendingPermission).toBeUndefined();
     expect(state.activeTaskIds).toBeUndefined();
     expect(state.deferredResult).toBeUndefined();
+  });
+
+  it('is idempotent for the same reason (the SDK reports it twice)', () => {
+    // A mid-response API failure arrives as the flagged assistant message and again
+    // as the result that rolls it up, so the second call must add nothing.
+    const first = toInterrupted(running, 5000, 'connection closed mid-response');
+    const second = toInterrupted(first, 6000, 'connection closed mid-response');
+    expect(second).toBe(first);
+    expect(second.finishedAt).toBe(5000);
+  });
+
+  it('still logs a second interruption once the session moved on', () => {
+    // The dedup is scoped to the current stop: after the user sends a follow-up the
+    // session is running again, so the same wording next turn is a new event.
+    const first = toInterrupted(running, 5000, 'connection closed mid-response');
+    const resumed = reduce(first, { kind: 'user_input', text: 'continue', at: 6000 });
+    expect(resumed.status).toBe('running');
+    const again = toInterrupted(resumed, 7000, 'connection closed mid-response');
+    expect(again.status).toBe('interrupted');
+    expect(again.finishedAt).toBe(7000);
+    expect(again.messages.filter((m) => m.text === 'connection closed mid-response')).toHaveLength(
+      2,
+    );
+  });
+
+  it('does not confuse a later interruption with an older, unrelated system line', () => {
+    // The key is the last *system* entry, so intervening entries of other kinds
+    // (tool results, assistant text) must not break the dedup either way.
+    const first = toInterrupted(running, 5000, 'socket hang up');
+    const withNoise = appendLog(first, 'tool_result', 'aborted');
+    const state = toInterrupted(
+      { ...first, messages: withNoise.messages, logSeq: withNoise.logSeq },
+      6000,
+      'socket hang up',
+    );
+    expect(state.messages.filter((m) => m.text === 'socket hang up')).toHaveLength(1);
   });
 });
 

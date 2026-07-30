@@ -419,6 +419,17 @@ export class Session {
     if (next === this.state) {
       return;
     }
+    // A transition that clears a pending decision without going through
+    // resolvePending came from the SDK stream — the turn ended (interrupted / auth
+    // stop) while a permission prompt was still open, so canUseTool's promise can
+    // never be answered. Deny it, for the same reason `stop()` and the consume
+    // catch do: a transcript ending on a dangling tool_use can make a later
+    // `resume` error out. (resolvePending clears `pending` before it dispatches, so
+    // ordinary allow/deny answers never reach this.)
+    if (this.pending && next.pendingPermission === undefined) {
+      this.pending.resolve({ behavior: 'deny', message: 'turn ended before this was answered' });
+      this.pending = undefined;
+    }
     // Fold the transition into the active-time accumulator centrally, so every
     // status change (reducer- or SDK-driven) counts only the time actually spent
     // working (see accrueActive). Uses the injected clock for determinism.

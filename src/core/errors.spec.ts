@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { errorMessage, isAuthError, isAuthErrorKind, isConnectionError } from '@/core/errors';
+import {
+  errorMessage,
+  isAuthError,
+  isAuthErrorKind,
+  isConnectionError,
+  isTransientApiErrorKind,
+  isTransientApiStatus,
+} from '@/core/errors';
 
 describe('errorMessage', () => {
   it('uses an Error message', () => {
@@ -28,6 +35,15 @@ describe('isConnectionError', () => {
     'Error: 503 Service Unavailable',
     'Overloaded',
     'The operation timed out',
+    // The CLI's own wordings for a stream that died after part of the answer had
+    // already been delivered (recovered from the binary). It finalizes the partial
+    // response as an `API Error:` assistant message and ends the turn.
+    'API Error: Connection closed mid-response. The response above may be incomplete.',
+    'API Error: Server error mid-response. The response above may be incomplete.',
+    'API Error: Response stalled mid-stream. The response above may be incomplete.',
+    'API Error: Connection closed while thinking, before producing a response. Try again.',
+    'API Error: Response stalled while thinking, before producing a response. Try again.',
+    'API Error: Connection to the API was lost (ECONNRESET). This is usually temporary — try again.',
   ])('classifies %j as a connection interruption', (text) => {
     expect(isConnectionError(text)).toBe(true);
   });
@@ -99,7 +115,8 @@ describe('isAuthErrorKind', () => {
 
   it.each([
     // Other SDKAssistantMessageError kinds keep their own handling: rate_limit has
-    // its own state, and billing/server errors are genuine failures.
+    // its own state, server/overloaded errors are transient interruptions
+    // (isTransientApiErrorKind), and billing errors are genuine failures.
     'rate_limit',
     'billing_error',
     'overloaded',
@@ -115,5 +132,64 @@ describe('isAuthErrorKind', () => {
     expect(isAuthErrorKind(undefined)).toBe(false);
     expect(isAuthErrorKind(null)).toBe(false);
     expect(isAuthErrorKind(42)).toBe(false);
+  });
+});
+
+describe('isTransientApiErrorKind', () => {
+  it.each(['server_error', 'overloaded'])(
+    'treats the SDK error kind %j as a resumable interruption',
+    (kind) => {
+      expect(isTransientApiErrorKind(kind)).toBe(true);
+    },
+  );
+
+  it.each([
+    // Auth and rate limits have their own dedicated states.
+    'authentication_failed',
+    'oauth_org_not_allowed',
+    'rate_limit',
+    // Real failures that retrying never fixes.
+    'billing_error',
+    'invalid_request',
+    'model_not_found',
+    // The CLI continues the turn after this one (max-output-tokens recovery), so
+    // it must never stop the session.
+    'max_output_tokens',
+    // Too vague to promise a resume — the result's terminal_reason classifies it.
+    'unknown',
+  ])('does not treat %j as a transient API failure', (kind) => {
+    expect(isTransientApiErrorKind(kind)).toBe(false);
+  });
+
+  it('is safe for non-string values', () => {
+    expect(isTransientApiErrorKind(undefined)).toBe(false);
+    expect(isTransientApiErrorKind(null)).toBe(false);
+    expect(isTransientApiErrorKind(42)).toBe(false);
+  });
+});
+
+describe('isTransientApiStatus', () => {
+  it('treats an explicit null as a connection-level failure (no HTTP response)', () => {
+    expect(isTransientApiStatus(null)).toBe(true);
+  });
+
+  it('does not treat an absent status as transient', () => {
+    // The field only exists on the SDK's success result variant, so on an error
+    // result its absence carries no information — assuming "no HTTP response" there
+    // would make a hard 400 look resumable.
+    expect(isTransientApiStatus(undefined)).toBe(false);
+  });
+
+  it.each([500, 502, 503, 504, 529, 408, 429])('treats %i as transient', (status) => {
+    expect(isTransientApiStatus(status)).toBe(true);
+  });
+
+  it.each([400, 401, 403, 404, 413, 422])('treats %i as a real failure', (status) => {
+    expect(isTransientApiStatus(status)).toBe(false);
+  });
+
+  it('is safe for non-numeric values', () => {
+    expect(isTransientApiStatus('503')).toBe(false);
+    expect(isTransientApiStatus({})).toBe(false);
   });
 });

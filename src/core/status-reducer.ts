@@ -136,6 +136,24 @@ export function toRateLimited(
  * resumed turn starts clean.
  */
 export function toInterrupted(state: SessionState, at: number, detail: string): SessionState {
+  // A mid-response API failure reaches us twice: first as the flagged assistant
+  // message the CLI synthesizes for it, then as the `result` that rolls that
+  // message up (same text). Treat the second one as a no-op so the log doesn't
+  // grow a duplicate line (and `finishedAt` isn't pushed forward). Same reasoning
+  // as `toNeedsLogin`, but keyed on the log rather than on `state.error`: an
+  // interruption is not a failure, so it deliberately leaves `error` unset.
+  //
+  // The key is the last *system* entry, not the last entry: other messages can
+  // land in between (a synthesized tool_result for the tool_use the dead stream
+  // left dangling, a background sub-agent's output). Still gated on the status, so
+  // a later turn that gets interrupted with the very same wording is logged again
+  // — anything the user sends first leaves `interrupted` for `running`.
+  if (state.status === 'interrupted') {
+    const lastSystem = state.messages.findLast((m) => m.kind === 'system');
+    if (lastSystem?.text === detail) {
+      return state;
+    }
+  }
   const withLog = appendLog(state, 'system', detail);
   const { pendingPermission, deferredResult, activeTaskIds, ...rest } = state;
   void pendingPermission;
