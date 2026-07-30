@@ -1,13 +1,13 @@
-import { Box, Text } from 'ink';
-import type { FC } from 'react';
+import { Box, type DOMElement, Text } from 'ink';
+import type { FC, RefObject } from 'react';
 import {
-  formatUsd,
-  type Messages,
-  type RateLimitWindow,
-  rateLimitLabelKey,
-  resetCountdown,
+  type BannerLine,
+  type BannerTone,
+  bannerLineText,
+  bannerText,
+  lineSelection,
+  type SelectionRange,
 } from '@/core';
-import { useMessages } from './i18n-context';
 import { palette, statusColor } from './theme';
 
 // codiva mascot. Each glyph is rendered in its own <Text>, so you can paint it
@@ -51,78 +51,123 @@ const LOGO_ROWS = LOGO.map((line, row) => ({
   cells: [...line].map((ch, col) => ({ key: `${row}:${col}`, ch, row, col })),
 }));
 
-/** Semantic color for a usage window: red when rejected, amber on warning, dim otherwise. */
-function usageColor(status: RateLimitWindow['status']): string | undefined {
-  if (status === 'rejected') {
-    return statusColor.failed;
+/**
+ * Map a semantic tone to Ink text props. Colors live only here (`theme.ts`) — the
+ * text itself is composed by the pure `bannerLines` in core. A highlighted
+ * (inverse) piece drops `dimColor` so the selection stays legible.
+ */
+function toneStyle(tone: BannerTone, inverse: boolean): { color?: string; dimColor?: boolean } {
+  switch (tone) {
+    case 'warn':
+      return { color: statusColor.awaitingPermission };
+    case 'error':
+      return { color: statusColor.failed };
+    case 'dim':
+      return inverse ? {} : { dimColor: true };
+    default:
+      return {};
   }
-  if (status === 'allowed_warning') {
-    return statusColor.awaitingPermission;
-  }
-  return undefined; // 'allowed' — falls back to the dim default
 }
 
-/** Build the "5% used · resets in 4h45m" trailing detail for a usage window. */
-function usageDetail(m: Messages, window: RateLimitWindow, now: number): string {
-  const parts: string[] = [];
-  if (window.utilization !== undefined) {
-    parts.push(m.banner.usage.used(Math.round(window.utilization)));
-  }
-  if (window.resetsAt !== undefined) {
-    const { days, hours, minutes } = resetCountdown(window.resetsAt, now);
-    parts.push(m.banner.usage.resetsIn(days, hours, minutes));
-  }
-  return parts.join(' · ');
+interface RowPiece {
+  key: string;
+  text: string;
+  tone: BannerTone;
+  bold?: boolean;
+  /** Part of the mouse selection → drawn as an inverse (highlighted) cell run. */
+  inverse: boolean;
 }
 
 /**
- * The claude.ai subscription usage section (5-hour "current session" + weekly
- * windows). Renders nothing when the SDK reports no limits (Console/API keys), so
- * it's invisible to non-subscription users.
+ * Split one header line's segments into styled pieces, cutting each segment at the
+ * selection boundaries so the highlight can span a run that crosses segments (the
+ * wordmark line is several segments: bold name, dim version, dim counters).
+ * `sel` offsets are char indices within this line (see `lineSelection`).
  */
-const UsageSection: FC<{ windows: readonly RateLimitWindow[]; now: number }> = ({
-  windows,
-  now,
-}) => {
-  const m = useMessages();
-  if (windows.length === 0) {
-    return null;
+function rowPieces(line: BannerLine, sel?: { from: number; to: number }): RowPiece[] {
+  const pieces: RowPiece[] = [];
+  let offset = 0;
+  for (const [i, seg] of line.segments.entries()) {
+    const start = offset;
+    offset += seg.text.length;
+    const from = sel ? Math.max(0, Math.min(seg.text.length, sel.from - start)) : 0;
+    const to = sel ? Math.max(0, Math.min(seg.text.length, sel.to - start)) : 0;
+    const slices: [string, boolean][] =
+      to > from
+        ? [
+            [seg.text.slice(0, from), false],
+            [seg.text.slice(from, to), true],
+            [seg.text.slice(to), false],
+          ]
+        : [[seg.text, false]];
+    for (const [text, inverse] of slices) {
+      if (text.length > 0) {
+        pieces.push({
+          key: `${i}:${pieces.length}`,
+          text,
+          inverse,
+          tone: seg.tone,
+          bold: seg.bold,
+        });
+      }
+    }
+  }
+  return pieces;
+}
+
+/**
+ * One header row. `wrap="truncate-end"` is required, not cosmetic: mouse
+ * hit-testing maps a terminal row straight to a line index (`bannerCaretAt`), so a
+ * line that soft-wrapped into two rows would shift every line below it.
+ */
+const BannerRow: FC<{ line: BannerLine; sel?: { from: number; to: number } }> = ({ line, sel }) => {
+  const pieces = rowPieces(line, sel);
+  if (pieces.length === 0) {
+    // 空行（使用状況節の前のスペーサ）。高さ 1 を保つためスペースを 1 つ描く。
+    return <Text> </Text>;
   }
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text dimColor>{m.banner.usage.heading}</Text>
-      {windows.map((w) => {
-        const label = m.banner.usage[rateLimitLabelKey(w.type)];
-        const detail = usageDetail(m, w, now);
-        const color = usageColor(w.status);
-        return (
-          <Text key={w.type} color={color} dimColor={color === undefined}>
-            {`  ${label}${detail ? `  ${detail}` : ''}`}
-          </Text>
-        );
-      })}
-    </Box>
+    <Text wrap="truncate-end">
+      {pieces.map((p) => (
+        <Text key={p.key} bold={p.bold} inverse={p.inverse} {...toneStyle(p.tone, p.inverse)}>
+          {p.text}
+        </Text>
+      ))}
+    </Text>
   );
 };
 
 /**
  * Borderless startup header echoing Claude Code's banner: the mascot on the left
- * and identity / subtitle / cwd on the right (vertically centered against it).
+ * and identity / subtitle / model / cwd on the right (vertically centered against
+ * it). Purely presentational — the text is composed by `bannerLines` in core, and
+ * the owning view supplies the mouse selection (drag to copy the repo path).
  */
 export const Banner: FC<{
-  cwd?: string;
-  model?: string;
-  /** アプリのバージョン（package.json 由来）。ワードマークの右に `vX.Y.Z` で表示。 */
-  version?: string;
-  sessionCount: number;
-  totalCostUsd?: number;
-  /** claude.ai サブスクリプションの使用リミット枠（SDK 由来。空なら非表示）。 */
-  rateLimits?: readonly RateLimitWindow[];
-  /** リセットまでの残り時間を算出する基準時刻（ms）。省略時は現在時刻。 */
-  now?: number;
-}> = ({ cwd, model, version, sessionCount, totalCostUsd = 0, rateLimits = [], now }) => {
-  const m = useMessages();
+  /** 表示行（`bannerLines`）。1 要素 = 1 表示行。 */
+  lines: readonly BannerLine[];
+  /** Highlighted mouse-selection range over `bannerText(lines)`. */
+  selection?: SelectionRange;
+  /**
+   * テキスト欄の左上を実測するための ref。マウス座標 → 文字位置の逆算に使うので、
+   * **行だけを包む内側の Box** に付ける（中央寄せの外側 Box だと centering のぶん
+   * ずれて、クリック位置が 1〜2 行手前の行に当たる）。
+   */
+  textRef?: RefObject<DOMElement | null>;
+}> = ({ lines, selection, textRef }) => {
+  const value = selection ? bannerText(lines) : undefined;
+  const rows = lines.map((line, row) => ({
+    key: `banner-line-${row}-${bannerLineText(line).slice(0, 8)}`,
+    line,
+    sel: value !== undefined && selection ? lineSelection(value, selection, row) : undefined,
+  }));
   return (
+    // ここで flexShrink を止めないこと: 低い端末ではヘッダも縮んで場所を譲る（コマンド
+    // パレット等の下段 UI が潰れる）。**行 Box も縮ませる**のが重要で、内側だけ
+    // flexShrink={0} にすると中央寄せ（justifyContent="center"）が負のオフセットを返し、
+    // ヘッダのテキストが一覧の先頭行に重なって描かれてしまう。潰れたときは末尾の行が
+    // クリップされるだけなので「行 index = 表示行」は可視域では保たれる。重なりが
+    // 起きた場合の当たり判定の優先順位は SessionList 側（一覧の行を優先）で決める。
     <Box>
       <Box flexDirection="column" marginRight={2}>
         {LOGO_ROWS.map((r) => (
@@ -136,21 +181,11 @@ export const Banner: FC<{
         ))}
       </Box>
       <Box flexDirection="column" justifyContent="center">
-        <Text>
-          {/* ワードマークは通常色（セッション一覧のタイトルと同じ）+ Bold。
-              すぐ右に model 行と同じ dim 色でバージョンを添える。 */}
-          <Text bold>Codiva</Text>
-          {version ? <Text dimColor>{` v${version}`}</Text> : null}
-          <Text dimColor>
-            {'   '}
-            {m.list.sessionCount(sessionCount)}
-            {totalCostUsd > 0 ? `   ${m.list.totalCost(formatUsd(totalCostUsd))}` : ''}
-          </Text>
-        </Text>
-        <Text dimColor>{m.banner.subtitle}</Text>
-        <Text dimColor>{m.banner.model(model ?? m.banner.defaultModel)}</Text>
-        {cwd ? <Text dimColor>{cwd}</Text> : null}
-        <UsageSection windows={rateLimits} now={now ?? Date.now()} />
+        <Box ref={textRef} flexDirection="column">
+          {rows.map((r) => (
+            <BannerRow key={r.key} line={r.line} sel={r.sel} />
+          ))}
+        </Box>
       </Box>
     </Box>
   );

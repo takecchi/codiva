@@ -51,10 +51,31 @@
   範囲選択し、離した時点で **1 回だけ** クリップボードへコピー（`utils/clipboard.ts` の
   OSC 52。SSH 越しでも動く）。選択の純粋ロジックは `core/text-selection.ts`
   （`normalizeSelection`/`selectionText`/`lineSelection`）、状態管理は共有フック
-  `useComposerSelection`（`ui/hooks.ts`、コピー関数は DI）。ハイライト描画は `PromptInput`
+  `useDragSelection`（`ui/hooks.ts`、コピー関数は DI）。ハイライト描画は `PromptInput`
   の `selection` prop（選択中は block caret を出さない）。コピー関数は合成ルート
   （`index.tsx`→`App`→両 view の `onCopy`）で注入する（ui は utils を直接 import しない）。
   ドラッグごとに送らない（再描画毎コピーは他 TUI で既知のバグ）。
+- **ヘッダの範囲選択コピー**: 一覧のヘッダ（`Banner`）も同じ `useDragSelection` で選択・コピーできる
+  （主用途は cwd の絶対パスの取り出し）。**選択領域ごとに 1 インスタンス**にする — caret index は
+  その領域のテキスト（コンポーザは buffer、ヘッダは `bannerText(lines)`）が基準なので、共有すると
+  index の意味が混ざる。press でどちらが drag を持つか決め、release は両方に渡す（アンカーの無い側は
+  no-op）。ヘッダのドラッグは**フォーカスも選択行も動かさない**（パスを取るだけの操作でタイピング
+  位置を奪わない）。当たり判定は「**行 index = 表示行**」前提の `bannerCaretAt`（`core/banner-lines.ts`）
+  なので、行は `wrap="truncate-end"` で固定し、余白は `marginTop` ではなく空行を `bannerLines` が出す
+  （折返しや margin が入ると以降の行が全部ズレる）。位置の実測 ref は縦中央寄せの外側 Box ではなく
+  **行だけを包む内側 Box** に付ける（外側だと centering のぶんズレる）。
+  - **ヘッダの Box に `flexShrink={0}` を付けない**。低い端末ではヘッダも縮んで下段 UI（コマンド
+    パレット等）に場所を譲る必要がある。かつ**内側の行 Box だけを縮ませない**のも禁止 —
+    中央寄せが負のオフセットを返し、ヘッダのテキストが一覧の先頭行に重なって描かれる。
+  - **重なったときは一覧のクリックを優先**する（`y >= rowsBox.top` ならヘッダの当たり判定を
+    しない）。ヘッダは装飾なので、行選択や PR セルのクリックを黙って食う方が害が大きい。
+  - **press は行末より右を当たりにしない（`'reject'`）、drag は行末へ丸める（`'clamp'`）**。
+    何も無い余白のクリックを飲まないようにしつつ、パス全体を選ぶときに数セル行き過ぎる
+    普通の操作は「行末まで選ぶ」で受ける。
+  - **選択中はドラッグ開始時のヘッダ内容（行 + テキスト）を固定して持つ**。選択範囲はその
+    テキストへの caret index なので、途中で文言が変わると（合計コスト・セッション数・使用状況の
+    カウントダウン）ズレる。固定すればコピー結果は選択した瞬間の文字列になり、現在の表示と
+    食い違ったらハイライトを捨てる。
 
 ## 全画面レイアウト
 

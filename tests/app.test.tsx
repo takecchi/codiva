@@ -13,6 +13,7 @@ import {
   makeManager,
   noopSession,
   renderFullscreen,
+  stripAnsi,
   fakeWorktrees as worktrees,
 } from './helpers';
 
@@ -267,6 +268,75 @@ describe('App fullscreen layout', () => {
     expect(copied).toEqual(['world']);
     // The dragged text is still typed in the composer (selection doesn't delete).
     expect(lastFrame()).toContain('hello world');
+    app.unmount();
+  });
+
+  it('ヘッダの cwd をドラッグするとパスがコピーされる（選択行もフォーカスも動かない）', async () => {
+    const copied: string[] = [];
+    const cwd = '/Users/hoge/codiva';
+    const manager = makeManager();
+    const { app, stdin, lastFrame } = renderFullscreen(
+      <App manager={manager} cwd={cwd} onCopy={(t) => copied.push(t)} />,
+      20,
+      120,
+    );
+    // マスコットの右のテキスト欄は縦中央寄せなので、位置はフレームから実測する。
+    // 装飾（SGR）は落としてから列を数える — 色が有効な環境だとエスケープ列のぶん
+    // インデックスがズレ、送るマウス座標が別の場所になってしまう。
+    await flush();
+    const rowsOf = () => stripAnsi(lastFrame()).split('\n');
+    const lineIndex = rowsOf().findIndex((l) => l.includes(cwd));
+    expect(lineIndex).toBeGreaterThan(0);
+    const startCol = (rowsOf()[lineIndex] ?? '').indexOf(cwd);
+    const endCol = startCol + cwd.length; // just past the last character
+
+    stdin.write(`\x1b[<0;${startCol + 1};${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<32;${endCol + 1};${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<0;${endCol + 1};${lineIndex + 1}m`);
+    await flush();
+
+    expect(copied).toEqual([cwd]);
+    // ヘッダのドラッグはフォーカスを奪わない: そのまま入力するとコンポーザに入る
+    // （一覧フォーカスへ移っていれば印字キーは選択操作に食われる）。
+    stdin.write('after drag');
+    await flush();
+    expect(lastFrame()).toContain('after drag');
+    app.unmount();
+  });
+
+  it('ヘッダのテキスト以外（マスコット・行末より右）のドラッグは選択にならない', async () => {
+    const copied: string[] = [];
+    const cwd = '/Users/hoge/codiva';
+    const { app, stdin, lastFrame } = renderFullscreen(
+      <App manager={makeManager()} cwd={cwd} onCopy={(t) => copied.push(t)} />,
+      20,
+      120,
+    );
+    await flush();
+    const lineIndex = stripAnsi(lastFrame())
+      .split('\n')
+      .findIndex((l) => l.includes(cwd));
+    // 左端（マスコット側）は選択対象のテキストではないので何も起きない。
+    stdin.write(`\x1b[<0;2;${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<32;10;${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<0;10;${lineIndex + 1}m`);
+    await flush();
+    expect(copied).toEqual([]);
+
+    // 行末より右の余白も当たりにしない（何も無い場所のクリックを飲まない）。
+    const rightOfPath = stripAnsi(lastFrame()).split('\n')[lineIndex]?.indexOf(cwd) ?? 0;
+    const farRight = rightOfPath + cwd.length + 6;
+    stdin.write(`\x1b[<0;${farRight + 1};${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<32;${rightOfPath + 1};${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<0;${rightOfPath + 1};${lineIndex + 1}m`);
+    await flush();
+    expect(copied).toEqual([]);
     app.unmount();
   });
 

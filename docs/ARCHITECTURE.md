@@ -351,14 +351,24 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
 
 - `App`: 全画面レイアウトの root と Ctrl+C の安全網。**list ⇔ detail のビュー切替**を `View` state で持ち、
   一覧で Enter/→ すると `onOpen(id)` で詳細へ、詳細で Esc すると `onBack` で一覧へ戻る。
-- `Banner`: 起動時ヘッダ（`✻ codiva` + サブタイトル + cwd）。枠なし3行、一覧上部に表示。
+- `Banner`: 起動時ヘッダ（マスコット + ワードマーク / サブタイトル / モデル / cwd + 使用状況）。枠なしで
+  一覧上部に表示。**純粋に presentational** で、表示行は core の `bannerLines()`（`core/banner-lines.ts`）が
+  組む（`BannerLine[]` = 1 要素 1 表示行。色は `BannerTone` という抽象で受け取り、実際の色は `theme.ts`）。
+  ヘッダのテキストはドラッグで範囲選択してコピーできる（cwd の絶対パスを取り出す用途）。当たり判定は
+  「行 index = 表示行」を前提に `bannerCaretAt()` で逆算するため、**行は `wrap="truncate-end"` で 1 行 1 行に
+  固定し、使用状況節の余白も `marginTop` ではなく明示的な空行**として `bannerLines` が出す（折返し・margin が
+  入ると以降の行が全てズレる）。位置の実測 ref は中央寄せの外側ではなく**行だけを包む内側 Box** に付ける。
+  低い端末ではヘッダも縮んで下段 UI に場所を譲る（`flexShrink` を止めない）ため、潰れて一覧の行に
+  重なった場合は**一覧のクリックを優先**する（`SessionList` 側で `y >= rowsBox.top` を除外）。
 - `SessionList`: 一覧画面。`Banner` + 一覧 + 下部 `PromptInput`/`StatusFooter`。フォーカスは
   `composer`（起動時既定。タイピング + 矢印キャレット移動）と `list`（↑↓選択・Enter/→ = 詳細を開く・
   m/d = マージ/破棄）の2ゾーンで Tab 切替。選択セッションの `PermissionDialog` は list フォーカス時のみ
   アクティブ。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で行選択・キャレット移動。
   コンポーザ上のドラッグで範囲選択し、離すとクリップボードへコピー（OSC 52 = `utils/clipboard.ts`。
-  純粋ロジックは `core/text-selection.ts`、状態は共有フック `useComposerSelection`）。詳細ビューの
-  フォローアップ入力欄も同様。
+  純粋ロジックは `core/text-selection.ts`、状態は共有フック `useDragSelection`）。詳細ビューの
+  フォローアップ入力欄も同様。**ヘッダ（`Banner`）も同じ仕組みで選択・コピーできる**（`useDragSelection` を
+  コンポーザとは別インスタンスで持つ = caret index の基準テキストが違うため）。ヘッダのドラッグは
+  フォーカスも選択行も動かさない（パスをコピーしたいだけの操作でタイピング位置を奪わない）。
 - `SessionDetail`: 詳細画面。**ステータスヘッダは持たず**、コンテンツ（末尾ビューポートのログ）+ フッタ
   （追加指示コンポーザ）だけの構成。SDK セッションに**直結**し、末尾ビューポートにログを描画（`core/scroll.ts` の
   `logLines` でエントリを CJK 幅対応で折り返した**物理行**（`DisplayLine[]`）へ展開してから、

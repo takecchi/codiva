@@ -36,7 +36,7 @@ import {
   useAbsolutePosition,
   useBoxHeight,
   useCommandRunner,
-  useComposerSelection,
+  useDragSelection,
   useLifecycleAction,
   useRunMode,
   useSessions,
@@ -154,7 +154,7 @@ export const SessionDetail: FC<{
   const session = sessions.find((s) => s.id === id);
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
   // フォローアップ入力欄のマウス範囲選択（ドラッグで選択→離すとコピー）。
-  const sel = useComposerSelection(onCopy);
+  const sel = useDragSelection(onCopy);
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
   // ログ表示域の実測高さ。ここに描く行数の上限であり、スクロール1回の移動量の基準

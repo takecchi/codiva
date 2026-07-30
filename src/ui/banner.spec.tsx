@@ -1,96 +1,70 @@
 import { render } from 'ink-testing-library';
 import { describe, expect, it } from 'vitest';
-import { messages } from '@/core';
+import { type BannerLine, bannerLines, bannerText, messages } from '@/core';
 import { Banner } from './banner';
-import { MessagesProvider } from './i18n-context';
 
-function renderBanner(props: Parameters<typeof Banner>[0], lang: 'ja' | 'en' = 'en') {
-  return render(
-    <MessagesProvider value={messages[lang]}>
-      <Banner {...props} />
-    </MessagesProvider>,
-  );
+const NOW = 1_000_000_000_000;
+const CWD = '/Users/hoge/codiva';
+
+// 色が有効な環境でも比較できるように装飾（SGR）を落とす。制御文字を正規表現リテラルに
+// 書くと Biome の noControlCharactersInRegex に触れるので組み立てる。
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+/** The header lines for a typical startup state (no usage windows unless given). */
+function lines(overrides: Partial<Parameters<typeof bannerLines>[1]> = {}): BannerLine[] {
+  return bannerLines(messages.en, {
+    sessionCount: 1,
+    version: '0.1.5',
+    model: 'sonnet',
+    cwd: CWD,
+    now: NOW,
+    ...overrides,
+  });
+}
+
+/** Rendered frame with styling stripped (the text a terminal would show). */
+function frameOf(element: Parameters<typeof render>[0]): string {
+  return (render(element).lastFrame() ?? '').replace(ANSI, '');
 }
 
 describe('Banner', () => {
-  it('ワードマークを Codiva として表示する', () => {
-    const { lastFrame } = renderBanner({ sessionCount: 0 }, 'en');
-    expect(lastFrame()).toContain('Codiva');
+  it('マスコットと各行を描画する', () => {
+    const frame = frameOf(<Banner lines={lines()} />);
+    expect(frame).toContain('█'); // マスコット
+    expect(frame).toContain('Codiva v0.1.5');
+    expect(frame).toContain('model: sonnet');
+    expect(frame).toContain(CWD);
+    expect(frame.indexOf('model: sonnet')).toBeLessThan(frame.indexOf(CWD));
   });
 
-  it('バージョンをワードマークの右に表示する', () => {
-    const { lastFrame } = renderBanner({ sessionCount: 0, version: '0.1.5' }, 'en');
-    expect(lastFrame()).toContain('Codiva v0.1.5');
+  it('使用状況節の空行も 1 行として描く（行 index = 表示行を保つ）', () => {
+    const withUsage = lines({
+      rateLimits: [{ type: 'five_hour', status: 'allowed', utilization: 5, resetsAt: NOW }],
+    });
+    const rows = frameOf(<Banner lines={withUsage} />).split('\n');
+    const heading = rows.findIndex((l) => l.includes('Usage'));
+    const cwdRow = rows.findIndex((l) => l.includes(CWD));
+    expect(cwdRow).toBeGreaterThanOrEqual(0);
+    // cwd 行 → 空行 → 見出し。ここが 1 になったら空行が潰れており、マウスの
+    // 当たり判定（行 index = 表示行）がズレる。
+    expect(heading - cwdRow).toBe(2);
   });
 
-  it('バージョン未指定なら v 表記を出さない', () => {
-    const { lastFrame } = renderBanner({ sessionCount: 0 }, 'en');
-    expect(lastFrame()).not.toContain(' v');
-  });
-
-  it('設定されたモデル名をヘッダに表示する', () => {
-    const { lastFrame } = renderBanner({ sessionCount: 0, model: 'claude-opus-4-8' }, 'en');
-    expect(lastFrame()).toContain('model: claude-opus-4-8');
-  });
-
-  it('モデル未設定なら CLI 既定を表示する', () => {
-    const { lastFrame } = renderBanner({ sessionCount: 0 }, 'en');
-    expect(lastFrame()).toContain('model: CLI default');
-  });
-
-  it('モデル行は cwd 行の上に描画される', () => {
-    const { lastFrame } = renderBanner(
-      { sessionCount: 0, model: 'sonnet', cwd: '/tmp/repo' },
-      'en',
+  it('選択範囲は装飾だけで、表示テキストは変わらない', () => {
+    const value = lines();
+    const start = bannerText(value).indexOf(CWD);
+    const plain = frameOf(<Banner lines={value} />);
+    const selected = frameOf(
+      <Banner lines={value} selection={{ start, end: start + CWD.length }} />,
     );
-    const frame = lastFrame() ?? '';
-    expect(frame.indexOf('model: sonnet')).toBeLessThan(frame.indexOf('/tmp/repo'));
+    // 文字の落ち・重複（セグメント分割のバグ）をここで捕まえる。
+    expect(selected).toBe(plain);
   });
 
-  it('サブスクリプション使用リミットが無ければ Usage 節を出さない', () => {
-    const { lastFrame } = renderBanner({ sessionCount: 0 }, 'en');
-    expect(lastFrame()).not.toContain('Usage');
-  });
-
-  it('5時間枠の使用率とリセットまでの残り時間を表示する', () => {
-    const now = 1_000_000_000_000;
-    const { lastFrame } = renderBanner(
-      {
-        sessionCount: 0,
-        now,
-        rateLimits: [
-          {
-            type: 'five_hour',
-            status: 'allowed',
-            utilization: 5,
-            resetsAt: now + (4 * 60 + 45) * 60_000, // 4h45m out
-          },
-        ],
-      },
-      'en',
-    );
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('Usage');
-    expect(frame).toContain('Current session');
-    expect(frame).toContain('5% used');
-    expect(frame).toContain('resets in 4h 45m');
-  });
-
-  it('日本語では現在のセッションと使用率を日本語で表示する', () => {
-    const now = 1_000_000_000_000;
-    const { lastFrame } = renderBanner(
-      {
-        sessionCount: 0,
-        now,
-        rateLimits: [
-          { type: 'five_hour', status: 'allowed', utilization: 5, resetsAt: now + 285 * 60_000 },
-        ],
-      },
-      'ja',
-    );
-    const frame = lastFrame() ?? '';
-    expect(frame).toContain('現在のセッション');
-    expect(frame).toContain('5% 使用');
-    expect(frame).toContain('4時間45分後にリセット');
+  it('セグメントを跨ぐ選択でも文字を落とさない', () => {
+    // ワードマーク行は Codiva / バージョン / セッション数の複数セグメント。
+    const value = lines();
+    const frame = frameOf(<Banner lines={value} selection={{ start: 0, end: 12 }} />);
+    expect(frame).toContain('Codiva v0.1.5');
   });
 });

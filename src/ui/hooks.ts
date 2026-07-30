@@ -271,12 +271,12 @@ export function useCommandRunner(
   };
 }
 
-export interface ComposerSelection {
+export interface DragSelection {
   /** The current highlighted range, or undefined when nothing is selected. */
   selection: SelectionRange | undefined;
   /** True between a press and its release (a drag is in progress). */
   dragging: () => boolean;
-  /** Mouse press inside the composer: set the anchor and drop any old selection. */
+  /** Mouse press inside the selectable text: set the anchor and drop any old selection. */
   begin: (index: number) => void;
   /** Mouse drag: move the focus end to `index`, updating the highlight live. */
   extend: (index: number) => void;
@@ -287,15 +287,20 @@ export interface ComposerSelection {
 }
 
 /**
- * Mouse-drag text selection for a composer, shared by both views. A press sets an
- * anchor caret index, drags extend the focus (live highlight), and release copies
- * the selected substring via the injected `onCopy` (OSC 52). Copy fires once on
- * release — never per drag event — so a burst of motion reports doesn't spam the
- * clipboard (a bug seen in other TUIs). The selection stays highlighted after
- * release until a key clears it. Anchor/focus live in refs so `end` reads the
- * final range even if the last `extend`'s state update hasn't flushed.
+ * Mouse-drag text selection over a block of text, shared by the composers of both
+ * views and the list header (so the repo path can be copied out of the banner). A
+ * press sets an anchor caret index, drags extend the focus (live highlight), and
+ * release copies the selected substring via the injected `onCopy` (OSC 52). Copy
+ * fires once on release — never per drag event — so a burst of motion reports
+ * doesn't spam the clipboard (a bug seen in other TUIs). The selection stays
+ * highlighted after release until a key clears it. Anchor/focus live in refs so
+ * `end` reads the final range even if the last `extend`'s state update hasn't
+ * flushed.
+ *
+ * One instance per selectable region: the caret indices are relative to whichever
+ * text that region's `end(value)` is called with.
  */
-export function useComposerSelection(onCopy?: (text: string) => void): ComposerSelection {
+export function useDragSelection(onCopy?: (text: string) => void): DragSelection {
   const [selection, setSelection] = useState<SelectionRange | undefined>(undefined);
   const anchorRef = useRef<number | undefined>(undefined);
   const focusRef = useRef<number | undefined>(undefined);
