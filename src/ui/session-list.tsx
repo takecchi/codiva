@@ -924,7 +924,7 @@ export const SessionList: FC<{
           />
         </Box>
       )}
-      <StatusFooter mode={mode} hint={footerHint} account={account} usage={rateLimits} now={now} />
+      <StatusFooter mode={mode} hint={footerHint} />
     </Box>
   );
 };

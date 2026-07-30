@@ -385,8 +385,8 @@ describe('App (list view)', () => {
     expect(lastFrame()).toContain('最初のセッション');
   });
 
-  it('shows the polled plan + usage in the status bar of both views', async () => {
-    // The wiring index.tsx sets up: usage poller → manager.applyUsage → both views.
+  it('shows the polled plan + usage in the header (not in the footer)', async () => {
+    // The wiring index.tsx sets up: usage poller → manager.applyUsage → banner.
     const manager = makeManager();
     manager.applyUsage({
       account: { plan: 'Claude Team', organization: 'Example Inc' },
@@ -399,19 +399,22 @@ describe('App (list view)', () => {
     await flush();
 
     const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 120);
-    // 一覧: ヘッダのプラン + モデル行、ステータスバーのゲージ（8 セル）。
+    // 一覧: プラン行 + 使用状況（ゲージ + 使用率）はヘッダ（バナー）の担当。
     expect(lastFrame()).toContain('プラン: Claude Team (Example Inc)');
-    // ヘッダのゲージ（幅可変）と混ざらないよう、モード表示のある行だけを見る。
+    expect(lastFrame()).toContain('使用状況');
+    expect(lastFrame()).toContain('50%');
+    // フッタはモード行 + ヒントだけ（使用状況は詰め込まない）。
     const footer = (lastFrame() ?? '').split('\n').find((l) => l.includes('自動モード')) ?? '';
-    expect(footer).toContain('████░░░░');
+    expect(footer).not.toContain('█');
+    expect(footer).not.toContain('50%');
 
-    // 詳細（バナーが無い画面）でもステータスバーに出続ける。
+    // 詳細（バナーが無い画面）ではプラン・使用状況を出さない。
     stdin.write('\t');
     await flush();
     stdin.write('\r');
     await flush();
-    expect(lastFrame()).toContain('Claude Team');
-    expect(lastFrame()).toContain('50%');
+    expect(lastFrame()).not.toContain('Claude Team');
+    expect(lastFrame()).not.toContain('50%');
     app.unmount();
   });
 

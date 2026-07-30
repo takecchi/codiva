@@ -288,6 +288,9 @@ UI なし。すべてユニットテストで駆動する。
 > 実績メモ: lint/typecheck/test/build 緑。実測は Claude Team アカウントで採取（`utilization` が
 > 来ないため実機では残り時間のみ表示。ゲージ表示経路はテストで担保）。フッタの折り返しは実装中に
 > 実測で発覚し、Yoga の flex 縮小任せをやめて幅ベースの段階的縮退へ変更した。体感確認はユーザー環境で。
+>
+> 追記: フッタ側の表示は **Phase 14 でヘッダに一本化**して撤去した（`usageFooterPlan` /
+> `footer.usage.*` も削除）。取得・合流の仕組みはそのまま。
 
 ## Phase 12: アップデート通知 / `/update`
 
@@ -399,9 +402,34 @@ UI なし。すべてユニットテストで駆動する。
 
 > 実績メモ: 全 1560 テスト緑・lint / typecheck / build 緑。ヘッダは 6 行 →（プラン+モデル統合と
 > サブタイトル削除で）4 行に減り、使用状況は枠を並べて比較できるようになった。ゲージ幅は
-> 幅 100 以上で 20 セル（フッタは常に 8）。レビューで見つかった「80 桁でマスコットが崩れる」は
-> `flexShrink={0}` + 幅の段階的縮退で解消し、幅 20〜200 の回帰テストで固定した。
+> 幅 100 以上で 20 セル（当時のフッタは常に 8。フッタ側は Phase 14 で撤去）。レビューで見つかった
+> 「80 桁でマスコットが崩れる」は `flexShrink={0}` + 幅の段階的縮退で解消し、幅 20〜200 の
+> 回帰テストで固定した。
 > 実機での体感確認はユーザーに依頼。
+
+## Phase 14: フッタの整理（プラン / 使用状況をヘッダへ一本化）
+
+> Phase 13 でヘッダの使用状況が読みやすくなり、フッタの同じ表示は重複になった。フッタは
+> 「モード表示 + 操作ヒント」に戻して、詰め込みすぎを解消する。表示だけの変更で取得経路には触らない。
+
+- [x] `ui/status-footer.tsx`: `account` / `usage` / `now` prop と `UsageStatus` /
+      `UsageWindowSegment` を削除。モード表示（縮まない）+ ヒント（唯一縮む）の2要素だけにする
+      （**どの幅でも1行**は不変条件として維持）
+- [x] `core/layout.ts`: フッタ専用の `usageFooterPlan` / `UsageFooterPlan` /
+      `MIN_USAGE_FOOTER_COLUMNS` を削除（ヘッダの `bannerGaugeWidth` は残る）
+- [x] 文言: `footer.usage.*` を ja / en 両方から削除（使用状況の文言は `banner.usage.*` に一本化）
+- [x] `ui/session-detail.tsx`: 使用状況のための `useAccount` / `useRateLimit` / `useClock(30_000)` を削除
+      （詳細ビューの 30 秒ごとの全再描画も無くなる）。ヘッダを持たない画面なのでプラン / 使用状況は
+      出なくなる = 見たいときは Esc で一覧へ戻る
+- [x] テスト更新: `ui/status-footer.spec.tsx`（使用状況のテストを削除し「出さない」回帰テストを追加。
+      幅ごとの1行維持は継続）/ `core/layout.spec.ts`（`usageFooterPlan` のテーブル削除）/
+      `tests/app.test.tsx`（「両ビューのステータスバー」→「ヘッダに出る / 詳細では出ない」）
+- [x] ドキュメント: `README.md`（機能一覧・「プラン / 使用状況の表示」節）/ `docs/ARCHITECTURE.md`
+      （表示先と撤去理由）/ `docs/TASKS.md`
+
+> 実績メモ: lint / typecheck / build 緑、テストは CI で確認。`core/gauge.ts` の `gaugeCells` は
+> ヘッダのゲージで使い続けるので残す。`core/rate-limit.ts` の `compactRateLimitWindows` は
+> 「1行に収める上位 N 枠」の選別用でヘッダは全枠を出すため、現状は未使用のまま残置している。
 
 ---
 

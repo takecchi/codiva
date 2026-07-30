@@ -254,21 +254,14 @@ export interface Messages {
     /** ダイアログの閉じ方（任意キー）。 */
     dismiss: string;
   };
-  /** 下部モード行（status-footer.tsx） */
+  /**
+   * 下部モード行（status-footer.tsx）。プラン / 使用状況はヘッダ（`banner.usage.*`）の
+   * 担当なので、フッタはモードとヒントだけを持つ。
+   */
   footer: {
     autoMode: string;
     confirmMode: string;
     cycleHint: string;
-    /** ステータスバーの使用状況セグメント（枠の短縮見出し。キーは RateLimitLabelKey と一致）。 */
-    usage: {
-      session: string;
-      week: string;
-      weekOpus: string;
-      weekSonnet: string;
-      overage: string;
-      /** 使用率が不明な枠（SDK が utilization を送らない）で残り時間だけ出すときの前置き。 */
-      resetsInShort: (days: number, hours: number, minutes: number) => string;
-    };
   };
   /** スラッシュコマンド（commands.ts / command-palette.tsx） */
   command: {
@@ -456,19 +449,6 @@ const ja: Messages = {
     autoMode: '自動モード',
     confirmMode: '確認モード',
     cycleHint: '(shift+tab で切替)',
-    usage: {
-      session: '5時間',
-      week: '今週',
-      weekOpus: '今週Opus',
-      weekSonnet: '今週Sonnet',
-      overage: '追加',
-      resetsInShort: (days, hours, minutes) =>
-        days > 0
-          ? `残り${days}日${hours}時間`
-          : hours > 0
-            ? `残り${hours}時間${minutes}分`
-            : `残り${minutes}分`,
-    },
   },
   command: {
     paletteTitle: 'コマンド',
@@ -638,19 +618,6 @@ const en: Messages = {
     autoMode: 'auto mode on',
     confirmMode: 'confirm mode on',
     cycleHint: '(shift+tab to cycle)',
-    usage: {
-      session: '5h',
-      week: 'week',
-      weekOpus: 'week Opus',
-      weekSonnet: 'week Sonnet',
-      overage: 'overage',
-      resetsInShort: (days, hours, minutes) =>
-        days > 0
-          ? `${days}d ${hours}h left`
-          : hours > 0
-            ? `${hours}h ${minutes}m left`
-            : `${minutes}m left`,
-    },
   },
   command: {
     paletteTitle: 'Commands',
