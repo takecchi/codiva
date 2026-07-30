@@ -77,6 +77,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 通知 | `core/notify.ts`（判定・純粋）/ `utils/notify.ts`（OS I/O） |
 | 学習データ利用の警告 | `core/privacy.ts`（判定・純粋）/ `utils/privacy.ts`（キャッシュ+非公開 API）/ `ui/banner.tsx` |
 | モデル選択 | `core/models.ts` / `utils/model-catalog.ts` / `ui/model-select.tsx` |
+| 選択肢リストの表示（質問・モデル） | `core/choice-lines.ts`（折返し・純粋）/ `ui/choice-row.tsx`（1件の描画） |
 | アップデート通知・`/update` | `core/update.ts`（比較・判定・DI 境界）/ `utils/update.ts`（registry fetch・経路判定・`npm install`）/ `ui/update-dialog.tsx` |
 | 起動・副作用の配線 | `src/index.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / runtime） |
 | 共有 UI フック | `ui/hooks.ts`（`useSessions` / `useCommandRunner` / `useLifecycleAction` / `useTextBufferRef` / `useComposerSelection` …） |

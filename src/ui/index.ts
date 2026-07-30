@@ -1,4 +1,5 @@
 export * from './banner';
+export * from './choice-row';
 export * from './command-palette';
 export * from './confirm-prompt';
 export * from './dialog-box';

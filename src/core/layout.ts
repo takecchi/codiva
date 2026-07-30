@@ -58,6 +58,25 @@ export function bannerGaugeWidth(columns: number): number {
 }
 
 /**
+ * ダイアログ（`ui/dialog-box.tsx` と同じ枠を持つオーバーレイ）が本文に使えない横幅:
+ * ビューの padding 1×2 + 枠線 1×2 + ダイアログの paddingX 1×2 = 6 セル。
+ */
+export const DIALOG_CHROME_COLUMNS = 6;
+
+/**
+ * 端末桁数からダイアログ本文に使える表示幅を求める純関数。選択肢のラベル・説明を
+ * **折返して全文出す**ための折返し幅として使う（`core/choice-lines.ts`）。
+ *
+ * Yoga は溢れた子を縮めるため、幅を渡さずラベルと説明を 1 行に並べると両方が
+ * 途中で切れる。折返し幅を端末から自前で出しておけば、枠の内側に収まる行だけを
+ * 描くことになり切り捨てが起きない。下限を持たせているのは極端に狭い端末で
+ * 1 セルずつ折り返して縦に爆発させないため（そこまで狭ければ多少の溢れは許容する）。
+ */
+export function dialogContentWidth(columns: number): number {
+  return Math.max(10, columns - DIALOG_CHROME_COLUMNS);
+}
+
+/**
  * 詳細ビューでログ以外に消費される固定の縦幅の見積り: 上下パディング 2 +
  * コンポーザ上の余白 1 + 入力欄 3（上下ボーダー付き） + フッタ 1 +
  * スクロールヒント 1（スクロール中のみ）。

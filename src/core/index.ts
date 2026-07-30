@@ -2,6 +2,7 @@ export * from './account';
 export * from './ansi';
 export * from './async-queue';
 export * from './banner-lines';
+export * from './choice-lines';
 export * from './commands';
 export * from './config';
 export * from './cost';

@@ -1,12 +1,14 @@
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useState } from 'react';
 import {
   currentModelIndex,
   DEFAULT_MODEL_VALUE,
+  dialogContentWidth,
   isCurrentModel,
   type ModelOption,
   toConfigModel,
 } from '@/core';
+import { ChoiceRow } from './choice-row';
 import { useMessages } from './i18n-context';
 import { glyph, theme } from './theme';
 
@@ -33,6 +35,10 @@ export const ModelSelect: FC<{
   onCancel: () => void;
 }> = ({ current, models, onSelect, onCancel }) => {
   const m = useMessages();
+  const { columns } = useWindowSize();
+  // モデル名・説明の折返し幅（枠の内側の本文幅）。横に並べると Yoga が両方を縮めて
+  // どちらも切れるので、行に分けて折返す（`ui/choice-row.tsx`）。
+  const width = dialogContentWidth(columns);
   // The cursor is *derived* from the catalog until the user actually moves it.
   // A `useState` initializer would only run at mount, and the dialog can open
   // while the catalog is still loading (`models === undefined`) — the cursor
@@ -72,7 +78,13 @@ export const ModelSelect: FC<{
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.accent}
+      paddingX={1}
+      flexShrink={0}
+    >
       <Text color={theme.accent} bold>
         {m.model.title}
       </Text>
@@ -88,13 +100,14 @@ export const ModelSelect: FC<{
             const label =
               choice.value === DEFAULT_MODEL_VALUE ? m.model.defaultRow : choice.displayName;
             return (
-              <Box key={choice.value}>
-                <Text color={active ? theme.accent : undefined}>
-                  {active ? glyph.caret : ' '} {label}
-                  {isCurrentModel(choice, current) ? ' ✔' : ''}
-                </Text>
-                {choice.description ? <Text dimColor> — {choice.description}</Text> : null}
-              </Box>
+              <ChoiceRow
+                key={choice.value}
+                prefix={`${active ? glyph.caret : ' '} `}
+                label={`${label}${isCurrentModel(choice, current) ? ' ✔' : ''}`}
+                description={choice.description}
+                active={active}
+                width={width}
+              />
             );
           })
         )}

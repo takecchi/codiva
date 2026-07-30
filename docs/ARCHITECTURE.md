@@ -65,6 +65,7 @@ codiva/
 │   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatDuration/clamp/…）
 │   │   ├── privacy.ts        # 学習データ利用（grove）の判定（JSON→TrainingOptIn・純粋）
 │   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts / update.ts
+│   │   ├── choice-lines.ts    # 選択肢（ラベル + 説明）の折返し（純粋・表示幅ベース）
 │   │   ├── scroll.ts / text-buffer.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
 │   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
 │   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（sdk-parse テスト用）
@@ -76,7 +77,7 @@ codiva/
 │   │   ├── session-detail.tsx # 詳細画面（ログ + 追加指示 + マージ/破棄。SDK セッションに直結）
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
 │   │   ├── repo-prompt-editor.tsx # /prompt のリポジトリ追加指示エディタ（モーダル・composer を置換）
-│   │   ├── dialog-box.tsx / confirm-prompt.tsx  # 共有 presentational（角丸枠・y/n 確認行）
+│   │   ├── dialog-box.tsx / confirm-prompt.tsx / choice-row.tsx  # 共有 presentational（角丸枠・y/n 確認行・選択肢1件）
 │   │   ├── update-dialog.tsx  # /update の表示（presentational・useInput を持たない）
 │   │   ├── status-footer.tsx / permission-dialog.tsx / model-select.tsx / command-palette.tsx / progress-badge.tsx
 │   │   ├── hooks.ts           # useSessions / useClock / useTextBufferRef / useCommandRunner / useLifecycleAction
