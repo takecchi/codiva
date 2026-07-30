@@ -71,7 +71,7 @@ codiva/
 │   ├── ui/                    # Ink コンポーネント（kebab-case, 識別子は PascalCase）
 │   │   ├── index.ts           # バレル
 │   │   ├── theme.ts           # アクセント色・状態色・logColor・グリフ（色は必ずここ経由）
-│   │   ├── banner.tsx         # 起動時ヘッダ（✻ codiva + サブタイトル + cwd, 枠なし）
+│   │   ├── banner.tsx         # 起動時ヘッダ（マスコット + プラン/モデル + cwd + 使用状況ゲージ, 枠なし）
 │   │   ├── session-list.tsx   # 一覧画面（composer/list の2フォーカスゾーン）
 │   │   ├── session-detail.tsx # 詳細画面（ログ + 追加指示 + マージ/破棄。SDK セッションに直結）
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
@@ -394,15 +394,24 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
 
 - `App`: 全画面レイアウトの root と Ctrl+C の安全網。**list ⇔ detail のビュー切替**を `View` state で持ち、
   一覧で Enter/→ すると `onOpen(id)` で詳細へ、詳細で Esc すると `onBack` で一覧へ戻る。
-- `Banner`: 起動時ヘッダ（マスコット + ワードマーク / サブタイトル / モデル / プラン / cwd + 使用状況）。枠なしで
+- `Banner`: 起動時ヘッダ（マスコット + ワードマーク / プラン + モデル / cwd + 使用状況ゲージ）。枠なしで
   一覧上部に表示。**純粋に presentational** で、表示行は core の `bannerLines()`（`core/banner-lines.ts`）が
   組む（`BannerLine[]` = 1 要素 1 表示行。色は `BannerTone` という抽象で受け取り、実際の色は `theme.ts`）。
+  可読性のため**プランとモデルは 1 行にまとめ**（`Plan: Claude Max   Model: sonnet`）、サブタイトルは出さない。
   ヘッダのテキストはドラッグで範囲選択してコピーできる（cwd の絶対パスを取り出す用途）。当たり判定は
   「行 index = 表示行」を前提に `bannerCaretAt()` で逆算するため、**行は `wrap="truncate-end"` で 1 行 1 行に
-  固定し、使用状況節の余白も `marginTop` ではなく明示的な空行**として `bannerLines` が出す（折返し・margin が
-  入ると以降の行が全てズレる）。位置の実測 ref は中央寄せの外側ではなく**行だけを包む内側 Box** に付ける。
+  固定し、選択可能なテキスト塊（`textRef` の Box）の中に margin を入れない**（折返し・margin が入ると以降の
+  行が全てズレる）。位置の実測 ref は中央寄せの外側ではなく**行だけを包む内側 Box** に付ける。
+  使用状況（`UsageSection`）と学習データ利用の警告（`PrivacySection`）は**その塊の外**に描くので、
+  節の間隔は `marginTop` で空けてよい（行構成を揺らさない）。使用状況の行データは純粋な
+  `bannerUsageRows()`（見出しを表示幅で揃え、使用率を右詰めにした `BannerUsageRow[]`）が組み、
+  ゲージのセル数は `gaugeCells()`、記号（█ / ░）は `theme.ts` の `glyph` から取る（core に記号を置かない）。
+  ゲージ幅は端末幅で段階的に縮退させる（`bannerGaugeWidth(columns)` = 20 / 12 / 8 / 0 セル）。
   低い端末ではヘッダも縮んで下段 UI に場所を譲る（`flexShrink` を止めない）ため、潰れて一覧の行に
   重なった場合は**一覧のクリックを優先**する（`SessionList` 側で `y >= rowsBox.top` を除外）。
+  縦に潰れると中央寄せの負オフセットで**上端の行から**落ちるので、`SessionList` は実測高さ
+  （`useBoxHeight`）が行数より小さい間はヘッダの当たり判定をやめる。一方**マスコットの Box だけは
+  `flexShrink={0}`**（横方向の縮小でアスキーアートが折り返して崩れるのを防ぐ。縦の譲り合いには効かない）。
 - `SessionList`: 一覧画面。`Banner` + 一覧 + 下部 `PromptInput`/`StatusFooter`。フォーカスは
   `composer`（起動時既定。タイピング + 矢印キャレット移動）と `list`（↑↓選択・Enter/→ = 詳細を開く・
   m/d = マージ/破棄）の2ゾーンで Tab 切替。選択セッションの `PermissionDialog` は list フォーカス時のみ

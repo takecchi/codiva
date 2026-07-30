@@ -1,11 +1,16 @@
-import { Box, type DOMElement, Text } from 'ink';
+import { Box, type DOMElement, Text, useWindowSize } from 'ink';
 import type { FC, RefObject } from 'react';
 import {
   type BannerLine,
   type BannerTone,
+  type BannerUsageRow,
+  bannerGaugeWidth,
   bannerLineText,
   bannerText,
+  bannerUsageRows,
+  gaugeCells,
   lineSelection,
+  type RateLimitWindow,
   type SelectionRange,
   shouldWarnTraining,
   type TrainingOptIn,
@@ -143,6 +148,76 @@ const BannerRow: FC<{ line: BannerLine; sel?: { from: number; to: number } }> = 
 };
 
 /**
+ * `████░░░░░░░░░░░░` — フッタと同じ見た目のゲージ。使用率が取れない枠
+ * （SDK が返さないプランがある）ではゲージを描かず、**同じ幅の空白**を置いて
+ * 右隣の列（残り時間）を揃える（0% のゲージを描くと「まだ使っていない」と誤読される）。
+ * `width` が 0（狭い端末）ならゲージそのものを出さない。
+ */
+const UsageGauge: FC<{ percent?: number; tone: BannerTone; width: number }> = ({
+  percent,
+  tone,
+  width,
+}) => {
+  if (width === 0) {
+    return null;
+  }
+  if (percent === undefined) {
+    return <Text>{' '.repeat(width)}</Text>;
+  }
+  const cells = gaugeCells(percent, width);
+  return (
+    <Text>
+      <Text {...toneStyle(tone, false)}>{glyph.gaugeFilled.repeat(cells.filled)}</Text>
+      <Text dimColor>{glyph.gaugeEmpty.repeat(cells.empty)}</Text>
+    </Text>
+  );
+};
+
+/** 使用状況 1 行: `  Current session  ███░░░  42%  resets in 4h 45m`。 */
+const UsageRow: FC<{ row: BannerUsageRow; gaugeWidth: number }> = ({ row, gaugeWidth }) => (
+  <Text wrap="truncate-end">
+    <Text dimColor>{`  ${row.label}  `}</Text>
+    <UsageGauge percent={row.percent} tone={row.tone} width={gaugeWidth} />
+    <Text
+      {...toneStyle(row.tone, false)}
+    >{`${gaugeWidth === 0 ? '' : ' '}${row.percentText}`}</Text>
+    {row.detail ? <Text dimColor>{`  ${row.detail}`}</Text> : null}
+  </Text>
+);
+
+/**
+ * claude.ai の使用リミット（見出し + 枠ごとのゲージ行）。枠が無い環境
+ * （API キー / Bedrock / Vertex）では何も描かない。
+ *
+ * `PrivacySection` と同じく **選択可能なテキスト塊（textRef）の外**に描く。ゲージの記号は
+ * `theme.ts` が持つもので、純粋な `bannerLines` に持ち込みたくないうえ、ヘッダのドラッグ
+ * 選択の用途は cwd の取り出しなのでコピー対象にする必要がない。塊の外なので `marginTop`
+ * で空けても「行 index = 表示行」（`bannerCaretAt`）は揺らがない。
+ */
+const UsageSection: FC<{ windows: readonly RateLimitWindow[]; now: number }> = ({
+  windows,
+  now,
+}) => {
+  const m = useMessages();
+  const { columns } = useWindowSize();
+  const rows = bannerUsageRows(m, windows, now);
+  if (rows.length === 0) {
+    return null;
+  }
+  // ゲージ幅は端末幅で決める（純粋な判定は core/layout.ts）。ここを固定幅にすると
+  // 狭い端末でヘッダ全体が縮められ、マスコットが折り返して崩れる。
+  const gaugeWidth = bannerGaugeWidth(columns);
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text dimColor>{m.banner.usage.heading}</Text>
+      {rows.map((row) => (
+        <UsageRow key={row.type} row={row} gaugeWidth={gaugeWidth} />
+      ))}
+    </Box>
+  );
+};
+
+/**
  * 学習データ利用（claude.ai の「Help improve our AI models」）が ON と分かったときだけ
  * 出す注意セクション。`'off'` / `'unknown'`（未ログイン・API キー利用・取得失敗）では
  * 何も描かないので、判定できない環境ではバナーの見た目が変わらない。
@@ -169,15 +244,20 @@ const PrivacySection: FC<{ optIn?: TrainingOptIn }> = ({ optIn }) => {
 
 /**
  * Borderless startup header echoing Claude Code's banner: the mascot on the left
- * and identity / subtitle / model / cwd on the right (vertically centered against
- * it). Purely presentational — the text is composed by `bannerLines` in core, and
- * the owning view supplies the mouse selection (drag to copy the repo path).
+ * and identity / plan + model / cwd on the right (vertically centered against it),
+ * with the claude.ai usage gauges below. Purely presentational — the text is
+ * composed by `bannerLines` / `bannerUsageRows` in core, and the owning view
+ * supplies the mouse selection (drag to copy the repo path).
  */
 export const Banner: FC<{
   /** 表示行（`bannerLines`）。1 要素 = 1 表示行。 */
   lines: readonly BannerLine[];
   /** Highlighted mouse-selection range over `bannerText(lines)`. */
   selection?: SelectionRange;
+  /** 使用リミット枠（`rate_limit_event` + `/usage` ポーリングの統合結果）。 */
+  usage?: readonly RateLimitWindow[];
+  /** リセットまでの残り時間を算出する基準時刻（ms）。省略時は現在時刻。 */
+  now?: number;
   /**
    * テキスト欄の左上を実測するための ref。マウス座標 → 文字位置の逆算に使うので、
    * **行だけを包む内側の Box** に付ける（中央寄せの外側 Box だと centering のぶん
@@ -189,7 +269,7 @@ export const Banner: FC<{
    * 未解決・判定不能は undefined / `'unknown'` で、その場合は何も描かない。
    */
   trainingOptIn?: TrainingOptIn;
-}> = ({ lines, selection, textRef, trainingOptIn }) => {
+}> = ({ lines, selection, usage = [], now, textRef, trainingOptIn }) => {
   const value = selection ? bannerText(lines) : undefined;
   const rows = lines.map((line, row) => ({
     key: `banner-line-${row}-${bannerLineText(line).slice(0, 8)}`,
@@ -200,11 +280,18 @@ export const Banner: FC<{
     // ここで flexShrink を止めないこと: 低い端末ではヘッダも縮んで場所を譲る（コマンド
     // パレット等の下段 UI が潰れる）。**行 Box も縮ませる**のが重要で、内側だけ
     // flexShrink={0} にすると中央寄せ（justifyContent="center"）が負のオフセットを返し、
-    // ヘッダのテキストが一覧の先頭行に重なって描かれてしまう。潰れたときは末尾の行が
-    // クリップされるだけなので「行 index = 表示行」は可視域では保たれる。重なりが
-    // 起きた場合の当たり判定の優先順位は SessionList 側（一覧の行を優先）で決める。
+    // ヘッダのテキストが一覧の先頭行に重なって描かれてしまう。
+    // ただし縦に潰れたときに落ちるのは**上端の行から**（中央寄せが負のオフセットになる）で、
+    // 「行 index = 表示行」は保たれない。そのため `SessionList` は実測高さが行数より小さい
+    // 間はヘッダの当たり判定をやめる（`headerCaretAt`）。重なりが起きた場合の優先順位も
+    // `SessionList` 側（一覧の行を優先）で決める。
     <Box>
-      <Box flexDirection="column" marginRight={2}>
+      {/* マスコットは**横方向に縮ませない**（`flexShrink={0}`）。行は truncate を持たない
+          アスキーアートなので、幅が足りなくなると折り返して 6 行の絵が崩れる。右のテキスト
+          欄は各行が `wrap="truncate-end"` なので、縮小はすべてそちらに寄せて末尾を切る。
+          縦方向の縮小（低い端末でヘッダが場所を譲る）はこの指定では止まらない — main axis が
+          横の行なので、ここでの flexShrink は横幅だけに効く。 */}
+      <Box flexDirection="column" flexShrink={0} marginRight={2}>
         {LOGO_ROWS.map((r) => (
           <Text key={r.key}>
             {r.cells.map((c) => (
@@ -221,6 +308,7 @@ export const Banner: FC<{
             <BannerRow key={r.key} line={r.line} sel={r.sel} />
           ))}
         </Box>
+        <UsageSection windows={usage} now={now ?? Date.now()} />
         <PrivacySection optIn={trainingOptIn} />
       </Box>
     </Box>

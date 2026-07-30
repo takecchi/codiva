@@ -1,9 +1,12 @@
 import { visibleLineRange } from './text-buffer';
 
 /**
- * 全画面レイアウトに必要な最小の端末行数。固定部分（バナー6行 + 入力欄3行 +
- * フッタ・余白・パディング）だけで約15行あり、これ未満で root の height を
+ * 全画面レイアウトに必要な最小の端末行数。固定部分（ヘッダ = マスコットの 6 行 +
+ * 入力欄3行 + フッタ・余白・パディング）だけで約15行あり、これ未満で root の height を
  * 固定するとクリップで入力欄やフッタが消えて操作不能になる。
+ *
+ * ヘッダはこれより高くなりうる（使用状況の枠が増える・学習データ利用の警告が出る）が、
+ * ヘッダ自身は縮んで下段 UI に場所を譲るので閾値はマスコットの高さで足りる。
  */
 export const MIN_FULLSCREEN_ROWS = 16;
 
@@ -75,6 +78,29 @@ export function usageFooterPlan(columns: number): UsageFooterPlan {
     return { windows: 1, showBars: false, showPlan: false };
   }
   return { windows: 0, showBars: false, showPlan: false };
+}
+
+/**
+ * ヘッダ（`ui/banner.tsx`）の使用状況ゲージ以外に 1 行が使う幅の見積り（ja の最長ケース）:
+ * マスコット 15 + 余白 2 + 一覧のパディング 2 + 行頭のインデント 2 + 見出し 16
+ * （`現在のセッション`）+ 余白 2 + 使用率 4 + 余白 2 + 残り時間 21（`3日23時間後にリセット`）。
+ */
+const BANNER_USAGE_FIXED_CELLS = 68;
+
+/** ヘッダの使用状況ゲージの幅の段階（広い順）。1 セル ≒ 5% / 8% / 12% で読める。 */
+const BANNER_GAUGE_STEPS = [20, 12, 8] as const;
+
+/**
+ * 端末桁数からヘッダの使用状況ゲージの幅（セル）を決める純関数。`0` はゲージを出さない
+ * （使用率と残り時間だけにする）。
+ *
+ * フッタの `usageFooterPlan` と同じ段階的縮退だが、こちらは**枠を落とさずゲージだけを
+ * 縮める** — ヘッダは枠を並べて比べる場所なので、行数を減らすより 1 行を短くするほうが
+ * 情報が残る。ゲージを縮めないと最長ケースで 87 桁必要になり、80 桁の端末でヘッダ全体が
+ * 縮められてマスコットが折り返す（実際に起きた）。
+ */
+export function bannerGaugeWidth(columns: number): number {
+  return BANNER_GAUGE_STEPS.find((width) => columns >= BANNER_USAGE_FIXED_CELLS + width) ?? 0;
 }
 
 /**
