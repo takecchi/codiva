@@ -12,6 +12,7 @@ import { errorMessage, isAuthError, isConnectionError } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
 import { applySdkMessage } from './sdk-parse';
 import { accrueActive, initialState, reduce } from './status-reducer';
+import { composeSystemPrompt } from './system-prompt';
 import type {
   CodivaEvent,
   CreateSessionInput,
@@ -20,6 +21,7 @@ import type {
   QuestionSpec,
   SessionState,
 } from './types';
+import type { IgnoredFilesMode } from './worktree';
 
 export type QueryFn = (params: {
   prompt: AsyncIterable<SDKUserMessage>;
@@ -52,6 +54,13 @@ export interface SessionOptions {
    * 詳細は `consume()` の注入コメントを参照。
    */
   appendSystemPrompt?: string;
+  /**
+   * worktree が ignore 済みファイルをどう引き継いだか（合成レイヤが
+   * `resolveIgnoredFilesMode(config)` の結果を渡す）。`'symlink'` のときだけ
+   * 「実体は元リポジトリと共有なので書き込む前にリンクを切る」注意書きを
+   * systemPrompt へ載せる（`core/system-prompt.ts`）。
+   */
+  ignoredFiles?: IgnoredFilesMode;
 }
 
 export interface SessionDeps {
@@ -339,6 +348,12 @@ export class Session {
       // restored session, or the live `sdkSessionId` when restarting after a
       // connection interruption. Absent on a fresh session's first start.
       const resume = this.deps.resume ?? this.state.sdkSessionId;
+      // worktree の環境説明（symlink 共有の注意書き）とリポジトリ追加指示をまとめた
+      // systemPrompt。どちらも無ければ undefined で、その場合は渡さない。
+      const systemPrompt = composeSystemPrompt({
+        ignoredFiles: opts?.ignoredFiles,
+        repoPrompt: opts?.appendSystemPrompt,
+      });
       this.handle = this.deps.queryFn({
         prompt: this.inputQueue,
         options: {
@@ -350,11 +365,11 @@ export class Session {
           // Stream partial assistant text so the detail view shows a live preview
           // (reduced into state.streamingText). See sdk-parse reduceStreamEvent.
           includePartialMessages: true,
-          // リポジトリ追加指示を systemPrompt として注入する。SDK は systemPrompt 省略時に
-          // 空文字("")へ写像する（claude_code プリセットは使わない）ため、ここに文字列を
-          // 渡すのは「空への追記」と等価で現挙動を変えない。将来ベースの systemPrompt を
+          // worktree の環境説明 + リポジトリ追加指示を systemPrompt として注入する。SDK は
+          // systemPrompt 省略時に空文字("")へ写像する（claude_code プリセットは使わない）ため、
+          // ここに文字列を渡すのは「空への追記」と等価。将来ベースの systemPrompt を
           // 足すなら、この行は array / preset-append 形へ切り替える必要がある。
-          ...(opts?.appendSystemPrompt ? { systemPrompt: opts.appendSystemPrompt } : {}),
+          ...(systemPrompt ? { systemPrompt } : {}),
           ...(model ? { model } : {}),
           ...(opts?.effort ? { effort: opts.effort } : {}),
           ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),

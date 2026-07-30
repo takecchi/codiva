@@ -27,9 +27,14 @@
 - 既定の options: `cwd`=セッションの worktree、`permissionMode`（設定優先、既定 `acceptEdits`）、
   `canUseTool`、`abortController`、`settingSources: ['project']`（対象リポジトリの CLAUDE.md を読ませる）、
   `includePartialMessages: true`（ストリーミングプレビュー用）。
-- `systemPrompt` は `<repo>/.codiva/prompt.md` の内容がある場合のみ付与する。**SDK は
-  `systemPrompt` 省略時に空文字へ写像する**ので単純代入で現挙動を壊さないが、将来ベースの
-  systemPrompt を導入するなら array / preset-append 形へ変える必要がある（`session.ts` のコメント参照）。
+- `systemPrompt` は**純粋な `core/system-prompt.ts` の `composeSystemPrompt()` で組み立てる**
+  （`session.ts` に文言や結合順を書かない）。要素は「worktree の環境説明（`ignoredFiles: 'symlink'`
+  のときだけ載る共有 symlink の注意書き）」→「`<repo>/.codiva/prompt.md` の内容」の順で、
+  どちらも無ければ付与しない。**SDK は `systemPrompt` 省略時に空文字へ写像する**ので単純代入で
+  現挙動を壊さないが、将来ベースの systemPrompt を導入するなら array / preset-append 形へ
+  変える必要がある（`session.ts` のコメント参照）。
+- **AI 向けのプロンプト文字列は i18n カタログに置かない**（UI 文字列ではない）。英語で書く
+  （`core/system-prompt.ts` / `utils/title.ts` の `TITLE_INSTRUCTION` が前例）。
 - `resume` は**モデル側コンテキストだけ**を復元し、過去メッセージをストリームに再送出しない。
   UI のログは transcript から再構築する（[session-domain.md](./session-domain.md)）。
 

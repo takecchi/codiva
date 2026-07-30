@@ -60,6 +60,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 |---|---|
 | セッションの状態・遷移 | `core/types.ts`（union）/ `core/status-meta.ts`（性質の表）/ `core/status-reducer.ts`（純粋 reducer） |
 | SDK メッセージの解釈 | `core/sdk-parse.ts` **のみ** + `core/__fixtures__/*.jsonl` |
+| セッションへ渡す systemPrompt | `core/system-prompt.ts`（worktree の共有 symlink 注意書き + `.codiva/prompt.md` の合成） |
 | セッションのライフサイクル | `core/session.ts`（1 query）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
 | worktree・マージ・破棄 | `utils/worktree-manager.ts`（I/O）/ `core/worktree.ts`（型・純関数）/ `core/session-actions.ts` |
 | PR 自動化 | `core/pr-coordinator.ts` / `utils/pr.ts`（`gh` はここだけ） |

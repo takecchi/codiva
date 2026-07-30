@@ -405,6 +405,65 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 14: 共有シンボリックリンクをセッションに伝える
+
+> `ignoredFiles: 'symlink'`（既定）では ignore 済みパスの実体が元リポジトリと共有なので、
+> セッションが依存更新やビルドを走らせるとメインチェックアウトと並行セッションに波及する。
+> エージェントは「自分の worktree の中だから安全」と判断するため、環境として伝えるしかない。
+
+- [x] 純関数 `core/system-prompt.ts` を追加: `SHARED_IGNORED_FILES_NOTICE`（AI 向け注意書き・英語）と
+      `composeSystemPrompt({ ignoredFiles, repoPrompt })`（環境説明 → リポジトリ追加指示の順に連結。
+      両方無ければ `undefined` = `systemPrompt` を渡さない）
+- [x] 注意書きの内容: ①ignore 済みパスは元リポジトリへの symlink で実体は共有（worktree 作成後に
+      生まれたパスは実体なので、断定せず `test -L` で判定させる）②読むのは安全・**書き込む前に
+      そのパスだけリンクを切って独立させる**（`target="$(readlink <path>)" && rm <path> &&
+      cp -Rp "$target/." <path>` / 作り直しでもよい）③`rm -rf <path>/` や `<path>/*` はリンクを
+      辿って共有先を消すので禁止 ④`.gitignore` の末尾スラッシュパターンは symlink にマッチしないので
+      リンクが untracked に現れる（`git add -A` 禁止・パス指定でステージ）⑤実際に書き込むパスだけ
+      切り離し、**触らない作業では何もしない**。
+      判定は名前ではなく `test -L` にして言語・ツールチェイン非依存にする
+- [x] **`git add -A` の危険性を実測**（`git status` 由来の発見）: 使い捨てリポジトリで、`.gitignore` の
+      `node_modules/` は symlink にマッチせず（`git check-ignore` exit 1）、`git add -A` が
+      **mode 120000 でステージ**することを確認。そのままマージすると絶対パス入りのリンクが base に
+      入るため、注意書きと README / TECH_NOTES に明記した（`diffStat().uncommitted` に混ざる件も記録）
+- [x] **手順を実機検証**（レビュー指摘）: 当初の `mv` + `cp -RL` は、①循環／壊れたリンクを含む
+      ツリー（ワークスペースの相互リンク等）で **exit 1・半端なコピー**になる ②内部 symlink まで
+      実体化してリンク構造を壊す ③退避名 `<path>.bak` が残っていると `mv` が**共有先の中へ移動**
+      してしまう ④退避名は `.gitignore` のディレクトリパターンに載らず untracked に出る、の4点が
+      あった。`readlink` + `cp -Rp "$target/."`（最上位リンクだけ辿る・一時名なし・モード保全）へ
+      変更し、循環・壊れたリンク・600 の `.env` を含むケースで exit 0 かつ共有先無傷を実測
+- [x] `SessionOptions.ignoredFiles` を追加し、`consume()` は `composeSystemPrompt()` の結果を
+      `options.systemPrompt` に載せる（`session.ts` は文言も結合順も持たない）
+- [x] 配線: `bootstrap/build-manager.ts` の `sessionOptionsFrom(config, appendSystemPrompt)`
+      （config → `SessionOptions` の対応付けだけの純関数として切り出し、spec で固定）が
+      `resolveIgnoredFilesMode(config)` で解決して渡す。`WorktreeManager` と同じ config 由来なので一致する
+- [x] `setRepoPrompt`（`/prompt`）が注意書きを消さないこと: `appendSystemPrompt` は
+      リポジトリ追加指示だけを持ち、合成は `consume()` 側で毎回行う
+- [x] テスト: `core/system-prompt.spec.ts`（合成のテーブルドリブン + 注意書きの必須要素を
+      **意味アンカー**で固定（文ではなく `test -L` / `readlink` / `rm -rf` 等。推敲で落ちないように）
+      + `cp -L` を勧めていないこと + ツールチェイン名の直書きが無いこと）/ `core/session.spec.ts`
+      （`symlink` のときだけ注入され、リポジトリ追加指示は常に末尾）/
+      `bootstrap/build-manager.spec.ts`（`ignoredFiles` の渡し忘れ回帰。この配線は
+      `src/bootstrap/**` が coverage 対象外で今まで無防備だった）
+- [x] ドキュメント: `docs/ARCHITECTURE.md`（systemPrompt の組み立て）/ `docs/TECH_NOTES.md`
+      （Options メモ・実測）/ `README.md`（利用者向けの節）/ `.claude/rules/sdk-integration.md`
+      （組み立ては純関数経由・AI 向け文言は i18n 対象外）/ `.claude/rules/git-and-io.md`
+      （symlink モードの不変条件）/ `CLAUDE.md`（コードの地図）
+
+- [x] 既知の制約として記録: モードは state.json に永続していないため、`symlink` で作った worktree を
+      後から `copy` / `none` 設定で復元すると注意書きが載らない（設定を変えた場合のみ。逆向きは
+      手順1の `test -L` 判定で無害）。永続フィールドを増やす価値が薄いので docs に明記して留める
+
+> 実績メモ: 全 1591 テスト緑・lint / typecheck 緑。実測で、このリポジトリ自身のセッション worktree の
+> `node_modules` / `dist` / `coverage` が元リポジトリを指すリンクになっていることを確認（＝worktree 内で
+> `npm run build` すると main の `dist/` を書き換える）。そのためこの Phase の検証では `npm run build` と
+> `npm test`（`--coverage` が `coverage/` へ書く）を避け、`tsc --noEmit` / `biome check` /
+> `vitest run --coverage.enabled=false` で通した。ビルドは CI に任せている。
+> codiva 側でリンクを張り替える案は採らなかった（何が書き込み対象かは指示内容次第で、
+> 先回りして全部コピーすると symlink モードの利点が消える）。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る
