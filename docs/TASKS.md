@@ -291,6 +291,42 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 12: 学習データ利用（grove）の警告
+
+> claude.ai の「Help improve our AI models」が ON のまま並列セッションを回してしまうのを防ぐ
+> 「気付き」だけを足す。**codiva 側の挙動は変えない / アカウント設定を書き換えない**方針。
+
+- [x] **判定（純粋）**: `core/privacy.ts` に `TrainingOptIn`（`'on' | 'off' | 'unknown'`）/
+      `toTrainingOptIn`（API レスポンス）/ `trainingOptInFromClaudeJson`（`~/.claude.json` の
+      `groveConfigCache`。7 日より古い値は使わない）/ `shouldWarnTraining`（`'on'` だけ true）
+- [x] **取得（I/O）**: `utils/privacy.ts` の `fetchTrainingOptIn` = 認証方式の門番 → キャッシュ
+      （`'off'` はここで確定）→ Keychain `Claude Code-credentials` / `~/.claude/.credentials.json` の
+      OAuth トークンで `GET /api/claude_code_grove`。**User-Agent は `claude-cli` 前置きが必須**
+      （実測。詳細は TECH_NOTES）。API キー / Bedrock / Vertex / 独自 `ANTHROPIC_BASE_URL` 利用時は
+      キャッシュも読まない。失敗・403・タイムアウトはすべて `'unknown'`（throw しない）
+- [x] **誤警告対策**（レビュー指摘の反映）: ① 認証方式の門番をキャッシュより先に置く
+      ② キャッシュの `'on'` は API で再確認（Web 側で OFF にしても cache は書き換わらないため）
+      ③ `accountUuid` が分かっているときは他アカウントのエントリを流用しない
+      ④ `domain_excluded === true` は `'unknown'` に倒す
+      ⑤ `security`（Keychain）に `signal` + `timeout` 2 秒（終了が返らなくなるのを防ぐ）
+- [x] **UI**: `ui/banner.tsx` の `PrivacySection`（`'on'` のときだけ ⚠ 行 + 変更先 URL。色は
+      `statusColor.awaitingPermission`）。`useTrainingOptIn`（`ui/hooks.ts`）で解決し、合成ルートは
+      **await しない**（起動をブロックしない・終了時に abort）
+- [x] 文言: `banner.privacy.warning` / `banner.privacy.hint` を ja / en 両方に追加
+- [x] 設定: `privacyWarning`（既定 on）。`false` なら判定自体を走らせない（Keychain もネットワークも触らない）
+- [x] テスト: `core/privacy.spec.ts`（テーブルドリブン）/ `utils/privacy.spec.ts`（キャッシュの
+      非対称な信頼・Keychain/ファイル・403・オフライン・タイムアウト・abort・認証方式ごとのスキップ・
+      Keychain のタイムアウト付与）/ `ui/banner.spec.tsx`（on で出る・off/unknown で出ない）/
+      `tests/app.test.tsx`（index.tsx → App → SessionList → Banner の prop チェーン）/ `core/config.spec.ts`
+
+> 実績メモ: 全 1136 テスト緑・lint / typecheck / build 緑（`utils/privacy.ts` は 88% statements）。
+> 非公開エンドポイント依存のため「壊れたら黙る」設計。abort 済みシグナルでは
+> `addEventListener('abort')` が発火しない（= タイムアウトまで待ってしまう）ため、`probe` の先頭で
+> `signal.aborted` を先手チェックしている。実機で `grove_enabled: false` を確認済み（警告が出ない）。
+> ON 時の表示は spec で担保し、手動確認は未実施（アカウント設定を変える必要があるため）。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

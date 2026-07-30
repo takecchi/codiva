@@ -21,6 +21,15 @@ export interface CodivaConfig {
   /** 質問・完了時のデスクトップ通知。未設定は有効（true）。 */
   notifications?: boolean;
   /**
+   * 学習データ利用（claude.ai の「Help improve our AI models」）が ON のとき、
+   * 一覧画面に警告行を出す。未設定は有効（true）。
+   *
+   * 判定は `~/.claude.json` のキャッシュ →（無ければ）Claude Code の非公開
+   * エンドポイントへの問い合わせの順（`utils/privacy.ts`）。`false` にすると
+   * 判定自体を走らせない（Keychain もネットワークも触らない）。
+   */
+  privacyWarning?: boolean;
+  /**
    * マウスサポート（クリックでキャレット移動・行選択、入力欄のドラッグで範囲選択→
    * クリップボードへコピー）。未設定は有効（true）。有効中は端末の通常ドラッグ選択は
    * 奪われるが、入力欄はアプリ側の選択コピー（OSC 52）で代替する（Shift+ドラッグで
@@ -74,6 +83,7 @@ interface CodivaConfigJson {
   permissionMode?: unknown;
   maxBudgetUsd?: unknown;
   notifications?: unknown;
+  privacyWarning?: unknown;
   mouse?: unknown;
   followOrigin?: unknown;
   autoPr?: unknown;
@@ -160,6 +170,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const notifications = toBoolean(raw.notifications);
   if (notifications !== undefined) {
     config.notifications = notifications;
+  }
+  const privacyWarning = toBoolean(raw.privacyWarning);
+  if (privacyWarning !== undefined) {
+    config.privacyWarning = privacyWarning;
   }
   const mouse = toBoolean(raw.mouse);
   if (mouse !== undefined) {

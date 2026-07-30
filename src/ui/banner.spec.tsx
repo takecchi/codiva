@@ -2,6 +2,7 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it } from 'vitest';
 import { type BannerLine, bannerLines, bannerText, messages } from '@/core';
 import { Banner } from './banner';
+import { MessagesProvider } from './i18n-context';
 
 const NOW = 1_000_000_000_000;
 const CWD = '/Users/hoge/codiva';
@@ -66,5 +67,51 @@ describe('Banner', () => {
     const value = lines();
     const frame = frameOf(<Banner lines={value} selection={{ start: 0, end: 12 }} />);
     expect(frame).toContain('Codiva v0.1.5');
+  });
+
+  it('学習データ利用が ON なら注意行と変更先 URL を出す', () => {
+    const frame = frameOf(
+      <MessagesProvider value={messages.en}>
+        <Banner lines={lines()} trainingOptIn="on" />
+      </MessagesProvider>,
+    );
+    // 端末幅で折り返されうるので、行頭側の短い断片と URL だけを見る。
+    expect(frame).toContain('data sharing is ON');
+    expect(frame).toContain('https://claude.ai/settings/data-privacy-controls');
+  });
+
+  it('日本語でも学習データ利用の注意行を出す', () => {
+    const frame = frameOf(
+      <MessagesProvider value={messages.ja}>
+        <Banner lines={lines()} trainingOptIn="on" />
+      </MessagesProvider>,
+    );
+    expect(frame).toContain('学習データ利用が ON');
+  });
+
+  it.each([['off'], ['unknown'], [undefined]] as const)(
+    '学習データ利用が %s のときは何も出さない',
+    (trainingOptIn) => {
+      const frame = frameOf(
+        <MessagesProvider value={messages.en}>
+          <Banner lines={lines()} trainingOptIn={trainingOptIn} />
+        </MessagesProvider>,
+      );
+      expect(frame).not.toContain('data sharing');
+    },
+  );
+
+  it('注意行は選択可能なテキスト（bannerText）に含まれない', () => {
+    // ヘッダのドラッグ選択は bannerText への caret index。注意行はその外（textRef の外）に
+    // 描くので、警告が出ていても選択対象のテキストは変わらない = 当たり判定がズレない。
+    const value = lines();
+    expect(bannerText(value)).not.toContain('data sharing is ON');
+    const frame = frameOf(
+      <MessagesProvider value={messages.en}>
+        <Banner lines={value} trainingOptIn="on" />
+      </MessagesProvider>,
+    );
+    // 描画上は cwd 行より下に出る。
+    expect(frame.indexOf(CWD)).toBeLessThan(frame.indexOf('data sharing is ON'));
   });
 });

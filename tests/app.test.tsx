@@ -413,6 +413,25 @@ describe('App (list view)', () => {
     app.unmount();
   });
 
+  // index.tsx → App → SessionList → Banner の配線。どこかで prop を落とすと
+  // 「一度も警告が出ない」= 気付けない壊れ方になるため、通しで検証する。
+  it('学習データ利用が ON と判定されたらバナーに注意行を出す', async () => {
+    const { lastFrame } = render(
+      <App manager={makeManager()} trainingOptIn={Promise.resolve('on')} />,
+    );
+    await flush();
+    expect(lastFrame()).toContain('学習データ利用が ON');
+    expect(lastFrame()).toContain('https://claude.ai/settings/data-privacy-controls');
+  });
+
+  it('学習データ利用が OFF なら何も出さない', async () => {
+    const { lastFrame } = render(
+      <App manager={makeManager()} trainingOptIn={Promise.resolve('off')} />,
+    );
+    await flush();
+    expect(lastFrame()).not.toContain('学習データ利用');
+  });
+
   it('renders in English when the en catalog is injected', () => {
     // The path index.tsx uses: resolved catalog → App messages prop → provider → components.
     const { lastFrame } = render(<App manager={makeManager()} messages={messages.en} />);

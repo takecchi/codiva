@@ -20,6 +20,7 @@ export * from './mouse';
 export * from './notify';
 export * from './persistence';
 export * from './pr-coordinator';
+export * from './privacy';
 export * from './rate-limit';
 export * from './repo-prompt';
 export * from './resume';

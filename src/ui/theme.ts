@@ -102,6 +102,7 @@ export const glyph = {
   attention: '●', // session needs the user
   gaugeFilled: '█', // usage bar — consumed part of a rate-limit window
   gaugeEmpty: '░', // usage bar — remaining part (dim)
+  warning: '⚠', // environment-level caution (e.g. training data sharing is on)
   merged: '⑂', // PR already merged (fork mark)
   mergeable: '✓', // PR can be merged cleanly
   conflicting: '✗', // PR has conflicts, cannot merge

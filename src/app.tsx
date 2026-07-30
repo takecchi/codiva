@@ -7,6 +7,7 @@ import {
   type ModelOption,
   type MouseControl,
   type SessionManager,
+  type TrainingOptIn,
 } from '@/core';
 import {
   type ListViewState,
@@ -14,6 +15,7 @@ import {
   SessionDetail,
   SessionList,
   useModelCatalog,
+  useTrainingOptIn,
 } from '@/ui';
 
 /** どの画面を出しているか。詳細は対象セッション id を持つ。 */
@@ -32,6 +34,12 @@ export const App: FC<{
    * props で配る（一覧・詳細のどちらからでも `/model` を開けるため）。
    */
   modelCatalog?: Promise<readonly ModelOption[]>;
+  /**
+   * 学習データ利用（claude.ai の「Help improve our AI models」）の判定。合成ルートが
+   * render 前に開始した Promise をそのまま受け、解決したら一覧のバナーに注意行を出す
+   * （`'on'` のときだけ）。設定 `privacyWarning: false` では未指定になる。
+   */
+  trainingOptIn?: Promise<TrainingOptIn>;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
   /** Copy composer selection to the clipboard. Injected from index.tsx (OSC 52). */
@@ -49,12 +57,14 @@ export const App: FC<{
   // 既定は ja。index.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   modelCatalog,
+  trainingOptIn,
   onOpenPr,
   onCopy,
   mouse,
 }) => {
   const { exit } = useApp();
   const models = useModelCatalog(modelCatalog);
+  const training = useTrainingOptIn(trainingOptIn);
   const [view, setView] = useState<View>({ mode: 'list' });
   // 一覧はビュー切替でアンマウントされ内部 state（選択行・フォーカス）が失われる。
   // 詳細から戻ったときに「前見ていた箇所」を復元できるよう、最新の表示状態をここに
@@ -107,6 +117,7 @@ export const App: FC<{
               listStateRef.current = state;
             }}
             onCopy={onCopy}
+            trainingOptIn={training}
           />
         )}
       </Box>

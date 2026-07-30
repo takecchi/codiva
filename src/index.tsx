@@ -12,6 +12,7 @@ import {
   copyToClipboard,
   defaultStatePath,
   fetchModelCatalog,
+  fetchTrainingOptIn,
   fetchUsageSnapshot,
   loadConfig,
   loadRepoPrompt,
@@ -101,6 +102,16 @@ async function main(): Promise<void> {
     after: modelCatalog,
   });
 
+  // 学習データ利用（claude.ai の「Help improve our AI models」）が ON なら一覧に注意行を
+  // 出す。ここも await せずに投げておき（キャッシュヒットなら即答、問い合わせに落ちても
+  // 数百 ms）、解決したらバナーに反映される。設定 `privacyWarning: false` なら判定自体を
+  // 走らせない（Keychain もネットワークも触らない）。
+  const privacyAbort = new AbortController();
+  const trainingOptIn =
+    config.privacyWarning === false
+      ? undefined
+      : fetchTrainingOptIn({ signal: privacyAbort.signal });
+
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);
   installHardExitFlush(persist.flushSync);
@@ -114,6 +125,7 @@ async function main(): Promise<void> {
       version={appVersion}
       messages={t}
       modelCatalog={modelCatalog}
+      trainingOptIn={trainingOptIn}
       onOpenPr={openUrl}
       onCopy={(text) => copyToClipboard(text)}
       // 詳細ビューを開いている間だけマウス捕捉を解除し、端末ネイティブの
@@ -130,6 +142,7 @@ async function main(): Promise<void> {
   stopPrPolling();
   stopUsagePolling();
   probeAbort.abort();
+  privacyAbort.abort();
   await persist.flushAsync();
   terminal.teardown();
 }
