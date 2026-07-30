@@ -141,7 +141,7 @@ export const isTerminalStatus = (s: SessionStatus): boolean => STATUS_META[s].te
 
 ### DoD
 - [ ] `status-reducer.ts` に SDK メッセージの形状知識(`message.subtype` 等の生参照)が残っていない
-- [ ] `tests/fixtures` 由来の実データテストが sdk-parse 側で従来ケースを網羅
+- [ ] `src/core/__fixtures__/` 由来の実データテストが sdk-parse 側で従来ケースを網羅
 - [ ] 全テスト green・reducer/parse のカバレッジ 90%+
 
 ---

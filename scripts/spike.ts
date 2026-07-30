@@ -6,10 +6,14 @@
  * status-reducer (Phase 2) can be built and tested against real data rather than
  * assumptions. See docs/TASKS.md "Phase 1" and docs/TECH_NOTES.md checklist.
  *
- * Usage:
- *   pnpm spike            # 'basic' scenario (todo + question + file edit)
- *   pnpm spike followup   # push a 2nd user message after the first result
- *   pnpm spike interrupt  # interrupt() mid-run
+ * Usage (note the `--`: without it npm swallows the scenario argument):
+ *   npm run spike               # 'basic' scenario (todo + question + file edit)
+ *   npm run spike -- followup   # push a 2nd user message after the first result
+ *   npm run spike -- interrupt  # interrupt() mid-run
+ *   npm run spike -- subagent   # delegate via the Task tool (completion-gate data)
+ *
+ * See .claude/skills/sdk-spike/SKILL.md for how to sanitize and promote the raw
+ * output into src/core/__fixtures__/.
  *
  * Requires Claude auth (the spawned `claude` subprocess inherits ~/.claude).
  * Everything runs inside a throwaway temp repo + worktree, cleaned up on exit
@@ -49,7 +53,7 @@ const PROMPTS: Record<Scenario, string> = {
 
 const prompt = PROMPTS[scenario];
 if (prompt === undefined) {
-  console.error(`unknown scenario "${scenario}". use: basic | followup | interrupt`);
+  console.error(`unknown scenario "${scenario}". use: basic | followup | interrupt | subagent`);
   process.exit(1);
 }
 

@@ -38,9 +38,9 @@
   - 受信した全 SDKMessage を `scripts/fixtures/<scenario>-<timestamp>.jsonl` に生のまま保存
 - [x] 追加シナリオ: result 後に2通目のユーザーメッセージを push（followup）/ interrupt() を呼ぶ（interrupt）
 - [x] TECH_NOTES.md の「スパイクで検証すべき項目」7点をすべて確認し、結果を TECH_NOTES.md 末尾「スパイク結果」節に追記
-- [x] 収集した JSONL から代表ケースを `tests/fixtures/` に配置（session-basic / session-followup / session-interrupt）
+- [x] 収集した JSONL から代表ケースを `src/core/__fixtures__/` に配置（session-basic / session-followup / session-interrupt。のちに session-subagent を追加）
 
-**DoD**: 7つの検証項目すべてに実測ベースの回答が記録されている。フィクスチャが tests/fixtures/ にある。
+**DoD**: 7つの検証項目すべてに実測ベースの回答が記録されている。フィクスチャが `src/core/__fixtures__/` にある。
 
 > 実績メモ（詳細は TECH_NOTES.md「スパイク結果」）:
 > - 進捗は **TaskCreate/TaskUpdate**（TodoWrite ではない）。連番 string ID。
@@ -65,7 +65,7 @@ UI なし。すべてユニットテストで駆動する。
 
 > 実績メモ: テスト 69件全緑。カバレッジ statements 95% / functions 87% / lines 97% / branches 77%。
 > branch 閾値のみ 75% に設定（残りは untyped SDK データ対策の `?? default` 防御分岐で、テスト強制の価値が低いため）。
-> lint / tsc --noEmit / build すべて exit 0。reducer テストは Phase 1 実データ（tests/fixtures）で駆動。
+> lint / tsc --noEmit / build すべて exit 0。reducer テストは Phase 1 実データ（`src/core/__fixtures__/`）で駆動。
 
 ## Phase 3: UI MVP（一覧と投入）✅
 

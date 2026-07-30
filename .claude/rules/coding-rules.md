@@ -18,7 +18,8 @@
 - **純粋ロジックと I/O を分離**（[architecture.md](./architecture.md)）。I/O は薄いラッパにし、変換・判定は純関数へ。
 - ロジックには必ずテストを書く（vitest）。純関数はテーブルドリブンで。
   - **単体テストは実装の隣に co-located `*.spec.ts`**（例: `slug.ts` ↔ `slug.spec.ts`）。フィクスチャは `__fixtures__/`。
-  - **App 全体を通す機能/統合テストは `tests/*.test.ts`**（特定モジュールに属さないため）。
+  - **App 全体を通す機能/統合テストは `tests/*.test.tsx`**（特定モジュールに属さないため）。
+    フェイクは `tests/helpers.ts` に集約する（詳細は [testing.md](./testing.md)）。
 - 1ファイルが 500 行を超えたら分割を検討。
 - コメントは「なぜ」を書く。自明な「何を」は書かない。
 

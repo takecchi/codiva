@@ -6,7 +6,7 @@ coverage/
 .idea/
 .vscode/
 .codiva/
-# raw spike output is throwaway; the promoted, cleaned fixtures live in tests/fixtures/ and ARE tracked
+# raw spike output is throwaway; the promoted, sanitized fixtures live in src/core/__fixtures__/ and ARE tracked
 scripts/fixtures/
 
 .claude/worktrees/

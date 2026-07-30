@@ -18,6 +18,9 @@
 
 - **1画面につき `useInput` は1つ**（view コンポーネントに置く）。`PromptInput` 等は presentational にして、キー処理は view 側の単一ハンドラに集約する（複数 `useInput` の競合を避ける）。
 - モーダルな状態（`pendingPermission` あり）では、そのダイアログにキーを委譲し、背後の view はキーを処理しない。
+  例外として**モーダル自身は `useInput` を持つ**（`permission-dialog` / `model-select` / `repo-prompt-editor`）。
+  成立条件は「背後の view がモーダル表示中に全キーを飲む」こと（`pending` / `modelSelect` / `promptEdit` の
+  ガードが view の `useInput` の先頭にある）。モーダルを増やすときはこのガードを必ず追加する。
 - **フォーカスモデル**: 一覧画面は `composer`（入力欄・起動時の既定）と `list` の2ゾーン。
   Tab で切替。composer 中は矢印がキャレット移動（`editText` の arrows+vertical）、list 中は
   ↑↓が行選択・Enter/→ が「claude で開く」・m/d がマージ/破棄。list 中に印字キーを打つと

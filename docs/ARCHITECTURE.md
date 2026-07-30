@@ -52,7 +52,7 @@ codiva/
 │   │   ├── types.ts           # SessionState, SessionStatus, CodivaEvent 等の型定義
 │   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（型付きイベントのみ・純関数）
 │   │   ├── sdk-parse.ts       # applySdkMessage()（SDK メッセージ形状の解釈を集約・純粋）
-│   │   ├── status-meta.ts     # STATUS_META（terminal/attention/復元先/通知キーの一元表）
+│   │   ├── status-meta.ts     # STATUS_META（terminal/attention/active/resumable/復元先/通知キーの一元表）
 │   │   ├── session.ts         # 1 SDK query のライフサイクル
 │   │   ├── session-store.ts   # 購読可能スナップショット（順序・状態・参照同一性保持）
 │   │   ├── session-manager.ts # create/restore/dispose + passthrough のファサード
@@ -117,6 +117,8 @@ codiva/
  completed ──(追加指示送信)─────────────────▶ running   # 完了後の追加作業も許す
  running ──(通信断で query が throw / エラー result & sdkSessionId あり)──▶ interrupted # 接続中断。resumable
  * ──(query の throw / abort)──────────────▶ failed  # 通信断以外（or sdkSessionId 無し）
+ completed ──(マージで競合検知 → merge --abort)──▶ conflict  # 自動解消しない。解消は人手（終端扱い）
+ conflict ──(手動解消後の再マージ or 破棄)────▶ archived
  completed ──(マージ or 破棄)────────────────▶ archived
  running/awaiting_* ──(アプリ終了 → 保存)────▶ interrupted # メモリ上は状態不変。保存時に丸める（restorableStatus）
  rate_limited ──(アプリ終了 → 保存)──────────▶ interrupted # 制限は一時的。復元時は resumable な interrupted に丸める
@@ -214,14 +216,25 @@ interface SessionState {
   prompt: string;             // 最初の指示文
   branch: string;             // codiva/<slug>
   worktreePath: string;
-  todos: TodoItem[];          // TodoWrite の最新スナップショット
+  todos: TodoItem[];          // TaskCreate/TaskUpdate（+ 旧 TodoWrite）から構築した最新スナップショット
   progress?: { done: number; total: number }; // todos から導出
   messages: LogEntry[];       // 整形済みログ。SessionDetail のログビューで表示し、復元時は SDK transcript から再構築
-  pendingPermission?: PermissionRequest;      // awaiting_permission 時のみ
+  pendingPermission?: PermissionRequest;      // awaiting_permission / awaiting_input 時のみ
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
+  model?: string;             // セッション個別のモデル上書き（/model）
+  pr?: PrInfo;                // 自動作成した PR の番号・URL・draft/checks 状態
+  conflictFiles?: string[];   // conflict 時の競合ファイル（自動解消はしない）
   startedAt: number;
   finishedAt?: number;
+  activeMs: number;           // 「実際に動いた時間」の累積（active な区間のみ積算）
+  activeSince?: number;       // 現稼働セグメントの開始時刻（idle なら未設定）
+  totalCostUsd?: number;      // result の total_cost_usd 累計
   error?: string;
+  rateLimitResetsAt?: number; // rate_limited のときの解除予定時刻
+  streamingText?: string;     // stream_event の text_delta プレビュー（transient・永続しない）
+  activeTaskIds?: string[];   // 稼働中のサブエージェント（完了ゲート用。transient）
+  deferredResult?: { at: number; totalCostUsd?: number; resultText: string }; // 保留した result（同上）
+  logSeq: number;             // LogEntry の採番カウンタ
 }
 ```
 
