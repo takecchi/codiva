@@ -89,12 +89,29 @@ const RichLogLine: FC<{ spans: RichSpan[] }> = ({ spans }) => (
   </Text>
 );
 
+/**
+ * 空行を描くための最小の中身。Ink の `measureText('')` は **高さ 0** を返すため、
+ * 空文字の `<Text>` は行として一切場所を取らない。ログの空行（Markdown の段落間・
+ * コードブロック内の空行など）がこれに当たり、そのままだと
+ *
+ * 1. 段落の区切りが消えて行が詰まって見える
+ * 2. スクロール計算（`core/scroll.ts` は空行も 1 物理行として数える）が確保した高さ
+ *    より実際の描画が短くなり、末尾寄せ（justifyContent="flex-end"）の分だけ
+ *    **可視域の上端に隙間が生まれる**（表示できる行があるのに空白のままになる）
+ *
+ * という不具合になる。半角スペース 1 つを描いて必ず 1 行ぶんの高さを確保する。
+ */
+const BLANK_ROW = ' ';
+
 // One physical row of the log. `line.text` already carries the kind's prefix /
 // continuation indent (built by core's logLines); truncate is only a safety net
 // against width drift — wrapping happened in core at the exact content width.
 // Markdown-rendered rows carry `spans` and take the styled path instead.
+// 空行（`text` が空）はどちらの経路でも高さ 0 になるので BLANK_ROW で埋める。
 const LogLine: FC<{ line: DisplayLine }> = ({ line }) =>
-  line.spans && line.spans.length > 0 ? (
+  line.text.length === 0 ? (
+    <Text>{BLANK_ROW}</Text>
+  ) : line.spans && line.spans.length > 0 ? (
     <RichLogLine spans={line.spans} />
   ) : (
     <Text color={logColor[line.kind]} dimColor={LOG_DIM[line.kind]} wrap="truncate-end">
@@ -251,6 +268,14 @@ export const SessionDetail: FC<{
   const viewport = isFullscreenViewport(rows)
     ? Math.max(1, Math.floor(measuredLogRows ?? logViewportRows(rows)))
     : Math.max(1, rows);
+  // ライブ入力中のプレビュー行はログと同じビューポートを共有するので、**実際に描く
+  // ときだけ** 1 行を差し引く（末尾追従中のみ描画する）。スクロール中も差し引くと
+  // 描かない行を予約してしまい、可視域の上端に 1 行の隙間が残る。
+  const preview = session?.streamingText ? streamTail(session.streamingText) : '';
+  const showPreview = preview.length > 0 && anchor === 'bottom';
+  // ログを描ける行数。logWindow とスクロール（移動量・アンカーの下限）で必ず同じ値を
+  // 使う — 食い違うと最上部でアンカーが 1 行手前で止まり、先頭行に到達できなくなる。
+  const logCap = Math.max(1, viewport - (showPreview ? 1 : 0));
 
   /** Caret index for a mouse point inside the composer, or undefined if outside. */
   const composerCaretAt = (x: number, y: number): number | undefined => {
@@ -276,8 +301,8 @@ export const SessionDetail: FC<{
       if (mouse.kind === 'wheel') {
         setAnchor((a) =>
           mouse.dir === 'up'
-            ? scrollUp(a, total, viewport, WHEEL_SCROLL_LINES)
-            : scrollDown(a, total, viewport, WHEEL_SCROLL_LINES),
+            ? scrollUp(a, total, logCap, WHEEL_SCROLL_LINES)
+            : scrollDown(a, total, logCap, WHEEL_SCROLL_LINES),
         );
       } else if (mouse.kind === 'press') {
         // コンポーザ内のクリックはキャレット移動 + 選択アンカー。欄外は選択解除。
@@ -344,11 +369,11 @@ export const SessionDetail: FC<{
     // step is derived from the *visible* log height, not the full terminal, so a
     // page never jumps past unseen lines.
     if (key.pageUp) {
-      setAnchor((a) => scrollUp(a, total, viewport));
+      setAnchor((a) => scrollUp(a, total, logCap));
       return;
     }
     if (key.pageDown) {
-      setAnchor((a) => scrollDown(a, total, viewport));
+      setAnchor((a) => scrollDown(a, total, logCap));
       return;
     }
     if (confirm) {
@@ -380,8 +405,8 @@ export const SessionDetail: FC<{
     ) {
       setAnchor((a) =>
         key.upArrow
-          ? scrollUp(a, total, viewport, ARROW_SCROLL_LINES)
-          : scrollDown(a, total, viewport, ARROW_SCROLL_LINES),
+          ? scrollUp(a, total, logCap, ARROW_SCROLL_LINES)
+          : scrollDown(a, total, logCap, ARROW_SCROLL_LINES),
       );
       return;
     }
@@ -438,10 +463,7 @@ export const SessionDetail: FC<{
         : m.detail.helpInput;
   // コマンドとして解決される入力か（`/` 付き、または詳細で使える名前と完全一致）。
   const commandPreview = commands.preview(buffer.value);
-  const preview = session.streamingText ? streamTail(session.streamingText) : '';
-  // プレビュー行はログと同じビューポートを共有するため、その1行を差し引いて描く
-  // （溢れると上端が1行クリップされ、最新行を見ているつもりで欠けが出る）。
-  const win = logWindow(lines, Math.max(1, viewport - (preview ? 1 : 0)), anchor);
+  const win = logWindow(lines, logCap, anchor);
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -471,7 +493,7 @@ export const SessionDetail: FC<{
             <LogLine key={line.key} line={line} />
           ))}
           {/* Live streaming preview, only while following the tail. */}
-          {win.atBottom && preview ? (
+          {showPreview ? (
             <Text color={theme.accent} dimColor wrap="truncate-end">
               {preview}
             </Text>
