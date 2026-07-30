@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bannerGaugeWidth,
   DETAIL_CHROME_ROWS,
   isFullscreenViewport,
   LIST_CHROME_ROWS,
@@ -208,6 +209,31 @@ describe('usageFooterPlan', () => {
       expect(Number(plan.showBars)).toBeLessThanOrEqual(Number(prev.showBars));
       expect(Number(plan.showPlan)).toBeLessThanOrEqual(Number(prev.showPlan));
       prev = plan;
+    }
+  });
+});
+
+describe('bannerGaugeWidth', () => {
+  it.each([
+    // 固定部分 68 セル + ゲージ幅が収まる最大の段を選ぶ。
+    [200, 20],
+    [88, 20],
+    [87, 12],
+    [80, 12],
+    [79, 8],
+    [76, 8],
+    [75, 0],
+    [0, 0],
+  ])('幅 %s ではゲージ %s セル', (columns, expected) => {
+    expect(bannerGaugeWidth(columns)).toBe(expected);
+  });
+
+  it('狭くなるほどゲージは単調に細くなる', () => {
+    let prev = bannerGaugeWidth(200);
+    for (let columns = 200; columns >= 0; columns--) {
+      const width = bannerGaugeWidth(columns);
+      expect(width).toBeLessThanOrEqual(prev);
+      prev = width;
     }
   });
 });

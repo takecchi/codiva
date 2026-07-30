@@ -368,6 +368,43 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 13: ヘッダの可読性改善
+
+> 起動ヘッダの情報量が縦に伸びて読みにくくなっていたので、行を詰めて数値をゲージ化する。
+> 表示だけの変更で、取得経路（`rate_limit_event` / usage ポーリング）には触らない。
+
+- [x] サブタイトル行（`並列 Claude Code セッションを…`）を削除。文言 `banner.subtitle` も ja/en ごと撤去
+- [x] プランとモデルを 1 行に統合（`プラン: Claude Max   モデル: sonnet`）。`banner.usage.plan` を
+      `banner.plan` へ移し、en は `Plan:` / `Model:` と大文字始まりに揃える
+- [x] 使用状況をフッタと同じ**ゲージ + 使用率**表示に（`現在のセッション  ████████░░░░░░░░░░░░  42%  2時間45分後にリセット`）。
+      純粋な `bannerUsageRows()`（見出しを表示幅で揃える / 使用率を右詰め 4 桁 / 使用率なしは同幅の空白）を
+      `core/banner-lines.ts` に追加し、セル数は既存の `gaugeCells()`、記号は `theme.glyph` から取る
+- [x] 使用状況節を `bannerLines` の行リストから外し、`ui/banner.tsx` の `UsageSection`（`PrivacySection` と
+      同じく `textRef` の外）で描く。記号を core に持ち込まず、`bannerCaretAt` の「行 index = 表示行」も維持
+- [x] 文言: `banner.usage.used` を撤去（ゲージ横の `42%` はデータなので i18n 対象外。フッタと同じ扱い）
+- [x] **幅の縮退**（レビュー指摘）: ゲージ幅を固定 20 セルにすると ja の最長ケースで 87 桁必要になり、
+      80 桁の端末でヘッダ全体が横に縮められて**マスコットが折り返して崩れる**。`core/layout.ts` に
+      `bannerGaugeWidth(columns)`（20 / 12 / 8 / 0 セル）を足し、さらに**マスコットの Box に
+      `flexShrink={0}`**（横方向のみに効く）を付けて縮小をテキスト欄の truncate 側に寄せた
+- [x] **縦に潰れたときの当たり判定**（レビュー指摘）: 中央寄せの負オフセットで落ちるのは**上端の行**
+      なので「行 index = 表示行」は保たれない（従来コメントの記述が誤り）。`SessionList` は実測高さ
+      （`useBoxHeight`）が行数より小さい間はヘッダの当たり判定をやめる
+- [x] テスト更新: `core/banner-lines.spec.ts`（行構成 / `bannerUsageRows` のテーブルドリブン）/
+      `core/layout.spec.ts`（`bannerGaugeWidth` の段と単調性）/ `ui/banner.spec.tsx`（ゲージ・
+      使用率なし枠・列の揃い・選択テキストに含まれない・**幅 20〜200 でマスコットが折り返さない**）/
+      `tests/app.test.tsx`（フッタのゲージ検証をフッタ行に限定）
+- [x] ドキュメント: `docs/ARCHITECTURE.md`（`Banner` の責務）/ `.claude/rules/ink-components.md`
+      （margin は「選択可能な塊の外なら可」/ マスコットの `flexShrink={0}` は例外 / 幅の縮退）/
+      `README.md`（ヘッダの見え方）
+
+> 実績メモ: 全 1560 テスト緑・lint / typecheck / build 緑。ヘッダは 6 行 →（プラン+モデル統合と
+> サブタイトル削除で）4 行に減り、使用状況は枠を並べて比較できるようになった。ゲージ幅は
+> 幅 100 以上で 20 セル（フッタは常に 8）。レビューで見つかった「80 桁でマスコットが崩れる」は
+> `flexShrink={0}` + 幅の段階的縮退で解消し、幅 20〜200 の回帰テストで固定した。
+> 実機での体感確認はユーザーに依頼。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

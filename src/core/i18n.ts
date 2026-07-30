@@ -178,11 +178,16 @@ export interface Messages {
   };
   /** 起動バナー（banner.tsx） */
   banner: {
-    subtitle: string;
-    /** 使用中モデルの表示（設定 model。未設定は CLI 既定）。 */
+    /** 使用中モデルの表示（設定 model。未設定は CLI 既定）。プラン表示と同じ行に並ぶ。 */
     model: (name: string) => string;
     /** model 未設定時に表示するプレースホルダ（CLI 既定）。 */
     defaultModel: string;
+    /**
+     * プラン表示（`accountInfo()` 由来）。プラン名は SDK 由来の表示文字列なので
+     * そのまま渡す（i18n の例外。モデル名と同じ扱い）。組織名は Team /
+     * Enterprise のときだけ付く。
+     */
+    plan: (plan: string, organization?: string) => string;
     /**
      * claude.ai サブスクリプションの使用リミット表示（SDK の rate_limit_event 由来）。
      * ウィンドウ見出しのキーは core の RateLimitLabelKey と一致させる。
@@ -200,16 +205,8 @@ export interface Messages {
       weekSonnet: string;
       /** 追加利用（overage）枠の見出し。 */
       overage: string;
-      /** 使用率（0-100 の整数パーセント）。 */
-      used: (pct: number) => string;
       /** リセットまでの残り時間（日・時・分）。 */
       resetsIn: (days: number, hours: number, minutes: number) => string;
-      /**
-       * プラン行（`accountInfo()` 由来）。プラン名は SDK 由来の表示文字列なので
-       * そのまま渡す（i18n の例外。モデル名と同じ扱い）。組織名は Team /
-       * Enterprise のときだけ付く。
-       */
-      plan: (plan: string, organization?: string) => string;
     };
     /**
      * 学習データ利用（claude.ai の「Help improve our AI models」）が ON と判定された
@@ -410,9 +407,10 @@ const ja: Messages = {
     hint: 'Claude の認証が切れています。別のターミナルで claude を起動して /login し、Ctrl+R で再開してください。',
   },
   banner: {
-    subtitle: '並列 Claude Code セッションを git worktree 上で実行',
     model: (name) => `モデル: ${name}`,
     defaultModel: 'CLI 既定',
+    plan: (plan, organization) =>
+      organization ? `プラン: ${plan} (${organization})` : `プラン: ${plan}`,
     usage: {
       heading: '使用状況',
       session: '現在のセッション',
@@ -420,7 +418,6 @@ const ja: Messages = {
       weekOpus: '今週 (Opus)',
       weekSonnet: '今週 (Sonnet)',
       overage: '追加利用',
-      used: (pct) => `${pct}% 使用`,
       resetsIn: (days, hours, minutes) => {
         const when =
           days > 0
@@ -430,8 +427,6 @@ const ja: Messages = {
               : `${minutes}分`;
         return `${when}後にリセット`;
       },
-      plan: (plan, organization) =>
-        organization ? `プラン: ${plan} (${organization})` : `プラン: ${plan}`,
     },
     privacy: {
       warning: '学習データ利用が ON です（会話がモデル改善に使われる場合があります）',
@@ -598,9 +593,10 @@ const en: Messages = {
     hint: 'Claude authentication expired. Run `claude` in another terminal, use /login, then press Ctrl+R to resume.',
   },
   banner: {
-    subtitle: 'Parallel Claude Code sessions in git worktrees',
-    model: (name) => `model: ${name}`,
+    model: (name) => `Model: ${name}`,
     defaultModel: 'CLI default',
+    plan: (plan, organization) =>
+      organization ? `Plan: ${plan} (${organization})` : `Plan: ${plan}`,
     usage: {
       heading: 'Usage',
       session: 'Current session',
@@ -608,14 +604,11 @@ const en: Messages = {
       weekOpus: 'This week (Opus)',
       weekSonnet: 'This week (Sonnet)',
       overage: 'Overage',
-      used: (pct) => `${pct}% used`,
       resetsIn: (days, hours, minutes) => {
         const when =
           days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
         return `resets in ${when}`;
       },
-      plan: (plan, organization) =>
-        organization ? `plan: ${plan} (${organization})` : `plan: ${plan}`,
     },
     privacy: {
       warning: 'Model-improvement data sharing is ON (conversations may be used for training)',

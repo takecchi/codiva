@@ -399,9 +399,11 @@ describe('App (list view)', () => {
     await flush();
 
     const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 120);
-    // 一覧: バナーのプラン行 + ステータスバーのゲージ。
+    // 一覧: ヘッダのプラン + モデル行、ステータスバーのゲージ（8 セル）。
     expect(lastFrame()).toContain('プラン: Claude Team (Example Inc)');
-    expect(lastFrame()).toContain('████░░░░');
+    // ヘッダのゲージ（幅可変）と混ざらないよう、モード表示のある行だけを見る。
+    const footer = (lastFrame() ?? '').split('\n').find((l) => l.includes('自動モード')) ?? '';
+    expect(footer).toContain('████░░░░');
 
     // 詳細（バナーが無い画面）でもステータスバーに出続ける。
     stdin.write('\t');

@@ -204,8 +204,10 @@ export const SessionList: FC<{
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
   // ヘッダのテキスト欄（マスコットの右）。左上を実測してマウス座標から文字位置を逆算する。
+  // 高さも測るのは、低い端末で欄が潰れたときに当たり判定をやめるため（下記 headerCaretAt）。
   const headerRef = useRef<DOMElement>(null);
   const headerBox = useAbsolutePosition(headerRef);
+  const headerHeight = useBoxHeight(headerRef);
 
   // 一覧は常に作成順（上が古い・下が新しい）。archived になっても位置は動かさない。
   const selected = Math.min(sel, Math.max(0, sessions.length - 1));
@@ -382,17 +384,15 @@ export const SessionList: FC<{
     version,
     sessionCount: sessions.length,
     totalCostUsd: totalCostUsd(sessions),
-    rateLimits,
     account,
     updateLatest: updateInfo?.latest,
-    now,
   });
   const headerText = bannerText(headerLines);
 
   // 選択を始めた時点のヘッダ内容を固定して持つ。選択範囲は「このテキストへの caret
-  // index」なので、途中でヘッダの文言が変わると（合計コストの増加・セッション数・
-  // 使用状況のカウントダウン）行の長さがズレて別の文字を指してしまう。固定しておけば
-  // コピー結果は常に「選択した瞬間の文字列」になる。
+  // index」なので、途中でヘッダの文言が変わると（合計コストの増加・セッション数・モデルの
+  // 切替）行の長さがズレて別の文字を指してしまう。固定しておけばコピー結果は常に
+  // 「選択した瞬間の文字列」になる（毎秒動く使用状況のカウントダウンはこのテキストの外）。
   const headerSnapRef = useRef<{ lines: readonly BannerLine[]; text: string } | undefined>(
     undefined,
   );
@@ -412,6 +412,10 @@ export const SessionList: FC<{
    * it's outside: the mascot, a row above/below the text, or — for a press — right of
    * that row's last character (an empty area must not silently swallow clicks).
    * Drags pass `'clamp'` instead, so overshooting the end still selects to the end.
+   *
+   * 実測高さが行数より小さいとき（低い端末でヘッダが縮み、縦中央寄せの都合で**上端の行から**
+   * 落ちる）は当たり判定そのものをやめる。「行 index = 表示行」が崩れているので、そのまま
+   * 逆算すると押した行とは別の行の文字を選んでしまう（黙って間違うより選べないほうがよい）。
    */
   const headerCaretAt = (
     lines: readonly BannerLine[],
@@ -419,7 +423,7 @@ export const SessionList: FC<{
     y: number,
     beyondEnd: 'reject' | 'clamp' = 'reject',
   ): number | undefined => {
-    if (!headerBox) {
+    if (!headerBox || (headerHeight !== undefined && headerHeight < lines.length)) {
       return undefined;
     }
     return bannerCaretAt(lines, y - headerBox.top, x - headerBox.left, beyondEnd);
@@ -754,6 +758,8 @@ export const SessionList: FC<{
       <Banner
         lines={headerLines}
         selection={headerSel.selection}
+        usage={rateLimits}
+        now={now}
         textRef={headerRef}
         trainingOptIn={trainingOptIn}
       />

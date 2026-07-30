@@ -5,9 +5,10 @@ import {
   bannerLines,
   bannerLineText,
   bannerText,
+  bannerUsageRows,
 } from './banner-lines';
 import { messages } from './i18n';
-import type { RateLimitStatus } from './rate-limit';
+import type { RateLimitStatus, RateLimitWindow } from './rate-limit';
 
 const m = messages.en;
 const NOW = 1_000_000_000_000;
@@ -18,47 +19,41 @@ function rows(line: BannerLine[]): string[] {
 }
 
 describe('bannerLines', () => {
-  it('ワードマーク → サブタイトル → モデル → cwd の順に行を組む', () => {
-    const lines = rows(
-      bannerLines(m, { sessionCount: 0, model: 'sonnet', cwd: '/tmp/repo', now: NOW }),
-    );
+  it('ワードマーク → プラン + モデル → cwd の順に行を組む（サブタイトルは出さない）', () => {
+    const lines = rows(bannerLines(m, { sessionCount: 0, model: 'sonnet', cwd: '/tmp/repo' }));
     expect(lines[0]).toContain('Codiva');
-    expect(lines[1]).toBe(m.banner.subtitle);
-    expect(lines[2]).toBe('model: sonnet');
-    expect(lines[3]).toBe('/tmp/repo');
-    expect(lines).toHaveLength(4);
+    expect(lines[1]).toBe('Model: sonnet');
+    expect(lines[2]).toBe('/tmp/repo');
+    expect(lines).toHaveLength(3);
   });
 
   it('モデル未設定なら CLI 既定を出す', () => {
-    const lines = rows(bannerLines(m, { sessionCount: 0, now: NOW }));
-    expect(lines[2]).toBe('model: CLI default');
+    const lines = rows(bannerLines(m, { sessionCount: 0 }));
+    expect(lines[1]).toBe('Model: CLI default');
   });
 
   it('cwd 未指定ならパス行を作らない', () => {
-    expect(rows(bannerLines(m, { sessionCount: 0, now: NOW }))).toHaveLength(3);
+    expect(rows(bannerLines(m, { sessionCount: 0 }))).toHaveLength(2);
   });
 
-  it('プラン名はモデル行と cwd 行の間に入る', () => {
+  it('プラン名はモデルと同じ行に並ぶ（行を増やさない）', () => {
     const lines = rows(
       bannerLines(m, {
         sessionCount: 0,
         model: 'sonnet',
         cwd: '/tmp/repo',
         account: { plan: 'Claude Team', organization: 'Acme' },
-        now: NOW,
       }),
     );
-    expect(lines[2]).toBe('model: sonnet');
-    expect(lines[3]).toBe(m.banner.usage.plan('Claude Team', 'Acme'));
-    expect(lines[4]).toBe('/tmp/repo');
+    expect(lines[1]).toBe('Plan: Claude Team (Acme)   Model: sonnet');
+    expect(lines[2]).toBe('/tmp/repo');
+    expect(lines).toHaveLength(3);
   });
 
-  it('プランが取れないときはプラン行を作らない（行 index をずらさない）', () => {
-    const base = rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo', now: NOW }));
+  it('プランが取れないときはモデルだけの行にする（行 index をずらさない）', () => {
+    const base = rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo' }));
     for (const account of [undefined, {}, { organization: 'Acme' }]) {
-      expect(
-        rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo', account, now: NOW })),
-      ).toEqual(base);
+      expect(rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo', account }))).toEqual(base);
     }
   });
 
@@ -70,25 +65,25 @@ describe('bannerLines', () => {
   }[] = [
     {
       name: 'バージョンをワードマークの右に添える',
-      input: { sessionCount: 0, version: '0.1.5', now: NOW },
+      input: { sessionCount: 0, version: '0.1.5' },
       contains: ['Codiva v0.1.5'],
       omits: [],
     },
     {
       name: 'バージョン未指定なら v 表記を出さない',
-      input: { sessionCount: 0, now: NOW },
+      input: { sessionCount: 0 },
       contains: ['Codiva'],
       omits: [' v'],
     },
     {
       name: 'コストが 0 なら合計を出さない',
-      input: { sessionCount: 2, totalCostUsd: 0, now: NOW },
+      input: { sessionCount: 2, totalCostUsd: 0 },
       contains: ['2 session'],
       omits: ['total'],
     },
     {
       name: 'コストがあれば合計を添える',
-      input: { sessionCount: 2, totalCostUsd: 1.5, now: NOW },
+      input: { sessionCount: 2, totalCostUsd: 1.5 },
       contains: ['total'],
       omits: [],
     },
@@ -110,83 +105,95 @@ describe('bannerLines', () => {
         model: 'sonnet',
         cwd: '/tmp/repo',
         updateLatest: '0.3.0',
-        now: NOW,
       }),
     );
-    expect(lines).toHaveLength(5);
-    expect(lines[4]).toContain(m.update.available('0.3.0'));
-    expect(lines[4]).toContain(m.update.availableHint);
+    expect(lines).toHaveLength(4);
+    expect(lines[3]).toContain(m.update.available('0.3.0'));
+    expect(lines[3]).toContain(m.update.availableHint);
   });
 
   it('更新が無ければ行を増やさない（最新でも未確認でも同じ = 行 index をずらさない）', () => {
-    const base = { sessionCount: 0, model: 'sonnet', cwd: '/tmp/repo', now: NOW };
-    expect(rows(bannerLines(m, base))).toHaveLength(4);
-    expect(rows(bannerLines(m, { ...base, updateLatest: undefined }))).toHaveLength(4);
+    const base = { sessionCount: 0, model: 'sonnet', cwd: '/tmp/repo' };
+    expect(rows(bannerLines(m, base))).toHaveLength(3);
+    expect(rows(bannerLines(m, { ...base, updateLatest: undefined }))).toHaveLength(3);
   });
 
   it('更新行はアクセント色 + dim の 2 セグメントで組む（色は theme が決める）', () => {
-    const lines = bannerLines(m, { sessionCount: 0, updateLatest: '0.3.0', now: NOW });
+    const lines = bannerLines(m, { sessionCount: 0, updateLatest: '0.3.0' });
     const update = lines[lines.length - 1];
     expect(update?.segments.map((s) => s.tone)).toEqual(['accent', 'dim']);
   });
 
-  it('使用リミットが無ければ使用状況節を出さない', () => {
-    const lines = rows(bannerLines(m, { sessionCount: 0, now: NOW }));
+  it('使用状況は行リストに含めない（記号を持つゲージは ui 側で描く）', () => {
+    const lines = rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo' }));
     expect(lines.join('\n')).not.toContain('Usage');
   });
+});
 
-  it('使用リミットがあれば空行 + 見出し + 枠ごとの行を足す', () => {
-    const lines = rows(
-      bannerLines(m, {
-        sessionCount: 0,
-        now: NOW,
-        rateLimits: [
-          {
-            type: 'five_hour',
-            status: 'allowed',
-            utilization: 5,
-            resetsAt: NOW + (4 * 60 + 45) * 60_000,
-          },
-        ],
-      }),
-    );
-    // 3 行（ワードマーク/サブタイトル/モデル）+ 空行 + 見出し + 枠1行。
-    expect(lines).toHaveLength(6);
-    expect(lines[3]).toBe(''); // marginTop ではなく明示的な空行（行 index = 表示行）
-    expect(lines[4]).toBe('Usage');
-    expect(lines[5]).toContain('Current session');
-    expect(lines[5]).toContain('5% used');
-    expect(lines[5]).toContain('resets in 4h 45m');
+describe('bannerUsageRows', () => {
+  const window = (over: Partial<RateLimitWindow> = {}): RateLimitWindow => ({
+    type: 'five_hour',
+    status: 'allowed',
+    utilization: 5,
+    ...over,
   });
 
-  it('日本語では使用状況を日本語で組む（ja/en を対で担保する）', () => {
-    const lines = rows(
-      bannerLines(messages.ja, {
-        sessionCount: 0,
-        now: NOW,
-        rateLimits: [
-          { type: 'five_hour', status: 'allowed', utilization: 5, resetsAt: NOW + 285 * 60_000 },
-        ],
-      }),
-    );
-    expect(lines[4]).toBe('使用状況');
-    expect(lines[5]).toContain('現在のセッション');
-    expect(lines[5]).toContain('5% 使用');
-    expect(lines[5]).toContain('4時間45分後にリセット');
+  it('枠が無ければ行を作らない（API キー利用など）', () => {
+    expect(bannerUsageRows(m, [], NOW)).toEqual([]);
+  });
+
+  it('見出し・使用率・残り時間を 1 行ぶんの表示データにする', () => {
+    const [row] = bannerUsageRows(m, [window({ resetsAt: NOW + (4 * 60 + 45) * 60_000 })], NOW);
+    expect(row).toMatchObject({
+      type: 'five_hour',
+      label: 'Current session',
+      percent: 5,
+      percentText: '  5%',
+      detail: 'resets in 4h 45m',
+      tone: 'accent',
+    });
+  });
+
+  it('日本語でも同じ構造で組む（ja/en を対で担保する）', () => {
+    const [row] = bannerUsageRows(messages.ja, [window({ resetsAt: NOW + 285 * 60_000 })], NOW);
+    expect(row?.label).toBe('現在のセッション');
+    expect(row?.detail).toBe('4時間45分後にリセット');
+  });
+
+  it('見出しは表示幅で揃える（CJK 混在でもゲージの左端が揃う）', () => {
+    const rows = bannerUsageRows(messages.ja, [window(), window({ type: 'seven_day_opus' })], NOW);
+    // '現在のセッション' = 16 セル、'今週 (Opus)' = 11 セル → 後者に 5 セルの空白が付く。
+    expect(rows.map((r) => r.label)).toEqual(['現在のセッション', '今週 (Opus)     ']);
+  });
+
+  it('使用率が無い枠は同じ幅の空白にする（0% のゲージを描かせない）', () => {
+    const [row] = bannerUsageRows(m, [window({ utilization: undefined })], NOW);
+    expect(row?.percent).toBeUndefined();
+    expect(row?.percentText).toBe('    ');
+  });
+
+  it('残り時間が無い枠では detail を持たない', () => {
+    const [row] = bannerUsageRows(m, [window()], NOW);
+    expect(row?.detail).toBeUndefined();
+  });
+
+  const percentCases: [number, string][] = [
+    [0, '  0%'],
+    [4.4, '  4%'],
+    [42.5, ' 43%'],
+    [100, '100%'],
+  ];
+  it.each(percentCases)('使用率 %s は %s と表示する（右詰めで桁を揃える）', (utilization, text) => {
+    expect(bannerUsageRows(m, [window({ utilization })], NOW)[0]?.percentText).toBe(text);
   });
 
   const toneCases: [RateLimitStatus, string][] = [
-    ['allowed', 'dim'],
+    ['allowed', 'accent'],
     ['allowed_warning', 'warn'],
     ['rejected', 'error'],
   ];
   it.each(toneCases)('使用枠 %s の色調は %s', (status, tone) => {
-    const lines = bannerLines(m, {
-      sessionCount: 0,
-      now: NOW,
-      rateLimits: [{ type: 'five_hour', status, utilization: 5 }],
-    });
-    expect(lines[5]?.segments[0]?.tone).toBe(tone);
+    expect(bannerUsageRows(m, [window({ status })], NOW)[0]?.tone).toBe(tone);
   });
 });
 

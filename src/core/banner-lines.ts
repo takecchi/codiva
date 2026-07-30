@@ -2,7 +2,12 @@ import stringWidth from 'string-width';
 import type { AccountSummary } from './account';
 import { formatUsd } from './cost';
 import type { Messages } from './i18n';
-import { type RateLimitWindow, rateLimitLabelKey, resetCountdown } from './rate-limit';
+import {
+  type RateLimitType,
+  type RateLimitWindow,
+  rateLimitLabelKey,
+  resetCountdown,
+} from './rate-limit';
 import { caretIndexForColumn, indexAtRowCol } from './text-buffer';
 
 /**
@@ -31,9 +36,7 @@ export interface BannerInput {
   version?: string;
   sessionCount: number;
   totalCostUsd?: number;
-  /** claude.ai サブスクリプションの使用リミット枠（SDK 由来。空なら非表示）。 */
-  rateLimits?: readonly RateLimitWindow[];
-  /** ログイン中のアカウント（プラン名・組織名）。SDK probe 由来で、無ければ行を出さない。 */
+  /** ログイン中のアカウント（プラン名・組織名）。SDK probe 由来で、無ければ出さない。 */
   account?: AccountSummary;
   /**
    * npm に出ている新しいバージョン（起動時チェックの結果）。undefined なら
@@ -41,46 +44,26 @@ export interface BannerInput {
    * （更新が無いときにヘッダを 1 行増やさないため）。
    */
   updateLatest?: string;
-  /** リセットまでの残り時間を算出する基準時刻（ms）。 */
-  now: number;
 }
 
 /** 新しいバージョンがあることを示す記号（翻訳対象ではない）。 */
 const UPDATE_MARK = '↑';
 
-/** Semantic tone for a usage window: error when rejected, warn on warning, else dim. */
-function usageTone(status: RateLimitWindow['status']): BannerTone {
-  if (status === 'rejected') {
-    return 'error';
-  }
-  if (status === 'allowed_warning') {
-    return 'warn';
-  }
-  return 'dim';
-}
-
-/** Build the "5% used · resets in 4h45m" trailing detail for a usage window. */
-function usageDetail(m: Messages, window: RateLimitWindow, now: number): string {
-  const parts: string[] = [];
-  if (window.utilization !== undefined) {
-    parts.push(m.banner.usage.used(Math.round(window.utilization)));
-  }
-  if (window.resetsAt !== undefined) {
-    const { days, hours, minutes } = resetCountdown(window.resetsAt, now);
-    parts.push(m.banner.usage.resetsIn(days, hours, minutes));
-  }
-  return parts.join(' · ');
-}
+/** 同じ行に複数の項目（Plan / Model、セッション数 / 合計コスト）を並べるときの間隔。 */
+const FIELD_GAP = '   ';
 
 /**
- * The header's text block, one entry per rendered row: wordmark / subtitle /
- * model / plan / cwd, then the claude.ai usage section (blank spacer + heading +
- * one row per window) when the SDK reports limits.
+ * The header's text block, one entry per rendered row: wordmark / plan + model /
+ * cwd / update notice.
  *
- * Rows are emitted as an explicit list — including the blank spacer, rather than a
- * `marginTop` on the usage box — so row index === line index. Mouse hit-testing
- * inverts that mapping to locate the drag-selected characters (`bannerCaretAt`),
- * and a margin would silently shift every line below it.
+ * 使用状況（ゲージ付き）は**この行リストに含めない** — 記号（█ / ░）は `ui/theme.ts` が
+ * 持ち、行はドラッグでコピーする対象でもないので、`ui/banner.tsx` が
+ * `bannerUsageRows()` を使ってテキスト塊の外に描く（`PrivacySection` と同じ扱い）。
+ *
+ * Rows are emitted as an explicit list so row index === line index. Mouse
+ * hit-testing inverts that mapping to locate the drag-selected characters
+ * (`bannerCaretAt`), and a margin inside the block would silently shift every line
+ * below it.
  */
 export function bannerLines(m: Messages, input: BannerInput): BannerLine[] {
   const lines: BannerLine[] = [];
@@ -90,28 +73,26 @@ export function bannerLines(m: Messages, input: BannerInput): BannerLine[] {
   if (input.version) {
     head.push({ text: ` v${input.version}`, tone: 'dim' });
   }
-  head.push({ text: `   ${m.list.sessionCount(input.sessionCount)}`, tone: 'dim' });
+  head.push({ text: `${FIELD_GAP}${m.list.sessionCount(input.sessionCount)}`, tone: 'dim' });
   const cost = input.totalCostUsd ?? 0;
   if (cost > 0) {
-    head.push({ text: `   ${m.list.totalCost(formatUsd(cost))}`, tone: 'dim' });
+    head.push({ text: `${FIELD_GAP}${m.list.totalCost(formatUsd(cost))}`, tone: 'dim' });
   }
   lines.push({ segments: head });
 
-  lines.push({ segments: [{ text: m.banner.subtitle, tone: 'dim' }] });
-  lines.push({
-    segments: [{ text: m.banner.model(input.model ?? m.banner.defaultModel), tone: 'dim' }],
-  });
-  // プラン名は SDK 由来の表示文字列なのでそのまま出す（i18n の例外）。取れなければ行を出さない。
+  // プランとモデルは 1 行に並べる（縦に散らすより「どのアカウントの、どのモデルか」を
+  // 一目で読める）。プラン名は SDK 由来の表示文字列なのでそのまま出す（i18n の例外）で、
+  // 取れない環境（API キー利用など）ではモデルだけの行になる。
+  const identity: BannerSegment[] = [];
   if (input.account?.plan) {
-    lines.push({
-      segments: [
-        {
-          text: m.banner.usage.plan(input.account.plan, input.account.organization),
-          tone: 'dim',
-        },
-      ],
+    identity.push({
+      text: `${m.banner.plan(input.account.plan, input.account.organization)}${FIELD_GAP}`,
+      tone: 'dim',
     });
   }
+  identity.push({ text: m.banner.model(input.model ?? m.banner.defaultModel), tone: 'dim' });
+  lines.push({ segments: identity });
+
   if (input.cwd) {
     lines.push({ segments: [{ text: input.cwd, tone: 'dim' }] });
   }
@@ -127,19 +108,73 @@ export function bannerLines(m: Messages, input: BannerInput): BannerLine[] {
     });
   }
 
-  const windows = input.rateLimits ?? [];
-  if (windows.length > 0) {
-    lines.push({ segments: [] }); // 使用状況節の前の空行（marginTop の代わり）
-    lines.push({ segments: [{ text: m.banner.usage.heading, tone: 'dim' }] });
-    for (const w of windows) {
-      const detail = usageDetail(m, w, input.now);
-      const label = m.banner.usage[rateLimitLabelKey(w.type)];
-      lines.push({
-        segments: [{ text: `  ${label}${detail ? `  ${detail}` : ''}`, tone: usageTone(w.status) }],
-      });
-    }
-  }
   return lines;
+}
+
+/** 使用率の表示幅（`'100%'` に合わせて右詰め）。列を揃えるための固定幅。 */
+const PERCENT_CELLS = 4;
+
+/** Semantic tone for a usage window: error when turned away, warn on warning, else accent. */
+function usageTone(status: RateLimitWindow['status']): BannerTone {
+  if (status === 'rejected') {
+    return 'error';
+  }
+  if (status === 'allowed_warning') {
+    return 'warn';
+  }
+  return 'accent';
+}
+
+/**
+ * ヘッダの使用状況 1 行ぶんの表示データ。ゲージのセル数は `gaugeCells(percent, width)`、
+ * 記号は `ui/theme.ts` が持つので、ここでは**文字列と色調だけ**を決める。
+ */
+export interface BannerUsageRow {
+  /** React キー兼識別子（枠の種類）。 */
+  readonly type: RateLimitType;
+  /** 枠の見出し。複数行でゲージの開始位置を揃えるため表示幅でパディング済み。 */
+  readonly label: string;
+  /** 使用率（0-100）。SDK が返さない枠では undefined（ゲージを描かない）。 */
+  readonly percent?: number;
+  /** 使用率の表示（`' 42%'`）。不明なときは同じ幅の空白（後続の列を揃える）。 */
+  readonly percentText: string;
+  /** リセットまでの残り時間（無ければ undefined）。 */
+  readonly detail?: string;
+  /** ゲージと使用率の色調（`ui/theme.ts` が実際の色を決める）。 */
+  readonly tone: BannerTone;
+}
+
+/**
+ * claude.ai の使用リミット枠を、ヘッダに描く行データへ変換する（純粋）。
+ *
+ * 見出しは**表示幅**でパディングする（`'今週 (Opus)'` のような CJK 混在でもゲージの
+ * 左端が揃う）。使用率が無い枠でも `percentText` を同じ幅で返すので、残り時間の列が
+ * 行ごとにギザギザにならない。
+ */
+export function bannerUsageRows(
+  m: Messages,
+  windows: readonly RateLimitWindow[],
+  now: number,
+): BannerUsageRow[] {
+  const labels = windows.map((w) => m.banner.usage[rateLimitLabelKey(w.type)]);
+  const labelCells = Math.max(0, ...labels.map((label) => stringWidth(label)));
+  return windows.map((w, i) => {
+    const label = labels[i] ?? '';
+    const countdown = w.resetsAt === undefined ? undefined : resetCountdown(w.resetsAt, now);
+    return {
+      type: w.type,
+      label: label + ' '.repeat(Math.max(0, labelCells - stringWidth(label))),
+      percent: w.utilization,
+      percentText:
+        w.utilization === undefined
+          ? ' '.repeat(PERCENT_CELLS)
+          : `${Math.round(w.utilization)}%`.padStart(PERCENT_CELLS),
+      detail: countdown
+        ? m.banner.usage.resetsIn(countdown.days, countdown.hours, countdown.minutes)
+        : undefined,
+      tone: usageTone(w.status),
+    };
+  });
 }
 
 /** The plain text of one header line (segments concatenated, styling dropped). */
