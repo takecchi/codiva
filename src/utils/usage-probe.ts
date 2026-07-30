@@ -1,5 +1,13 @@
 import { type AccountSummary, toAccountSummary, toUsageSnapshot, type UsageSnapshot } from '@/core';
-import { type ProbeQuery, runSdkProbe } from './sdk-probe';
+import { type ProbeQuery, runSdkProbe, settleWithin } from './sdk-probe';
+
+/**
+ * Per-read deadline, deliberately shorter than the probe's own overall deadline
+ * (`PROBE_TIMEOUT_MS` in sdk-probe): the two reads are independent, so a hang in the
+ * experimental usage request must not take the account info (which already
+ * answered) down with it.
+ */
+const READ_TIMEOUT_MS = 7_000;
 
 /** What one probe could learn. Either half can be missing (the other is still useful). */
 export interface UsageProbeResult {
@@ -14,37 +22,68 @@ export interface UsageProbeResult {
  * probe session (one `claude` subprocess, no inference, no tokens — see
  * `utils/sdk-probe.ts`), then abort it.
  *
- * Both halves are best-effort and read independently: on a Team account the
- * experimental usage request answers with `rate_limits: null` while `accountInfo()`
- * still reports the plan, so one failing must not hide the other. Never throws;
- * an all-failed probe returns `{}` and the caller keeps its previous values.
+ * Both halves are read independently, each with its own deadline: on a Team account
+ * the experimental usage request answers `rate_limits: null` while `accountInfo()`
+ * still reports the plan, and an experimental control request is exactly the kind of
+ * thing that hangs. One failing — or stalling — must not hide the other. Never
+ * throws; an all-failed probe returns `{}` and the caller keeps its previous values.
  */
 export async function fetchUsageSnapshot(
   queryFn: ProbeQuery,
   opts: { cwd: string; signal?: AbortSignal },
 ): Promise<UsageProbeResult> {
   const result = await runSdkProbe(queryFn, opts, async (handle) => {
-    const [account, usage] = await Promise.allSettled([
-      handle.accountInfo ? handle.accountInfo() : Promise.reject(new Error('unsupported')),
-      handle.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET
-        ? handle.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()
-        : Promise.reject(new Error('unsupported')),
+    const [account, usage] = await Promise.all([
+      settleWithin(handle.accountInfo?.(), READ_TIMEOUT_MS),
+      settleWithin(
+        handle.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?.(),
+        READ_TIMEOUT_MS,
+      ),
     ]);
     return {
-      account: account.status === 'fulfilled' ? toAccountSummary(account.value) : undefined,
-      usage: usage.status === 'fulfilled' ? toUsageSnapshot(usage.value) : undefined,
+      account: account === undefined ? undefined : toAccountSummary(account),
+      usage: usage === undefined ? undefined : toUsageSnapshot(usage),
     };
   });
-  return result ?? {};
+  return withPlanFallback(result ?? {});
 }
 
 /**
- * Whether a probe result carries anything worth polling for again.
+ * Use the usage endpoint's `subscription_type` as the plan name when
+ * `accountInfo()` didn't report one (it can fail on its own, and the two spell the
+ * plan differently — `toUsageSnapshot` already title-cased it to match).
+ */
+function withPlanFallback(result: UsageProbeResult): UsageProbeResult {
+  const fallback = result.usage?.plan;
+  if (result.account?.plan !== undefined || fallback === undefined) {
+    return result;
+  }
+  return { ...result, account: { ...result.account, plan: fallback } };
+}
+
+/**
+ * Whether a probe found **subscription usage** worth polling for again.
  *
- * False means this login has no subscription usage to show at all (API key,
- * Bedrock/Vertex, or an SDK that dropped the requests) — the poller stops instead
- * of spawning a subprocess forever for data that will never arrive.
+ * Deliberately keyed on the plan name and the windows, not on "did `accountInfo()`
+ * answer at all": a Bedrock/Vertex login answers with `{apiProvider:'bedrock'}` and
+ * an API-key login with `{apiProvider:'firstParty'}` and no `subscriptionType`, so
+ * treating any answer as data would keep the poller alive forever for a status line
+ * that renders nothing.
  */
 export function hasUsageData(result: UsageProbeResult): boolean {
-  return result.account !== undefined || (result.usage?.windows.length ?? 0) > 0;
+  return result.account?.plan !== undefined || (result.usage?.windows.length ?? 0) > 0;
+}
+
+/**
+ * Positive evidence that this login can **never** report subscription usage, so the
+ * poller can stop immediately instead of waiting out its empty-result counter:
+ * either the usage endpoint said plan limits don't apply, or the account is served
+ * by a non-claude.ai backend (Bedrock / Vertex / gateway …).
+ */
+export function hasNoSubscription(result: UsageProbeResult): boolean {
+  if (result.usage?.limitsAvailable === false) {
+    return true;
+  }
+  const provider = result.account?.apiProvider;
+  return provider !== undefined && provider !== 'firstParty';
 }

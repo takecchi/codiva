@@ -275,6 +275,16 @@ UI なし。すべてユニットテストで駆動する。
 - [x] テスト: account / usage / gauge / rate-limit / usage-probe / usage-poller / session-manager /
       status-footer / `tests/app.test.tsx`（両ビューのステータスバー）
 
+- [x] **レビュー指摘の反映**（code-reviewer サブエージェント）:
+      ①`hasUsageData` が `accountInfo()` の応答有無を見ていたため Bedrock / API キーで
+      ポーリングが永久に止まらなかった → プラン名/枠の有無で判定し、`hasNoSubscription()` の
+      肯定的シグナルで即停止。②usage 要求のハングが `accountInfo()` の結果を捨てていた →
+      読み取りごとの締め切り（`settleWithin`）。③幅の閾値が典型文言前提で
+      `Claude Enterprise` + `今週Sonnet` だと数字が黙って切れた → 最長ケースで再計算し、
+      spec を最長文言（ja/en）でパラメタライズ。④usage 側のプラン名を `accountInfo()` 失敗時の
+      フォールバックに使用（`normalizePlanName` が実際に効くようになった）。⑤枠のロールオーバーで
+      古い `rejected` が残る問題、⑥`apply` の例外でポーラーが死ぬ問題、⑦詳細ビューの毎秒再描画も修正
+
 > 実績メモ: lint/typecheck/test/build 緑。実測は Claude Team アカウントで採取（`utilization` が
 > 来ないため実機では残り時間のみ表示。ゲージ表示経路はテストで担保）。フッタの折り返しは実装中に
 > 実測で発覚し、Yoga の flex 縮小任せをやめて幅ベースの段階的縮退へ変更した。体感確認はユーザー環境で。

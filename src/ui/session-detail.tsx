@@ -157,7 +157,9 @@ export const SessionDetail: FC<{
   // 出す（バナーが無い画面なので、ここが唯一の可視点になる）。
   const account = useAccount(manager);
   const rateLimits = useRateLimit(manager);
-  const now = useClock(1000);
+  // 詳細ビューが時刻に依存するのはリセットまでのカウントダウン（分単位）だけなので
+  // 一覧のような毎秒更新は不要。ログ全体の再描画コストを避けて 30 秒間隔にする。
+  const now = useClock(30_000);
   const { rows, columns } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();

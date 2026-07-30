@@ -37,7 +37,8 @@ const POPULATED_RESPONSE = {
 describe('toUsageSnapshot', () => {
   it('reads the plan but no windows from the real Team response', () => {
     expect(toUsageSnapshot(TEAM_RESPONSE)).toEqual({
-      plan: 'team',
+      // accountInfo() の綴り（'Claude Team'）と揃えるため title-case する。
+      plan: 'Team',
       limitsAvailable: true,
       windows: [],
     });
@@ -45,7 +46,7 @@ describe('toUsageSnapshot', () => {
 
   it('parses the documented window shape (ISO resets_at → epoch ms)', () => {
     const snapshot = toUsageSnapshot(POPULATED_RESPONSE);
-    expect(snapshot.plan).toBe('max');
+    expect(snapshot.plan).toBe('Max');
     expect(snapshot.limitsAvailable).toBe(true);
     expect(snapshot.windows).toEqual([
       { type: 'five_hour', utilization: 12.5, resetsAt: Date.parse('2026-07-30T09:00:00.000Z') },
@@ -103,6 +104,18 @@ describe('mergeUsageWindow', () => {
     });
   });
 
+  it('resets a stale status when the window rolled over', () => {
+    // rejected だった枠がリセットされた後も赤いままになるのを防ぐ（イベントは
+    // ターン中しか来ないので、ポーリングだけが気づける）。
+    const rejected: RateLimitWindow = { ...event, status: 'rejected', utilization: 100 };
+    expect(mergeUsageWindow(rejected, { type: 'five_hour', resetsAt: 9999 })).toEqual({
+      type: 'five_hour',
+      status: 'allowed',
+      utilization: undefined,
+      resetsAt: 9999,
+    });
+  });
+
   it("keeps the event's status (the usage endpoint reports none) and adds its numbers", () => {
     expect(mergeUsageWindow(event, { type: 'five_hour', utilization: 12 })).toEqual({
       type: 'five_hour',
@@ -122,11 +135,11 @@ describe('mergeUsageWindow', () => {
     expect(mergeUsageWindow(prev, { type: 'five_hour', utilization: 40 })).toBe(prev);
   });
 
-  it('drops a stale percentage when the poll reports a new window', () => {
+  it('drops a stale percentage (and the stale status) when the poll reports a new window', () => {
     const prev: RateLimitWindow = { ...event, utilization: 40 };
     expect(mergeUsageWindow(prev, { type: 'five_hour', resetsAt: 9999 })).toEqual({
       type: 'five_hour',
-      status: 'allowed_warning',
+      status: 'allowed',
       utilization: undefined,
       resetsAt: 9999,
     });

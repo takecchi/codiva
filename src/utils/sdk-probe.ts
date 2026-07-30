@@ -67,6 +67,37 @@ export async function* idlePrompt(signal: AbortSignal): AsyncGenerator<SDKUserMe
 }
 
 /**
+ * Resolve `promise` with its value, or `undefined` if it rejects, is absent, or
+ * doesn't settle within `ms`. Lets a probe read several independent control-channel
+ * answers without one slow/absent answer discarding the others.
+ *
+ * The timer is unref'd, and a late rejection is swallowed rather than left unhandled.
+ */
+export async function settleWithin<T>(
+  promise: Promise<T> | undefined,
+  ms: number,
+): Promise<T | undefined> {
+  if (promise === undefined) {
+    return undefined;
+  }
+  const settled = promise.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      settled,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
  * Run `read` against a throwaway probe session and return its value, or
  * `undefined` when the probe fails, times out, or is aborted (**never throws** —
  * probes are best-effort by contract, callers fall back).

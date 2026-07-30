@@ -67,15 +67,16 @@ describe('StatusFooter', () => {
     expect(frame).toContain('残り2日0時間');
   });
 
-  it('1画面には最大2枠までしか出さない（1行に収める）', () => {
+  it('広い端末でも最大2枠までしか出さない（1行に収める）', () => {
     const windows: RateLimitWindow[] = [
       { type: 'five_hour', status: 'allowed', utilization: 1 },
       { type: 'seven_day', status: 'allowed', utilization: 2 },
       { type: 'seven_day_opus', status: 'allowed', utilization: 3 },
     ];
-    const frame = renderFooter({ mode: 'auto', usage: windows, now: NOW }, 'en').lastFrame() ?? '';
+    // 2枠出せる幅（閾値以上）で確認する。狭い端末では 1 枠に縮退する。
+    const { frame } = renderAtWidth(130, { windows, lang: 'en' });
     expect(frame).toContain('5h');
-    expect(frame).toContain('week');
+    expect(frame).toContain('week ');
     expect(frame).not.toContain('week Opus');
   });
 
@@ -110,16 +111,40 @@ const WINDOWS: RateLimitWindow[] = [
   { type: 'seven_day', status: 'allowed', utilization: 48, resetsAt: NOW + 2 * 1440 * MIN },
 ];
 
-function renderAtWidth(columns: number) {
+/**
+ * 最長ケース: 長いプラン名 + 長いラベル（`今週Opus` / `今週Sonnet`）+ 3桁% +
+ * 複数日の残り時間。閾値を典型ケースで決めると、この組み合わせで数字の途中が
+ * 黙って切れる（実際に起きた）。
+ */
+const WIDEST_WINDOWS: RateLimitWindow[] = [
+  {
+    type: 'seven_day_opus',
+    status: 'allowed',
+    utilization: 100,
+    resetsAt: NOW + (6 * 1440 + 23 * 60) * MIN,
+  },
+  {
+    type: 'seven_day_sonnet',
+    status: 'allowed',
+    utilization: 100,
+    resetsAt: NOW + (6 * 1440 + 23 * 60) * MIN,
+  },
+];
+const WIDEST_PLAN = 'Claude Enterprise';
+
+function renderAtWidth(
+  columns: number,
+  opts: { plan?: string; windows?: RateLimitWindow[]; lang?: 'ja' | 'en' } = {},
+) {
   const stdout = new FakeStdout(columns);
   const app = inkRender(
-    <MessagesProvider value={messages.ja}>
+    <MessagesProvider value={messages[opts.lang ?? 'ja']}>
       <StatusFooter
         mode="auto"
         // 実際の一覧ビューのヒント程度の長さ（最初に削られる枠）。
         hint="Tab: 一覧 / Enter: 送信 / /help: コマンド"
-        account={{ plan: 'Claude Team' }}
-        usage={WINDOWS}
+        account={{ plan: opts.plan ?? 'Claude Team' }}
+        usage={opts.windows ?? WINDOWS}
         now={NOW}
       />
     </MessagesProvider>,
@@ -136,27 +161,50 @@ function renderAtWidth(columns: number) {
   return { lines, frame };
 }
 
+/** 各段の境界（しきい値とその1つ下）と極端な幅。 */
+const WIDTHS = [200, 130, 116, 115, 100, 81, 80, 79, 63, 62, 61, 51, 50, 49, 40, 30, 20];
+
 describe('StatusFooter の幅ごとの縮退', () => {
-  it.each([200, 120, 100, 99, 80, 76, 75, 60, 59, 46, 45, 30])(
-    '幅 %s でも1行に収まる',
+  it.each(WIDTHS)('幅 %s でも1行に収まる', (columns) => {
+    const { lines } = renderAtWidth(columns);
+    expect(lines).toHaveLength(1);
+    expect(stringWidth(lines[0] ?? '')).toBeLessThanOrEqual(columns);
+  });
+
+  it.each(WIDTHS)(
+    '幅 %s: 最長の文言（Enterprise + 今週Sonnet + 100% + 複数日）でも溢れない',
     (columns) => {
-      const { lines } = renderAtWidth(columns);
+      const { lines } = renderAtWidth(columns, {
+        plan: WIDEST_PLAN,
+        windows: WIDEST_WINDOWS,
+        lang: 'ja',
+      });
       expect(lines).toHaveLength(1);
       expect(stringWidth(lines[0] ?? '')).toBeLessThanOrEqual(columns);
     },
   );
 
+  it.each(WIDTHS)('幅 %s: 英語カタログの最長文言でも溢れない', (columns) => {
+    const { lines } = renderAtWidth(columns, {
+      plan: WIDEST_PLAN,
+      windows: WIDEST_WINDOWS,
+      lang: 'en',
+    });
+    expect(lines).toHaveLength(1);
+    expect(stringWidth(lines[0] ?? '')).toBeLessThanOrEqual(columns);
+  });
+
   it.each([
     // [幅, プラン名, 2つ目の枠, ゲージ, 5時間枠]
-    [120, true, true, true, true],
-    [100, true, true, true, true],
-    [99, true, false, true, true],
-    [76, true, false, true, true],
-    [75, false, false, true, true],
-    [60, false, false, true, true],
-    [59, false, false, false, true],
-    [46, false, false, false, true],
-    [45, false, false, false, false],
+    [130, true, true, true, true],
+    [116, true, true, true, true],
+    [115, true, false, true, true],
+    [80, true, false, true, true],
+    [79, false, false, true, true],
+    [62, false, false, true, true],
+    [61, false, false, false, true],
+    [50, false, false, false, true],
+    [49, false, false, false, false],
   ])('幅 %s: プラン=%s 2枠目=%s ゲージ=%s 5時間枠=%s', (columns, plan, second, bar, first) => {
     const { frame } = renderAtWidth(columns);
     expect(frame.includes('Claude Team')).toBe(plan);
@@ -168,7 +216,7 @@ describe('StatusFooter の幅ごとの縮退', () => {
   });
 
   it('プラン名も枠も出せない幅ではモード表示だけが残る', () => {
-    const { frame } = renderAtWidth(30);
+    const { frame } = renderAtWidth(40);
     expect(frame).toContain('自動モード');
     expect(frame).not.toContain('5時間');
   });

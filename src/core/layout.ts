@@ -48,22 +48,27 @@ export interface UsageFooterPlan {
 
 /**
  * これ未満の幅ではモード表示とヒントだけで埋まるため、使用状況をまるごと省く。
- * （表示可否の閾値は実測ベース: ja カタログ + 2桁% + 「残り2日0時間」で最も長くなる。）
  */
-export const MIN_USAGE_FOOTER_COLUMNS = 46;
+export const MIN_USAGE_FOOTER_COLUMNS = 50;
 
 /**
  * 端末桁数から使用状況表示の内容を決める純関数（`showsBranchColumn` と同じ発想の
- * 段階的縮退）。閾値は `status-footer.spec.tsx` が実際の描画幅で検証している。
+ * 段階的縮退）。
+ *
+ * 閾値は**最長ケースの実描画幅**で決めている: ja カタログ（CJK は 2 セル）+ 長い
+ * プラン名（`Claude Enterprise`）+ 長いラベル（`今週Sonnet`）+ 3桁% + 複数日の
+ * 残り時間。典型ケースに合わせると `Claude Team`+`今週` では収まるのに
+ * `Claude Enterprise`+`今週Sonnet` で数字の途中が黙って切れる（実際に起きた）。
+ * `status-footer.spec.tsx` が最長ケースで幅超過ゼロを検証している。
  */
 export function usageFooterPlan(columns: number): UsageFooterPlan {
-  if (columns >= 100) {
+  if (columns >= 116) {
     return { windows: 2, showBars: true, showPlan: true };
   }
-  if (columns >= 76) {
+  if (columns >= 80) {
     return { windows: 1, showBars: true, showPlan: true };
   }
-  if (columns >= 60) {
+  if (columns >= 62) {
     return { windows: 1, showBars: true, showPlan: false };
   }
   if (columns >= MIN_USAGE_FOOTER_COLUMNS) {

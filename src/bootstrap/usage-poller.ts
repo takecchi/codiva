@@ -1,37 +1,50 @@
 import type { UsageProbeResult } from '@/utils';
-import { hasUsageData } from '@/utils';
+import { hasNoSubscription, hasUsageData } from '@/utils';
 
 /**
  * How often the claude.ai usage snapshot is refreshed. Five minutes is the
  * balance the numbers themselves suggest: the windows are 5-hour / 7-day, the
- * countdown to reset ticks locally every second (`useClock`), and a live session
- * pushes a `rate_limit_event` at the start of every turn — so polling exists to
- * cover the *idle* case, not to chase the last percent. Each poll spawns a
- * short-lived `claude` subprocess (no inference, no tokens), which is exactly why
- * it is minutes rather than seconds.
+ * countdown to reset ticks locally (`useClock`), and a live session pushes a
+ * `rate_limit_event` at the start of every turn — so polling exists to cover the
+ * *idle* case, not to chase the last percent. Each poll spawns a short-lived
+ * `claude` subprocess (no inference, no tokens), which is exactly why it is
+ * minutes rather than seconds.
  */
 export const USAGE_POLL_INTERVAL_MS = 5 * 60_000;
 
 /**
- * How many consecutive empty probes end the polling. An API-key / Bedrock / Vertex
- * login has no subscription usage at all, and one transient failure (offline,
- * `claude` busy) shouldn't be mistaken for that — so require two in a row before
- * giving up for the rest of the run.
+ * Fallback give-up threshold, for logins that report *nothing* — no plan, no
+ * windows, and not even the "limits don't apply" signal that
+ * {@link hasNoSubscription} keys on (an SDK that dropped both control requests,
+ * say). The primary stop path is that positive signal; this one only exists so an
+ * unknown environment can't be probed forever.
+ *
+ * Three in a row (15 minutes) rather than two, because a cold start contending with
+ * the model-catalog probe, one offline moment, or one slow control request must not
+ * be mistaken for "this account has no subscription".
  */
-const MAX_EMPTY_POLLS = 2;
+const MAX_EMPTY_POLLS = 3;
 
 export interface UsagePollingDeps {
   /** Runs one probe (`utils/usage-probe.fetchUsageSnapshot`, best-effort). */
   fetch: () => Promise<UsageProbeResult>;
   /** Folds the result into the manager (`manager.applyUsage`). */
   apply: (result: UsageProbeResult) => void;
+  /**
+   * Optional gate for the first probe (the composition root passes the model-catalog
+   * fetch). Both probes spawn a `claude` subprocess, so waiting avoids two cold
+   * starts at once — which is also what makes the probe deadlines fire spuriously.
+   * Rejection is ignored; the poll runs either way.
+   */
+  after?: Promise<unknown>;
   /** Override for tests. Defaults to {@link USAGE_POLL_INTERVAL_MS}. */
   intervalMs?: number;
 }
 
 /**
- * Keep the account plan + usage windows fresh: probe once now, then every
- * `intervalMs`. Returns a stop fn (the composition root calls it on shutdown).
+ * Keep the account plan + usage windows fresh: probe once (after `after` settles),
+ * then every `intervalMs`. Returns a stop fn (the composition root calls it on
+ * shutdown).
  *
  * Overlapping probes are skipped rather than queued — a slow probe must not stack
  * up subprocesses — and the timer is unref'd so it never keeps the process alive.
@@ -63,11 +76,17 @@ export function startUsagePolling(deps: UsagePollingDeps): () => void {
       if (stopped) {
         return;
       }
-      deps.apply(result);
-      if (hasUsageData(result)) {
+      // apply は購読者（UI）を起こすので、そこの例外でポーリングを殺さない。
+      try {
+        deps.apply(result);
+      } catch {
+        // best-effort: 表示の更新に失敗しても次回の取得は続ける。
+      }
+      if (hasNoSubscription(result)) {
+        stop(); // このログインでは永久に取れない — サブプロセスを立てるのをやめる。
+      } else if (hasUsageData(result)) {
         emptyPolls = 0;
       } else if (++emptyPolls >= MAX_EMPTY_POLLS) {
-        // This login will never report subscription usage — stop spawning probes.
         stop();
       }
     } finally {
@@ -75,7 +94,11 @@ export function startUsagePolling(deps: UsagePollingDeps): () => void {
     }
   };
 
-  void poll();
+  const first = deps.after ?? Promise.resolve();
+  void first.then(
+    () => poll(),
+    () => poll(),
+  );
   timer = setInterval(() => {
     void poll();
   }, intervalMs);

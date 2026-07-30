@@ -96,6 +96,9 @@ async function main(): Promise<void> {
   const stopUsagePolling = startUsagePolling({
     fetch: () => fetchUsageSnapshot(query, { cwd: repoRoot, signal: probeAbort.signal }),
     apply: (snapshot) => manager.applyUsage(snapshot),
+    // カタログ取得の後にずらす（どちらも probe サブプロセスを立てるので、起動直後に
+    // 2本同時に走らせない）。失敗しても取得は行う。
+    after: modelCatalog,
   });
 
   await restoreSessions(manager, statePath);

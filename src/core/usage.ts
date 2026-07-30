@@ -22,6 +22,7 @@
  * ignored — codiva shows the fixed 5-hour + weekly windows only.
  */
 
+import { normalizePlanName } from './account';
 import { type RateLimitType, type RateLimitWindow, sameRateLimitWindow } from './rate-limit';
 
 /** A usage window as reported by the usage endpoint (no status — see the file docs). */
@@ -35,7 +36,11 @@ export interface UsageWindow {
 
 /** Normalized `/usage` response: the plan name plus whatever windows came with it. */
 export interface UsageSnapshot {
-  /** Plan display name (title-cased, e.g. `'Team'`), when the API reported one. */
+  /**
+   * Plan display name, title-cased to match `accountInfo()`'s spelling (the API
+   * reports `'team'`, `accountInfo()` reports `'Claude Team'`). Used as the plan
+   * fallback when `accountInfo()` itself reported nothing.
+   */
   plan?: string;
   /** The API's own claim that plan limits apply (false for API key / Bedrock / Vertex). */
   limitsAvailable: boolean;
@@ -104,7 +109,7 @@ export function toUsageSnapshot(json: unknown): UsageSnapshot {
   }
   const response = json as UsageResponseJson;
   const rawPlan = typeof response.subscription_type === 'string' ? response.subscription_type : '';
-  const plan = rawPlan.trim().length > 0 ? rawPlan.trim() : undefined;
+  const plan = rawPlan.trim().length > 0 ? normalizePlanName(rawPlan) : undefined;
   const limits = response.rate_limits;
   const windows: UsageWindow[] = [];
   if (typeof limits === 'object' && limits !== null) {
@@ -133,8 +138,10 @@ export function toUsageSnapshot(json: unknown): UsageSnapshot {
  * a window the account is being served on until an event says otherwise).
  *
  * A value is only carried over while the window instance is unchanged: a different
- * reset time means the period rolled over, so the old percentage is stale and gets
- * dropped rather than shown against the new window.
+ * reset time means the period rolled over, so the old percentage **and the old
+ * status** are stale. Both are dropped (status back to `allowed`) — events only
+ * arrive during turns, so a `rejected` from the previous window would otherwise
+ * stay red long after the limit actually reset.
  *
  * Returns `prev` unchanged when nothing displayable moved, so the manager's
  * snapshot keeps its reference identity and the status line doesn't re-render.
@@ -150,7 +157,7 @@ export function mergeUsageWindow(
     prev.resetsAt !== next.resetsAt;
   const merged: RateLimitWindow = {
     type: next.type,
-    status: prev?.status ?? 'allowed',
+    status: rolledOver ? 'allowed' : (prev?.status ?? 'allowed'),
     utilization: next.utilization ?? (rolledOver ? undefined : prev?.utilization),
     resetsAt: next.resetsAt ?? prev?.resetsAt,
   };

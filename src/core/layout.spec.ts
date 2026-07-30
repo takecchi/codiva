@@ -187,12 +187,12 @@ describe('usageFooterPlan', () => {
   it.each([
     // 段階的縮退: 幅が減るごとに情報量の少ない要素から落ちる。
     [200, { windows: 2, showBars: true, showPlan: true }],
-    [100, { windows: 2, showBars: true, showPlan: true }],
-    [99, { windows: 1, showBars: true, showPlan: true }],
-    [76, { windows: 1, showBars: true, showPlan: true }],
-    [75, { windows: 1, showBars: true, showPlan: false }],
-    [60, { windows: 1, showBars: true, showPlan: false }],
-    [59, { windows: 1, showBars: false, showPlan: false }],
+    [116, { windows: 2, showBars: true, showPlan: true }],
+    [115, { windows: 1, showBars: true, showPlan: true }],
+    [80, { windows: 1, showBars: true, showPlan: true }],
+    [79, { windows: 1, showBars: true, showPlan: false }],
+    [62, { windows: 1, showBars: true, showPlan: false }],
+    [61, { windows: 1, showBars: false, showPlan: false }],
     [MIN_USAGE_FOOTER_COLUMNS, { windows: 1, showBars: false, showPlan: false }],
     [MIN_USAGE_FOOTER_COLUMNS - 1, { windows: 0, showBars: false, showPlan: false }],
     [0, { windows: 0, showBars: false, showPlan: false }],
