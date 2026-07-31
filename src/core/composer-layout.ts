@@ -230,6 +230,22 @@ export function moveRowUp(buffer: TextBuffer, width?: number): TextBuffer {
   return cursor === buffer.cursor ? buffer : { value: buffer.value, cursor };
 }
 
+/**
+ * キャレットが最上段の表示行にあるか。↑ を「キャレット移動」ではなく「入力履歴の
+ * 呼び出し」に使ってよい位置か、の判定に使う（shell と同じで、行の途中では移動を
+ * 優先し、端でさらに押したときだけ履歴へ回す）。行は折り返し後の**表示行**で数える
+ * ので、長い1行の途中で履歴に化けることはない。
+ */
+export function atFirstComposerRow(buffer: TextBuffer, width?: number): boolean {
+  return composerLayout(buffer, width).caret.row === 0;
+}
+
+/** 同じく最下段の表示行にあるか（↓ = 新しい履歴へ / 書きかけへ復帰）。 */
+export function atLastComposerRow(buffer: TextBuffer, width?: number): boolean {
+  const layout = composerLayout(buffer, width);
+  return layout.caret.row === layout.rows.length - 1;
+}
+
 /** Move the caret one display row down; past the last row it goes to the end. */
 export function moveRowDown(buffer: TextBuffer, width?: number): TextBuffer {
   const layout = composerLayout(buffer, width);

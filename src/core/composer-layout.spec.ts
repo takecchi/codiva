@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  atFirstComposerRow,
+  atLastComposerRow,
   caretIndexAtClick,
   composerLayout,
   composerRowCount,
@@ -256,4 +258,39 @@ describe('vertical caret movement by display row', () => {
     const buf = bufferOf('ab\ncdef', 6); // row 1, col 3
     expect(moveRowUp(buf).cursor).toBe(2); // end of 'ab'
   });
+});
+
+describe('display-row edges (入力履歴に回してよい位置か)', () => {
+  const cases: {
+    name: string;
+    value: string;
+    cursor: number;
+    width?: number;
+    first: boolean;
+    last: boolean;
+  }[] = [
+    {
+      name: '空の入力欄は最上段かつ最下段',
+      value: '',
+      cursor: 0,
+      width: 10,
+      first: true,
+      last: true,
+    },
+    { name: '1行の途中でも上下端', value: 'abc', cursor: 2, width: 10, first: true, last: true },
+    // width 4 → 'abcd' / 'efgh' / 'ij'
+    { name: '折り返し1行目', value: 'abcdefghij', cursor: 2, width: 4, first: true, last: false },
+    { name: '折り返し中間行', value: 'abcdefghij', cursor: 6, width: 4, first: false, last: false },
+    { name: '折り返し最終行', value: 'abcdefghij', cursor: 9, width: 4, first: false, last: true },
+    { name: '複数論理行の1行目', value: 'ab\ncd', cursor: 1, width: 10, first: true, last: false },
+    { name: '複数論理行の最終行', value: 'ab\ncd', cursor: 4, width: 10, first: false, last: true },
+    { name: '幅未実測でも論理行で判定', value: 'ab\ncd', cursor: 4, first: false, last: true },
+  ];
+  for (const c of cases) {
+    it(c.name, () => {
+      const buf = bufferOf(c.value, c.cursor);
+      expect(atFirstComposerRow(buf, c.width)).toBe(c.first);
+      expect(atLastComposerRow(buf, c.width)).toBe(c.last);
+    });
+  }
 });
