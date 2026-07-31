@@ -11,8 +11,16 @@
   `useTextBufferRef()`、`/command` の解決・実行は `useCommandRunner(handlers, onError, unknownLabel)`、
   マージ/破棄の確認→実行フローは `useLifecycleAction(manager, id, onDone?)`。`useInput` 本体はフックに移さず
   view に置いたまま、これらから state とハンドラを受け取る（1画面1 useInput は維持）。
-- **共有 presentational**: 角丸ダイアログ枠は `<DialogBox>`、y/n 確認行は `<ConfirmPrompt>`。両 view で使う。
+- **共有 presentational**: 角丸ダイアログ枠は `<DialogBox>`、y/n 確認行は `<ConfirmPrompt>`、
+  選択肢の 1 件（ラベル + 説明）は `<ChoiceRow>`。両 view で使う。
   色は必ず `theme.ts`（`theme`/`statusColor`/`logColor`）経由で引き、`.tsx` に生 ANSI 名（`color="red"` 等）を書かない。
+- **ラベルと説明を横に並べない**。同じ行（row の Box）に 2 つの `<Text>` を置くと Yoga が
+  **両方を縮める**ため、長いラベルも長い説明も途中で切れて読めなくなる（質問ダイアログで実際に
+  起きた不具合）。折返し幅は端末桁から自前で出し（`dialogContentWidth(columns)`）、行への分解は
+  純粋な `choiceLines()`（`core/choice-lines.ts`）に委譲して、`<ChoiceRow>` で 1 行 1 `<Text>` として
+  描く（ログの `logLines` と同じ考え方）。継続行は prefix の表示幅ぶん字下げしてラベルの桁に揃える。
+  溢れたときに縮む役は内部スクロールを持つ領域（ログ・一覧）なので、ダイアログ側の枠には
+  `flexShrink={0}` を付ける。
 
 ## 入力ハンドリング
 

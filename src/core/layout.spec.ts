@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   bannerGaugeWidth,
   DETAIL_CHROME_ROWS,
+  DIALOG_CHROME_COLUMNS,
+  dialogContentWidth,
   isFullscreenViewport,
   LIST_CHROME_ROWS,
   listView,
@@ -33,6 +35,24 @@ describe('showsBranchColumn', () => {
     [0, false],
   ])('columns=%d → %s', (columns, expected) => {
     expect(showsBranchColumn(columns)).toBe(expected);
+  });
+});
+
+describe('dialogContentWidth', () => {
+  it.each([
+    [100, 94],
+    [80, 74],
+    [40, 34],
+    // 極端に狭い端末では下限で止める（1 セルずつ折返して縦に爆発させない）。
+    [12, 10],
+    [4, 10],
+    [0, 10],
+  ])('columns=%d → %d', (columns, expected) => {
+    expect(dialogContentWidth(columns)).toBe(expected);
+  });
+
+  it('leaves room for the view padding, the border and the dialog padding', () => {
+    expect(dialogContentWidth(100)).toBe(100 - DIALOG_CHROME_COLUMNS);
   });
 });
 

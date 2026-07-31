@@ -26,6 +26,39 @@ function question(multiSelect = false): PermissionRequest {
   };
 }
 
+/**
+ * 端末幅（ink-testing-library は 100 桁）より長いラベル・説明を持つ質問。
+ * 文字を `X` / `Y` で埋めるので、フレーム内の出現数で「1 文字も欠けていない」ことを
+ * 数えられる（折返し位置に依存しない検証）。
+ */
+function longQuestion(labelCells: number, descriptionCells: number): PermissionRequest {
+  return {
+    id: 'q1',
+    toolName: 'AskUserQuestion',
+    input: {},
+    kind: 'question',
+    questions: [
+      {
+        question: 'Which one?',
+        header: 'Long',
+        multiSelect: false,
+        options: [
+          { label: 'X'.repeat(labelCells), description: 'Y'.repeat(descriptionCells) },
+          { label: 'short', description: 'also short' },
+        ],
+      },
+    ],
+  };
+}
+
+const countOf = (frame: string, char: string) => frame.split(char).length - 1;
+
+// SGR（色）エスケープを落とす。正規表現に生の制御文字を書かない（biome）ため
+// `tests/helpers.ts` と同じく charCode から組む。
+const SGR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+/** フレームの 1 行から色と枠線を落として「枠の中身」だけにする。 */
+const inner = (line: string) => line.replace(SGR, '').replace(/│/g, '').trimEnd();
+
 describe('PermissionDialog — question', () => {
   it('renders the question and options', () => {
     const { lastFrame } = render(
@@ -34,6 +67,40 @@ describe('PermissionDialog — question', () => {
     expect(lastFrame()).toContain('Which language?');
     expect(lastFrame()).toContain('English');
     expect(lastFrame()).toContain('Japanese');
+  });
+
+  // 回帰: ラベルと説明を横に並べていたときは Yoga が両方を縮め、長い文言が
+  // 途中で切れて読めなくなっていた（実機で報告された不具合）。折返して全文出す。
+  it('wraps long labels and descriptions instead of truncating them', () => {
+    const { lastFrame } = render(
+      <PermissionDialog
+        request={longQuestion(150, 260)}
+        onAnswer={noop}
+        onAllow={noop}
+        onDeny={noop}
+      />,
+    );
+    const frame = lastFrame() ?? '';
+    expect(countOf(frame, 'X')).toBe(150);
+    expect(countOf(frame, 'Y')).toBe(260);
+    // 折返した行は枠の内側に収まる（端末幅 100 桁を超える行を作らない）。
+    for (const line of frame.split('\n')) {
+      expect(line.replace(SGR, '').length).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it('keeps the description on its own line under the label', () => {
+    const { lastFrame } = render(
+      <PermissionDialog request={question()} onAnswer={noop} onAllow={noop} onDeny={noop} />,
+    );
+    // ANSI と枠線を落として「枠の中身」だけを見る。
+    const lines = (lastFrame() ?? '').split('\n').map(inner);
+    const label = lines.findIndex((l) => l.includes('English'));
+    expect(label).toBeGreaterThan(0);
+    // ラベル行に説明は混ざらず、直後の行に字下げして出る。
+    expect(lines[label]?.trim()).toBe('❯ English');
+    expect(lines[label + 1]?.trim()).toBe('en');
+    expect(lines[label + 1]?.startsWith('     ')).toBe(true);
   });
 
   it('selects the highlighted option on Enter and answers by question text', async () => {
