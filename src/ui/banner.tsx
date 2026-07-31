@@ -12,6 +12,7 @@ import {
   lineSelection,
   type RateLimitWindow,
   type SelectionRange,
+  selectionSlices,
   shouldWarnTraining,
   type TrainingOptIn,
 } from '@/core';
@@ -93,36 +94,24 @@ interface RowPiece {
  * selection boundaries so the highlight can span a run that crosses segments (the
  * wordmark line is several segments: bold name, dim version, dim counters).
  * `sel` offsets are char indices within this line (see `lineSelection`).
+ *
+ * 切り分けそのものは純粋な `selectionSlices`（ログ行の反転描画と共用）。ここは片ごとに
+ * 元セグメントの色調を引き直すだけ。
  */
 function rowPieces(line: BannerLine, sel?: { from: number; to: number }): RowPiece[] {
-  const pieces: RowPiece[] = [];
-  let offset = 0;
-  for (const [i, seg] of line.segments.entries()) {
-    const start = offset;
-    offset += seg.text.length;
-    const from = sel ? Math.max(0, Math.min(seg.text.length, sel.from - start)) : 0;
-    const to = sel ? Math.max(0, Math.min(seg.text.length, sel.to - start)) : 0;
-    const slices: [string, boolean][] =
-      to > from
-        ? [
-            [seg.text.slice(0, from), false],
-            [seg.text.slice(from, to), true],
-            [seg.text.slice(to), false],
-          ]
-        : [[seg.text, false]];
-    for (const [text, inverse] of slices) {
-      if (text.length > 0) {
-        pieces.push({
-          key: `${i}:${pieces.length}`,
-          text,
-          inverse,
-          tone: seg.tone,
-          bold: seg.bold,
-        });
-      }
-    }
-  }
-  return pieces;
+  return selectionSlices(
+    line.segments.map((seg) => seg.text),
+    sel,
+  ).map((slice) => {
+    const seg = line.segments[slice.index];
+    return {
+      key: `${slice.index}:${slice.offset}`,
+      text: slice.text,
+      inverse: slice.inverse,
+      tone: seg?.tone ?? 'normal',
+      bold: seg?.bold,
+    };
+  });
 }
 
 /**

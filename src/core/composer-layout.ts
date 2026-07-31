@@ -1,7 +1,7 @@
 import stringWidth from 'string-width';
 import { clamp } from './math';
 import { bufferLines, caretIndexForColumn, type TextBuffer, visibleLineRange } from './text-buffer';
-import type { SelectionRange } from './text-selection';
+import type { RowSelection, SelectionRange } from './text-selection';
 
 /**
  * Display geometry of the composer: how a buffer's text is laid out as *display
@@ -197,10 +197,7 @@ export function caretIndexAtClick(
  * The char offsets `[from, to)` within one display row that fall inside `range`,
  * for painting a per-row highlight. Undefined when the row has nothing selected.
  */
-export function rowSelection(
-  range: SelectionRange,
-  row: ComposerRow,
-): { from: number; to: number } | undefined {
+export function rowSelection(range: SelectionRange, row: ComposerRow): RowSelection | undefined {
   const len = row.text.length;
   const from = clamp(range.start - row.start, 0, len);
   const to = clamp(range.end - row.start, 0, len);

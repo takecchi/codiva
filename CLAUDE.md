@@ -67,8 +67,8 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 一覧画面 | `ui/session-list.tsx`（composer / list の2フォーカス） |
 | 詳細画面 | `ui/session-detail.tsx`（ログ + 追加指示 + 操作パネル） |
 | 入力欄・キー処理 | `core/text-buffer.ts`（純粋モデル）/ `core/composer-layout.ts`（折り返し・表示行の幾何）/ `core/input-history.ts`（↑↓ の入力履歴）/ `ui/input.ts`（キー→操作）/ `ui/prompt-input.tsx` |
-| ログ描画・スクロール | `core/scroll.ts` / `core/markdown.ts` / `core/ansi.ts` |
-| マウス・範囲選択 | `core/mouse.ts` / `core/list-hit.ts` / `core/text-selection.ts` / `utils/mouse.ts` / `utils/clipboard.ts` |
+| ログ描画・スクロール | `core/scroll.ts` / `core/markdown.ts` / `core/ansi.ts` / `ui/log-line.tsx`（1 行の描画） |
+| マウス・範囲選択 | `core/mouse.ts` / `core/list-hit.ts` / `core/text-selection.ts` / `core/log-selection.ts`（詳細ログの選択・端の自動スクロール） / `utils/mouse.ts` / `utils/clipboard.ts` |
 | 文言・言語 | `core/i18n.ts`（カタログ）/ `ui/i18n-context.tsx`（`useMessages`） |
 | 色・記号 | `ui/theme.ts`（`.tsx` に生 ANSI 名を書かない） |
 | スラッシュコマンド | `core/commands.ts`（レジストリ）/ `ui/command-palette.tsx` / `ui/hooks.ts` の `useCommandRunner` |

@@ -223,9 +223,10 @@ export function pageStep(rows: number): number {
 export const WHEEL_SCROLL_LINES = 3;
 
 /**
- * Lines moved per ↑/↓ press. Under the alt screen with mouse capture released,
- * terminals translate the wheel into arrow keys (alternate scroll mode), so this
- * doubles as the wheel step in the detail view — one row at a time.
+ * Lines moved per ↑/↓ press — also the step of the detail view's drag auto-scroll
+ * (one row per tick). Where mouse reporting is off (`"mouse": false`, non-TTY) the
+ * terminal translates the wheel into arrow keys under the alt screen (alternate
+ * scroll mode), so this doubles as the wheel step there.
  */
 export const ARROW_SCROLL_LINES = 1;
 

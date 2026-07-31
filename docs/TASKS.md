@@ -535,7 +535,8 @@ UI なし。すべてユニットテストで駆動する。
       （↑ の連打が1チャンクで届いても潰れない）
 - [x] 一覧のコンポーザに配線（送信時に `record`、↑↓ で `recall`、呼び出せなければ `editText` へ落とす）。
       履歴は `ListViewState` に載せて `app.tsx` の ref へ預け、詳細ビューから戻っても残す
-- [x] 詳細ビューには入れない（あちらの ↑↓ は alternate scroll mode のホイール受け口なので奪えない）
+- [x] 詳細ビューには入れない（あちらの ↑↓ はログのスクロール。当時はマウス捕捉を解除していたので
+      alternate scroll mode のホイール受け口も兼ねていた → Phase 17 で捕捉は常時有効になった）
 - [x] i18n: フッタヒントに `↑↓: 履歴` / `↑↓: history`（ja / en 両方）
 - [x] テスト: `core/input-history.spec.ts`（テーブルドリブン）/ `core/composer-layout.spec.ts` に端の
       判定 / `tests/app.test.tsx` に「↑↓ で呼び戻す・書きかけが復帰する」「複数行編集中の ↑ は
@@ -544,6 +545,50 @@ UI なし。すべてユニットテストで駆動する。
 
 > 実績メモ: 履歴の永続化（`state.json` へ保存）は入れていない。復元用メタに会話由来のテキストを
 > 増やしたくないため、履歴はアプリのプロセス内だけで持つ。
+
+---
+
+## Phase 17: 詳細ログの範囲選択（画面外までドラッグ = 自動スクロール）✅
+
+**課題**: セッション詳細のログをコピペしたいのに、画面に収まらない範囲（上端より上・下端より下に
+隠れている行）が取れなかった。詳細ビューはマウス捕捉を解除して端末ネイティブの選択に任せていたため、
+選択できるのは**いま見えている 1 画面ぶんだけ**で、選択したままスクロールする操作が存在しなかった。
+
+- [x] 純粋な `core/log-selection.ts` を新設: 位置は平坦な caret index ではなく **`LogPoint`
+      （文書の表示行 index + 行内の桁）**。スクロールしても意味が変わらず、数千行でも O(n) に収まる
+- [x] 当たり判定 `LogViewport` / `logRowAt` / `logCaretAt`（末尾寄せの隙間・プレビュー行・
+      表示幅の逆算）と、端の自動スクロール `logEdgeAt` / `logEdgePoint` / `LOG_EDGE_SCROLL_MS`
+- [x] 描画用の `logRowSelection` とコピー用の `logSelectionText`（表示どおり改行で繋ぐ）
+- [x] 切り分けの共通化: `core/text-selection.ts` に `selectionSlices`（選択境界でセグメントを
+      切り直す）を追加し、ヘッダの `rowPieces` とログの `RichLogLine` で共用
+- [x] フックの共通化: `ui/hooks.ts` に内部 `useRangeSelection`（位置の型と正規化だけ差し替える）を
+      置き、`useDragSelection`（caret index）と `useLogDragSelection`（`LogPoint`）が乗る形にした
+- [x] `SessionDetail` に配線: press/drag/release、端でのタイマー自動スクロール、キー入力・幅変更での
+      解除、アンカーを ref で持つ（バースト時に潰れない）、ハイライト描画（反転・dim は落とす）
+- [x] **詳細ビューでもマウス捕捉を解除しない**方針に変更（`mouse` prop / `TerminalSetup.mouse` を廃止）。
+      端末ネイティブ選択は Shift+ドラッグ・設定 `"mouse": false` で従来どおり使える
+- [x] テスト: `core/log-selection.spec.ts`（テーブルドリブン）/ `core/text-selection.spec.ts` に
+      `selectionSlices` / `tests/app.test.tsx` に「複数行のドラッグでコピー」「クリックだけでは
+      コピーしない」「可視域の外へドラッグ → 自動スクロールしながら選択が伸び、離すと止まる」
+- [x] ドキュメント: `README.md`（テキストのコピー）/ `.claude/rules/ink-components.md` /
+      `docs/ARCHITECTURE.md` / `docs/TECH_NOTES.md`（?1002 の実測）/ `CLAUDE.md`（地図）
+- [x] レビュー指摘の反映:
+      - **モーダルは自分の `useInput` の先頭でマウスレポートを弾く**（`permission-dialog` /
+        `model-select`。捕捉を保つようになったため、質問の自由記述に `[<0;10;5M` が混入していた。
+        `repo-prompt-editor` は既に同じ防御を持っていた）
+      - 自動スクロールの終点は**スクロール後のアンカーの行数**（`capFor(next)`）で数える
+        （末尾追従を外れてプレビュー行が消えると 1 行増えるため、上端 1 行が漏れていた）
+      - **行より上の余白（末尾寄せの隙間）の press は先頭行の行頭をアンカーにする**
+        （「画面のいちばん上から下へ」のドラッグを捨てない）
+      - 空文字はクリップボードへ送らない（貼り付け内容を消さない）
+      - 行の描画を `ui/log-line.tsx` へ切り出し（`session-detail.tsx` の肥大化を戻す）、
+        1 行内の選択オフセットは core の `RowSelection` 型に統一
+      - `anchorRef` の理由コメントを実態（同期的に読む必要がある）に修正
+
+> 実績メモ: 自動スクロールにタイマーが必要なのは SGR ?1002 が**セルが変わったときだけ**移動を
+> 報告するため（端で静止するとレポートが来ず、レポート駆動だけでは止まってしまう）。タイマーは
+> 向きが変わったときだけ張り替え、最新のステップ関数は ref で渡す（ログの追記ごとに作り直すと
+> 1 tick も進まない）。i18n の追加は無し（新しい表示文字列を増やしていない）。
 
 ---
 

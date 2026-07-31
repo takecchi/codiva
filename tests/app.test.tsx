@@ -1017,16 +1017,22 @@ describe('App detail view (in-app connection)', () => {
   /**
    * Open the detail view of a session whose log holds `count` numbered lines
    * (`log-00`, `log-01`, …), rendered at a fixed terminal size. `textFor` lets a
-   * test emit multi-line Markdown per entry instead of a single line.
+   * test emit multi-line Markdown per entry instead of a single line; `onCopy`
+   * captures what a mouse selection puts on the clipboard.
    */
   async function detailWithLog(
     count: number,
     rows = 24,
     columns = 80,
     textFor: (i: number) => string = (i) => `log-${String(i).padStart(2, '0')}`,
+    onCopy?: (text: string) => void,
   ) {
     const { manager, out } = drivenManager();
-    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, rows, columns);
+    const { app, stdin, lastFrame } = renderFullscreen(
+      <App manager={manager} onCopy={onCopy} />,
+      rows,
+      columns,
+    );
     stdin.write('start');
     await flush();
     stdin.write('\r');
@@ -1060,6 +1066,12 @@ describe('App detail view (in-app connection)', () => {
     expect(rowNumbers.length).toBeGreaterThan(0);
     expect(rowNumbers).toEqual(rowNumbers.map((_, i) => first + i));
   }
+
+  // SGR マウスレポート（座標は 0 始まりのフレーム上の位置で渡す → レポートは 1 始まり）。
+  // ドラッグはボタン押下中の移動なので motion bit 32 が立つ。
+  const press = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}M`;
+  const dragTo = (col: number, row: number) => `\x1b[<32;${col + 1};${row + 1}M`;
+  const release = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}m`;
 
   // Regression (詳細画面のログが上部にスクロールできない): the window was sized from
   // the whole terminal rather than the log viewport, so every frame overflowed and
@@ -1125,8 +1137,8 @@ describe('App detail view (in-app connection)', () => {
     app.unmount();
   }, 30000);
 
-  // 詳細ビューはログのコピペのためマウス捕捉を解除しており、その状態の alt screen
-  // では端末がホイールを ↑/↓ に変換して送ってくる（alternate scroll mode）。
+  // マウス無効環境（設定 `"mouse": false` / 非 TTY）では alt screen の端末がホイールを
+  // ↑/↓ に変換して送ってくる（alternate scroll mode）ので、↑/↓ はその受け口も兼ねる。
   it('scrolls the detail log one line at a time with the arrow keys (wheel under alt screen)', async () => {
     const { app, stdin, visible } = await detailWithLog(40);
     expect(visible().at(-1)).toBe(39);
@@ -1140,6 +1152,121 @@ describe('App detail view (in-app connection)', () => {
     stdin.write('\x1b[B'); // ↓ → back to the tail
     await flush();
     expect(visible().at(-1)).toBe(39);
+    app.unmount();
+  }, 30000);
+
+  it('ログをドラッグすると複数行を範囲選択し、離した時点でコピーする', async () => {
+    const copied: string[] = [];
+    const { app, stdin, lastFrame } = await detailWithLog(40, 24, 80, undefined, (t) =>
+      copied.push(t),
+    );
+    // 装飾（SGR）を落としてから列を数える — 色が有効な環境ではエスケープ列のぶんズレる。
+    const rowsOf = () => stripAnsi(lastFrame()).split('\n');
+    const rowOf = (label: string) => rowsOf().findIndex((l) => l.includes(label));
+    const colOf = (row: number, label: string) => (rowsOf()[row] ?? '').indexOf(label);
+
+    const from = rowOf('log-30');
+    const to = rowOf('log-32');
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBe(from + 2); // sanity: 3 行が連続して見えている
+
+    // 'log-30' の先頭 → 'log-32' の行末（行末より右でも行末に丸める）→ 離す。
+    stdin.write(press(colOf(from, 'log-30'), from));
+    await flush();
+    stdin.write(dragTo(colOf(to, 'log-32') + 'log-32'.length + 3, to));
+    await flush();
+    expect(copied).toEqual([]); // ドラッグ中はコピーしない（再描画ごとに送らない）
+    stdin.write(release(colOf(to, 'log-32') + 'log-32'.length + 3, to));
+    await flush();
+
+    expect(copied).toEqual(['log-30\nlog-31\nlog-32']);
+    // ログのクリックはコンポーザへ文字を入れない（レポートを先取りして飲んでいる）。
+    expect(lastFrame()).toContain('追加の指示を入力');
+    app.unmount();
+  }, 30000);
+
+  /**
+   * ログが可視域に満たないとき、末尾寄せ（flex-end）なので**上に余白が空く**。
+   * 「画面のいちばん上から下へ」ドラッグして全部選ぶ操作を受けたいので、その余白の
+   * クリックは先頭行の行頭をアンカーにする（捨てない）。
+   */
+  it('行より上の余白からドラッグしても先頭行から選択できる', async () => {
+    const copied: string[] = [];
+    const { app, stdin, lastFrame } = await detailWithLog(3, 24, 80, undefined, (t) =>
+      copied.push(t),
+    );
+    const rowsOf = () => stripAnsi(lastFrame()).split('\n');
+    const last = rowsOf().findIndex((l) => l.includes('log-02'));
+    expect(last).toBeGreaterThan(3); // 上に余白がある（末尾寄せ）
+    const col = (rowsOf()[last] ?? '').indexOf('log-02');
+
+    stdin.write(press(col, 1)); // ログ領域の上端（行より上の余白）
+    await flush();
+    stdin.write(dragTo(col + 'log-02'.length, last));
+    await flush();
+    stdin.write(release(col + 'log-02'.length, last));
+    await flush();
+
+    // 文書の先頭行は投入した指示（`> start`）なので、そこから全部入る。
+    expect(copied).toEqual(['> start\nlog-00\nlog-01\nlog-02']);
+    app.unmount();
+  }, 30000);
+
+  it('ログのクリックだけ（ドラッグなし）ではコピーしない', async () => {
+    const copied: string[] = [];
+    const { app, stdin, lastFrame } = await detailWithLog(40, 24, 80, undefined, (t) =>
+      copied.push(t),
+    );
+    const row = stripAnsi(lastFrame())
+      .split('\n')
+      .findIndex((l) => l.includes('log-35'));
+    stdin.write(press(3, row));
+    await flush();
+    stdin.write(release(3, row));
+    await flush();
+    expect(copied).toEqual([]);
+    app.unmount();
+  }, 30000);
+
+  /**
+   * 「画面の上から下まですーっとスクロールしながらコピペしたい」。可視域の外へドラッグしたら
+   * その向きへ自動スクロールし、現れた行まで選択が伸び続ける。押さえたまま静止していても
+   * 続くこと（?1002 はセルが変わったときだけ移動を報告するのでタイマーが要る）も併せて確認する。
+   */
+  it('可視域の外へドラッグすると自動スクロールしながら選択が伸び、離すと止まる', async () => {
+    const copied: string[] = [];
+    const { app, stdin, lastFrame, visible } = await detailWithLog(40, 24, 80, undefined, (t) =>
+      copied.push(t),
+    );
+    const tail = visible();
+    expect(tail.at(-1)).toBe(39);
+    const rowsOf = () => stripAnsi(lastFrame()).split('\n');
+    const lastRow = rowsOf().findIndex((l) => l.includes('log-39'));
+    const col = (rowsOf()[lastRow] ?? '').indexOf('log-39');
+
+    // 末尾の行の行末をアンカーにして、フレームの先頭行（ログ可視域より上）へドラッグ。
+    stdin.write(press(col + 'log-39'.length, lastRow));
+    await flush();
+    stdin.write(dragTo(col, 0));
+    // ドラッグレポートは 1 回だけ。以降はタイマーがスクロールを続ける。
+    await flush(250);
+    stdin.write(release(col, 0));
+    await flush();
+
+    const top = visible();
+    // 1 行以上（= レポート駆動の 1 回ぶんより多く）スクロールしている。
+    expect((tail[0] ?? 0) - (top[0] ?? 0)).toBeGreaterThan(1);
+    expectUnbrokenRun(top);
+
+    // 選択はスクロールで消えず、現れた上端行からアンカー（log-39）までが入っている。
+    const lines = copied[0]?.split('\n') ?? [];
+    expect(lines.at(-1)).toBe('log-39');
+    expect(lines[0]).toBe(`log-${String(top[0]).padStart(2, '0')}`);
+    expect(lines.length).toBe(39 - (top[0] ?? 0) + 1);
+
+    // 離したら自動スクロールは止まる（タイマーが残っていると勝手に動き続ける）。
+    await flush(200);
+    expect(visible()).toEqual(top);
     app.unmount();
   }, 30000);
 

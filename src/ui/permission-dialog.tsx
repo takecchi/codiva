@@ -1,6 +1,12 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useState } from 'react';
-import { choiceLines, dialogContentWidth, emptyBuffer, type PermissionRequest } from '@/core';
+import {
+  choiceLines,
+  dialogContentWidth,
+  emptyBuffer,
+  type PermissionRequest,
+  parseSgrMouse,
+} from '@/core';
 import { ChoiceRow } from './choice-row';
 import { useTextBufferRef } from './hooks';
 import { useMessages } from './i18n-context';
@@ -35,6 +41,12 @@ const ToolDialog: FC<{
   const m = useMessages();
   const { columns } = useWindowSize();
   useInput((rawInput, rawKey) => {
+    // マウスレポートを先に握り潰す。モーダルは自分の useInput を持つので背後の view の
+    // 先取り解釈では守られず、クリック/ホイールの列が y/n 判定へ流れ込む（下の
+    // QuestionDialog と同じ理由。`repo-prompt-editor` も同じ防御を持つ）。
+    if (parseSgrMouse(rawInput)) {
+      return;
+    }
     // 一覧/詳細ビューと同じく chord を復号する。modifyOtherKeys / CSI-u を送る端末
     // （Ghostty など）では y/n も生のエスケープ列で届き、素の比較が外れるため。
     const { input } = normalizeChord(rawInput, rawKey);
@@ -125,6 +137,13 @@ const QuestionDialog: FC<{
 
   useInput((rawInput, rawKey) => {
     if (!current) {
+      return;
+    }
+    // マウスレポートは文字入力として扱わない。自由記述モード（`typing`）は editText に
+    // 流すので、これが無いとログをクリック/ドラッグした瞬間に `[<0;10;5M` のような
+    // レポート列が回答へ挿入される（詳細ビューがマウス捕捉を保つようになったため実際に
+    // 起きる。モーダルは背後の view のガードでは守られない）。
+    if (parseSgrMouse(rawInput)) {
       return;
     }
     // modifyOtherKeys / CSI-u を送る端末（Ghostty/xterm 等）では Space や Enter が

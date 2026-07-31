@@ -14,15 +14,20 @@ import {
   isFullscreenViewport,
   isResumable,
   isTerminalStatus,
-  type LogEntry,
+  LOG_EDGE_SCROLL_MS,
+  type LogEdge,
+  type LogPoint,
+  type LogViewport,
+  logCaretAt,
+  logEdgeAt,
+  logEdgePoint,
   logLines,
+  logRowSelection,
   logViewportRows,
   logWindow,
   type ModelOption,
-  type MouseControl,
   matchCommands,
   parseSgrMouse,
-  type RichSpan,
   resumeInstruction,
   type ScrollAnchor,
   type SessionManager,
@@ -41,86 +46,19 @@ import {
   useComposerWidth,
   useDragSelection,
   useLifecycleAction,
+  useLogDragSelection,
   useRunMode,
   useSessions,
   useTextBufferRef,
 } from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, normalizeChord, resolveEnter } from './input';
+import { LOG_PREFIX, LogLine } from './log-line';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
-import { glyph, logColor, markdownColor, statusColor, theme } from './theme';
-
-/** Prefix/indent for each log kind — echoes Claude Code's transcript. Colors live in `logColor`. */
-const LOG_PREFIX: Record<LogEntry['kind'], string> = {
-  assistant_text: '',
-  tool_use: `${glyph.bullet} `,
-  tool_result: `  ${glyph.branch} `,
-  result: '',
-  user: '> ',
-  system: '',
-  error: '✗ ',
-};
-
-/** Kinds rendered dimmed (secondary transcript lines). */
-const LOG_DIM: Partial<Record<LogEntry['kind'], boolean>> = { tool_result: true };
-
-// Styled Markdown row: assistant text is rendered to per-span styling in core
-// (bold/italic/code/heading color …). Each span becomes a nested <Text>; the
-// `tone` maps to a theme color, everything else is a boolean Ink text prop.
-const RichLogLine: FC<{ spans: RichSpan[] }> = ({ spans }) => (
-  <Text wrap="truncate-end">
-    {spans.map((s, i) => (
-      <Text
-        // Spans are positional within one already-wrapped row (no identity of
-        // their own); the row rebuilds wholesale on any change, so the index is a
-        // stable, correct key here.
-        // biome-ignore lint/suspicious/noArrayIndexKey: positional spans, whole row re-derived per render
-        key={i}
-        color={s.tone ? markdownColor[s.tone] : undefined}
-        bold={s.bold}
-        italic={s.italic}
-        dimColor={s.dim}
-        underline={s.underline}
-        strikethrough={s.strikethrough}
-      >
-        {s.text}
-      </Text>
-    ))}
-  </Text>
-);
-
-/**
- * 空行を描くための最小の中身。Ink の `measureText('')` は **高さ 0** を返すため、
- * 空文字の `<Text>` は行として一切場所を取らない。ログの空行（Markdown の段落間・
- * コードブロック内の空行など）がこれに当たり、そのままだと
- *
- * 1. 段落の区切りが消えて行が詰まって見える
- * 2. スクロール計算（`core/scroll.ts` は空行も 1 物理行として数える）が確保した高さ
- *    より実際の描画が短くなり、末尾寄せ（justifyContent="flex-end"）の分だけ
- *    **可視域の上端に隙間が生まれる**（表示できる行があるのに空白のままになる）
- *
- * という不具合になる。半角スペース 1 つを描いて必ず 1 行ぶんの高さを確保する。
- */
-const BLANK_ROW = ' ';
-
-// One physical row of the log. `line.text` already carries the kind's prefix /
-// continuation indent (built by core's logLines); truncate is only a safety net
-// against width drift — wrapping happened in core at the exact content width.
-// Markdown-rendered rows carry `spans` and take the styled path instead.
-// 空行（`text` が空）はどちらの経路でも高さ 0 になるので BLANK_ROW で埋める。
-const LogLine: FC<{ line: DisplayLine }> = ({ line }) =>
-  line.text.length === 0 ? (
-    <Text>{BLANK_ROW}</Text>
-  ) : line.spans && line.spans.length > 0 ? (
-    <RichLogLine spans={line.spans} />
-  ) : (
-    <Text color={logColor[line.kind]} dimColor={LOG_DIM[line.kind]} wrap="truncate-end">
-      {line.text}
-    </Text>
-  );
+import { statusColor, theme } from './theme';
 
 /**
  * The in-app detail view: live log of a single session plus a follow-up
@@ -141,15 +79,9 @@ export const SessionDetail: FC<{
    * アプリ終了ではなく「このセッションを閉じる」。終了は一覧の `/exit`）。
    */
   onBack: () => void;
-  /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
+  /** マウス選択（コンポーザ・ログ）をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
   onCopy?: (text: string) => void;
-  /**
-   * マウスレポート制御（マウス有効環境でのみ渡る）。詳細ビューを開いている間は
-   * 捕捉を解除し、端末ネイティブのドラッグ選択でログをコピペできるようにする。
-   * 戻る（アンマウント）と再度有効化する。
-   */
-  mouse?: MouseControl;
-}> = ({ manager, id, models, onBack, onCopy, mouse }) => {
+}> = ({ manager, id, models, onBack, onCopy }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -158,6 +90,10 @@ export const SessionDetail: FC<{
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
   // フォローアップ入力欄のマウス範囲選択（ドラッグで選択→離すとコピー）。
   const sel = useDragSelection(onCopy);
+  // ログの範囲選択。コンポーザとは別インスタンス（位置の基準が「文書の行 + 桁」で違う）。
+  const logSel = useLogDragSelection(onCopy);
+  // ドラッグが可視域の外へ出ている向き。ここにあるあいだ自動スクロールし続ける。
+  const [edge, setEdge] = useState<LogEdge | undefined>(undefined);
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
   // 入力欄の折り返し幅（実測）。PromptInput が描いた折り返しと同じ値でクリック位置の
@@ -169,8 +105,19 @@ export const SessionDetail: FC<{
   // 虫食いで欠落するため（= 上へスクロールしても読めない状態になっていた）。
   const logRef = useRef<DOMElement>(null);
   const measuredLogRows = useBoxHeight(logRef);
+  // ログ可視域の絶対位置（マウス当たり判定の原点）。
+  const logBox = useAbsolutePosition(logRef);
   // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
   const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
+  // スクロール位置は ref にも持つ。理由は**同期的に読む必要がある**こと: 自動スクロールの
+  // 1 tick は「次のアンカー」から選択の終点（`logEdgePoint`）を組み、さらに「動かなかったか」で
+  // タイマーを止める判定をするので、setState の関数形（次の描画まで値が見えない）では書けない。
+  // ref なら 1 チャンクにまとまって届いた複数レポートも順に積める。
+  const anchorRef = useRef<ScrollAnchor>('bottom');
+  const applyAnchor = (next: ScrollAnchor) => {
+    anchorRef.current = next;
+    setAnchor(next);
+  };
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
@@ -204,17 +151,9 @@ export const SessionDetail: FC<{
     // `status` はスロットルされた購読値なので、送信直後の連打を弾けない。
     if (manager.resume(session.id, resumeInstruction(status, m))) {
       setPanel('input');
-      setAnchor('bottom');
+      applyAnchor('bottom');
     }
   };
-
-  // 詳細ビューにいる間はマウス捕捉を解除し、端末ネイティブのドラッグ選択で
-  // ログをそのままコピペできるようにする。一覧へ戻る（アンマウント）と再度有効化して
-  // 一覧のクリック/ホイール操作を復帰させる。マウス無効環境では `mouse` が undefined。
-  useEffect(() => {
-    mouse?.disable();
-    return () => mouse?.enable();
-  }, [mouse]);
 
   // Fetch the diff summary once the session reaches a terminal state.
   useEffect(() => {
@@ -281,7 +220,84 @@ export const SessionDetail: FC<{
   const showPreview = preview.length > 0 && anchor === 'bottom';
   // ログを描ける行数。logWindow とスクロール（移動量・アンカーの下限）で必ず同じ値を
   // 使う — 食い違うと最上部でアンカーが 1 行手前で止まり、先頭行に到達できなくなる。
-  const logCap = Math.max(1, viewport - (showPreview ? 1 : 0));
+  // プレビュー行は末尾追従中しか描かないので、行数はアンカーの関数になる（自動スクロールは
+  // スクロール後のアンカーで数え直す必要がある → capFor）。
+  const capFor = (at: ScrollAnchor): number =>
+    Math.max(1, viewport - (preview.length > 0 && at === 'bottom' ? 1 : 0));
+  const logCap = capFor(anchor);
+  // 実際に描くウィンドウ。当たり判定（どの行をクリックしたか）と描画で**同じ結果**を使う。
+  const win = logWindow(lines, logCap, anchor);
+  /**
+   * ログ可視域の幾何。すべて描画に使った実測値・同じウィンドウから組むので、クリック位置の
+   * 逆算が別の行に当たらない。実測前とインライン描画時（低い端末＝マウス捕捉もしない）は
+   * undefined にして、当たり判定そのものをやめる（黙って別の行を選ぶより選べないほうがよい）。
+   */
+  const logView: LogViewport | undefined =
+    logBox && measuredLogRows !== undefined && isFullscreenViewport(rows)
+      ? {
+          top: logBox.top,
+          left: logBox.left,
+          height: Math.max(1, Math.floor(measuredLogRows)),
+          firstRow: win.hiddenAbove,
+          rows: win.entries.length,
+          preview: showPreview,
+        }
+      : undefined;
+
+  /** ログの選択を捨てる（端の自動スクロールも止める）。 */
+  const clearLogSelection = () => {
+    logSel.clear();
+    setEdge(undefined);
+  };
+
+  /**
+   * 端でのドラッグ 1 tick: 1 行スクロールし、選択の終点を**スクロール後の**端の行へ伸ばす。
+   * これで新しく現れた行がそのまま選択に入り、「画面の上端／下端までドラッグすると、
+   * そのままスクロールしながら選択が続く」になる。
+   */
+  const edgeStep = (dir: LogEdge) => {
+    const current = anchorRef.current;
+    const next =
+      dir === 'up'
+        ? scrollUp(current, total, logCap, ARROW_SCROLL_LINES)
+        : scrollDown(current, total, logCap, ARROW_SCROLL_LINES);
+    applyAnchor(next);
+    // 終点は**次に描かれる**ウィンドウの端の行。行数は `capFor(next)` で数え直す —
+    // 末尾追従を外れるとプレビュー行が消えて 1 行増えるため、`logCap` のままだと
+    // 上端の 1 行が選択から漏れる。
+    logSel.extend(logEdgePoint(logWindow(lines, capFor(next), next), dir));
+    if (next === current) {
+      // 文書の端まで来た（もう動かない）: タイマーを止める。release のレポートを取り逃した
+      // ときに永久にスクロールし続けないための保険にもなっている。
+      setEdge(undefined);
+    }
+  };
+
+  // 端で押さえたまま静止していてもスクロールを続けるためのタイマー。SGR ?1002 は
+  // **セルが変わったときだけ**移動を報告するので、レポート駆動だけでは端で止まってしまう。
+  // 最新の edgeStep は ref 経由で渡し、タイマーは向きが変わったときだけ張り替える
+  // （ログの追記や再描画ごとにタイマーを作り直すと 1 tick も進まないことがある）。
+  const edgeStepRef = useRef(edgeStep);
+  useEffect(() => {
+    edgeStepRef.current = edgeStep;
+  });
+  useEffect(() => {
+    if (!edge) {
+      return undefined;
+    }
+    const timer = setInterval(() => edgeStepRef.current(edge), LOG_EDGE_SCROLL_MS);
+    return () => clearInterval(timer);
+  }, [edge]);
+
+  // 端末幅が変わるとログを再折り返すため、行 index の指す文字が変わる。ズレた位置を
+  // 光らせ続けない（deps を付けられないのは logSel の参照が毎描画で変わるため）。
+  const widthRef = useRef(columns);
+  useEffect(() => {
+    if (widthRef.current !== columns) {
+      widthRef.current = columns;
+      clearLogSelection();
+    }
+  });
 
   /**
    * Caret index for a mouse point inside the composer, or undefined if outside.
@@ -301,28 +317,72 @@ export const SessionDetail: FC<{
     );
   };
 
+  /**
+   * ログ選択のアンカー（press）。行の上ならその文字、**行より上の余白**（ログが可視域に
+   * 満たないときの末尾寄せの隙間・上パディング）なら先頭行の行頭にする — 「画面のいちばん
+   * 上から下へ」というドラッグを受けたいので、ここでクリックを捨てない。行より下
+   * （プレビュー行・操作パネル側）は当たりにしない（ログ以外の要素があるので黙って食わない）。
+   */
+  const logAnchorAt = (x: number, y: number): LogPoint | undefined => {
+    if (!logView) {
+      return undefined;
+    }
+    const point = logCaretAt(lines, logView, x, y);
+    if (point) {
+      return point;
+    }
+    return logEdgeAt(logView, y) === 'up' ? logEdgePoint(win, 'up') : undefined;
+  };
+
+  /**
+   * ログ上のドラッグ。可視域の外へ出たらその向きへ自動スクロールしながら選択を伸ばし
+   * （`edgeStep` + タイマー）、内側なら指している文字まで終点を動かす。
+   */
+  const handleLogDrag = (x: number, y: number) => {
+    if (!logView) {
+      return;
+    }
+    const dir = logEdgeAt(logView, y);
+    if (dir) {
+      setEdge(dir);
+      edgeStep(dir); // レポートが来た時点で 1 行進めておく（タイマーを待たない）
+      return;
+    }
+    setEdge(undefined);
+    const point = logCaretAt(lines, logView, x, y);
+    if (point) {
+      logSel.extend(point);
+    }
+  };
+
   useInput((rawInput, rawKey) => {
-    // 詳細ビューでは（コピペのため）マウス捕捉を解除しているので通常マウスレポートは
-    // 届かない。ただし解除の境界で端末が送り残したレポート断片が生テキストとして
-    // editText に流れ込む（「スクロールしようとすると文字が入力される」）のを防ぐため、
-    // キー入力より先に SGR レポートを解釈して握り潰す（一覧の useInput と同じ防御）。
-    // スクロールは PgUp/PgDn を使う。捕捉が生きている隙間ではホイールも一応効かせる。
+    // SGR マウスレポートはキー入力より先に解釈する（レポート断片が生テキストとして
+    // editText に流れ込み「スクロールしようとすると文字が入力される」のを防ぐ）。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
       if (mouse.kind === 'wheel') {
-        setAnchor((a) =>
+        applyAnchor(
           mouse.dir === 'up'
-            ? scrollUp(a, total, logCap, WHEEL_SCROLL_LINES)
-            : scrollDown(a, total, logCap, WHEEL_SCROLL_LINES),
+            ? scrollUp(anchorRef.current, total, logCap, WHEEL_SCROLL_LINES)
+            : scrollDown(anchorRef.current, total, logCap, WHEEL_SCROLL_LINES),
         );
       } else if (mouse.kind === 'press') {
-        // コンポーザ内のクリックはキャレット移動 + 選択アンカー。欄外は選択解除。
+        // コンポーザ内のクリックはキャレット移動 + 選択アンカー。ログ行の上ならログの
+        // 範囲選択を始める（どちらでもなければ両方のハイライトを解除）。
         const index = composerCaretAt(mouse.x, mouse.y);
         if (index !== undefined) {
           updateBuffer(bufferOf(bufferRef.current.value, index));
           sel.begin(index);
+          clearLogSelection();
         } else {
           sel.clear();
+          setEdge(undefined);
+          const point = logAnchorAt(mouse.x, mouse.y);
+          if (point) {
+            logSel.begin(point);
+          } else {
+            logSel.clear();
+          }
         }
       } else if (mouse.kind === 'drag') {
         if (sel.dragging()) {
@@ -331,9 +391,15 @@ export const SessionDetail: FC<{
             updateBuffer(bufferOf(bufferRef.current.value, index));
             sel.extend(index);
           }
+        } else if (logSel.dragging()) {
+          handleLogDrag(mouse.x, mouse.y);
         }
       } else if (mouse.kind === 'release') {
-        sel.end(bufferRef.current.value); // 離した時点で 1 回だけコピー
+        // 離した時点で 1 回だけコピー（ドラッグごとに送らない）。ハイライトは残す。
+        // アンカーの無い側は no-op なので、両方に release を渡して構わない。
+        sel.end(bufferRef.current.value);
+        logSel.end(lines);
+        setEdge(undefined);
       }
       return;
     }
@@ -341,8 +407,9 @@ export const SessionDetail: FC<{
     // 生テキストとして渡す。一覧と同じ共通ヘルパーで実キーへ復号し、Enter/改行/
     // Tab/Esc の挙動を両画面で揃える（詳細で Shift+Enter が改行にならない不具合対策）。
     const { input, key } = normalizeChord(rawInput, rawKey);
-    // 何かキーが来たらマウス選択のハイライトは消す。
+    // 何かキーが来たらマウス選択のハイライトは消す（自動スクロールも止める）。
     sel.clear();
+    clearLogSelection();
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
     // everything here so nothing leaks through to the composer underneath.
     if (modelSelect) {
@@ -380,11 +447,11 @@ export const SessionDetail: FC<{
     // step is derived from the *visible* log height, not the full terminal, so a
     // page never jumps past unseen lines.
     if (key.pageUp) {
-      setAnchor((a) => scrollUp(a, total, logCap));
+      applyAnchor(scrollUp(anchorRef.current, total, logCap));
       return;
     }
     if (key.pageDown) {
-      setAnchor((a) => scrollDown(a, total, logCap));
+      applyAnchor(scrollDown(anchorRef.current, total, logCap));
       return;
     }
     if (confirm) {
@@ -405,10 +472,9 @@ export const SessionDetail: FC<{
       setPanel((p) => (p === 'input' ? 'actions' : 'input'));
       return;
     }
-    // ↑/↓ でログを1行スクロールする。詳細ビューはログのコピペのためマウス捕捉を
-    // 解除しており（上の useEffect）、その状態の alt screen ではホイールが端末側で
-    // ↑/↓ に変換されて届く（alternate scroll mode）。これを拾わないとホイールが
-    // キャレット移動になるだけで「ログが上へスクロールできない」状態になる。
+    // ↑/↓ でログを1行スクロールする。マウス無効環境（設定 `"mouse": false` / 非 TTY）では
+    // alt screen の端末がホイールを ↑/↓ に変換して送ってくる（alternate scroll mode）ので、
+    // これがホイールの受け口も兼ねる。
     // 複数行を編集している最中だけはキャレット移動を優先する（ログは PgUp/PgDn で辿れる）。
     // 「複数行」は**折り返し後の表示行**で数える — 長い1行も画面上は複数行なので、
     // ↑↓ がログスクロールに吸われるとその行の中を移動できなくなる。
@@ -416,10 +482,10 @@ export const SessionDetail: FC<{
       (key.upArrow || key.downArrow) &&
       (panel === 'actions' || composerRowCount(bufferRef.current.value, composerWidth) <= 1)
     ) {
-      setAnchor((a) =>
+      applyAnchor(
         key.upArrow
-          ? scrollUp(a, total, logCap, ARROW_SCROLL_LINES)
-          : scrollDown(a, total, logCap, ARROW_SCROLL_LINES),
+          ? scrollUp(anchorRef.current, total, logCap, ARROW_SCROLL_LINES)
+          : scrollDown(anchorRef.current, total, logCap, ARROW_SCROLL_LINES),
       );
       return;
     }
@@ -449,7 +515,7 @@ export const SessionDetail: FC<{
       if (enter.text && session) {
         manager.send(session.id, enter.text);
         updateBuffer(emptyBuffer());
-        setAnchor('bottom'); // jump back to the tail to watch the new turn
+        applyAnchor('bottom'); // jump back to the tail to watch the new turn
       }
       return;
     }
@@ -482,7 +548,6 @@ export const SessionDetail: FC<{
         : m.detail.helpInput;
   // コマンドとして解決される入力か（`/` 付き、または詳細で使える名前と完全一致）。
   const commandPreview = commands.preview(buffer.value);
-  const win = logWindow(lines, logCap, anchor);
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -508,8 +573,18 @@ export const SessionDetail: FC<{
          * 実測した可視高さに収めている（二重の保険）。
          */}
         <Box flexDirection="column" flexShrink={0}>
-          {win.entries.map((line) => (
-            <LogLine key={line.key} line={line} />
+          {/* 選択のハイライトは**文書の行 index**で引く（win.hiddenAbove + 表示位置）。
+              スクロールしても同じ文字が光り続けるのがこのビューの選択の要件。 */}
+          {win.entries.map((line, i) => (
+            <LogLine
+              key={line.key}
+              line={line}
+              sel={
+                logSel.selection
+                  ? logRowSelection(logSel.selection, win.hiddenAbove + i, line.text.length)
+                  : undefined
+              }
+            />
           ))}
           {/* Live streaming preview, only while following the tail. */}
           {showPreview ? (
@@ -578,7 +653,7 @@ export const SessionDetail: FC<{
             onSelect={(model) => {
               manager.setSessionModel(session.id, model);
               setModelSelect(false);
-              setAnchor('bottom');
+              applyAnchor('bottom');
             }}
             onCancel={() => setModelSelect(false)}
           />

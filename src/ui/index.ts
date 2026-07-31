@@ -6,6 +6,7 @@ export * from './dialog-box';
 export * from './hooks';
 export * from './i18n-context';
 export * from './input';
+export * from './log-line';
 export * from './model-select';
 export * from './permission-dialog';
 export * from './progress-badge';

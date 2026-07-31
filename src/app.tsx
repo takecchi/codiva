@@ -5,7 +5,6 @@ import {
   isFullscreenViewport,
   type Messages,
   type ModelOption,
-  type MouseControl,
   type SessionManager,
   type TrainingOptIn,
   type UpdateService,
@@ -51,13 +50,8 @@ export const App: FC<{
   updater?: UpdateService;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
-  /** Copy composer selection to the clipboard. Injected from index.tsx (OSC 52). */
+  /** Copy a mouse selection (composer / header / detail log) to the clipboard (OSC 52). */
   onCopy?: (text: string) => void;
-  /**
-   * マウスレポート制御。詳細ビューはこれを使い、開いている間だけ捕捉を解除して
-   * 端末ネイティブのテキスト選択（コピペ）を可能にする。マウス無効環境では undefined。
-   */
-  mouse?: MouseControl;
 }> = ({
   manager,
   cwd,
@@ -70,7 +64,6 @@ export const App: FC<{
   updater,
   onOpenPr,
   onCopy,
-  mouse,
 }) => {
   const { exit } = useApp();
   const models = useModelCatalog(modelCatalog);
@@ -111,7 +104,6 @@ export const App: FC<{
             models={models}
             onBack={() => setView({ mode: 'list' })}
             onCopy={onCopy}
-            mouse={mouse}
           />
         ) : (
           <SessionList
