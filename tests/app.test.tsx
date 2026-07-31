@@ -385,6 +385,22 @@ describe('App (list view)', () => {
     expect(lastFrame()).toContain('最初のセッション');
   });
 
+  // Ctrl+U = 書きかけの一括破棄。macOS の Cmd+Delete は端末がアプリへ送らないため、
+  // 全端末で確実に届く ctrl chord にしてある（フォーカスは入力欄のまま）。
+  it('Ctrl+U clears the composer without creating a session', async () => {
+    const manager = makeManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('ログイン機能を実装してください');
+    await flush();
+    expect(lastFrame()).toContain('ログイン機能を実装してください');
+
+    stdin.write('\x15'); // Ctrl+U
+    await flush();
+    expect(lastFrame()).not.toContain('ログイン機能を実装してください');
+    expect(lastFrame()).toContain(messages.ja.list.promptPlaceholder);
+    expect(manager.getSnapshot()).toHaveLength(0);
+  });
+
   it('shows the polled plan + usage in the header (not in the footer)', async () => {
     // The wiring index.tsx sets up: usage poller → manager.applyUsage → banner.
     const manager = makeManager();
@@ -807,6 +823,29 @@ describe('App detail view (in-app connection)', () => {
     stdin.write('\x1b'); // Esc → back to the list
     await flush();
     expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
+  });
+
+  it('Ctrl+U clears the follow-up composer in the detail view', async () => {
+    const { manager, out } = drivenManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('open me');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-clear' }));
+    await flush();
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    stdin.write('やっぱりこの指示はやめる');
+    await flush();
+    expect(lastFrame()).toContain('やっぱりこの指示はやめる');
+    stdin.write('\x15'); // Ctrl+U
+    await flush();
+    expect(lastFrame()).not.toContain('やっぱりこの指示はやめる');
+    expect(lastFrame()).toContain('追加の指示を入力'); // placeholder is back
   });
 
   // 詳細ビューの `/exit` はアプリ終了ではなく「セッションを閉じて一覧へ戻る」

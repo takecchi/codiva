@@ -298,7 +298,8 @@ const ja: Messages = {
     totalCost: (usd) => `合計 ${usd}`,
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
-    helpComposer: 'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ /exit: 終了',
+    helpComposer:
+      'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ /exit: 終了 ・ Ctrl+U: 全消し',
     helpList:
       '↑↓: 選択 ・ Enter/→: 詳細を開く ・ p: PRを開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
@@ -320,7 +321,8 @@ const ja: Messages = {
     discardAction: '破棄（worktree削除）',
     helpPending: 'Esc: 一覧へ戻る',
     helpActions: 'm/d: 操作 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 入力へ ・ Esc: 戻る',
-    helpInput: 'Enter: 送信 ・ Shift+Enter: 改行 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ',
+    helpInput:
+      'Enter: 送信 ・ Shift+Enter: 改行 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ ・ Ctrl+U: 全消し',
   },
   action: {
     actionErrorLabel: '操作エラー',
@@ -472,7 +474,7 @@ const en: Messages = {
     totalCost: (usd) => `total ${usd}`,
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
-    helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · /exit: quit',
+    helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · /exit: quit · Ctrl+U: clear',
     helpList:
       '↑↓: select · Enter/→: open detail · p: open PR · m: merge · d: discard · Tab/Esc: input',
     helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
@@ -494,7 +496,8 @@ const en: Messages = {
     discardAction: 'Discard (remove worktree)',
     helpPending: 'Esc: back to list',
     helpActions: 'm/d: actions · ↑↓/PgUp/PgDn: log · Tab: input · Esc: back',
-    helpInput: 'Enter: send · Shift+Enter: newline · ↑↓/PgUp/PgDn: log · Tab: actions · Esc: back',
+    helpInput:
+      'Enter: send · Shift+Enter: newline · ↑↓/PgUp/PgDn: log · Tab: actions · Esc: back · Ctrl+U: clear',
   },
   action: {
     actionErrorLabel: 'Action error',

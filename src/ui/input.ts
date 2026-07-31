@@ -1,6 +1,7 @@
 import type { Key } from 'ink';
 import {
   backspace,
+  clearBuffer,
   decodeKeySequence,
   insert,
   moveDown,
@@ -44,7 +45,7 @@ function sanitizeInsertText(text: string): string {
  * caret movement (←/→); `opts.vertical` also enables ↑/↓. The list view leaves
  * arrows off so they stay free for row navigation; the detail composer turns both
  * on. Keys the owning view handles itself (Enter, Tab, Esc, modifiers, PageUp/Down)
- * report `changed: false` and are left untouched.
+ * report `changed: false` and are left untouched. Ctrl+U clears the whole buffer.
  *
  * `opts.wrapWidth` is the composer's soft-wrap width (cells). With it, ↑/↓ move by
  * *display* row — what the user sees — instead of by logical line, which would jump
@@ -59,6 +60,14 @@ export function editText(
 ): EditResult {
   const { arrows = false, vertical = false, wrapWidth } = opts;
 
+  // Ctrl+U: 書きかけを一括で捨てる（readline / Claude Code CLI と同じ慣習）。
+  // macOS の Cmd+Delete は既定では**端末がアプリへ送らない**（super 修飾は kitty
+  // keyboard protocol を有効にした端末でしか届かない）ため、全端末で確実に届く
+  // ctrl chord を正式なキーにする。ctrl 付きなのでタイピングとも衝突しない
+  // （Cmd+Delete で使いたい場合は端末側で `super+backspace` を \x15 に割り当てる）。
+  if (key.ctrl && (input === 'u' || input === 'U')) {
+    return result(buffer, clearBuffer(buffer));
+  }
   // macOS reports Backspace as `delete`; treat both as delete-before-caret.
   if (key.backspace || key.delete) {
     return result(buffer, backspace(buffer));

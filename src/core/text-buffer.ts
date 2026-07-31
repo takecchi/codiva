@@ -78,6 +78,14 @@ export function backspace(buf: TextBuffer): TextBuffer {
   return { value, cursor: buf.cursor - n };
 }
 
+/**
+ * Drop the whole buffer (Ctrl+U — "書きかけを捨ててやり直す"). Returns the same
+ * reference when it's already empty so a no-op keypress doesn't re-render.
+ */
+export function clearBuffer(buf: TextBuffer): TextBuffer {
+  return isEmptyBuffer(buf) ? buf : emptyBuffer();
+}
+
 export function moveLeft(buf: TextBuffer): TextBuffer {
   return buf.cursor === 0
     ? buf
