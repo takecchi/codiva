@@ -165,9 +165,12 @@ export function caretIndexForColumn(text: string, column: number): number {
 }
 
 /**
- * Which line range to render so the caret stays visible within `maxRows` lines.
+ * Which row range to render so the caret stays visible within `maxRows` rows.
  * Anchors the caret near the bottom of the window (a growing composer), but never
  * scrolls a short buffer. Returns a half-open range [start, end).
+ *
+ * "Row" here is a *display* row: the composer soft-wraps, so the caller counts rows
+ * with `composerLayout` (see `composer-layout.ts`), not with `bufferLines`.
  */
 export function visibleLineRange(
   totalLines: number,
@@ -180,29 +183,4 @@ export function visibleLineRange(
   }
   const start = clamp(cursorRow - cap + 1, 0, totalLines - cap);
   return { start, end: start + cap };
-}
-
-/**
- * Caret index for a mouse click inside the (internally-scrolled) composer.
- * `contentRow` is the click's 0-based row within the visible window (i.e.
- * `y - contentTop`) and `cells` its display column within that line (`x` minus the
- * left edge and the caret-prefix width). Returns undefined when the click lands
- * outside the visible lines. Pure inverse of the composer's caret geometry — the
- * UI supplies only the pixel→cell offsets.
- */
-export function caretIndexAtClick(
-  buffer: TextBuffer,
-  contentRow: number,
-  cells: number,
-  maxRows: number,
-): number | undefined {
-  const lines = bufferLines(buffer.value);
-  const caret = cursorRowCol(buffer);
-  const { start, end } = visibleLineRange(lines.length, caret.row, maxRows);
-  const row = start + contentRow;
-  if (contentRow < 0 || row >= end) {
-    return undefined;
-  }
-  const line = lines[row] ?? '';
-  return indexAtRowCol(buffer.value, row, caretIndexForColumn(line, cells));
 }

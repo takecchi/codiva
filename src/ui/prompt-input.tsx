@@ -2,16 +2,15 @@ import { Box, type DOMElement, Text, useCursor } from 'ink';
 import { type FC, useRef } from 'react';
 import stringWidth from 'string-width';
 import {
-  bufferLines,
-  cursorRowCol,
+  composerLayout,
   INPUT_MAX_ROWS,
   isEmptyBuffer,
-  lineSelection,
+  rowSelection,
   type SelectionRange,
   type TextBuffer,
   visibleLineRange,
 } from '@/core';
-import { useAbsolutePosition } from './hooks';
+import { useAbsolutePosition, useComposerWidth } from './hooks';
 import { glyph, theme } from './theme';
 
 /**
@@ -52,8 +51,14 @@ const SelectionLine: FC<{ line: string; from: number; to: number }> = ({ line, f
  * Claude-Code-style composer: a full-width horizontal rule above and below the
  * input (no side borders). Purely presentational — key handling lives in the
  * owning view (a single useInput per screen). Multi-line aware: the box grows with
- * the content up to `maxRows` lines, then scrolls internally to keep the caret in
- * view (`visibleLineRange`). Empty/single-line input stays exactly one row tall.
+ * the content up to `maxRows` display rows, then scrolls internally to keep the
+ * caret in view (`visibleLineRange`). Empty/single-line input stays one row tall.
+ *
+ * Text longer than the input is **soft-wrapped** onto the next display row rather
+ * than truncated: with `wrap="truncate-end"` alone, typing past the right edge hid
+ * both the text and the caret behind a `…`. The wrap geometry is computed by the
+ * pure `composerLayout` from the box's measured width, which is also what the
+ * owning views hit-test clicks against — one geometry, no drift.
  *
  * The real terminal cursor is anchored on the caret cell while focused. IME の
  * 未確定文字列（日本語変換中のプレビュー）は端末がカーソル位置に描画するため、
@@ -70,17 +75,20 @@ export const PromptInput: FC<{
 }> = ({ buffer, focused, placeholder = '', maxRows = INPUT_MAX_ROWS, selection }) => {
   const boxRef = useRef<DOMElement>(null);
   const box = useAbsolutePosition(boxRef);
+  // 折り返し幅は実測（ダイアログ内では端末幅と一致しないため）。初回描画までは
+  // undefined = 折り返さない（1フレームだけ従来通り truncate される）。
+  const width = useComposerWidth(boxRef);
   const { setCursorPosition } = useCursor();
 
-  const lines = bufferLines(buffer.value);
-  const { row, col } = cursorRowCol(buffer);
-  const { start, end } = visibleLineRange(lines.length, row, maxRows);
+  const { rows, caret } = composerLayout(buffer, width);
+  const { row, col } = caret;
+  const { start, end } = visibleLineRange(rows.length, row, maxRows);
 
   if (focused && box) {
     // y: 上ボーダー1行 + 表示ウィンドウ内でのキャレット行。x: プレフィックス
     // 2セル + キャレット手前のテキストの表示幅（空バッファは行 '' で列2になる）。
     setCursorPosition({
-      x: box.left + promptCaretColumn((lines[row] ?? '').slice(0, col)),
+      x: box.left + promptCaretColumn((rows[row]?.text ?? '').slice(0, col)),
       y: box.top + 1 + (row - start),
     });
   } else {
@@ -94,6 +102,10 @@ export const PromptInput: FC<{
     borderBottom: true,
     borderLeft: false,
     borderRight: false,
+    // 幅は必ず「使える幅いっぱい」に固定する。row 方向の親（`PermissionDialog` の
+    // 一行 Box など）に置かれると Box の幅は**中身の幅**になり、それを測って
+    // 折り返すと「折り返す→中身が細くなる→さらに折り返す」の自己参照になる。
+    width: '100%' as const,
   };
 
   if (isEmptyBuffer(buffer)) {
@@ -110,22 +122,23 @@ export const PromptInput: FC<{
 
   return (
     <Box ref={boxRef} {...frame} flexDirection="column">
-      {lines.slice(start, end).map((line, i) => {
-        const lineIndex = start + i;
-        const sel = selection ? lineSelection(buffer.value, selection, lineIndex) : undefined;
+      {rows.slice(start, end).map((r, i) => {
+        const rowIndex = start + i;
+        const sel = selection ? rowSelection(selection, r) : undefined;
         // While a selection is shown, suppress the block caret so the highlight
         // reads cleanly (the real terminal cursor still marks the focus end).
-        const isCaretLine = focused && !selection && lineIndex === row;
+        const isCaretRow = focused && !selection && rowIndex === row;
         return (
-          // Line index is a stable key within a single render's window.
-          <Box key={lineIndex}>
+          // Row index is a stable key within a single render's window.
+          <Box key={rowIndex}>
             <Text color={theme.accent}>{i === 0 ? `${glyph.caret} ` : '  '}</Text>
             {sel ? (
-              <SelectionLine line={line} from={sel.from} to={sel.to} />
-            ) : isCaretLine ? (
-              <CaretLine line={line} col={col} />
+              <SelectionLine line={r.text} from={sel.from} to={sel.to} />
+            ) : isCaretRow ? (
+              <CaretLine line={r.text} col={col} />
             ) : (
-              <Text wrap="truncate-end">{line}</Text>
+              // 幅は composerLayout が合わせているので truncate は保険（未実測の1フレーム）。
+              <Text wrap="truncate-end">{r.text}</Text>
             )}
           </Box>
         );

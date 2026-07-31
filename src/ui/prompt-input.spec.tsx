@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { render as inkRender } from 'ink';
+import { Box, render as inkRender } from 'ink';
+import { render } from 'ink-testing-library';
 import type { ReactElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { bufferOf, emptyBuffer } from '@/core';
@@ -81,6 +82,18 @@ describe('PromptInput cursor anchoring (IME)', () => {
     app.unmount();
   });
 
+  it('follows the caret onto a soft-wrapped row', async () => {
+    // 端末 80 桁 → テキスト幅 78。100 文字は 78 + 22 に折り返り、キャレットは 2 行目の
+    // 22 文字目（列 = プレフィックス2 + 22 → 1-based 25）。折り返さず truncate して
+    // いた頃はここでキャレットが画面外に消えていた。
+    const { app, output } = renderInteractive(
+      <PromptInput buffer={bufferOf('a'.repeat(100))} focused />,
+    );
+    await flush();
+    expect(lastCursor(output())).toEqual({ up: 2, column: 25 });
+    app.unmount();
+  });
+
   it('keeps the cursor hidden when not focused', async () => {
     const { app, output } = renderInteractive(
       <PromptInput buffer={bufferOf('abc')} focused={false} />,
@@ -88,5 +101,53 @@ describe('PromptInput cursor anchoring (IME)', () => {
     await flush();
     expect(output()).not.toContain('[?25h');
     app.unmount();
+  });
+});
+
+describe('PromptInput soft wrapping', () => {
+  it('wraps a long line instead of truncating it', async () => {
+    // ink-testing-library の端末は 100 桁。200 文字は複数行に折り返り、**全文字**が
+    // 描かれる（以前は幅を超えたぶんが `…` で切り捨てられ、何を打ったか読めなかった）。
+    const { lastFrame, unmount } = render(
+      <PromptInput buffer={bufferOf('a'.repeat(200))} focused={false} />,
+    );
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).not.toContain('…');
+    expect((frame.match(/a/g) ?? []).length).toBe(200);
+    expect(frame.split('\n').filter((l) => l.includes('aaa')).length).toBeGreaterThan(1);
+    unmount();
+  });
+
+  it('uses the full available width inside a row-direction parent', async () => {
+    // row 方向の親（`PermissionDialog` の 1 行 Box が該当）では Box の幅が**中身の幅**
+    // になる。短いテキストを描いたあとの実測値をそのまま折り返し幅にすると、以降は
+    // その幅より広がれず（測る→狭い→狭く折り返す→狭いまま）1行に数文字しか入らない。
+    // `width: 100%` で幅を中身から切り離しているので、伸びたテキストも1行に収まる。
+    const { lastFrame, rerender, unmount } = render(
+      <Box>
+        <PromptInput buffer={bufferOf('a'.repeat(10))} focused={false} />
+      </Box>,
+    );
+    await flush();
+    rerender(
+      <Box>
+        <PromptInput buffer={bufferOf('a'.repeat(40))} focused={false} />
+      </Box>,
+    );
+    await flush();
+    const rows = (lastFrame() ?? '').split('\n').filter((l) => l.includes('aaa'));
+    expect(rows.length).toBe(1); // 端末 100 桁なので 40 文字は折り返さない
+    unmount();
+  });
+
+  it('wraps at word boundaries when there is one', async () => {
+    // テキスト幅 98 をまたぐ位置に空白がある → 単語の途中で切らず次の行へ送る。
+    const words = `${'x'.repeat(96)} tail`;
+    const { lastFrame, unmount } = render(<PromptInput buffer={bufferOf(words)} focused={false} />);
+    await flush();
+    const rows = (lastFrame() ?? '').split('\n').map((l) => l.trim());
+    expect(rows.some((l) => l === 'tail')).toBe(true);
+    unmount();
   });
 });

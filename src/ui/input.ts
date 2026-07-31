@@ -7,6 +7,8 @@ import {
   moveDown,
   moveLeft,
   moveRight,
+  moveRowDown,
+  moveRowUp,
   moveUp,
   newline,
   type TextBuffer,
@@ -44,14 +46,19 @@ function sanitizeInsertText(text: string): string {
  * arrows off so they stay free for row navigation; the detail composer turns both
  * on. Keys the owning view handles itself (Enter, Tab, Esc, modifiers, PageUp/Down)
  * report `changed: false` and are left untouched. Ctrl+U clears the whole buffer.
+ *
+ * `opts.wrapWidth` is the composer's soft-wrap width (cells). With it, ↑/↓ move by
+ * *display* row — what the user sees — instead of by logical line, which would jump
+ * over every wrapped row of a long line. Omit it (or pass undefined, e.g. before the
+ * box is measured) to fall back to logical-line movement.
  */
 export function editText(
   buffer: TextBuffer,
   input: string,
   key: Key,
-  opts: { arrows?: boolean; vertical?: boolean } = {},
+  opts: { arrows?: boolean; vertical?: boolean; wrapWidth?: number } = {},
 ): EditResult {
-  const { arrows = false, vertical = false } = opts;
+  const { arrows = false, vertical = false, wrapWidth } = opts;
 
   // Ctrl+U: 書きかけを一括で捨てる（readline / Claude Code CLI と同じ慣習）。
   // macOS の Cmd+Delete は既定では**端末がアプリへ送らない**（super 修飾は kitty
@@ -72,10 +79,13 @@ export function editText(
     return result(buffer, moveRight(buffer));
   }
   if (vertical && key.upArrow) {
-    return result(buffer, moveUp(buffer));
+    return result(buffer, wrapWidth === undefined ? moveUp(buffer) : moveRowUp(buffer, wrapWidth));
   }
   if (vertical && key.downArrow) {
-    return result(buffer, moveDown(buffer));
+    return result(
+      buffer,
+      wrapWidth === undefined ? moveDown(buffer) : moveRowDown(buffer, wrapWidth),
+    );
   }
   // Non-text keys the view owns (or that we don't map): no change.
   if (
