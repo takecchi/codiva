@@ -423,16 +423,22 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   アクティブ。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で行選択・キャレット移動。
   コンポーザ上のドラッグで範囲選択し、離すとクリップボードへコピー（OSC 52 = `utils/clipboard.ts`。
   純粋ロジックは `core/text-selection.ts`、状態は共有フック `useDragSelection`）。詳細ビューの
-  フォローアップ入力欄も同様。**ヘッダ（`Banner`）も同じ仕組みで選択・コピーできる**（`useDragSelection` を
+  フォローアップ入力欄・ログも同様（ログは行単位の `useLogDragSelection`）。**ヘッダ（`Banner`）も同じ仕組みで選択・コピーできる**（`useDragSelection` を
   コンポーザとは別インスタンスで持つ = caret index の基準テキストが違うため）。ヘッダのドラッグは
   フォーカスも選択行も動かさない（パスをコピーしたいだけの操作でタイピング位置を奪わない）。
 - `SessionDetail`: 詳細画面。**ステータスヘッダは持たず**、コンテンツ（末尾ビューポートのログ）+ フッタ
   （追加指示コンポーザ）だけの構成。SDK セッションに**直結**し、末尾ビューポートにログを描画（`core/scroll.ts` の
   `logLines` でエントリを CJK 幅対応で折り返した**物理行**（`DisplayLine[]`）へ展開してから、
-  `logWindow`/`scrollUp`/`scrollDown` で PgUp/PgDn（半画面）と ↑/↓（1行 = `ARROW_SCROLL_LINES`）スクロール。
-  詳細ビューはコピペのためマウス捕捉を解除しており、alt screen では端末がホイールを ↑/↓ に変換して
-  送るため（alternate scroll mode）↑/↓ がホイールの受け口になる。捕捉が生きている隙間のために
-  ホイールのレポート列も `parseSgrMouse` で先取り解釈し、コンポーザへ文字入力として漏れないようにする。
+  `logWindow`/`scrollUp`/`scrollDown` で PgUp/PgDn（半画面）・↑/↓（1行 = `ARROW_SCROLL_LINES`）・
+  ホイール（`WHEEL_SCROLL_LINES`）スクロール。マウスレポートは `parseSgrMouse` で useInput の先頭で
+  先取り解釈し、コンポーザへ文字入力として漏れないようにする（マウス無効環境では端末がホイールを
+  ↑/↓ に変換して送るので、↑/↓ がその受け口も兼ねる = alternate scroll mode）。
+  **ログはドラッグで範囲選択してコピーできる**（`core/log-selection.ts` + `useLogDragSelection`）。
+  選択の位置は平坦な caret index ではなく「**文書の表示行 index + 行内の桁**」（`LogPoint`）で持つ:
+  行 index はスクロールしても意味が変わらないので、**可視域の外へドラッグすると自動スクロール
+  しながら選択が伸び続ける**（`logEdgeAt` → 1 tick = 1 行の `edgeStep`。?1002 は静止中に移動を
+  報告しないので `LOG_EDGE_SCROLL_MS` のタイマーで継続）。当たり判定（`LogViewport`）は描画に
+  使った実測値と同じウィンドウから組み、末尾寄せの隙間・プレビュー行を勘案する。
   描く行数は**実測した可視高さ**（`useBoxHeight`）に収める — Ink/Yoga は溢れた子を縮小するため、
   多く描くと行が虫食いで欠落する）、
   `streamingText` のタイピング風プレビュー、

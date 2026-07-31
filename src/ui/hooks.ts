@@ -11,12 +11,17 @@ import {
   type AccountSummary,
   COMPOSER_PREFIX_CELLS,
   type CommandAction,
+  type DisplayLine,
   emptyBuffer,
   emptyInputHistory,
   FALLBACK_MODEL_OPTIONS,
   type InputHistory,
   isCommandInput,
+  type LogPoint,
+  type LogRange,
+  logSelectionText,
   type ModelOption,
+  normalizeLogSelection,
   normalizeSelection,
   type RateLimitWindow,
   type RunMode,
@@ -466,53 +471,53 @@ export interface DragSelection {
 }
 
 /**
- * Mouse-drag text selection over a block of text, shared by the composers of both
- * views and the list header (so the repo path can be copied out of the banner). A
- * press sets an anchor caret index, drags extend the focus (live highlight), and
- * release copies the selected substring via the injected `onCopy` (OSC 52). Copy
- * fires once on release — never per drag event — so a burst of motion reports
- * doesn't spam the clipboard (a bug seen in other TUIs). The selection stays
- * highlighted after release until a key clears it. Anchor/focus live in refs so
- * `end` reads the final range even if the last `extend`'s state update hasn't
- * flushed.
- *
- * One instance per selectable region: the caret indices are relative to whichever
- * text that region's `end(value)` is called with.
+ * press → drag → release で範囲を作る共通機械。位置の型 `P` と正規化 `normalize` だけを
+ * 差し替えて、コンポーザ/ヘッダ（平坦な caret index）とログ（行 + 桁の `LogPoint`）の両方に
+ * 使う。アンカー・終点は ref に持つ（`finish` が最後の `extend` の state 反映を待たずに
+ * 確定した範囲を読めるように。端末は複数のレポートを 1 チャンクで届ける）。
  */
-export function useDragSelection(onCopy?: (text: string) => void): DragSelection {
-  const [selection, setSelection] = useState<SelectionRange | undefined>(undefined);
-  const anchorRef = useRef<number | undefined>(undefined);
-  const focusRef = useRef<number | undefined>(undefined);
-  const selectionRef = useRef<SelectionRange | undefined>(undefined);
+function useRangeSelection<P, R>(
+  normalize: (anchor: P, focus: P) => R | undefined,
+): {
+  selection: R | undefined;
+  dragging: () => boolean;
+  begin: (at: P) => void;
+  extend: (at: P) => void;
+  /** ドラッグを終了し、確定した範囲を返す（何も選択していなければ undefined）。 */
+  finish: () => R | undefined;
+  clear: () => void;
+} {
+  const [selection, setSelection] = useState<R | undefined>(undefined);
+  const anchorRef = useRef<P | undefined>(undefined);
+  const focusRef = useRef<P | undefined>(undefined);
+  const selectionRef = useRef<R | undefined>(undefined);
 
-  const set = (next: SelectionRange | undefined) => {
+  const set = (next: R | undefined) => {
     selectionRef.current = next;
     setSelection(next);
   };
 
-  const begin = (index: number) => {
-    anchorRef.current = index;
-    focusRef.current = index;
+  const begin = (at: P) => {
+    anchorRef.current = at;
+    focusRef.current = at;
     set(undefined);
   };
-  const extend = (index: number) => {
-    if (anchorRef.current === undefined) {
+  const extend = (at: P) => {
+    const anchor = anchorRef.current;
+    if (anchor === undefined) {
       return;
     }
-    focusRef.current = index;
-    set(normalizeSelection(anchorRef.current, index));
+    focusRef.current = at;
+    set(normalize(anchor, at));
   };
-  const end = (value: string) => {
+  const finish = (): R | undefined => {
     const anchor = anchorRef.current;
     const focus = focusRef.current;
     anchorRef.current = undefined;
     if (anchor === undefined || focus === undefined) {
-      return;
+      return undefined;
     }
-    const range = normalizeSelection(anchor, focus);
-    if (range) {
-      onCopy?.(selectionText(value, range));
-    }
+    return normalize(anchor, focus);
   };
   const clear = () => {
     anchorRef.current = undefined;
@@ -522,6 +527,63 @@ export function useDragSelection(onCopy?: (text: string) => void): DragSelection
     }
   };
   const dragging = () => anchorRef.current !== undefined;
+  return { selection, dragging, begin, extend, finish, clear };
+}
+
+/**
+ * Mouse-drag text selection over a block of text, shared by the composers of both
+ * views and the list header (so the repo path can be copied out of the banner). A
+ * press sets an anchor caret index, drags extend the focus (live highlight), and
+ * release copies the selected substring via the injected `onCopy` (OSC 52). Copy
+ * fires once on release — never per drag event — so a burst of motion reports
+ * doesn't spam the clipboard (a bug seen in other TUIs). The selection stays
+ * highlighted after release until a key clears it.
+ *
+ * One instance per selectable region: the caret indices are relative to whichever
+ * text that region's `end(value)` is called with.
+ */
+export function useDragSelection(onCopy?: (text: string) => void): DragSelection {
+  const { selection, dragging, begin, extend, finish, clear } =
+    useRangeSelection(normalizeSelection);
+  const end = (value: string) => {
+    const range = finish();
+    if (range) {
+      onCopy?.(selectionText(value, range));
+    }
+  };
+  return { selection, dragging, begin, extend, end, clear };
+}
+
+export interface LogDragSelection {
+  /** The current highlighted range (document rows), or undefined when nothing is selected. */
+  selection: LogRange | undefined;
+  /** True between a press and its release (a drag is in progress). */
+  dragging: () => boolean;
+  /** Mouse press on a log row: set the anchor and drop any old selection. */
+  begin: (at: LogPoint) => void;
+  /** Mouse drag (or an auto-scroll tick): move the focus end, updating the highlight. */
+  extend: (at: LogPoint) => void;
+  /** Mouse release: copy the selected rows (if any) to the clipboard. */
+  end: (lines: readonly DisplayLine[]) => void;
+  /** Drop the selection (a key press, or a re-wrap that invalidated the rows). */
+  clear: () => void;
+}
+
+/**
+ * 詳細ビューのログの範囲選択。`useDragSelection` と同じ press/drag/release だが、位置が
+ * **文書内の行 + 桁**（`LogPoint`）なので、ビューポートがスクロールしても選択は同じ文字を
+ * 指し続ける（= 画面外へドラッグして自動スクロールしながら選択を伸ばせる）。コピーは
+ * release で 1 回だけ、その時点の表示行から作る（`core/log-selection.ts`）。
+ */
+export function useLogDragSelection(onCopy?: (text: string) => void): LogDragSelection {
+  const { selection, dragging, begin, extend, finish, clear } =
+    useRangeSelection(normalizeLogSelection);
+  const end = (lines: readonly DisplayLine[]) => {
+    const range = finish();
+    if (range) {
+      onCopy?.(logSelectionText(lines, range));
+    }
+  };
   return { selection, dragging, begin, extend, end, clear };
 }
 

@@ -1,3 +1,4 @@
+import { clamp } from './math';
 import { bufferLines } from './text-buffer';
 
 /**
@@ -53,4 +54,50 @@ export function lineSelection(
   const from = Math.max(0, Math.min(lineLen, range.start - lineStart));
   const to = Math.max(0, Math.min(lineLen, range.end - lineStart));
   return to > from ? { from, to } : undefined;
+}
+
+/** 選択ハイライトを描くために切り出した 1 片（元セグメントの一部）。 */
+export interface SelectionSlice {
+  /** 元セグメントの位置。呼び出し側がそこからスタイル（色・太字…）を引く。 */
+  readonly index: number;
+  /** そのセグメント内での開始オフセット。`index` と対で一意なので React キーに使える。 */
+  readonly offset: number;
+  readonly text: string;
+  /** 選択範囲に入っている = 反転表示する片。 */
+  readonly inverse: boolean;
+}
+
+/**
+ * 横並びのセグメント列（ヘッダ 1 行の `BannerSegment`、ログ 1 行の `RichSpan` …）を、
+ * 選択範囲の境界で切り分ける。ハイライトが**セグメントを跨いで**続く場合（ワードマーク行の
+ * 「太字の名前 + dim のバージョン」など）でも 1 続きの反転として描けるようにするため。
+ *
+ * `sel` のオフセットはセグメントを連結した文字列に対する `[from, to)`（= `lineSelection` /
+ * `logRowSelection` が返す値）。空文字になる片は落とすので、返る片はすべて非空。
+ */
+export function selectionSlices(
+  segments: readonly string[],
+  sel?: { from: number; to: number },
+): SelectionSlice[] {
+  const out: SelectionSlice[] = [];
+  let start = 0;
+  for (const [index, text] of segments.entries()) {
+    const from = sel ? clamp(sel.from - start, 0, text.length) : 0;
+    const to = sel ? clamp(sel.to - start, 0, text.length) : 0;
+    const cuts: readonly [number, number, boolean][] =
+      to > from
+        ? [
+            [0, from, false],
+            [from, to, true],
+            [to, text.length, false],
+          ]
+        : [[0, text.length, false]];
+    for (const [a, b, inverse] of cuts) {
+      if (b > a) {
+        out.push({ index, offset: a, text: text.slice(a, b), inverse });
+      }
+    }
+    start += text.length;
+  }
+  return out;
 }

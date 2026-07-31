@@ -153,9 +153,6 @@ async function main(): Promise<void> {
       updater={updater}
       onOpenPr={openUrl}
       onCopy={(text) => copyToClipboard(text)}
-      // 詳細ビューを開いている間だけマウス捕捉を解除し、端末ネイティブの
-      // ドラッグ選択（コピペ）を可能にするためのハンドル。
-      mouse={terminal.mouse}
     />,
     { exitOnCtrlC: false },
   );

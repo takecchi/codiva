@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { lineSelection, normalizeSelection, selectionText } from './text-selection';
+import {
+  lineSelection,
+  normalizeSelection,
+  selectionSlices,
+  selectionText,
+} from './text-selection';
 
 describe('normalizeSelection', () => {
   it('orders anchor/focus into start ≤ end', () => {
@@ -52,5 +57,57 @@ describe('lineSelection', () => {
     // 'a\n\nb': indices 0=a 1=\n 2=\n(blank line 1 is empty) 3=b
     const v = 'a\n\nb';
     expect(lineSelection(v, { start: 0, end: 4 }, 1)).toBeUndefined();
+  });
+});
+
+describe('selectionSlices', () => {
+  /** 検証しやすい形（テキストと反転の対）へ落とす。 */
+  const pairs = (segments: readonly string[], sel?: { from: number; to: number }) =>
+    selectionSlices(segments, sel).map((s) => [s.text, s.inverse]);
+
+  it('選択が無ければセグメントそのまま（空セグメントは落ちる）', () => {
+    expect(pairs(['ab', '', 'cd'])).toEqual([
+      ['ab', false],
+      ['cd', false],
+    ]);
+  });
+
+  it('1 セグメントの中を 3 片に切る', () => {
+    expect(pairs(['abcdef'], { from: 2, to: 4 })).toEqual([
+      ['ab', false],
+      ['cd', true],
+      ['ef', false],
+    ]);
+  });
+
+  it('セグメントを跨ぐ選択は各セグメントで切られる（1 続きの反転になる）', () => {
+    expect(pairs(['abc', 'def', 'ghi'], { from: 2, to: 7 })).toEqual([
+      ['ab', false],
+      ['c', true],
+      ['def', true],
+      ['g', true],
+      ['hi', false],
+    ]);
+  });
+
+  it('全体選択は反転のみ', () => {
+    expect(pairs(['ab', 'cd'], { from: 0, to: 4 })).toEqual([
+      ['ab', true],
+      ['cd', true],
+    ]);
+  });
+
+  it('index / offset はスタイル参照とキーのために保たれる', () => {
+    expect(selectionSlices(['abc', 'def'], { from: 1, to: 5 })).toEqual([
+      { index: 0, offset: 0, text: 'a', inverse: false },
+      { index: 0, offset: 1, text: 'bc', inverse: true },
+      { index: 1, offset: 0, text: 'de', inverse: true },
+      { index: 1, offset: 2, text: 'f', inverse: false },
+    ]);
+  });
+
+  it('範囲外のオフセットは各セグメントに丸められる', () => {
+    expect(pairs(['abc'], { from: -5, to: 99 })).toEqual([['abc', true]]);
+    expect(pairs(['abc'], { from: 5, to: 9 })).toEqual([['abc', false]]);
   });
 });

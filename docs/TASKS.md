@@ -547,6 +547,38 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 17: 詳細ログの範囲選択（画面外までドラッグ = 自動スクロール）✅
+
+**課題**: セッション詳細のログをコピペしたいのに、画面に収まらない範囲（上端より上・下端より下に
+隠れている行）が取れなかった。詳細ビューはマウス捕捉を解除して端末ネイティブの選択に任せていたため、
+選択できるのは**いま見えている 1 画面ぶんだけ**で、選択したままスクロールする操作が存在しなかった。
+
+- [x] 純粋な `core/log-selection.ts` を新設: 位置は平坦な caret index ではなく **`LogPoint`
+      （文書の表示行 index + 行内の桁）**。スクロールしても意味が変わらず、数千行でも O(n) に収まる
+- [x] 当たり判定 `LogViewport` / `logRowAt` / `logCaretAt`（末尾寄せの隙間・プレビュー行・
+      表示幅の逆算）と、端の自動スクロール `logEdgeAt` / `logEdgePoint` / `LOG_EDGE_SCROLL_MS`
+- [x] 描画用の `logRowSelection` とコピー用の `logSelectionText`（表示どおり改行で繋ぐ）
+- [x] 切り分けの共通化: `core/text-selection.ts` に `selectionSlices`（選択境界でセグメントを
+      切り直す）を追加し、ヘッダの `rowPieces` とログの `RichLogLine` で共用
+- [x] フックの共通化: `ui/hooks.ts` に内部 `useRangeSelection`（位置の型と正規化だけ差し替える）を
+      置き、`useDragSelection`（caret index）と `useLogDragSelection`（`LogPoint`）が乗る形にした
+- [x] `SessionDetail` に配線: press/drag/release、端でのタイマー自動スクロール、キー入力・幅変更での
+      解除、アンカーを ref で持つ（バースト時に潰れない）、ハイライト描画（反転・dim は落とす）
+- [x] **詳細ビューでもマウス捕捉を解除しない**方針に変更（`mouse` prop / `TerminalSetup.mouse` を廃止）。
+      端末ネイティブ選択は Shift+ドラッグ・設定 `"mouse": false` で従来どおり使える
+- [x] テスト: `core/log-selection.spec.ts`（テーブルドリブン）/ `core/text-selection.spec.ts` に
+      `selectionSlices` / `tests/app.test.tsx` に「複数行のドラッグでコピー」「クリックだけでは
+      コピーしない」「可視域の外へドラッグ → 自動スクロールしながら選択が伸び、離すと止まる」
+- [x] ドキュメント: `README.md`（テキストのコピー）/ `.claude/rules/ink-components.md` /
+      `docs/ARCHITECTURE.md` / `CLAUDE.md`（地図）
+
+> 実績メモ: 自動スクロールにタイマーが必要なのは SGR ?1002 が**セルが変わったときだけ**移動を
+> 報告するため（端で静止するとレポートが来ず、レポート駆動だけでは止まってしまう）。タイマーは
+> 向きが変わったときだけ張り替え、最新のステップ関数は ref で渡す（ログの追記ごとに作り直すと
+> 1 tick も進まない）。i18n の追加は無し（新しい表示文字列を増やしていない）。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

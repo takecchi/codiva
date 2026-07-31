@@ -23,8 +23,8 @@ export function enableMouse(stream: MouseStream = process.stdout): () => void {
 /**
  * ランタイムでマウスレポートを何度でも on/off できるコントローラを作る。
  * `enableMouse` は 1 回きりの teardown を返すのに対し、これは有効化した teardown を
- * 内部で保持して `disable()`/`enable()` を繰り返せるようにする（詳細ビューの出入りで
- * 捕捉を解除・復帰させる用途）。どちらの呼び出しも冪等。
+ * 内部で保持して `disable()`/`enable()` を繰り返せるようにする。どちらの呼び出しも冪等
+ * （起動時に enable、終了時に disable。画面ごとの切替えには使わない）。
  */
 export function createMouseControl(stream: MouseStream = process.stdout): MouseControl {
   let teardown: (() => void) | undefined;
