@@ -580,8 +580,14 @@ export function useLogDragSelection(onCopy?: (text: string) => void): LogDragSel
     useRangeSelection(normalizeLogSelection);
   const end = (lines: readonly DisplayLine[]) => {
     const range = finish();
-    if (range) {
-      onCopy?.(logSelectionText(lines, range));
+    if (!range) {
+      return;
+    }
+    const text = logSelectionText(lines, range);
+    // 空文字ではクリップボードを触らない（行が短くなって両端が同じオフセットに丸まる
+    // ケースがあり得る。選択できていないのに貼り付け内容を消してしまうのを防ぐ）。
+    if (text.length > 0) {
+      onCopy?.(text);
     }
   };
   return { selection, dragging, begin, extend, end, clear };

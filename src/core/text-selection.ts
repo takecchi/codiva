@@ -13,6 +13,15 @@ export interface SelectionRange {
 }
 
 /**
+ * ハイライトを描くための、**1 行の中**の選択オフセット `[from, to)`。行を持つ選択
+ * （コンポーザ・ヘッダ・ログ）はどれもこの形へ落として UI に渡す。
+ */
+export interface RowSelection {
+  readonly from: number;
+  readonly to: number;
+}
+
+/**
  * Build a normalized selection from an anchor (where a drag began) and a focus
  * (where it is now / ended). Returns undefined when nothing is actually selected
  * (a plain click, or a drag that never left the anchor cell) so callers can treat
@@ -40,7 +49,7 @@ export function lineSelection(
   value: string,
   range: SelectionRange,
   row: number,
-): { from: number; to: number } | undefined {
+): RowSelection | undefined {
   const lines = bufferLines(value);
   if (row < 0 || row >= lines.length) {
     return undefined;
@@ -75,10 +84,7 @@ export interface SelectionSlice {
  * `sel` のオフセットはセグメントを連結した文字列に対する `[from, to)`（= `lineSelection` /
  * `logRowSelection` が返す値）。空文字になる片は落とすので、返る片はすべて非空。
  */
-export function selectionSlices(
-  segments: readonly string[],
-  sel?: { from: number; to: number },
-): SelectionSlice[] {
+export function selectionSlices(segments: readonly string[], sel?: RowSelection): SelectionSlice[] {
   const out: SelectionSlice[] = [];
   let start = 0;
   for (const [index, text] of segments.entries()) {

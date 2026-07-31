@@ -6,6 +6,7 @@ import {
   dialogContentWidth,
   isCurrentModel,
   type ModelOption,
+  parseSgrMouse,
   toConfigModel,
 } from '@/core';
 import { ChoiceRow } from './choice-row';
@@ -52,7 +53,13 @@ export const ModelSelect: FC<{
       ? currentModelIndex(rows, current)
       : Math.min(moved, Math.max(0, rows.length - 1));
 
-  useInput((_input, key) => {
+  useInput((rawInput, key) => {
+    // モーダルは自分の useInput を持つ（背後の view のガードでは守られない）ので、
+    // マウスレポートは先頭で握り潰す（名前付きキーには当たらないが、将来の編集で
+    // 文字入力を扱い始めたときに黙って壊れないように揃えておく）。
+    if (parseSgrMouse(rawInput)) {
+      return;
+    }
     if (key.escape) {
       onCancel();
       return;

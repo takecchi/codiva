@@ -161,6 +161,35 @@ describe('PermissionDialog — question', () => {
     expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'my own answer' });
   });
 
+  /**
+   * 詳細ビューはログの範囲選択のためマウス捕捉を保つようになった。モーダルは自分の
+   * `useInput` を持ち背後の view のガードでは守られないので、レポート列（`[<0;10;5M`）を
+   * 弾かないと自由記述の回答に混入する（クリックしただけで回答が汚れる）。
+   */
+  it('マウスレポートを回答テキストとして挿入しない', async () => {
+    const onAnswer = vi.fn();
+    const { stdin } = render(
+      <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+    );
+    stdin.write('\x1B[B'); // Japanese
+    await flush();
+    stdin.write('\x1B[B'); // 自分で入力する
+    await flush();
+    stdin.write('\r'); // enter typing mode
+    await flush();
+    stdin.write('ok');
+    await flush();
+    stdin.write('\x1b[<0;10;5M'); // press / drag / wheel はどれも文字ではない
+    await flush();
+    stdin.write('\x1b[<64;10;5M');
+    await flush();
+    stdin.write('\x1b[<0;10;5m');
+    await flush();
+    stdin.write('\r'); // submit
+    await flush();
+    expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'ok' });
+  });
+
   it('returns from free-text back to the choices on Backspace when empty', async () => {
     const onAnswer = vi.fn();
     const { stdin } = render(

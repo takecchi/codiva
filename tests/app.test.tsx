@@ -1185,6 +1185,33 @@ describe('App detail view (in-app connection)', () => {
     app.unmount();
   }, 30000);
 
+  /**
+   * ログが可視域に満たないとき、末尾寄せ（flex-end）なので**上に余白が空く**。
+   * 「画面のいちばん上から下へ」ドラッグして全部選ぶ操作を受けたいので、その余白の
+   * クリックは先頭行の行頭をアンカーにする（捨てない）。
+   */
+  it('行より上の余白からドラッグしても先頭行から選択できる', async () => {
+    const copied: string[] = [];
+    const { app, stdin, lastFrame } = await detailWithLog(3, 24, 80, undefined, (t) =>
+      copied.push(t),
+    );
+    const rowsOf = () => stripAnsi(lastFrame()).split('\n');
+    const last = rowsOf().findIndex((l) => l.includes('log-02'));
+    expect(last).toBeGreaterThan(3); // 上に余白がある（末尾寄せ）
+    const col = (rowsOf()[last] ?? '').indexOf('log-02');
+
+    stdin.write(press(col, 1)); // ログ領域の上端（行より上の余白）
+    await flush();
+    stdin.write(dragTo(col + 'log-02'.length, last));
+    await flush();
+    stdin.write(release(col + 'log-02'.length, last));
+    await flush();
+
+    // 文書の先頭行は投入した指示（`> start`）なので、そこから全部入る。
+    expect(copied).toEqual(['> start\nlog-00\nlog-01\nlog-02']);
+    app.unmount();
+  }, 30000);
+
   it('ログのクリックだけ（ドラッグなし）ではコピーしない', async () => {
     const copied: string[] = [];
     const { app, stdin, lastFrame } = await detailWithLog(40, 24, 80, undefined, (t) =>

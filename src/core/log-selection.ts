@@ -1,6 +1,7 @@
 import { clamp } from './math';
 import type { DisplayLine, LogWindow } from './scroll';
 import { caretIndexForColumn } from './text-buffer';
+import type { RowSelection } from './text-selection';
 
 /**
  * 詳細ビューのログ内の 1 点。**文書全体の表示行 index**（`row`）と、その行のテキスト内の
@@ -132,7 +133,7 @@ export function logEdgePoint(win: LogWindow<DisplayLine>, edge: LogEdge): LogPoi
 }
 
 /** 行 `row`（長さ `length`）のうち範囲に入る文字オフセット。行外・空なら空扱い。 */
-function rowSlice(range: LogRange, row: number, length: number): { from: number; to: number } {
+function rowSlice(range: LogRange, row: number, length: number): RowSelection {
   const from = row === range.start.row ? clamp(range.start.col, 0, length) : 0;
   const to = row === range.end.row ? clamp(range.end.col, 0, length) : length;
   return { from, to };
@@ -146,7 +147,7 @@ export function logRowSelection(
   range: LogRange,
   row: number,
   length: number,
-): { from: number; to: number } | undefined {
+): RowSelection | undefined {
   if (row < range.start.row || row > range.end.row) {
     return undefined;
   }

@@ -439,6 +439,8 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   しながら選択が伸び続ける**（`logEdgeAt` → 1 tick = 1 行の `edgeStep`。?1002 は静止中に移動を
   報告しないので `LOG_EDGE_SCROLL_MS` のタイマーで継続）。当たり判定（`LogViewport`）は描画に
   使った実測値と同じウィンドウから組み、末尾寄せの隙間・プレビュー行を勘案する。
+  1 行ぶんの描画（kind ごとの prefix / dim / Markdown スパン / 選択ハイライト）は
+  `ui/log-line.tsx` の `LogLine` に分けてある（`SessionDetail` は行の並べ方と入力に専念）。
   描く行数は**実測した可視高さ**（`useBoxHeight`）に収める — Ink/Yoga は溢れた子を縮小するため、
   多く描くと行が虫食いで欠落する）、
   `streamingText` のタイピング風プレビュー、

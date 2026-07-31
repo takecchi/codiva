@@ -16,7 +16,7 @@ import {
   isTerminalStatus,
   LOG_EDGE_SCROLL_MS,
   type LogEdge,
-  type LogEntry,
+  type LogPoint,
   type LogViewport,
   logCaretAt,
   logEdgeAt,
@@ -28,13 +28,11 @@ import {
   type ModelOption,
   matchCommands,
   parseSgrMouse,
-  type RichSpan,
   resumeInstruction,
   type ScrollAnchor,
   type SessionManager,
   scrollDown,
   scrollUp,
-  selectionSlices,
   streamTail,
   WHEEL_SCROLL_LINES,
 } from '@/core';
@@ -55,108 +53,12 @@ import {
 } from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, normalizeChord, resolveEnter } from './input';
+import { LOG_PREFIX, LogLine } from './log-line';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
-import { glyph, logColor, markdownColor, statusColor, theme } from './theme';
-
-/** Prefix/indent for each log kind — echoes Claude Code's transcript. Colors live in `logColor`. */
-const LOG_PREFIX: Record<LogEntry['kind'], string> = {
-  assistant_text: '',
-  tool_use: `${glyph.bullet} `,
-  tool_result: `  ${glyph.branch} `,
-  result: '',
-  user: '> ',
-  system: '',
-  error: '✗ ',
-};
-
-/** Kinds rendered dimmed (secondary transcript lines). */
-const LOG_DIM: Partial<Record<LogEntry['kind'], boolean>> = { tool_result: true };
-
-/** マウスの範囲選択が掛かっている文字オフセット `[from, to)`（その行の中での位置）。 */
-type RowSelection = { from: number; to: number };
-
-// Styled Markdown row: assistant text is rendered to per-span styling in core
-// (bold/italic/code/heading color …). Each span becomes a nested <Text>; the
-// `tone` maps to a theme color, everything else is a boolean Ink text prop.
-// 選択範囲はスパンの境界と一致しないので、純粋な `selectionSlices` でスパンを選択境界で
-// 切り直してから描く（ヘッダの `rowPieces` と同じ仕組み）。反転する片では dim を落とす
-// — 反転 + dim は読めなくなる。
-const RichLogLine: FC<{ spans: RichSpan[]; sel?: RowSelection }> = ({ spans, sel }) => (
-  <Text wrap="truncate-end">
-    {selectionSlices(
-      spans.map((s) => s.text),
-      sel,
-    ).map((piece) => {
-      const s = spans[piece.index];
-      return (
-        <Text
-          key={`${piece.index}:${piece.offset}`}
-          color={s?.tone ? markdownColor[s.tone] : undefined}
-          bold={s?.bold}
-          italic={s?.italic}
-          dimColor={piece.inverse ? false : s?.dim}
-          underline={s?.underline}
-          strikethrough={s?.strikethrough}
-          inverse={piece.inverse}
-        >
-          {piece.text}
-        </Text>
-      );
-    })}
-  </Text>
-);
-
-/**
- * 空行を描くための最小の中身。Ink の `measureText('')` は **高さ 0** を返すため、
- * 空文字の `<Text>` は行として一切場所を取らない。ログの空行（Markdown の段落間・
- * コードブロック内の空行など）がこれに当たり、そのままだと
- *
- * 1. 段落の区切りが消えて行が詰まって見える
- * 2. スクロール計算（`core/scroll.ts` は空行も 1 物理行として数える）が確保した高さ
- *    より実際の描画が短くなり、末尾寄せ（justifyContent="flex-end"）の分だけ
- *    **可視域の上端に隙間が生まれる**（表示できる行があるのに空白のままになる）
- *
- * という不具合になる。半角スペース 1 つを描いて必ず 1 行ぶんの高さを確保する。
- */
-const BLANK_ROW = ' ';
-
-// One physical row of the log. `line.text` already carries the kind's prefix /
-// continuation indent (built by core's logLines); truncate is only a safety net
-// against width drift — wrapping happened in core at the exact content width.
-// Markdown-rendered rows carry `spans` and take the styled path instead.
-// 空行（`text` が空）はどちらの経路でも高さ 0 になるので BLANK_ROW で埋める。
-const LogLine: FC<{ line: DisplayLine; sel?: RowSelection }> = ({ line, sel }) => {
-  if (line.text.length === 0) {
-    return <Text>{BLANK_ROW}</Text>;
-  }
-  if (line.spans && line.spans.length > 0) {
-    return <RichLogLine spans={line.spans} sel={sel} />;
-  }
-  const dim = LOG_DIM[line.kind];
-  if (!sel) {
-    return (
-      <Text color={logColor[line.kind]} dimColor={dim} wrap="truncate-end">
-        {line.text}
-      </Text>
-    );
-  }
-  return (
-    <Text color={logColor[line.kind]} wrap="truncate-end">
-      {selectionSlices([line.text], sel).map((piece) => (
-        <Text
-          key={`${piece.index}:${piece.offset}`}
-          inverse={piece.inverse}
-          dimColor={piece.inverse ? false : dim}
-        >
-          {piece.text}
-        </Text>
-      ))}
-    </Text>
-  );
-};
+import { statusColor, theme } from './theme';
 
 /**
  * The in-app detail view: live log of a single session plus a follow-up
@@ -207,9 +109,10 @@ export const SessionDetail: FC<{
   const logBox = useAbsolutePosition(logRef);
   // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
   const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
-  // スクロール位置は ref にも持ち、**必ず ref の現在値から次を計算する**。端末はホイールの
-  // 連打や自動スクロールの tick を同じ tick にまとめて届けるので、state 経由だと全部が同じ
-  // stale な値から計算されて 1 回分に潰れる（コンポーザの bufferRef と同じ理由）。
+  // スクロール位置は ref にも持つ。理由は**同期的に読む必要がある**こと: 自動スクロールの
+  // 1 tick は「次のアンカー」から選択の終点（`logEdgePoint`）を組み、さらに「動かなかったか」で
+  // タイマーを止める判定をするので、setState の関数形（次の描画まで値が見えない）では書けない。
+  // ref なら 1 チャンクにまとまって届いた複数レポートも順に積める。
   const anchorRef = useRef<ScrollAnchor>('bottom');
   const applyAnchor = (next: ScrollAnchor) => {
     anchorRef.current = next;
@@ -317,7 +220,11 @@ export const SessionDetail: FC<{
   const showPreview = preview.length > 0 && anchor === 'bottom';
   // ログを描ける行数。logWindow とスクロール（移動量・アンカーの下限）で必ず同じ値を
   // 使う — 食い違うと最上部でアンカーが 1 行手前で止まり、先頭行に到達できなくなる。
-  const logCap = Math.max(1, viewport - (showPreview ? 1 : 0));
+  // プレビュー行は末尾追従中しか描かないので、行数はアンカーの関数になる（自動スクロールは
+  // スクロール後のアンカーで数え直す必要がある → capFor）。
+  const capFor = (at: ScrollAnchor): number =>
+    Math.max(1, viewport - (preview.length > 0 && at === 'bottom' ? 1 : 0));
+  const logCap = capFor(anchor);
   // 実際に描くウィンドウ。当たり判定（どの行をクリックしたか）と描画で**同じ結果**を使う。
   const win = logWindow(lines, logCap, anchor);
   /**
@@ -355,7 +262,10 @@ export const SessionDetail: FC<{
         ? scrollUp(current, total, logCap, ARROW_SCROLL_LINES)
         : scrollDown(current, total, logCap, ARROW_SCROLL_LINES);
     applyAnchor(next);
-    logSel.extend(logEdgePoint(logWindow(lines, logCap, next), dir));
+    // 終点は**次に描かれる**ウィンドウの端の行。行数は `capFor(next)` で数え直す —
+    // 末尾追従を外れるとプレビュー行が消えて 1 行増えるため、`logCap` のままだと
+    // 上端の 1 行が選択から漏れる。
+    logSel.extend(logEdgePoint(logWindow(lines, capFor(next), next), dir));
     if (next === current) {
       // 文書の端まで来た（もう動かない）: タイマーを止める。release のレポートを取り逃した
       // ときに永久にスクロールし続けないための保険にもなっている。
@@ -408,6 +318,23 @@ export const SessionDetail: FC<{
   };
 
   /**
+   * ログ選択のアンカー（press）。行の上ならその文字、**行より上の余白**（ログが可視域に
+   * 満たないときの末尾寄せの隙間・上パディング）なら先頭行の行頭にする — 「画面のいちばん
+   * 上から下へ」というドラッグを受けたいので、ここでクリックを捨てない。行より下
+   * （プレビュー行・操作パネル側）は当たりにしない（ログ以外の要素があるので黙って食わない）。
+   */
+  const logAnchorAt = (x: number, y: number): LogPoint | undefined => {
+    if (!logView) {
+      return undefined;
+    }
+    const point = logCaretAt(lines, logView, x, y);
+    if (point) {
+      return point;
+    }
+    return logEdgeAt(logView, y) === 'up' ? logEdgePoint(win, 'up') : undefined;
+  };
+
+  /**
    * ログ上のドラッグ。可視域の外へ出たらその向きへ自動スクロールしながら選択を伸ばし
    * （`edgeStep` + タイマー）、内側なら指している文字まで終点を動かす。
    */
@@ -450,7 +377,7 @@ export const SessionDetail: FC<{
         } else {
           sel.clear();
           setEdge(undefined);
-          const point = logView ? logCaretAt(lines, logView, mouse.x, mouse.y) : undefined;
+          const point = logAnchorAt(mouse.x, mouse.y);
           if (point) {
             logSel.begin(point);
           } else {
