@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PrUnavailableReason } from '@/core';
-import { createPr, type ExecLike, lookupPr, markPrReady } from './pr';
+import { createPr, type ExecLike, lookupPr, lookupPrs, markPrReady } from './pr';
 
 const FIELDS = 'number,url,state,mergeable,isDraft,statusCheckRollup';
 
@@ -278,6 +278,160 @@ describe('lookupPr', () => {
       kind: 'unavailable',
       reason: 'unknown',
     });
+  });
+});
+
+describe('lookupPrs (batched)', () => {
+  const LIST_FIELDS = `headRefName,${FIELDS}`;
+  const targets = [
+    { id: 'a', cwd: '/wt/a', branch: 'codiva/a' },
+    { id: 'b', cwd: '/wt/b', branch: 'codiva/b' },
+    { id: 'c', cwd: '/wt/c', branch: 'codiva/c' },
+  ];
+
+  /** exec that answers `git rev-parse` with the recorded branch and `pr list` with `rows`. */
+  function listExec(rows: unknown[]) {
+    return vi.fn<ExecLike>(async (file, args, opts) => {
+      if (file === 'git') return { stdout: `codiva/${opts.cwd.slice(-1)}\n` };
+      if (args[1] === 'list') return { stdout: JSON.stringify(rows) };
+      throw ghError(NO_PR);
+    });
+  }
+
+  const row = (branch: string, number: number, over: Record<string, unknown> = {}) => ({
+    headRefName: branch,
+    number,
+    url: `https://x/${number}`,
+    state: 'OPEN',
+    mergeable: 'MERGEABLE',
+    statusCheckRollup: [{ status: 'IN_PROGRESS' }],
+    ...over,
+  });
+
+  // The point of batching: API cost stops scaling with the number of sessions.
+  it('resolves every session with a single `gh pr list`', async () => {
+    const exec = listExec([row('codiva/a', 1), row('codiva/c', 3)]);
+    const results = await lookupPrs(targets, exec);
+
+    expect(results.get('a')).toEqual({
+      kind: 'found',
+      pr: { number: 1, url: 'https://x/1', mergeStatus: 'mergeable', checks: 'pending' },
+    });
+    expect(results.get('b')).toEqual({ kind: 'absent' });
+    expect(results.get('c')?.kind).toBe('found');
+
+    const ghCalls = exec.mock.calls.filter(([file]) => file === 'gh');
+    expect(ghCalls).toHaveLength(1);
+    expect(ghCalls[0]?.[1]).toEqual([
+      'pr',
+      'list',
+      '--state',
+      'all',
+      '--limit',
+      '30',
+      '--json',
+      LIST_FIELDS,
+    ]);
+  });
+
+  it('matches the worktree HEAD branch, not just the recorded one', async () => {
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'feat/new-thing\n' };
+      if (args[1] === 'list') return { stdout: JSON.stringify([row('feat/new-thing', 9)]) };
+      throw ghError(NO_PR);
+    });
+    const results = await lookupPrs([targets[0] ?? { id: 'a', cwd: '/wt/a', branch: 'x' }], exec);
+    const result = results.get('a');
+    expect(result?.kind === 'found' && result.pr.number).toBe(9);
+  });
+
+  it('prefers an open PR over a closed one on the same branch', async () => {
+    // Newest-first ordering would otherwise pick the closed PR listed above.
+    const exec = listExec([
+      row('codiva/a', 5, { state: 'CLOSED', mergeable: 'UNKNOWN' }),
+      row('codiva/a', 4, { state: 'OPEN' }),
+    ]);
+    const results = await lookupPrs(targets, exec);
+    const result = results.get('a');
+    expect(result?.kind === 'found' && result.pr.number).toBe(4);
+  });
+
+  it('scales the page size with the number of sessions (capped at 100)', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      id: `s${i}`,
+      cwd: '/wt/x',
+      branch: `codiva/s${i}`,
+    }));
+    const exec = listExec([]);
+    await lookupPrs(many, exec);
+    const args = exec.mock.calls.find(([, a]) => a[1] === 'list')?.[1];
+    expect(args?.[5]).toBe('100');
+  });
+
+  // Same invariant as the single lookup: a failure must never read as "no PR".
+  it.each([
+    { stderr: 'GraphQL: API rate limit already exceeded', reason: 'rate_limit' },
+    { stderr: 'gh auth login', reason: 'auth' },
+  ] as const)('marks every target unavailable/$reason when the list fails', async (c) => {
+    const exec = vi.fn<ExecLike>(async (file) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      throw ghError(c.stderr);
+    });
+    const results = await lookupPrs(targets, exec);
+    for (const t of targets) {
+      expect(results.get(t.id)).toEqual({ kind: 'unavailable', reason: c.reason });
+    }
+  });
+
+  it('marks every target unavailable on malformed list output', async () => {
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      if (args[1] === 'list') return { stdout: '{ not json' };
+      throw ghError(NO_PR);
+    });
+    const results = await lookupPrs(targets, exec);
+    expect(results.get('a')).toEqual({ kind: 'unavailable', reason: 'unknown' });
+  });
+
+  it('skips unparsable rows instead of failing the whole batch', async () => {
+    const exec = listExec([null, { headRefName: 'codiva/a' }, row('codiva/b', 2)]);
+    const results = await lookupPrs(targets, exec);
+    expect(results.get('a')).toEqual({ kind: 'absent' }); // no number/url → not a match
+    expect(results.get('b')?.kind).toBe('found');
+  });
+
+  it('verifies a known PR with a targeted view when the page was truncated', async () => {
+    // 3 targets → limit 30. A full page means older PRs were cut off, so a session
+    // whose PR we already knew must not be declared gone on that basis alone.
+    const full = Array.from({ length: 30 }, (_, i) => row(`other/${i}`, 100 + i));
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      if (args[1] === 'list') return { stdout: JSON.stringify(full) };
+      return { stdout: JSON.stringify({ number: 7, url: 'u', state: 'OPEN' }) };
+    });
+    const results = await lookupPrs(
+      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: 7 }],
+      exec,
+    );
+    const result = results.get('a');
+    expect(result?.kind === 'found' && result.pr.number).toBe(7);
+    expect(exec.mock.calls.filter(([, a]) => a[1] === 'view')).toHaveLength(1);
+  });
+
+  it('reports absent (no extra call) when the page was not truncated', async () => {
+    const exec = listExec([row('other/1', 100)]);
+    const results = await lookupPrs(
+      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: 7 }],
+      exec,
+    );
+    expect(results.get('a')).toEqual({ kind: 'absent' });
+    expect(exec.mock.calls.filter(([, a]) => a[1] === 'view')).toHaveLength(0);
+  });
+
+  it('resolves an empty map for no targets (never runs `gh`)', async () => {
+    const exec = vi.fn<ExecLike>(async () => ({ stdout: '' }));
+    await expect(lookupPrs([], exec)).resolves.toEqual(new Map());
+    expect(exec).not.toHaveBeenCalled();
   });
 });
 

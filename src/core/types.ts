@@ -48,12 +48,26 @@ export interface LogEntry {
  */
 export type PrMergeStatus = 'merged' | 'mergeable' | 'conflicting' | 'unknown';
 
-/** A pull request opened for a session's branch (detected via `gh`). */
-export interface PrInfo {
+/**
+ * *Which* PR a session's branch corresponds to. Stable: a branch keeps the same PR
+ * number and URL for the PR's whole life, which is why this half is cached
+ * aggressively (persisted across restarts) and shown the moment it's known —
+ * independent of whether the volatile {@link PrStatus} could be fetched.
+ */
+export interface PrRef {
   /** PR number, shown as `#<number>` in the list. */
   number: number;
   /** Web URL, opened in the browser on click / `p`. */
   url: string;
+}
+
+/**
+ * The *volatile* half of a PR: everything that changes while the PR is open, so it
+ * has to be re-polled and can legitimately be unknown (right after a restart, or
+ * while `gh` can't answer). Kept separate from {@link PrRef} so a missing status
+ * never hides the number.
+ */
+export interface PrStatus {
   /** Whether the PR is merged / mergeable / conflicting; drives the status glyph. */
   mergeStatus: PrMergeStatus;
   /** True while the PR is still a draft (auto-PR opens drafts, then readies on green checks). */
@@ -61,6 +75,12 @@ export interface PrInfo {
   /** Aggregate CI state of the PR's checks; drives the checks glyph and auto-ready. */
   checks?: PrChecksState;
 }
+
+/**
+ * A pull request as `gh` reports it — both halves together, since one `gh pr view`
+ * returns them at once. `SessionState` stores them apart (`pr` + `prStatus`).
+ */
+export interface PrInfo extends PrRef, PrStatus {}
 
 /**
  * Aggregate CI state of a PR's checks (from `gh pr view --json statusCheckRollup`).
@@ -149,11 +169,26 @@ export interface SessionState {
    * with `formatModel`.
    */
   model?: string;
-  /** Pull request opened for `branch`, if any (detected asynchronously via `gh`). */
-  pr?: PrInfo;
   /**
-   * Progress/health of the background `gh` lookup that fills `pr`. Undefined once a
-   * lookup has answered (whether it found a PR or not). Transient — never persisted.
+   * Which PR belongs to this session's branch, if any (detected asynchronously via
+   * `gh`). Only an authoritative "this branch has no PR" clears it, so a failed
+   * lookup never hides the number. **Persisted** — a branch's PR number doesn't
+   * change, so the list can show `#<n>` immediately after a restart while the
+   * status below is still being fetched.
+   */
+  pr?: PrRef;
+  /**
+   * The volatile half of `pr` (merge state / checks / draft), refreshed on a
+   * staleness schedule (see `core/pr-refresh.ts`) and cached in between. Undefined
+   * means "not known yet" — the number renders without a status glyph rather than
+   * the row waiting for both. Transient — never persisted (a stale glyph from the
+   * previous run would be worse than briefly showing none).
+   */
+  prStatus?: PrStatus;
+  /**
+   * Progress/health of the background `gh` lookup that fills the two above.
+   * Undefined once a lookup has answered (whether it found a PR or not).
+   * Transient — never persisted.
    */
   prLookup?: PrLookupState;
   /** Files left conflicted by a failed merge into base (set with `status: 'conflict'`). */

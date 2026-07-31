@@ -27,6 +27,12 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
   `archived`）。`pr` は「`gh` が答えた」ときだけ流すので `prLookup` も必ずクリアする。
   失敗（`unavailable`）は `pr_lookup: 'error'` で表現し、**`pr` を undefined で上書きしない**
   （PR 番号がポーリングごとに消える不具合の再発防止）。
+- **PR は「識別」と「状態」に分けて持つ**。`pr: PrRef`（番号・URL。ブランチに対して不変なので
+  **永続化**し、復元直後から `#<n>` を出す）と `prStatus: PrStatus`（マージ可否・チェック・draft。
+  揺れるので transient、`core/pr-refresh.ts` の間隔でキャッシュ）。reducer は**半分ずつ**比較して
+  参照を維持する: 状態だけ変わったときに `pr` の参照を変えないことで、`persistRelevantChanged`
+  （= state.json の保存）がチェックの進行ごとに走らない。番号が分かっていてステータス未取得
+  （復元直後・PR 作成直後）は `prPollIntervalMs` が 0 を返し、すぐ取得して埋める。
   全 variant が `at: number` を持ち、reducer は時刻を読まない（純粋・決定的）。
 - **SDK メッセージは `CodivaEvent` ではない**。生の形を知るのは `sdk-parse.ts` だけ
   （[sdk-integration.md](./sdk-integration.md)）。

@@ -4,6 +4,7 @@ import type {
   PrChecksState,
   PrInfo,
   PrLookupResult,
+  PrLookupTarget,
   PrMergeStatus,
   PrUnavailableReason,
 } from '@/core';
@@ -102,8 +103,8 @@ function toChecksState(rollup: unknown): PrChecksState {
   return 'passing';
 }
 
-function toPrInfo(stdout: string): PrInfo | undefined {
-  const json = JSON.parse(stdout) as PrViewJson;
+/** Shared by the single (`pr view`) and batched (`pr list`) payload shapes. */
+function toPrJson(json: PrViewJson): PrInfo | undefined {
   const number = typeof json.number === 'number' ? json.number : undefined;
   const url = typeof json.url === 'string' ? json.url : undefined;
   if (number === undefined || url === undefined) {
@@ -116,6 +117,10 @@ function toPrInfo(stdout: string): PrInfo | undefined {
     checks: toChecksState(json.statusCheckRollup),
   };
   return typeof json.isDraft === 'boolean' ? { ...pr, isDraft: json.isDraft } : pr;
+}
+
+function toPrInfo(stdout: string): PrInfo | undefined {
+  return toPrJson(JSON.parse(stdout) as PrViewJson);
 }
 
 /** Concatenate the strings an execFile rejection carries (code / message / streams). */
@@ -254,6 +259,117 @@ export async function lookupPr(
   // Only report `absent` when every candidate was actually answered; a failure on
   // any candidate means we can't rule out a PR on it.
   return lastFailure ?? { kind: 'absent' };
+}
+
+/** Fields for the batched list — the PR view set plus the branch to match on. */
+const PR_LIST_FIELDS = `headRefName,${PR_VIEW_FIELDS}`;
+
+/** Bounds for `gh pr list --limit`: enough headroom to cover every session's PR. */
+const PR_LIST_MIN_LIMIT = 30;
+const PR_LIST_MAX_LIMIT = 100;
+
+/** One `gh pr list` entry: a PR plus the branch it comes from. */
+interface PrListEntry {
+  branch: string;
+  pr: PrInfo;
+  /** Open PRs win over closed/merged ones for the same branch (as `gh pr view` does). */
+  open: boolean;
+}
+
+function toListEntry(value: unknown): PrListEntry | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const json = value as PrViewJson & { headRefName?: unknown };
+  const branch = typeof json.headRefName === 'string' ? json.headRefName : undefined;
+  const pr = toPrJson(json);
+  return branch && pr ? { branch, pr, open: json.state === 'OPEN' } : undefined;
+}
+
+/**
+ * Index list entries by head branch. `gh pr list` is newest-first, so the first
+ * entry for a branch wins — except that an open PR always beats a closed/merged one
+ * (a branch reused after a closed PR must show the live one).
+ */
+function indexByBranch(entries: readonly PrListEntry[]): Map<string, PrListEntry> {
+  const byBranch = new Map<string, PrListEntry>();
+  for (const entry of entries) {
+    const existing = byBranch.get(entry.branch);
+    if (!existing || (entry.open && !existing.open)) {
+      byBranch.set(entry.branch, entry);
+    }
+  }
+  return byBranch;
+}
+
+/**
+ * Look up many sessions' PRs with a **single** `gh pr list` instead of one
+ * `gh pr view` per session, then match each session locally by its HEAD branch (or
+ * its recorded `codiva/<slug>` branch).
+ *
+ * This is the fix for "N sessions × every 20s" API pressure: the cost stops scaling
+ * with the number of open sessions. Every worktree of the repo resolves to the same
+ * GitHub repo, so any session's worktree can host the one list call.
+ *
+ * Failure handling matches {@link lookupPr}: a failed list marks *every* target
+ * `unavailable` (never `absent`), so no badge is cleared by a rate limit. If the
+ * list came back truncated and a target whose PR we already knew isn't in it, we
+ * verify that one session with a targeted view rather than declaring it gone.
+ */
+export async function lookupPrs(
+  targets: readonly PrLookupTarget[],
+  exec: ExecLike = execFileAsync,
+): Promise<Map<string, PrLookupResult>> {
+  const results = new Map<string, PrLookupResult>();
+  const first = targets[0];
+  if (!first) {
+    return results;
+  }
+  const limit = Math.min(PR_LIST_MAX_LIMIT, Math.max(PR_LIST_MIN_LIMIT, targets.length * 3));
+  let stdout: string;
+  try {
+    ({ stdout } = await exec(
+      'gh',
+      ['pr', 'list', '--state', 'all', '--limit', String(limit), '--json', PR_LIST_FIELDS],
+      { cwd: first.cwd },
+    ));
+  } catch (err) {
+    const reason = toUnavailableReason(errorText(err));
+    for (const target of targets) {
+      results.set(target.id, { kind: 'unavailable', reason });
+    }
+    return results;
+  }
+  let entries: PrListEntry[];
+  let truncated: boolean;
+  try {
+    const json: unknown = JSON.parse(stdout);
+    const rows = Array.isArray(json) ? json : [];
+    entries = rows.map(toListEntry).filter((e): e is PrListEntry => e !== undefined);
+    // A full page means older PRs were cut off; only then can a known PR be missing
+    // for a reason other than "it's gone".
+    truncated = rows.length >= limit;
+  } catch {
+    for (const target of targets) {
+      results.set(target.id, { kind: 'unavailable', reason: 'unknown' });
+    }
+    return results;
+  }
+  const byBranch = indexByBranch(entries);
+  for (const target of targets) {
+    // HEAD is where the work (and its PR) actually lives; the recorded branch is the
+    // fallback. Both are local git reads — no API budget.
+    const head = await currentBranch(target.cwd, exec);
+    const match = (head ? byBranch.get(head) : undefined) ?? byBranch.get(target.branch);
+    if (match) {
+      results.set(target.id, { kind: 'found', pr: match.pr });
+    } else if (target.knownPr !== undefined && truncated) {
+      results.set(target.id, await lookupPr(target.cwd, target.branch, exec));
+    } else {
+      results.set(target.id, { kind: 'absent' });
+    }
+  }
+  return results;
 }
 
 /**

@@ -24,8 +24,9 @@ import {
   type ModelOption,
   matchCommands,
   needsAttention,
-  type PrInfo,
   type PrLookupState,
+  type PrRef,
+  type PrStatus,
   parseSgrMouse,
   resumableSessions,
   resumeInstruction,
@@ -86,40 +87,49 @@ const PR_CELL_WIDTH = 10;
  * `unknown` (GitHub still computing, no checks configured) shows no glyph so the row
  * stays quiet until the state is real.
  */
-function prStatusBadge(pr: PrInfo): { char: string; color: string } | undefined {
-  if (pr.mergeStatus === 'merged') {
+function prStatusBadge(status: PrStatus): { char: string; color: string } | undefined {
+  if (status.mergeStatus === 'merged') {
     return { char: glyph.merged, color: statusColor.external };
   }
-  if (pr.checks === 'failing') {
+  if (status.checks === 'failing') {
     return { char: glyph.conflicting, color: statusColor.failed };
   }
-  if (pr.checks === 'pending') {
+  if (status.checks === 'pending') {
     return { char: glyph.checksPending, color: statusColor.awaitingPermission };
   }
-  if (pr.mergeStatus === 'conflicting') {
+  if (status.mergeStatus === 'conflicting') {
     return { char: glyph.conflicting, color: statusColor.failed };
   }
-  if (pr.mergeStatus === 'mergeable') {
+  if (status.mergeStatus === 'mergeable') {
     return { char: glyph.mergeable, color: statusColor.completed };
   }
   return undefined;
 }
 
 /**
- * The row's trailing PR cell. An *empty* cell has to mean exactly one thing ("this
- * branch has no PR"), so the two states where we simply don't know yet get their own
- * marks: `⋯` while the first `gh` lookup is in flight, `?` when the last one failed
- * (rate limit / offline / not logged in). Without these, a failed poll was
- * indistinguishable from "no PR" and the badge looked like it randomly vanished.
+ * The row's trailing PR cell, drawn from whatever is known so far — the two halves
+ * arrive (and expire) independently:
+ *
+ *  - `pr` (number/url) is stable and cached across restarts, so `#<n>` renders as
+ *    soon as it's known and never waits on the status.
+ *  - `status` is polled; until it lands the number stands alone without a glyph.
+ *
+ * An *empty* cell therefore means exactly one thing — "this branch has no PR" — and
+ * the two "don't know yet" cases get their own marks: `⋯` while the first lookup is
+ * in flight, `?` when the last one failed (rate limit / offline / not logged in).
  * A draft PR's number is dimmed (still underlined — it's clickable either way).
  */
-const PrCell: FC<{ pr?: PrInfo; lookup?: PrLookupState }> = ({ pr, lookup }) => {
+const PrCell: FC<{ pr?: PrRef; status?: PrStatus; lookup?: PrLookupState }> = ({
+  pr,
+  status,
+  lookup,
+}) => {
   if (pr) {
-    const badge = prStatusBadge(pr);
+    const badge = status ? prStatusBadge(status) : undefined;
     return (
       <Text>
         {badge ? <Text color={badge.color}>{badge.char} </Text> : null}
-        <Text color={pr.isDraft ? theme.dim : theme.accent} underline>
+        <Text color={status?.isDraft ? theme.dim : theme.accent} underline>
           #{pr.number}
         </Text>
       </Text>
@@ -853,7 +863,7 @@ export const SessionList: FC<{
                   {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
                       左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
                   <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
-                    <PrCell pr={s.pr} lookup={s.prLookup} />
+                    <PrCell pr={s.pr} status={s.prStatus} lookup={s.prLookup} />
                   </Box>
                 </Box>
               );

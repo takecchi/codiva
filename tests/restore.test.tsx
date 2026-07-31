@@ -1,5 +1,5 @@
 import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/session';
 import { SessionManager } from '@/core/session-manager';
@@ -106,5 +106,71 @@ describe('session restoration', () => {
       kind: 'user',
       text: 'tweak the styles',
     });
+  });
+  // 「PR の番号はもう分かっている」— 番号は永続化して復元直後から出し、ステータス
+  // （チェック・マージ可否）は復元後の最初のポーリングで埋める。
+  it('carries the PR number across a restart and fills the status in on the first poll', async () => {
+    const first = drivenQuery();
+    const m1 = new SessionManager({
+      worktrees,
+      queryFn: first.queryFn,
+      now: () => 0,
+      // A PR is detected during the first run, with its checks still running.
+      lookupPr: async () => ({
+        kind: 'found' as const,
+        pr: {
+          number: 42,
+          url: 'https://x/pull/42',
+          mergeStatus: 'unknown' as const,
+          checks: 'pending' as const,
+        },
+      }),
+    });
+    m1.create('add a login page');
+    await flush();
+    first.out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-restore-3' }));
+    first.out.push(asMsg({ type: 'result', subtype: 'success', result: 'done' }));
+    await flush();
+    const id = m1.getSnapshot()[0]?.id ?? '';
+    await m1.refreshPrs();
+    expect(m1.get(id)?.prStatus).toEqual({ mergeStatus: 'unknown', checks: 'pending' });
+    const persisted = m1.persistableState();
+    m1.dispose();
+
+    // The stable half is on disk; the volatile half deliberately is not.
+    expect(persisted.sessions[0]?.pr).toEqual({ number: 42, url: 'https://x/pull/42' });
+    expect(JSON.stringify(persisted)).not.toContain('pending');
+
+    const lookupPr = vi.fn(async () => ({
+      kind: 'found' as const,
+      pr: {
+        number: 42,
+        url: 'https://x/pull/42',
+        mergeStatus: 'mergeable' as const,
+        checks: 'passing' as const,
+      },
+    }));
+    const second = drivenQuery();
+    const m2 = new SessionManager({
+      worktrees,
+      queryFn: second.queryFn,
+      now: () => 0,
+      lookupPr,
+    });
+    m2.restore(persisted);
+
+    // Before any lookup: the number is already there, the status isn't — so the row
+    // shows `#42` with no glyph instead of "unknown".
+    const restored = m2.get(id);
+    expect(restored?.pr).toEqual({ number: 42, url: 'https://x/pull/42' });
+    expect(restored?.prStatus).toBeUndefined();
+    expect(restored?.prLookup).toBeUndefined();
+
+    // The first poll is due immediately for exactly this case and fills the status in.
+    await m2.refreshPrs();
+    expect(lookupPr).toHaveBeenCalledTimes(1);
+    const polled = m2.get(id);
+    expect(polled?.pr).toEqual({ number: 42, url: 'https://x/pull/42' });
+    expect(polled?.prStatus).toEqual({ mergeStatus: 'mergeable', checks: 'passing' });
   });
 });

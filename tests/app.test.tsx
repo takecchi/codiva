@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { AsyncQueue } from '@/core/async-queue';
 import { messages } from '@/core/i18n';
+import { PR_POLL_STABLE_MS } from '@/core/pr-refresh';
 import type { QueryFn } from '@/core/session';
 import { SessionManager } from '@/core/session-manager';
 import type { PrLookup, WorktreeService } from '@/core/session-ports';
@@ -1398,23 +1399,33 @@ describe('PR セル（GitHub ステータスの表示）', () => {
    * A manager whose sessions apply `pr` / `pr_lookup` events through the real
    * reducer, so a test drives the actual coordinator → reducer → UI path.
    */
-  function prManager(lookupPr: PrLookup) {
+  /**
+   * Shared clock so a test can jump past a PR's freshness window — `refreshPrs()`
+   * reuses the cached value until then (see core/pr-refresh.ts).
+   */
+  const clock = { value: 0 };
+  const staleTick = () => {
+    clock.value += PR_POLL_STABLE_MS;
+  };
+
+  function prManager(lookupPr: PrLookup, seed: Partial<SessionState> = {}) {
+    clock.value = 0;
     return new SessionManager({
       worktrees,
       queryFn: (() => {
         throw new Error('unused');
       }) as never,
-      now: () => 0,
+      now: () => clock.value,
       lookupPr,
       createSession: ({ input, onChange }) => {
         const session = noopSession(input);
-        session.state = { ...session.state, status: 'completed' };
+        session.state = { ...session.state, status: 'completed', ...seed };
         session.setPr = (pr) => {
-          session.state = reduce(session.state, { kind: 'pr', pr, at: 0 });
+          session.state = reduce(session.state, { kind: 'pr', pr, at: clock.value });
           onChange(session.state);
         };
         session.setPrLookup = (lookup) => {
-          session.state = reduce(session.state, { kind: 'pr_lookup', lookup, at: 0 });
+          session.state = reduce(session.state, { kind: 'pr_lookup', lookup, at: clock.value });
           onChange(session.state);
         };
         return session;
@@ -1468,6 +1479,35 @@ describe('PR セル（GitHub ステータスの表示）', () => {
     app.unmount();
   });
 
+  // 「番号が分かった時点で番号を表示、ステータスが分かった時点でステータスを表示」
+  // 再起動直後は番号だけ復元済み（ステータスは永続しない）ので、グリフ無しの `#42` を
+  // 先に出し、最初のポーリングでグリフが付く。
+  it('renders a known number before its status is known, then adds the glyph', async () => {
+    let result: PrLookupResult = { kind: 'found', pr: { ...PR, checks: 'pending' } };
+    // Seeded like a session restored from state.json: identity only, no status.
+    const manager = prManager(async () => result, { pr: { number: 42, url: 'https://x/pull/42' } });
+    manager.create('task');
+    await flush();
+    const { app, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 100);
+
+    const before = await settledFrame(lastFrame, (f) => f.includes('#42'));
+    expect(before).toContain('#42');
+    // No status yet → no glyph, and definitely not the "couldn't check" mark.
+    expect(before).not.toContain(`${glyph.checksPending} #42`);
+    expect(before).not.toContain(glyph.prUnknown);
+
+    await manager.refreshPrs();
+    const pending = `${glyph.checksPending} #42`;
+    expect(await settledFrame(lastFrame, (f) => f.includes(pending))).toContain(pending);
+
+    // A later failure keeps both halves (nothing authoritative said otherwise).
+    result = { kind: 'unavailable', reason: 'network' };
+    staleTick();
+    await manager.refreshPrs();
+    expect(await settledFrame(lastFrame, (f) => f.includes(pending))).toContain(pending);
+    app.unmount();
+  });
+
   it('leaves the cell empty when the branch genuinely has no PR', async () => {
     const manager = prManager(async () => ({ kind: 'absent' }));
     manager.create('task');
@@ -1492,6 +1532,7 @@ describe('PR セル（GitHub ステータスの表示）', () => {
     expect(await settledFrame(lastFrame, (f) => f.includes('#42'))).toContain('#42');
 
     result = { kind: 'unavailable', reason: 'rate_limit' };
+    staleTick();
     await manager.refreshPrs();
     await flush();
     // 番号は消えない（消えるのが今回直した不具合）。
@@ -1522,11 +1563,13 @@ describe('PR セル（GitHub ステータスの表示）', () => {
     expect(await settledFrame(lastFrame, (f) => f.includes(pending))).toContain(pending);
 
     result = { kind: 'found', pr: { ...PR, checks: 'failing' } };
+    staleTick();
     await manager.refreshPrs();
     const failing = `${glyph.conflicting} #42`;
     expect(await settledFrame(lastFrame, (f) => f.includes(failing))).toContain(failing);
 
     result = { kind: 'found', pr: { ...PR, checks: 'passing' } };
+    staleTick();
     await manager.refreshPrs();
     const passing = `${glyph.mergeable} #42`;
     expect(await settledFrame(lastFrame, (f) => f.includes(passing))).toContain(passing);

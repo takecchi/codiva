@@ -56,6 +56,30 @@ export interface PrAutomation {
  */
 export type PrLookup = (cwd: string, branch: string) => Promise<PrLookupResult>;
 
+/** One session to resolve a PR for in a batched lookup. */
+export interface PrLookupTarget {
+  /** Session id — the key of the returned map. */
+  id: string;
+  /** The session's worktree path (`gh` / `git` cwd). */
+  cwd: string;
+  /** The recorded `codiva/<slug>` branch (HEAD is preferred when it differs). */
+  branch: string;
+  /**
+   * PR number already known for this session, if any. Lets the implementation tell
+   * "this PR is gone" from "the listing was truncated before reaching it".
+   */
+  knownPr?: number;
+}
+
+/**
+ * Resolve many sessions' PRs in one go (one `gh pr list` instead of one
+ * `gh pr view` each), keyed by session id. Every target must get an entry.
+ * Optional: without it the coordinator falls back to per-session lookups.
+ */
+export type PrBatchLookup = (
+  targets: readonly PrLookupTarget[],
+) => Promise<ReadonlyMap<string, PrLookupResult>>;
+
 /** Result of a lifecycle action (merge/discard) surfaced to the UI. */
 export interface ActionResult {
   ok: boolean;

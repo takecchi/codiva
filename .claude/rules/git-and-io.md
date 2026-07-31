@@ -40,10 +40,18 @@
 
 - 使う `gh` は次だけ。増やすときもここに閉じる:
   `pr view <branch> --json number,url,state,mergeable,isDraft,statusCheckRollup` /
+  `pr list --state all --limit <n> --json headRefName,<同じ項目>` /
   `pr create --draft --fill --head <branch>` / `pr ready <branch>`。
   **チェック状態は PR 情報と同じ 1 回の `pr view` で取る**（`--json mergeable` は GitHub の
   **GraphQL** クォータを消費し、ユーザーの他のツールと共有の 5000/h なので、毎ポーリングで
   2 回投げない）。
+- **セッション数に比例させない**。同じサイクルで `PR_BATCH_MIN_SESSIONS`（3）件以上を
+  問い合わせるときは `lookupPrs`（`pr list` 1 回 + ローカルの `git rev-parse` で突き合わせ）に畳む。
+  1〜2 件なら `pr view` の方が安いのでそちら（list は全件のチェック rollup を運ぶため）。
+  worktree はどれも同じ repo を指すので、list の cwd はどのセッションのものでもよい。
+- **問い合わせ頻度はセッションごとの陳腐化で決める**（`core/pr-refresh.ts`）。20 秒の tick は
+  スケジューラに過ぎず、実際に `gh` を叩くのは「チェック実行中=20秒 / 未計算=60秒 / 落ち着いた
+  PR=180秒 / PR 未検出=状態次第」を超えたものだけ。`merged` と `archived` は二度と問い合わせない。
 - 方針は「足場作りは自動、確定操作は緑判定/人手」: `completed` かつコミット済み差分があれば
   push → **draft** PR（1セッション1回）、20 秒ポーリングでチェックが緑になったら ready 化。
 - `gh` 未導入・未認証・オフラインでも**セッションを壊さない**（失敗は握り潰す）。

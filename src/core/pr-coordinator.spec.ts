@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PR_LOOKUP_BACKOFF_MS, PrCoordinator, type PrCoordinatorDeps } from './pr-coordinator';
-import type { PrAutomation, SessionHandle, WorktreeMeta, WorktreeService } from './session-ports';
+import { PR_BATCH_MIN_SESSIONS, PR_POLL_SOON_MS, PR_POLL_STABLE_MS } from './pr-refresh';
+import type {
+  PrAutomation,
+  PrLookupTarget,
+  SessionHandle,
+  WorktreeMeta,
+  WorktreeService,
+} from './session-ports';
 import { initialState } from './status-reducer';
 import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
 
@@ -32,7 +39,15 @@ function fakeSession(state: SessionState) {
     archive() {},
     setPr(pr: PrInfo | undefined) {
       calls.push(`setPr:${pr ? `#${pr.number}${pr.isDraft ? ':draft' : ''}` : 'none'}`);
-      state = { ...state, pr, prLookup: undefined };
+      // Split like the real reducer: stable ref vs volatile status.
+      state = {
+        ...state,
+        pr: pr ? { number: pr.number, url: pr.url } : undefined,
+        prStatus: pr
+          ? { mergeStatus: pr.mergeStatus, isDraft: pr.isDraft, checks: pr.checks }
+          : undefined,
+        prLookup: undefined,
+      };
     },
     setPrLookup(lookup: PrLookupState | undefined) {
       calls.push(`prLookup:${lookup ?? 'none'}`);
@@ -43,76 +58,108 @@ function fakeSession(state: SessionState) {
   return { handle, calls, current: () => state };
 }
 
-interface Harness {
-  refresh: () => Promise<void>;
-  calls: string[];
-  state: () => SessionState;
-  now: { value: number };
-}
-
-function harness(
-  lookup: (cwd: string, branch: string) => Promise<PrLookupResult>,
-  over: {
-    state?: Partial<SessionState>;
-    autoPr?: boolean;
-    prAutomation?: PrAutomation;
-  } = {},
-): Harness {
-  const base: SessionState = {
+function stateFor(id: string, over: Partial<SessionState> = {}): SessionState {
+  return {
     ...initialState({
-      id: 's1',
+      id,
       title: 't',
       prompt: 'p',
-      branch: 'codiva/feature',
-      worktreePath: '/wt/feature',
+      branch: `codiva/${id}`,
+      worktreePath: `/wt/${id}`,
       startedAt: 0,
     }),
     status: 'completed',
-    ...over.state,
+    ...over,
   };
-  const session = fakeSession(base);
-  const meta: WorktreeMeta = {
-    worktree: { slug: 'feature', branch: 'codiva/feature', path: '/wt/feature' },
-    base: 'main',
-  };
+}
+
+interface Harness {
+  refresh: () => Promise<void>;
+  /** Advance the injected clock (staleness + backoff are time-driven). */
+  tick: (ms: number) => void;
+  calls: (id?: string) => string[];
+  state: (id?: string) => SessionState;
+}
+
+/**
+ * Build a coordinator over `ids` sessions. Every session gets the same lookup
+ * result unless the fake decides per-branch.
+ */
+function harness(
+  lookup: (cwd: string, branch: string) => Promise<PrLookupResult>,
+  over: {
+    ids?: string[];
+    state?: Partial<SessionState>;
+    autoPr?: boolean;
+    prAutomation?: PrAutomation;
+    lookupPrs?: PrCoordinatorDeps['lookupPrs'];
+  } = {},
+): Harness {
+  const ids = over.ids ?? ['s1'];
+  const sessions = new Map<string, ReturnType<typeof fakeSession>>();
+  const metas = new Map<string, WorktreeMeta>();
+  for (const id of ids) {
+    sessions.set(id, fakeSession(stateFor(id, over.state)));
+    metas.set(id, {
+      worktree: { slug: id, branch: `codiva/${id}`, path: `/wt/${id}` },
+      base: 'main',
+    });
+  }
   const now = { value: 0 };
   const deps: PrCoordinatorDeps = {
     worktrees,
     lookupPr: lookup,
+    lookupPrs: over.lookupPrs,
     autoPr: over.autoPr,
     prAutomation: over.prAutomation,
-    getMeta: () => meta,
-    getState: () => session.current(),
-    getSession: () => session.handle,
-    ids: () => ['s1'],
+    getMeta: (id) => metas.get(id),
+    getState: (id) => sessions.get(id)?.current(),
+    getSession: (id) => sessions.get(id)?.handle,
+    ids: () => ids,
     now: () => now.value,
   };
   const coordinator = new PrCoordinator(deps);
+  const pick = (id?: string) => {
+    const session = sessions.get(id ?? ids[0] ?? '');
+    if (!session) {
+      throw new Error(`no session ${id}`);
+    }
+    return session;
+  };
   return {
     refresh: () => coordinator.refreshPrs(),
-    calls: session.calls,
-    state: session.current,
-    now,
+    tick: (ms) => {
+      now.value += ms;
+    },
+    calls: (id) => pick(id).calls,
+    state: (id) => pick(id).current(),
   };
 }
 
 const found = (pr: PrInfo): PrLookupResult => ({ kind: 'found', pr });
 const PR: PrInfo = { number: 42, url: 'u', mergeStatus: 'mergeable', checks: 'passing' };
+/** Long enough for any freshness window to expire. */
+const STALE = PR_POLL_STABLE_MS;
 
 describe('PrCoordinator.refreshPrs', () => {
   it('marks the cell loading before the first lookup, then stores the PR', async () => {
     const h = harness(async () => found(PR));
     await h.refresh();
-    expect(h.calls).toEqual(['prLookup:loading', 'setPr:#42']);
-    expect(h.state().pr).toEqual(PR);
+    expect(h.calls()).toEqual(['prLookup:loading', 'setPr:#42']);
+    expect(h.state().pr).toEqual({ number: 42, url: 'u' });
     expect(h.state().prLookup).toBeUndefined();
   });
 
   it('records `absent` as "no PR" (clearing a stale badge)', async () => {
-    const h = harness(async () => ({ kind: 'absent' }), { state: { pr: PR } });
+    const h = harness(async () => ({ kind: 'absent' }), {
+      state: {
+        pr: { number: 42, url: 'u' },
+        prStatus: { mergeStatus: 'mergeable', checks: 'passing' },
+      },
+    });
     await h.refresh();
     // A PR was already known, so no loading mark — and `absent` is authoritative.
-    expect(h.calls).toEqual(['setPr:none']);
+    expect(h.calls()).toEqual(['setPr:none']);
     expect(h.state().pr).toBeUndefined();
   });
 
@@ -120,11 +167,14 @@ describe('PrCoordinator.refreshPrs', () => {
   // not read as "this branch has no PR", or the #<n> badge blinks out of the list.
   it('keeps the last known PR when the lookup is unavailable, and flags the cell', async () => {
     const h = harness(async () => ({ kind: 'unavailable', reason: 'rate_limit' }), {
-      state: { pr: PR },
+      state: {
+        pr: { number: 42, url: 'u' },
+        prStatus: { mergeStatus: 'mergeable', checks: 'passing' },
+      },
     });
     await h.refresh();
-    expect(h.calls).toEqual(['prLookup:error']);
-    expect(h.state().pr).toEqual(PR);
+    expect(h.calls()).toEqual(['prLookup:error']);
+    expect(h.state().pr).toEqual({ number: 42, url: 'u' });
     expect(h.state().prLookup).toBe('error');
   });
 
@@ -133,25 +183,14 @@ describe('PrCoordinator.refreshPrs', () => {
       throw new Error('boom');
     });
     await h.refresh();
-    expect(h.calls).toEqual(['prLookup:loading', 'prLookup:error']);
+    expect(h.calls()).toEqual(['prLookup:loading', 'prLookup:error']);
     expect(h.state().prLookup).toBe('error');
   });
 
   it('stays quiet when `gh` is not installed (the feature is simply unavailable)', async () => {
     const h = harness(async () => ({ kind: 'unavailable', reason: 'cli' }));
     await h.refresh();
-    expect(h.calls).toEqual(['prLookup:loading', 'prLookup:none']);
-    expect(h.state().prLookup).toBeUndefined();
-  });
-
-  // "answered: no PR" and "never asked" are both `pr: undefined, prLookup: undefined`,
-  // so a naive check re-marks loading every tick and the cell blinks ⋯ → empty.
-  it('marks loading only once for a branch that has no PR (no 20s flicker)', async () => {
-    const h = harness(async () => ({ kind: 'absent' }));
-    await h.refresh();
-    await h.refresh();
-    await h.refresh();
-    expect(h.calls.filter((c) => c === 'prLookup:loading')).toHaveLength(1);
+    expect(h.calls()).toEqual(['prLookup:loading', 'prLookup:none']);
     expect(h.state().prLookup).toBeUndefined();
   });
 
@@ -159,13 +198,26 @@ describe('PrCoordinator.refreshPrs', () => {
     let result: PrLookupResult = { kind: 'unavailable', reason: 'network' };
     const h = harness(async () => result);
     await h.refresh();
-    await h.refresh();
-    expect(h.calls).toEqual(['prLookup:loading', 'prLookup:error', 'prLookup:error']);
+    await h.refresh(); // a failure isn't cached, so this really retries
+    expect(h.calls()).toEqual(['prLookup:loading', 'prLookup:error', 'prLookup:error']);
     // A later success clears the error mark via setPr.
     result = found(PR);
     await h.refresh();
     expect(h.state().prLookup).toBeUndefined();
-    expect(h.state().pr).toEqual(PR);
+    expect(h.state().pr).toEqual({ number: 42, url: 'u' });
+  });
+
+  // "answered: no PR" and "never asked" are both `pr: undefined, prLookup: undefined`,
+  // so a naive check re-marks loading every tick and the cell blinks ⋯ → empty.
+  it('marks loading only once for a branch that has no PR (no flicker)', async () => {
+    const h = harness(async () => ({ kind: 'absent' }));
+    await h.refresh();
+    h.tick(STALE);
+    await h.refresh();
+    h.tick(STALE);
+    await h.refresh();
+    expect(h.calls().filter((c) => c === 'prLookup:loading')).toHaveLength(1);
+    expect(h.state().prLookup).toBeUndefined();
   });
 
   it('backs off polling after a rate-limit failure, then resumes', async () => {
@@ -177,11 +229,11 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(lookup).toHaveBeenCalledTimes(1);
 
     // Inside the backoff window the poll is skipped entirely (no API spend).
-    h.now.value = PR_LOOKUP_BACKOFF_MS - 1;
+    h.tick(PR_LOOKUP_BACKOFF_MS - 1);
     await h.refresh();
     expect(lookup).toHaveBeenCalledTimes(1);
 
-    h.now.value = PR_LOOKUP_BACKOFF_MS;
+    h.tick(1);
     await h.refresh();
     expect(lookup).toHaveBeenCalledTimes(2);
   });
@@ -196,7 +248,7 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(lookup).toHaveBeenCalledTimes(2);
   });
 
-  it('never runs two cycles at once (a slow `gh` outliving the 20s timer)', async () => {
+  it('never runs two cycles at once (a slow `gh` outliving the poll tick)', async () => {
     let release = () => {};
     const gate = new Promise<void>((r) => {
       release = r;
@@ -211,6 +263,7 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(lookup).toHaveBeenCalledTimes(1);
     release();
     await first;
+    h.tick(STALE);
     await h.refresh();
     expect(lookup).toHaveBeenCalledTimes(2);
   });
@@ -219,6 +272,7 @@ describe('PrCoordinator.refreshPrs', () => {
     const lookup = vi.fn(async () => found({ ...PR, mergeStatus: 'merged' as const }));
     const h = harness(lookup);
     await h.refresh();
+    h.tick(STALE * 10);
     await h.refresh();
     expect(lookup).toHaveBeenCalledTimes(1);
   });
@@ -237,8 +291,8 @@ describe('PrCoordinator.refreshPrs', () => {
       prAutomation: { createPr: async () => undefined, markReady },
     });
     await h.refresh();
-    expect(markReady).toHaveBeenCalledWith('/wt/feature', 'codiva/feature');
-    expect(h.state().pr?.isDraft).toBe(false);
+    expect(markReady).toHaveBeenCalledWith('/wt/s1', 'codiva/s1');
+    expect(h.state().prStatus?.isDraft).toBe(false);
   });
 
   it.each(['pending', 'failing', 'none'] as const)(
@@ -251,7 +305,7 @@ describe('PrCoordinator.refreshPrs', () => {
       });
       await h.refresh();
       expect(markReady).not.toHaveBeenCalled();
-      expect(h.state().pr?.isDraft).toBe(true);
+      expect(h.state().prStatus?.isDraft).toBe(true);
     },
   );
 
@@ -266,24 +320,15 @@ describe('PrCoordinator.refreshPrs', () => {
       },
     });
     await expect(h.refresh()).resolves.toBeUndefined();
-    expect(h.state().pr?.isDraft).toBe(true);
+    expect(h.state().prStatus?.isDraft).toBe(true);
   });
 
   it('is a no-op without a lookup port', async () => {
-    const session = fakeSession(
-      initialState({
-        id: 's1',
-        title: 't',
-        prompt: 'p',
-        branch: 'codiva/feature',
-        worktreePath: '/wt/feature',
-        startedAt: 0,
-      }),
-    );
+    const session = fakeSession(stateFor('s1'));
     const coordinator = new PrCoordinator({
       worktrees,
       getMeta: () => ({
-        worktree: { slug: 'feature', branch: 'codiva/feature', path: '/wt/feature' },
+        worktree: { slug: 's1', branch: 'codiva/s1', path: '/wt/s1' },
         base: 'main',
       }),
       getState: () => session.current(),
@@ -292,5 +337,165 @@ describe('PrCoordinator.refreshPrs', () => {
     });
     await expect(coordinator.refreshPrs()).resolves.toBeUndefined();
     expect(session.calls).toEqual([]);
+  });
+});
+
+// The polling tick is just a scheduler: what it actually costs per cycle is decided
+// by per-session staleness, so a screen full of settled PRs is nearly free.
+describe('PrCoordinator caching (staleness-driven polling)', () => {
+  it('reuses the cached PR until its freshness window expires', async () => {
+    const lookup = vi.fn(async () => found(PR)); // mergeable + passing → stable
+    const h = harness(lookup);
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledTimes(1);
+
+    // Several ticks later it's still fresh: no `gh`, no state churn.
+    h.tick(PR_POLL_STABLE_MS - 1);
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(h.calls()).toEqual(['prLookup:loading', 'setPr:#42']);
+
+    h.tick(1);
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-polls a PR with running checks much sooner than a settled one', async () => {
+    const lookup = vi.fn(async () => found({ ...PR, checks: 'pending' as const }));
+    const h = harness(lookup);
+    await h.refresh();
+    h.tick(PR_POLL_SOON_MS); // < stable window, > fast window
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed lookup is not cached (retries on the next tick)', async () => {
+    const lookup = vi.fn(
+      async (): Promise<PrLookupResult> => ({ kind: 'unavailable', reason: 'unknown' }),
+    );
+    const h = harness(lookup);
+    await h.refresh();
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('PrCoordinator batching (one `gh pr list` for many sessions)', () => {
+  const ids = Array.from({ length: PR_BATCH_MIN_SESSIONS }, (_, i) => `s${i + 1}`);
+
+  function batchHarness(
+    results: (targets: readonly PrLookupTarget[]) => Map<string, PrLookupResult>,
+    over: { ids?: string[]; state?: Partial<SessionState> } = {},
+  ) {
+    const seen: PrLookupTarget[][] = [];
+    const lookupPrs = vi.fn(async (targets: readonly PrLookupTarget[]) => {
+      seen.push([...targets]);
+      return results(targets);
+    });
+    const lookupPr = vi.fn(async () => found(PR));
+    const h = harness(lookupPr, { ids: over.ids ?? ids, state: over.state, lookupPrs });
+    return { ...h, lookupPr, lookupPrs, seen };
+  }
+
+  it('resolves every due session with one batched call instead of N', async () => {
+    const b = batchHarness(
+      (targets) => new Map(targets.map((t, i) => [t.id, found({ ...PR, number: 10 + i })])),
+    );
+    await b.refresh();
+    expect(b.lookupPrs).toHaveBeenCalledTimes(1);
+    expect(b.lookupPr).not.toHaveBeenCalled();
+    expect(b.state('s1').pr?.number).toBe(10);
+    expect(b.state(ids[ids.length - 1]).pr?.number).toBe(10 + ids.length - 1);
+  });
+
+  it('passes each session its worktree, branch and already-known PR number', async () => {
+    const b = batchHarness((targets) => new Map(targets.map((t) => [t.id, { kind: 'absent' }])), {
+      state: {
+        pr: { number: 42, url: 'u' },
+        prStatus: { mergeStatus: 'mergeable', checks: 'passing' },
+      },
+    });
+    await b.refresh();
+    expect(b.seen[0]).toEqual(
+      ids.map((id) => ({ id, cwd: `/wt/${id}`, branch: `codiva/${id}`, knownPr: 42 })),
+    );
+  });
+
+  it('omits knownPr for sessions with no PR yet', async () => {
+    const b = batchHarness((targets) => new Map(targets.map((t) => [t.id, { kind: 'absent' }])));
+    await b.refresh();
+    expect(b.seen[0]?.[0]).toEqual({ id: 's1', cwd: '/wt/s1', branch: 'codiva/s1' });
+  });
+
+  it('falls back to per-session lookups below the threshold', async () => {
+    const b = batchHarness(() => new Map(), { ids: ['only'] });
+    await b.refresh();
+    expect(b.lookupPrs).not.toHaveBeenCalled();
+    expect(b.lookupPr).toHaveBeenCalledTimes(1);
+    expect(b.state('only').pr).toEqual({ number: 42, url: 'u' });
+  });
+
+  it('treats a session the batch did not answer as unknown, not as "no PR"', async () => {
+    const b = batchHarness(
+      (targets) => {
+        const map = new Map<string, PrLookupResult>();
+        for (const t of targets.slice(1)) {
+          map.set(t.id, { kind: 'absent' });
+        }
+        return map; // s1 missing from the response
+      },
+      {
+        state: {
+          pr: { number: 42, url: 'u' },
+          prStatus: { mergeStatus: 'mergeable', checks: 'passing' },
+        },
+      },
+    );
+    await b.refresh();
+    expect(b.state('s1').pr).toEqual({ number: 42, url: 'u' }); // kept
+    expect(b.state('s1').prLookup).toBe('error');
+    expect(b.state('s2').pr).toBeUndefined();
+  });
+
+  it('keeps every PR and flags the rows when the batch rejects', async () => {
+    const lookupPrs = vi.fn(async () => {
+      throw new Error('gh exploded');
+    });
+    const h = harness(async () => found(PR), {
+      ids,
+      state: {
+        pr: { number: 42, url: 'u' },
+        prStatus: { mergeStatus: 'mergeable', checks: 'passing' },
+      },
+      lookupPrs,
+    });
+    await h.refresh();
+    for (const id of ids) {
+      expect(h.state(id).pr).toEqual({ number: 42, url: 'u' });
+      expect(h.state(id).prLookup).toBe('error');
+    }
+  });
+
+  it('backs off when the batch reports a rate limit', async () => {
+    const b = batchHarness(
+      (targets) =>
+        new Map(targets.map((t) => [t.id, { kind: 'unavailable', reason: 'rate_limit' }])),
+    );
+    await b.refresh();
+    expect(b.lookupPrs).toHaveBeenCalledTimes(1);
+    b.tick(PR_LOOKUP_BACKOFF_MS - 1);
+    await b.refresh();
+    expect(b.lookupPrs).toHaveBeenCalledTimes(1);
+  });
+
+  it('only sends the stale sessions to the batch', async () => {
+    const b = batchHarness(
+      (targets) => new Map(targets.map((t) => [t.id, found({ ...PR, checks: 'passing' })])),
+    );
+    await b.refresh();
+    // Everything is fresh now → the next tick has nothing to ask about at all.
+    b.tick(1000);
+    await b.refresh();
+    expect(b.lookupPrs).toHaveBeenCalledTimes(1);
   });
 });

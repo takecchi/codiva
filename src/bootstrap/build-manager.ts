@@ -12,6 +12,7 @@ import {
   createPr,
   createTitleGenerator,
   lookupPr,
+  lookupPrs,
   markPrReady,
   notify,
   saveConfig,
@@ -104,6 +105,8 @@ export function buildManager(opts: {
       void saveRepoPrompt(repoRoot, prompt ?? '').catch(() => undefined);
     },
     lookupPr,
+    // セッションが増えても API コストが比例しないよう、3件以上まとまったら `gh pr list` 1回に畳む。
+    lookupPrs,
     // origin 追従 / PR 自動化は既定 on。`"followOrigin": false` / `"autoPr": false` で無効化。
     followOrigin: config.followOrigin !== false,
     autoPr: config.autoPr !== false,

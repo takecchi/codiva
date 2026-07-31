@@ -308,16 +308,18 @@ describe('interrupted event (connection drop)', () => {
 });
 
 describe('pr event', () => {
-  it('stores the PR and no-ops when unchanged', () => {
+  it('splits the lookup into a stable ref and a volatile status', () => {
     const s0 = initialState(BASE);
     expect(s0.pr).toBeUndefined();
+    expect(s0.prStatus).toBeUndefined();
 
     const withPr = reduce(s0, {
       kind: 'pr',
       pr: { number: 12, url: 'https://x/12', mergeStatus: 'unknown' },
       at: 1,
     });
-    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12', mergeStatus: 'unknown' });
+    expect(withPr.pr).toEqual({ number: 12, url: 'https://x/12' });
+    expect(withPr.prStatus).toEqual({ mergeStatus: 'unknown' });
 
     // Same PR again → same reference (no re-render on every poll).
     expect(
@@ -328,67 +330,80 @@ describe('pr event', () => {
       }),
     ).toBe(withPr);
 
-    // mergeStatus flipping on the same PR is a change → repaints the glyph.
-    expect(
-      reduce(withPr, {
-        kind: 'pr',
-        pr: { number: 12, url: 'https://x/12', mergeStatus: 'merged' },
-        at: 2,
-      }).pr?.mergeStatus,
-    ).toBe('merged');
-
-    // A different PR replaces it; undefined clears it.
+    // A different PR replaces it; undefined clears both halves.
     expect(
       reduce(withPr, {
         kind: 'pr',
         pr: { number: 13, url: 'https://x/13', mergeStatus: 'mergeable' },
         at: 3,
       }).pr,
-    ).toEqual({ number: 13, url: 'https://x/13', mergeStatus: 'mergeable' });
-    expect(reduce(withPr, { kind: 'pr', pr: undefined, at: 4 }).pr).toBeUndefined();
+    ).toEqual({ number: 13, url: 'https://x/13' });
+    const cleared = reduce(withPr, { kind: 'pr', pr: undefined, at: 4 });
+    expect(cleared.pr).toBeUndefined();
+    expect(cleared.prStatus).toBeUndefined();
     // Already undefined → same reference.
     expect(reduce(s0, { kind: 'pr', pr: undefined, at: 5 })).toBe(s0);
   });
 
-  it('re-renders when only the draft flag changes', () => {
-    const draft: SessionState = {
+  // The status half moves on its own (CI progress, draft → ready, mergeability), and
+  // must repaint the glyph — while leaving `pr` untouched so the (persisted) identity
+  // doesn't look dirty on every poll.
+  it.each([
+    {
+      label: 'the draft flag flips',
+      before: { mergeStatus: 'unknown', isDraft: true },
+      after: { mergeStatus: 'unknown', isDraft: false },
+      check: (s: SessionState) => expect(s.prStatus?.isDraft).toBe(false),
+    },
+    {
+      label: 'checks progress',
+      before: { mergeStatus: 'mergeable', checks: 'pending' },
+      after: { mergeStatus: 'mergeable', checks: 'failing' },
+      check: (s: SessionState) => expect(s.prStatus?.checks).toBe('failing'),
+    },
+    {
+      label: 'mergeability is computed',
+      before: { mergeStatus: 'unknown' },
+      after: { mergeStatus: 'merged' },
+      check: (s: SessionState) => expect(s.prStatus?.mergeStatus).toBe('merged'),
+    },
+  ] as const)('re-renders (keeping the ref) when $label', (c) => {
+    const state: SessionState = {
       ...initialState(BASE),
-      pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: true },
+      pr: { number: 3, url: 'u' },
+      prStatus: { ...c.before },
     };
-    const next = reduce(draft, {
-      kind: 'pr',
-      pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: false },
-      at: 1,
-    });
-    expect(next).not.toBe(draft);
-    expect(next.pr?.isDraft).toBe(false);
+    const next = reduce(state, { kind: 'pr', pr: { number: 3, url: 'u', ...c.after }, at: 1 });
+    expect(next).not.toBe(state);
+    expect(next.pr).toBe(state.pr); // identity untouched → no needless persist
+    c.check(next);
   });
 
-  it('no-ops when number, url and draft flag are unchanged', () => {
-    const draft: SessionState = {
+  it('no-ops when neither half changed', () => {
+    const state: SessionState = {
       ...initialState(BASE),
-      pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: true },
+      pr: { number: 3, url: 'u' },
+      prStatus: { mergeStatus: 'unknown', isDraft: true },
     };
-    const next = reduce(draft, {
+    const next = reduce(state, {
       kind: 'pr',
       pr: { number: 3, url: 'u', mergeStatus: 'unknown', isDraft: true },
       at: 1,
     });
-    expect(next).toBe(draft);
+    expect(next).toBe(state);
   });
 
-  it('re-renders when only the checks state changes (CI progress)', () => {
-    const pending: SessionState = {
-      ...initialState(BASE),
-      pr: { number: 3, url: 'u', mergeStatus: 'mergeable', checks: 'pending' },
-    };
-    const next = reduce(pending, {
+  // "The number is already known" — a restored session has the ref but no status yet,
+  // and the first successful poll must fill the status in without touching the ref.
+  it('fills in the status for an already-known PR (restored from disk)', () => {
+    const restored: SessionState = { ...initialState(BASE), pr: { number: 8, url: 'u' } };
+    const next = reduce(restored, {
       kind: 'pr',
-      pr: { number: 3, url: 'u', mergeStatus: 'mergeable', checks: 'failing' },
+      pr: { number: 8, url: 'u', mergeStatus: 'mergeable', checks: 'passing' },
       at: 1,
     });
-    expect(next).not.toBe(pending);
-    expect(next.pr?.checks).toBe('failing');
+    expect(next.pr).toBe(restored.pr);
+    expect(next.prStatus).toEqual({ mergeStatus: 'mergeable', checks: 'passing' });
   });
 });
 
@@ -411,17 +426,23 @@ describe('pr_lookup event', () => {
   it('marking the lookup failed never touches a known PR', () => {
     const withPr: SessionState = {
       ...initialState(BASE),
-      pr: { number: 7, url: 'u', mergeStatus: 'mergeable' },
+      pr: { number: 7, url: 'u' },
+      prStatus: { mergeStatus: 'mergeable' },
     };
     const next = reduce(withPr, { kind: 'pr_lookup', lookup: 'error', at: 1 });
     expect(next.pr).toBe(withPr.pr);
   });
 
   it('a pr event clears the lookup mark even when the PR is unchanged', () => {
-    const pr = { number: 7, url: 'u', mergeStatus: 'mergeable' as const };
-    const stale: SessionState = { ...initialState(BASE), pr, prLookup: 'error' };
+    const pr = { number: 7, url: 'u' };
+    const stale: SessionState = {
+      ...initialState(BASE),
+      pr,
+      prStatus: { mergeStatus: 'mergeable' },
+      prLookup: 'error',
+    };
     // A retry that finds the same PR must drop the "couldn't check" mark…
-    const next = reduce(stale, { kind: 'pr', pr: { ...pr }, at: 1 });
+    const next = reduce(stale, { kind: 'pr', pr: { ...pr, mergeStatus: 'mergeable' }, at: 1 });
     expect(next.prLookup).toBeUndefined();
     // …while keeping the existing PR object identity (no needless re-render below).
     expect(next.pr).toBe(pr);
