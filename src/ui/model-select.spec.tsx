@@ -49,6 +49,21 @@ describe('ModelSelect', () => {
     expect(lastFrame() ?? '').toContain('Best for everyday, complex tasks');
   });
 
+  // 回帰: 説明をラベルの右に並べていたときは Yoga が両方を縮め、長い説明が
+  // 途中で切れていた。折返して全文出す（`ui/choice-row.tsx`）。
+  it('wraps a long description instead of truncating it', () => {
+    const { lastFrame } = render(
+      <ModelSelect
+        current={undefined}
+        models={[{ value: 'sonnet', displayName: 'Sonnet', description: 'Y'.repeat(260) }]}
+        onSelect={noop}
+        onCancel={noop}
+      />,
+    );
+    const frame = lastFrame() ?? '';
+    expect(frame.split('Y').length - 1).toBe(260);
+  });
+
   it('shows only models the catalog offers (no hardcoded rows)', () => {
     const { lastFrame } = render(
       <ModelSelect

@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useState } from 'react';
-import { emptyBuffer, type PermissionRequest } from '@/core';
+import { choiceLines, dialogContentWidth, emptyBuffer, type PermissionRequest } from '@/core';
+import { ChoiceRow } from './choice-row';
 import { useTextBufferRef } from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, normalizeChord } from './input';
@@ -32,6 +33,7 @@ const ToolDialog: FC<{
   onDeny: (message: string) => void;
 }> = ({ request, onAllow, onDeny }) => {
   const m = useMessages();
+  const { columns } = useWindowSize();
   useInput((rawInput, rawKey) => {
     // 一覧/詳細ビューと同じく chord を復号する。modifyOtherKeys / CSI-u を送る端末
     // （Ghostty など）では y/n も生のエスケープ列で届き、素の比較が外れるため。
@@ -43,6 +45,8 @@ const ToolDialog: FC<{
     }
   });
 
+  // ツール入力の要約。何を許可するのか（実行されるコマンド等）は判断材料なので、
+  // 1 行に切り詰めず本文幅で折返して出す（先頭 200 文字までなので数行で収まる）。
   const summary = JSON.stringify(request.input).slice(0, 200);
   return (
     <Box
@@ -50,13 +54,18 @@ const ToolDialog: FC<{
       borderStyle="round"
       borderColor={statusColor.awaitingPermission}
       paddingX={1}
+      flexShrink={0}
     >
       <Text color={statusColor.awaitingPermission} bold>
         {m.permission.toolTitle(request.toolName)}
       </Text>
-      <Text dimColor wrap="truncate-end">
-        {summary}
-      </Text>
+      {/* prefix 無しの 1 件として `choiceLines` で折返す（表示幅ベースの折返しと
+          安定キーをそのまま使う。選択肢と同じ経路にして挙動を揃える）。 */}
+      {choiceLines({ label: summary }, dialogContentWidth(columns), '').map((line) => (
+        <Text key={line.key} dimColor>
+          {line.text}
+        </Text>
+      ))}
       <Text>
         <Text color={theme.yes}>y</Text>: {m.permission.allow} ・ <Text color={theme.no}>n</Text>:{' '}
         {m.permission.deny}
@@ -200,8 +209,11 @@ const QuestionDialog: FC<{
   // 複数選択時はチェックボックス幅（"[x] "）ぶん、特別項目（自分で入力する/相談する）を
   // 字下げして実選択肢と桁を揃える。
   const pad = current.multiSelect ? '    ' : '';
+  // ラベル・説明の折返し幅（枠とパディングを引いた本文幅）。ラベルと説明を横に並べず
+  // ここで折返すことで、長い文言でも切り捨てずに全文を出す。
+  const width = dialogContentWidth(columns);
   // 区切り線幅（枠内に収まる範囲でほどほどに）。
-  const dividerWidth = Math.max(1, Math.min(40, columns - 4));
+  const dividerWidth = Math.min(40, width);
 
   return (
     <Box
@@ -209,6 +221,7 @@ const QuestionDialog: FC<{
       borderStyle="round"
       borderColor={statusColor.awaitingInput}
       paddingX={1}
+      flexShrink={0}
     >
       <Text color={statusColor.awaitingInput} bold>
         {m.permission.questionTitle(qIndex + 1, questions.length, current.header)}
@@ -220,22 +233,23 @@ const QuestionDialog: FC<{
           // 複数選択: `❯ [x] ラベル`（ポインタ＋チェックボックス）。単一選択: `❯ ラベル`。
           const box = current.multiSelect ? `${checked ? '[x]' : '[ ]'} ` : '';
           return (
-            <Box key={opt.label}>
-              <Text color={cursor === i ? theme.accent : undefined}>
-                {marker(i)} {box}
-                {opt.label}
-              </Text>
-              {opt.description ? <Text dimColor> — {opt.description}</Text> : null}
-            </Box>
+            <ChoiceRow
+              key={opt.label}
+              prefix={`${marker(i)} ${box}`}
+              label={opt.label}
+              description={opt.description}
+              active={cursor === i}
+              width={width}
+            />
           );
         })}
         {/* 「自分で入力する」— 実選択肢の直後（メインブロックの一部）。 */}
-        <Box>
-          <Text color={cursor === typeIndex ? theme.accent : undefined}>
-            {marker(typeIndex)} {pad}
-            {m.permission.typeSomething}
-          </Text>
-        </Box>
+        <ChoiceRow
+          prefix={`${marker(typeIndex)} ${pad}`}
+          label={m.permission.typeSomething}
+          active={cursor === typeIndex}
+          width={width}
+        />
       </Box>
 
       {mode === 'typing' ? (
@@ -247,12 +261,12 @@ const QuestionDialog: FC<{
       {/* 区切り線 + 「これについて相談する」— 質問をスキップして会話へ戻る導線。 */}
       <Box flexDirection="column" marginTop={1}>
         <Text dimColor>{'─'.repeat(dividerWidth)}</Text>
-        <Box>
-          <Text color={cursor === chatIndex ? theme.accent : undefined}>
-            {marker(chatIndex)} {pad}
-            {m.permission.chatAboutThis}
-          </Text>
-        </Box>
+        <ChoiceRow
+          prefix={`${marker(chatIndex)} ${pad}`}
+          label={m.permission.chatAboutThis}
+          active={cursor === chatIndex}
+          width={width}
+        />
       </Box>
 
       <Box marginTop={1}>
