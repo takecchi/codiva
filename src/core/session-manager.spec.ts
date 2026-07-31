@@ -2,8 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RateLimitInfoJson } from '@/core/rate-limit';
 import { SessionManager } from '@/core/session-manager';
 import type { PrAutomation, SessionHandle, WorktreeService } from '@/core/session-ports';
-import { initialState } from '@/core/status-reducer';
-import type { CreateSessionInput, PrInfo, SessionState } from '@/core/types';
+import { initialState, reduce } from '@/core/status-reducer';
+import type {
+  CreateSessionInput,
+  PrInfo,
+  PrLookupResult,
+  PrLookupState,
+  SessionState,
+} from '@/core/types';
 import { MergeConflictError } from '@/core/worktree';
 
 function fakeWorktrees(overrides: Partial<WorktreeService> = {}): WorktreeService {
@@ -81,7 +87,14 @@ class FakeSession implements SessionHandle {
   }
   setPr(pr: PrInfo | undefined) {
     this.calls.push(`setPr:${pr ? `#${pr.number}${pr.isDraft ? ':draft' : ''}` : 'none'}`);
-    this.state = { ...this.state, pr };
+    // Real reducer: it splits `pr` into the persisted ref + volatile status and keeps
+    // each half's reference when unchanged, which is what the persist check reads.
+    this.state = reduce(this.state, { kind: 'pr', pr, at: 0 });
+    this.onChange(this.state);
+  }
+  setPrLookup(lookup: PrLookupState | undefined) {
+    this.calls.push(`prLookup:${lookup ?? 'none'}`);
+    this.state = reduce(this.state, { kind: 'pr_lookup', lookup, at: 0 });
     this.onChange(this.state);
   }
   markConflict(files: string[]) {
@@ -838,10 +851,14 @@ describe('SessionManager', () => {
 
   describe('refreshPrs (gh PR detection)', () => {
     it('looks up each live session by worktree path + branch and feeds setPr', async () => {
-      const lookupPr = vi.fn(async (_cwd: string, branch: string) =>
-        branch === 'codiva/feature'
-          ? { number: 42, url: 'https://x/pr/42', mergeStatus: 'mergeable' as const }
-          : undefined,
+      const lookupPr = vi.fn(
+        async (_cwd: string, branch: string): Promise<PrLookupResult> =>
+          branch === 'codiva/feature'
+            ? {
+                kind: 'found',
+                pr: { number: 42, url: 'https://x/pr/42', mergeStatus: 'mergeable' },
+              }
+            : { kind: 'absent' },
       );
       const created: FakeSession[] = [];
       const manager = new SessionManager({
@@ -861,12 +878,59 @@ describe('SessionManager', () => {
       await flush();
       await manager.refreshPrs();
       expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
-      expect(manager.getSnapshot()[0]?.pr).toEqual({
-        number: 42,
-        url: 'https://x/pr/42',
-        mergeStatus: 'mergeable',
-      });
+      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 42, url: 'https://x/pr/42' });
+      expect(manager.getSnapshot()[0]?.prStatus).toEqual({ mergeStatus: 'mergeable' });
       expect(created[0]?.calls).toContain('setPr:#42');
+    });
+
+    // The PR number is persisted, the status isn't — so a poll that only moves the
+    // checks glyph must not mark state.json dirty (that would re-save every 20s).
+    it('signals a persist for a newly found PR but not for a status-only change', async () => {
+      const now = { value: 0 };
+      let result: PrLookupResult = {
+        kind: 'found',
+        pr: { number: 7, url: 'u', mergeStatus: 'unknown', checks: 'pending' },
+      };
+      const onPersist = vi.fn();
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => now.value,
+        onPersist,
+        lookupPr: async () => result,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      manager.create('feature');
+      await flush();
+      created[0]?.drive('completed', 'sdk-1');
+      onPersist.mockClear();
+
+      // Discovering the PR is worth persisting (the number survives a restart).
+      await manager.refreshPrs();
+      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 7, url: 'u' });
+      expect(onPersist).toHaveBeenCalledTimes(1);
+      expect(manager.persistableState().sessions[0]?.pr).toEqual({ number: 7, url: 'u' });
+
+      // CI finishing changes only the cached status half → no re-save.
+      onPersist.mockClear();
+      result = {
+        kind: 'found',
+        pr: { number: 7, url: 'u', mergeStatus: 'mergeable', checks: 'passing' },
+      };
+      now.value += 60_000;
+      await manager.refreshPrs();
+      expect(manager.getSnapshot()[0]?.prStatus).toEqual({
+        mergeStatus: 'mergeable',
+        checks: 'passing',
+      });
+      expect(onPersist).not.toHaveBeenCalled();
     });
 
     it('is a no-op when no lookupPr is wired', async () => {
@@ -904,15 +968,14 @@ describe('SessionManager', () => {
     });
 
     it('readies a draft PR once its checks pass (auto-ready)', async () => {
-      const lookupPr = vi.fn(async () => ({
-        number: 5,
-        url: 'u',
-        mergeStatus: 'unknown' as const,
-        isDraft: true,
-      }));
+      const lookupPr = vi.fn(
+        async (): Promise<PrLookupResult> => ({
+          kind: 'found',
+          pr: { number: 5, url: 'u', mergeStatus: 'unknown', isDraft: true, checks: 'passing' },
+        }),
+      );
       const prAutomation: PrAutomation = {
         createPr: vi.fn(async () => undefined),
-        checks: vi.fn(async () => 'passing' as const),
         markReady: vi.fn(async () => {}),
       };
       const created: FakeSession[] = [];
@@ -935,24 +998,23 @@ describe('SessionManager', () => {
       await flush();
       await manager.refreshPrs();
       expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
-      expect(manager.getSnapshot()[0]?.pr).toEqual({
-        number: 5,
-        url: 'u',
+      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 5, url: 'u' });
+      expect(manager.getSnapshot()[0]?.prStatus).toEqual({
         mergeStatus: 'unknown',
+        checks: 'passing',
         isDraft: false,
       });
     });
 
     it('does not ready a draft PR while checks are pending', async () => {
-      const lookupPr = vi.fn(async () => ({
-        number: 5,
-        url: 'u',
-        mergeStatus: 'unknown' as const,
-        isDraft: true,
-      }));
+      const lookupPr = vi.fn(
+        async (): Promise<PrLookupResult> => ({
+          kind: 'found',
+          pr: { number: 5, url: 'u', mergeStatus: 'unknown', isDraft: true, checks: 'pending' },
+        }),
+      );
       const prAutomation: PrAutomation = {
         createPr: vi.fn(async () => undefined),
-        checks: vi.fn(async () => 'pending' as const),
         markReady: vi.fn(async () => {}),
       };
       const manager = new SessionManager({
@@ -1028,7 +1090,6 @@ describe('SessionManager', () => {
       }));
       const prAutomation: PrAutomation = {
         createPr,
-        checks: async () => 'none',
         markReady: async () => {},
       };
       const created: FakeSession[] = [];
@@ -1061,9 +1122,9 @@ describe('SessionManager', () => {
       await flush();
       expect(pushBranch).toHaveBeenCalledTimes(1);
       expect(createPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
-      expect(manager.getSnapshot()[0]?.pr).toEqual({
-        number: 8,
-        url: 'u',
+      // The number is shown immediately (and persisted); its status rides along.
+      expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 8, url: 'u' });
+      expect(manager.getSnapshot()[0]?.prStatus).toEqual({
         mergeStatus: 'unknown',
         isDraft: true,
       });
@@ -1109,7 +1170,6 @@ describe('SessionManager', () => {
           autoPr: false,
           prAutomation: {
             createPr: async () => undefined,
-            checks: async () => 'none',
             markReady: async () => {},
           },
           createSession: ({ input, onChange }) => {

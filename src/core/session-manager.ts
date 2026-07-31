@@ -16,6 +16,7 @@ import { discardSession, mergeSession, sessionDiffStat } from './session-actions
 import type {
   ActionResult,
   PrAutomation,
+  PrBatchLookup,
   PrLookup,
   SessionHandle,
   WorktreeMeta,
@@ -45,8 +46,13 @@ export interface SessionManagerDeps {
   onModelChange?: (model: string | undefined) => void;
   /** Called when the repo instructions change (via /prompt); wired to persist `.codiva/prompt.md`. */
   onRepoPromptChange?: (prompt: string | undefined) => void;
-  /** Optional PR lookup (via `gh`); when set, refreshPrs() polls each live session's branch. */
+  /** Optional PR lookup (via `gh`); when set, refreshPrs() polls each stale session's branch. */
   lookupPr?: PrLookup;
+  /**
+   * Optional batched PR lookup (one `gh pr list` for many sessions). Keeps the API
+   * cost from scaling with the number of open sessions; falls back to `lookupPr`.
+   */
+  lookupPrs?: PrBatchLookup;
   /**
    * When true, sessions are created from the latest `origin/<base>` (fetched
    * first) instead of the local HEAD. Falls back to local HEAD when there is no
@@ -80,6 +86,10 @@ function persistRelevantChanged(prev: SessionState, next: SessionState): boolean
     prev.finishedAt !== next.finishedAt ||
     prev.totalCostUsd !== next.totalCostUsd ||
     prev.model !== next.model ||
+    // Reference compare: the reducer keeps `pr` identical while only the (unpersisted)
+    // status half changes, so a poll that just moves the checks glyph doesn't
+    // re-write state.json — only actually discovering/losing a PR does.
+    prev.pr !== next.pr ||
     prev.todos !== next.todos
   );
 }
@@ -131,10 +141,12 @@ export class SessionManager {
       autoPr: deps.autoPr,
       prAutomation: deps.prAutomation,
       lookupPr: deps.lookupPr,
+      lookupPrs: deps.lookupPrs,
       getMeta: (id) => this.worktreeMeta.get(id),
       getState: (id) => this.store.get(id),
       getSession: (id) => this.sessions.get(id),
       ids: () => this.store.ids(),
+      now: () => this.now(),
     });
   }
 

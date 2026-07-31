@@ -90,6 +90,53 @@ describe('toPersistedSession', () => {
     expect(fromPersistedJson({ sessions: [persisted] }).sessions[0]?.model).toBe('claude-opus-4-8');
   });
 
+  // The PR *number* is stable per branch, so it's cached across restarts and the list
+  // can render `#<n>` before the first `gh` poll answers. The volatile half (checks /
+  // mergeability / draft) is not persisted — it goes stale while the app is closed.
+  it('round-trips the PR number/url but never the volatile status', () => {
+    const s = state({
+      status: 'completed',
+      sdkSessionId: 'sdk-1',
+      pr: { number: 42, url: 'https://x/pull/42' },
+      prStatus: { mergeStatus: 'mergeable', checks: 'passing', isDraft: false },
+    });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' }, NOW);
+    expect(persisted?.pr).toEqual({ number: 42, url: 'https://x/pull/42' });
+    expect(JSON.stringify(persisted)).not.toContain('mergeable');
+
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
+    const restored = restoredSessionState(persisted!);
+    expect(restored.pr).toEqual({ number: 42, url: 'https://x/pull/42' });
+    expect(restored.prStatus).toBeUndefined();
+    expect(restored.prLookup).toBeUndefined();
+
+    // and it survives the untrusted-JSON validator
+    expect(fromPersistedJson({ sessions: [persisted] }).sessions[0]?.pr).toEqual({
+      number: 42,
+      url: 'https://x/pull/42',
+    });
+  });
+
+  it('omits the PR when the session has none', () => {
+    const s = state({ status: 'completed', sdkSessionId: 'sdk-1' });
+    expect(toPersistedSession(s, { slug: 'x', base: 'main' }, NOW)?.pr).toBeUndefined();
+  });
+
+  it.each([
+    { label: 'not an object', pr: 'nope' },
+    { label: 'missing url', pr: { number: 4 } },
+    { label: 'missing number', pr: { url: 'u' } },
+    { label: 'a non-numeric number', pr: { number: '4', url: 'u' } },
+  ] as const)('drops a malformed cached PR ($label) instead of restoring garbage', (c) => {
+    const base = toPersistedSession(
+      state({ status: 'completed', sdkSessionId: 'sdk-1' }),
+      { slug: 'x', base: 'main' },
+      NOW,
+    );
+    const parsed = fromPersistedJson({ sessions: [{ ...base, pr: c.pr }] });
+    expect(parsed.sessions[0]?.pr).toBeUndefined();
+  });
+
   it('maps an in-flight status to interrupted (resumable, not a clean finish)', () => {
     const s = state({ status: 'running', sdkSessionId: 'sdk-9' });
     expect(toPersistedSession(s, { slug: 'x', base: 'main' }, NOW)?.status).toBe('interrupted');

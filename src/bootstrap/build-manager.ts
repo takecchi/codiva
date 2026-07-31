@@ -12,9 +12,9 @@ import {
   createPr,
   createTitleGenerator,
   lookupPr,
+  lookupPrs,
   markPrReady,
   notify,
-  prChecks,
   saveConfig,
   saveRepoPrompt,
   type WorktreeManager,
@@ -105,9 +105,13 @@ export function buildManager(opts: {
       void saveRepoPrompt(repoRoot, prompt ?? '').catch(() => undefined);
     },
     lookupPr,
+    // セッションが増えても API コストが比例しないよう、3件以上まとまったら `gh pr list` 1回に畳む。
+    lookupPrs,
     // origin 追従 / PR 自動化は既定 on。`"followOrigin": false` / `"autoPr": false` で無効化。
     followOrigin: config.followOrigin !== false,
     autoPr: config.autoPr !== false,
-    prAutomation: { createPr, checks: prChecks, markReady: markPrReady },
+    // checks は `gh pr view` の 1 回で PrInfo に同梱されるので、専用の問い合わせは持たない
+    // （API（GraphQL）呼び出しを毎ポーリングで倍にしないため）。
+    prAutomation: { createPr, markReady: markPrReady },
   });
 }

@@ -1,4 +1,4 @@
-import type { PrChecksState, PrInfo, SessionState } from './types';
+import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
 import type { DiffStat, Worktree } from './worktree';
 
 /**
@@ -34,6 +34,7 @@ export interface SessionHandle {
   stop(): void;
   archive(): void;
   setPr(pr: PrInfo | undefined): void;
+  setPrLookup(lookup: PrLookupState | undefined): void;
   markConflict(files: string[]): void;
 }
 
@@ -44,14 +45,40 @@ export interface SessionHandle {
 export interface PrAutomation {
   /** Open a draft PR for a pushed branch (or return the existing one). */
   createPr(cwd: string, branch: string): Promise<PrInfo | undefined>;
-  /** Aggregate CI state of the PR's checks. */
-  checks(cwd: string, branch: string): Promise<PrChecksState>;
   /** Flip a draft PR to ready-for-review. */
   markReady(cwd: string, branch: string): Promise<void>;
 }
 
-/** Look up the open PR for a branch (via `gh`), or undefined if there is none. */
-export type PrLookup = (cwd: string, branch: string) => Promise<PrInfo | undefined>;
+/**
+ * Look up the PR for a branch (via `gh`). Returns a three-way result — found /
+ * absent / unavailable — never a bare undefined, so a failed lookup can't be
+ * mistaken for "this branch has no PR" (which would clear the badge).
+ */
+export type PrLookup = (cwd: string, branch: string) => Promise<PrLookupResult>;
+
+/** One session to resolve a PR for in a batched lookup. */
+export interface PrLookupTarget {
+  /** Session id — the key of the returned map. */
+  id: string;
+  /** The session's worktree path (`gh` / `git` cwd). */
+  cwd: string;
+  /** The recorded `codiva/<slug>` branch (HEAD is preferred when it differs). */
+  branch: string;
+  /**
+   * PR number already known for this session, if any. Lets the implementation tell
+   * "this PR is gone" from "the listing was truncated before reaching it".
+   */
+  knownPr?: number;
+}
+
+/**
+ * Resolve many sessions' PRs in one go (one `gh pr list` instead of one
+ * `gh pr view` each), keyed by session id. Every target must get an entry.
+ * Optional: without it the coordinator falls back to per-session lookups.
+ */
+export type PrBatchLookup = (
+  targets: readonly PrLookupTarget[],
+) => Promise<ReadonlyMap<string, PrLookupResult>>;
 
 /** Result of a lifecycle action (merge/discard) surfaced to the UI. */
 export interface ActionResult {

@@ -1,7 +1,7 @@
 import type { WorktreeMeta } from './session-ports';
 import { STATUS_META } from './status-meta';
 import { activeElapsedMs, progressOf } from './status-reducer';
-import type { LogEntry, SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
+import type { LogEntry, PrRef, SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
 
 /**
  * On-disk snapshot of a session, enough to rebuild it and resume its SDK
@@ -34,6 +34,14 @@ export interface PersistedSession {
   totalCostUsd?: number;
   /** Resolved model the session last ran on, so a restored row shows it before it resumes. */
   model?: string;
+  /**
+   * The PR detected for this branch, number + URL only. A branch's PR identity never
+   * changes, so caching it across restarts lets the list show `#<n>` immediately
+   * instead of an "unknown" cell until the first `gh` poll answers. The volatile half
+   * (merge state / checks / draft) is deliberately NOT persisted: it goes stale while
+   * the app is closed, and a wrong glyph is worse than briefly showing none.
+   */
+  pr?: PrRef;
   todos: TodoItem[];
 }
 
@@ -97,6 +105,7 @@ export function toPersistedSession(
     activeMs: activeElapsedMs(state, now),
     totalCostUsd: state.totalCostUsd,
     model: state.model,
+    pr: state.pr,
     todos: state.todos,
   };
 }
@@ -130,6 +139,9 @@ export function restoredSessionState(p: PersistedSession, history: LogEntry[] = 
     activeMs: p.activeMs ?? 0,
     totalCostUsd: p.totalCostUsd,
     model: p.model,
+    // Cached PR identity: rendered right away, with the status glyph filling in once
+    // the first poll answers (prPollIntervalMs returns 0 for exactly this case).
+    pr: p.pr,
     // Continue numbering after the restored history so new turns append cleanly.
     logSeq: history.at(-1)?.seq ?? 0,
   };
@@ -193,6 +205,17 @@ function toTodo(v: unknown): TodoItem | undefined {
   };
 }
 
+/** Cached PR identity from an untrusted snapshot; both fields or nothing. */
+function toPrRef(v: unknown): PrRef | undefined {
+  if (typeof v !== 'object' || v === null) {
+    return undefined;
+  }
+  const o = v as Record<string, unknown>;
+  const number = num(o.number);
+  const url = str(o.url);
+  return number !== undefined && url !== undefined ? { number, url } : undefined;
+}
+
 function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
   if (typeof v !== 'object' || v === null) {
     return undefined;
@@ -235,6 +258,7 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
     activeMs: num(o.activeMs),
     totalCostUsd: num(o.totalCostUsd),
     model: str(o.model),
+    pr: toPrRef(o.pr),
     todos,
   };
 }

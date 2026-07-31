@@ -500,3 +500,93 @@ Anthropic 内部の呼び名は **grove**。
 - claude.ai の Web 側で設定を変えても `~/.claude.json` の `groveConfigCache` は書き換わらない。
   キャッシュの `'on'` を信用すると、ユーザーが警告に従って OFF にしたあとも最大 7 日間
   警告が出続ける。**`'off'` はキャッシュを採用、`'on'` は必ず API で確認**（確認できなければ据え置き）。
+
+## `gh` による PR ステータス取得（実測 2026-07-31 / gh 2.96.0）
+
+一覧の `#<n>` バッジが「出るときと出ないときがある」原因の調査結果。
+
+### `gh pr view --json mergeable` は GraphQL クォータを食う
+
+- `gh pr view <branch> --json number,url,state,mergeable,isDraft` は REST ではなく **GraphQL API**
+  を叩く。GraphQL のレート制限は **5000 ポイント/時**で、REST（`core`, 5000/h）とは別枠。
+- 枯れると exit code 1・**stderr** に次を出す（stdout は空）:
+
+  ```
+  GraphQL: API rate limit already exceeded for user ID <id>.
+  ```
+
+  残量は `gh api rate_limit --jq .resources.graphql` で確認できる（`{"limit":5000,"used":5001,"remaining":0,...}`）。
+- このクォータは**同じアカウントの全ツールで共有**で、codiva のポーリングだけでなく
+  **セッション内の Claude が実行する `gh`**（PR 作成・レビュー・CI 確認…）も同じ枠を消費する。
+  並列セッションを回していると現実に枯れる。
+
+### 失敗と「PR が無い」は文言で区別できる
+
+| 状況 | exit | 文言（stderr） |
+|---|---|---|
+| PR が無い | 1 | `no pull requests found for branch "<branch>"` |
+| レート制限 | 1 | `GraphQL: API rate limit already exceeded …` |
+| 未認証 | 4 | `To get started with GitHub CLI, please run: gh auth login` |
+| `gh` 未導入 | — | spawn 時 `ENOENT` |
+
+→ `utils/pr.ts` は例外をこの文言で分類し、`found` / `absent` / `unavailable(reason)` を返す。
+`unavailable` を `absent` に丸めると、レート制限や一時的な通信断のたびに `setPr(undefined)` が走って
+**表示中の `#<n>` が消え、次のポーリングで復活する**（＝「GitHub ステータスが時々出ない」の正体）。
+
+### ポーリングのコストを下げる
+
+- `statusCheckRollup` は PR メタ情報と**同じ 1 回の `pr view`** で取れる。auto-ready 用に別途
+  `--json statusCheckRollup` を投げていたのをやめ、1 セッション 1 サイクル = `gh` 1 回にした
+  （HEAD ブランチで見つからなかったときだけ記録ブランチへフォールバックの 2 回目）。
+- `rate_limit` / `auth` / `cli` を検知したら 5 分ポーリングを止める（`PR_LOOKUP_BACKOFF_MS`）。
+  20 秒間隔で叩き続けても回復しないうえ、ユーザーの他ツールの枠まで削る。
+- `merged` になった PR と `archived` セッションは以後問い合わせない。サイクルの多重実行も禁止
+  （`gh` が 20 秒より遅いと重なる）。
+
+### ポーリングのコストを「セッション数 × 頻度」から切り離す
+
+素朴な実装（全セッション × 20 秒）だと 10 セッションで 1800 リクエスト/時。GraphQL の 5000/時を
+Claude セッション自身の `gh` と分け合うので、これだけで枯れる。3 段で切り離した。
+
+1. **PR の識別と状態を分けて、識別はキャッシュし切る**（`PrRef` / `PrStatus`）。番号・URL は
+   ブランチに対して不変なので `state.json` に載せ、再起動直後から `#<n>` を出す（状態のグリフは
+   最初のポーリングで付く）。状態だけ取れないときも番号は消さない。
+2. **セッションごとの陳腐化で叩くかを決める**（`core/pr-refresh.ts`）。20 秒 tick はスケジューラで、
+   実際のリクエストはチェック実行中（20 秒）/ マージ可否計算中（60 秒）/ 落ち着いた PR（180 秒）を
+   超えたものだけ。`merged` PR と `archived` セッションは永久に対象外。落ち着いた一覧なら
+   9 tick に 1 回しか叩かない。
+3. **同時に 3 件以上あるときは `gh pr list` 1 回に畳む**（`utils/pr.ts` の `lookupPrs`）。
+   `--json headRefName,…` で全 PR を取り、各セッションの HEAD ブランチ（ローカルの
+   `git rev-parse`、API 不要）で突き合わせる。10 セッションでもリクエストは 1 回。
+   1〜2 件のときは `pr view` の方が安い（list は全件のチェック rollup を運ぶ）ので閾値を置く。
+   `--limit` は件数 × 3（30〜100）。list は新しい順なので、セッションの PR（＝最近作ったもの）は
+   必ず先頭側に入る。ページが埋まっていた（＝切り詰められた）ときだけ、既知の PR が
+   見つからなかったセッションを `pr view` で確認する（「消えた」と誤判定しないため）。
+
+### `gh pr list --json` の実測（gh 2.96.0, 2026-07-31）
+
+`pr list` は **JSON 配列**で、各要素は `pr view` と同じフィールド + `headRefName`。
+
+```json
+[{"headRefName":"fix/pr-status-visibility","number":78,"url":"https://github.com/o/r/pull/78",
+  "state":"OPEN","mergeable":"MERGEABLE","isDraft":false,
+  "statusCheckRollup":[{"__typename":"CheckRun","name":"check","status":"COMPLETED",
+                        "conclusion":"SUCCESS","startedAt":"…","completedAt":"…",
+                        "workflowName":"CI","detailsUrl":"…"}]}]
+```
+
+- rollup の要素は `__typename: 'CheckRun'` のとき **`state` を持たない**（`status` + `conclusion`）。
+  レガシーな commit status は `StatusContext` で `state` を持つ。`toChecksState` が両方を読むのは
+  このため（片方しか見ないと「チェック無し」に見える）。
+- **新しい順**に返る（#78 → #77 の順で観測）。セッションの PR は最近作ったものなので、
+  `--limit` で切り詰められても取りこぼさない。
+- `state: 'MERGED'` のとき `mergeable` は `UNKNOWN` に落ちる（#77 で観測）。`state` を優先する
+  `toMergeStatus` の根拠。
+
+実 API で `lookupPrs` を通した結果（1 回の `pr list` + セッションごとのローカル `git rev-parse`）:
+
+| ケース | 入力 | 結果 |
+|---|---|---|
+| HEAD にある PR | cwd=この worktree, branch=`codiva/github` | `found` #78 mergeable / passing |
+| PR 無し | cwd=main チェックアウト, branch=存在しないブランチ | **`absent`**（`unavailable` ではない） |
+| マージ済み | branch=`codiva/task-11` | `found` #77 **merged**（以後ポーリングしない） |

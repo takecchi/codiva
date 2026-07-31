@@ -1,6 +1,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { PrChecksState, PrInfo, PrMergeStatus } from '@/core';
+import type {
+  PrChecksState,
+  PrInfo,
+  PrLookupResult,
+  PrLookupTarget,
+  PrMergeStatus,
+  PrUnavailableReason,
+} from '@/core';
 
 const execFileAsync = promisify(execFile);
 
@@ -11,7 +18,14 @@ export type ExecLike = (
   opts: { cwd: string },
 ) => Promise<{ stdout: string }>;
 
-/** Shape of the `gh pr view --json number,url,state,mergeable,isDraft` payload we care about. */
+/**
+ * The one `gh pr view` field set we ask for. `statusCheckRollup` rides along in the
+ * *same* call as the PR metadata on purpose: it used to be a second `gh` invocation
+ * for auto-ready, which doubled the API cost of every poll for no extra information.
+ */
+const PR_VIEW_FIELDS = 'number,url,state,mergeable,isDraft,statusCheckRollup';
+
+/** Shape of the `gh pr view --json …` payload we care about. */
 interface PrViewJson {
   number?: unknown;
   url?: unknown;
@@ -20,6 +34,8 @@ interface PrViewJson {
   /** `MERGEABLE` | `CONFLICTING` | `UNKNOWN`. */
   mergeable?: unknown;
   isDraft?: unknown;
+  /** Array of check-runs / status-contexts for the PR's head commit. */
+  statusCheckRollup?: unknown;
 }
 
 /**
@@ -37,101 +53,6 @@ function toMergeStatus(state: unknown, mergeable: unknown): PrMergeStatus {
     return 'conflicting';
   }
   return 'unknown';
-}
-
-function toPrInfo(stdout: string): PrInfo | undefined {
-  const json = JSON.parse(stdout) as PrViewJson;
-  const number = typeof json.number === 'number' ? json.number : undefined;
-  const url = typeof json.url === 'string' ? json.url : undefined;
-  if (number === undefined || url === undefined) {
-    return undefined;
-  }
-  const mergeStatus = toMergeStatus(json.state, json.mergeable);
-  return typeof json.isDraft === 'boolean'
-    ? { number, url, mergeStatus, isDraft: json.isDraft }
-    : { number, url, mergeStatus };
-}
-
-/**
- * The worktree's current HEAD branch, or undefined when detached / unresolvable.
- *
- * A session is created on a `codiva/<slug>` worktree branch, but the work that
- * ends up as a PR usually lives on a *different* branch: our git rules cut a
- * fresh `feat/…` / `fix/…` branch before opening the PR, which moves the
- * worktree's HEAD off `codiva/<slug>`. Looking the PR up by the recorded
- * `codiva/<slug>` name then finds nothing and the `#<n>` badge never appears.
- * So we resolve where HEAD actually points and prefer that.
- */
-async function currentBranch(cwd: string, exec: ExecLike): Promise<string | undefined> {
-  try {
-    const { stdout } = await exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
-    const branch = stdout.trim();
-    // Empty or the literal "HEAD" means detached — no branch name to query by.
-    return branch.length === 0 || branch === 'HEAD' ? undefined : branch;
-  } catch {
-    return undefined;
-  }
-}
-
-async function viewPr(cwd: string, branch: string, exec: ExecLike): Promise<PrInfo | undefined> {
-  try {
-    const { stdout } = await exec(
-      'gh',
-      ['pr', 'view', branch, '--json', 'number,url,state,mergeable,isDraft'],
-      { cwd },
-    );
-    return toPrInfo(stdout);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Resolve the open PR for a session's worktree via the GitHub CLI, or undefined
- * when there is none. Tries the worktree's *current* HEAD branch first (where the
- * work and its PR actually live) and falls back to the recorded `branch`, so the
- * `#<n>` badge still shows when the session opened its PR from a branch other than
- * the original `codiva/<slug>` worktree branch.
- *
- * Best-effort: any failure (no PR, `gh`/`git` missing, not authenticated, offline,
- * malformed JSON) resolves to undefined rather than throwing, so PR detection never
- * disrupts a session. Args are passed as argv (never a shell string) so the branch
- * name can't be interpreted.
- */
-export async function lookupPr(
-  cwd: string,
-  branch: string,
-  exec: ExecLike = execFileAsync,
-): Promise<PrInfo | undefined> {
-  const head = await currentBranch(cwd, exec);
-  // De-dup: only fall through to the recorded branch when HEAD differs from it.
-  const candidates = head && head !== branch ? [head, branch] : [branch];
-  for (const candidate of candidates) {
-    const pr = await viewPr(cwd, candidate, exec);
-    if (pr) {
-      return pr;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Open a draft PR for `branch` (title/body auto-filled from commits) and return
- * it. The branch must already be pushed to origin. If a PR already exists the
- * create step fails harmlessly and we still return the existing PR via lookup.
- * Best-effort: resolves undefined when no PR can be found/created.
- */
-export async function createPr(
-  cwd: string,
-  branch: string,
-  exec: ExecLike = execFileAsync,
-): Promise<PrInfo | undefined> {
-  try {
-    await exec('gh', ['pr', 'create', '--draft', '--fill', '--head', branch], { cwd });
-  } catch {
-    // PR may already exist, or `gh` is unavailable — fall through to lookup.
-  }
-  return lookupPr(cwd, branch, exec);
 }
 
 /** One entry of `gh`'s statusCheckRollup (check-run or legacy status-context). */
@@ -167,40 +88,308 @@ function isPending(c: RollupCheck): boolean {
   return state === 'PENDING' || state === 'EXPECTED';
 }
 
-function toChecksState(stdout: string): PrChecksState {
-  const json = JSON.parse(stdout) as { statusCheckRollup?: unknown };
-  const rollup = Array.isArray(json.statusCheckRollup)
-    ? (json.statusCheckRollup as RollupCheck[])
-    : [];
-  if (rollup.length === 0) {
+/** Aggregate a statusCheckRollup array into one CI state (worst-first). */
+function toChecksState(rollup: unknown): PrChecksState {
+  const checks = Array.isArray(rollup) ? (rollup as RollupCheck[]) : [];
+  if (checks.length === 0) {
     return 'none';
   }
-  if (rollup.some(isFailing)) {
+  if (checks.some(isFailing)) {
     return 'failing';
   }
-  if (rollup.some(isPending)) {
+  if (checks.some(isPending)) {
     return 'pending';
   }
   return 'passing';
 }
 
+/** Shared by the single (`pr view`) and batched (`pr list`) payload shapes. */
+function toPrJson(json: PrViewJson): PrInfo | undefined {
+  const number = typeof json.number === 'number' ? json.number : undefined;
+  const url = typeof json.url === 'string' ? json.url : undefined;
+  if (number === undefined || url === undefined) {
+    return undefined;
+  }
+  const pr: PrInfo = {
+    number,
+    url,
+    mergeStatus: toMergeStatus(json.state, json.mergeable),
+    checks: toChecksState(json.statusCheckRollup),
+  };
+  return typeof json.isDraft === 'boolean' ? { ...pr, isDraft: json.isDraft } : pr;
+}
+
+function toPrInfo(stdout: string): PrInfo | undefined {
+  return toPrJson(JSON.parse(stdout) as PrViewJson);
+}
+
+/** Concatenate the strings an execFile rejection carries (code / message / streams). */
+function errorText(err: unknown): string {
+  if (typeof err !== 'object' || err === null) {
+    return String(err).toLowerCase();
+  }
+  const record = err as Record<string, unknown>;
+  return ['code', 'message', 'stderr', 'stdout']
+    .map((key) => record[key])
+    .filter((v): v is string => typeof v === 'string')
+    .join('\n')
+    .toLowerCase();
+}
+
+/** True when `gh` told us the branch simply has no PR (an answer, not a failure). */
+function meansNoPr(text: string): boolean {
+  return (
+    text.includes('no pull requests found') ||
+    text.includes('no pull request found') ||
+    text.includes('could not resolve to a pullrequest')
+  );
+}
+
 /**
- * Aggregate CI state of `branch`'s PR from `gh pr view --json statusCheckRollup`.
- * Best-effort: any failure resolves to `none` (treated as "nothing to ready on").
+ * Classify why `gh` failed, so the caller can keep the last known PR instead of
+ * treating "couldn't ask" as "there is none". Ordered most-specific first;
+ * anything unrecognized is `unknown` (still non-destructive, just not backed off).
  */
-export async function prChecks(
+function toUnavailableReason(text: string): PrUnavailableReason {
+  if (text.includes('enoent') || text.includes('command not found')) {
+    return 'cli';
+  }
+  if (
+    text.includes('rate limit') ||
+    text.includes('secondary rate') ||
+    text.includes('api rate limit')
+  ) {
+    return 'rate_limit';
+  }
+  if (
+    text.includes('gh auth login') ||
+    text.includes('authentication') ||
+    text.includes('not logged in') ||
+    text.includes('bad credentials') ||
+    text.includes('http 401')
+  ) {
+    return 'auth';
+  }
+  if (
+    text.includes('could not resolve host') ||
+    text.includes('network is unreachable') ||
+    text.includes('connection refused') ||
+    text.includes('etimedout') ||
+    text.includes('econnreset') ||
+    text.includes('eai_again') ||
+    text.includes('timeout') ||
+    text.includes('dial tcp')
+  ) {
+    return 'network';
+  }
+  return 'unknown';
+}
+
+/**
+ * The worktree's current HEAD branch, or undefined when detached / unresolvable.
+ *
+ * A session is created on a `codiva/<slug>` worktree branch, but the work that
+ * ends up as a PR usually lives on a *different* branch: our git rules cut a
+ * fresh `feat/…` / `fix/…` branch before opening the PR, which moves the
+ * worktree's HEAD off `codiva/<slug>`. Looking the PR up by the recorded
+ * `codiva/<slug>` name then finds nothing and the `#<n>` badge never appears.
+ * So we resolve where HEAD actually points and prefer that.
+ */
+async function currentBranch(cwd: string, exec: ExecLike): Promise<string | undefined> {
+  try {
+    const { stdout } = await exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
+    const branch = stdout.trim();
+    // Empty or the literal "HEAD" means detached — no branch name to query by.
+    return branch.length === 0 || branch === 'HEAD' ? undefined : branch;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One `gh pr view` for a single branch, classified into a lookup result. */
+async function viewPr(cwd: string, branch: string, exec: ExecLike): Promise<PrLookupResult> {
+  let stdout: string;
+  try {
+    ({ stdout } = await exec('gh', ['pr', 'view', branch, '--json', PR_VIEW_FIELDS], { cwd }));
+  } catch (err) {
+    const text = errorText(err);
+    return meansNoPr(text)
+      ? { kind: 'absent' }
+      : { kind: 'unavailable', reason: toUnavailableReason(text) };
+  }
+  try {
+    const pr = toPrInfo(stdout);
+    // Well-formed JSON without number/url shouldn't happen; treat it as "couldn't
+    // tell" rather than "no PR" so a parse surprise never wipes a known badge.
+    return pr ? { kind: 'found', pr } : { kind: 'unavailable', reason: 'unknown' };
+  } catch {
+    return { kind: 'unavailable', reason: 'unknown' };
+  }
+}
+
+/**
+ * Resolve the open PR for a session's worktree via the GitHub CLI. Tries the
+ * worktree's *current* HEAD branch first (where the work and its PR actually live)
+ * and falls back to the recorded `branch`, so the `#<n>` badge still shows when the
+ * session opened its PR from a branch other than the original `codiva/<slug>` one.
+ *
+ * Never throws. Distinguishes "this branch has no PR" (`absent`) from "`gh`
+ * couldn't tell us" (`unavailable`) — callers must keep the previously known PR in
+ * the latter case, otherwise a rate limit or a dropped connection silently erases
+ * the badge until the next successful poll.
+ */
+export async function lookupPr(
   cwd: string,
   branch: string,
   exec: ExecLike = execFileAsync,
-): Promise<PrChecksState> {
-  try {
-    const { stdout } = await exec('gh', ['pr', 'view', branch, '--json', 'statusCheckRollup'], {
-      cwd,
-    });
-    return toChecksState(stdout);
-  } catch {
-    return 'none';
+): Promise<PrLookupResult> {
+  const head = await currentBranch(cwd, exec);
+  // De-dup: only fall through to the recorded branch when HEAD differs from it.
+  const candidates = head && head !== branch ? [head, branch] : [branch];
+  let lastFailure: PrLookupResult | undefined;
+  for (const candidate of candidates) {
+    const result = await viewPr(cwd, candidate, exec);
+    if (result.kind === 'found') {
+      return result;
+    }
+    if (result.kind === 'unavailable') {
+      lastFailure = result;
+    }
   }
+  // Only report `absent` when every candidate was actually answered; a failure on
+  // any candidate means we can't rule out a PR on it.
+  return lastFailure ?? { kind: 'absent' };
+}
+
+/** Fields for the batched list — the PR view set plus the branch to match on. */
+const PR_LIST_FIELDS = `headRefName,${PR_VIEW_FIELDS}`;
+
+/** Bounds for `gh pr list --limit`: enough headroom to cover every session's PR. */
+const PR_LIST_MIN_LIMIT = 30;
+const PR_LIST_MAX_LIMIT = 100;
+
+/** One `gh pr list` entry: a PR plus the branch it comes from. */
+interface PrListEntry {
+  branch: string;
+  pr: PrInfo;
+  /** Open PRs win over closed/merged ones for the same branch (as `gh pr view` does). */
+  open: boolean;
+}
+
+function toListEntry(value: unknown): PrListEntry | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const json = value as PrViewJson & { headRefName?: unknown };
+  const branch = typeof json.headRefName === 'string' ? json.headRefName : undefined;
+  const pr = toPrJson(json);
+  return branch && pr ? { branch, pr, open: json.state === 'OPEN' } : undefined;
+}
+
+/**
+ * Index list entries by head branch. `gh pr list` is newest-first, so the first
+ * entry for a branch wins — except that an open PR always beats a closed/merged one
+ * (a branch reused after a closed PR must show the live one).
+ */
+function indexByBranch(entries: readonly PrListEntry[]): Map<string, PrListEntry> {
+  const byBranch = new Map<string, PrListEntry>();
+  for (const entry of entries) {
+    const existing = byBranch.get(entry.branch);
+    if (!existing || (entry.open && !existing.open)) {
+      byBranch.set(entry.branch, entry);
+    }
+  }
+  return byBranch;
+}
+
+/**
+ * Look up many sessions' PRs with a **single** `gh pr list` instead of one
+ * `gh pr view` per session, then match each session locally by its HEAD branch (or
+ * its recorded `codiva/<slug>` branch).
+ *
+ * This is the fix for "N sessions × every 20s" API pressure: the cost stops scaling
+ * with the number of open sessions. Every worktree of the repo resolves to the same
+ * GitHub repo, so any session's worktree can host the one list call.
+ *
+ * Failure handling matches {@link lookupPr}: a failed list marks *every* target
+ * `unavailable` (never `absent`), so no badge is cleared by a rate limit. If the
+ * list came back truncated and a target whose PR we already knew isn't in it, we
+ * verify that one session with a targeted view rather than declaring it gone.
+ */
+export async function lookupPrs(
+  targets: readonly PrLookupTarget[],
+  exec: ExecLike = execFileAsync,
+): Promise<Map<string, PrLookupResult>> {
+  const results = new Map<string, PrLookupResult>();
+  const first = targets[0];
+  if (!first) {
+    return results;
+  }
+  const limit = Math.min(PR_LIST_MAX_LIMIT, Math.max(PR_LIST_MIN_LIMIT, targets.length * 3));
+  let stdout: string;
+  try {
+    ({ stdout } = await exec(
+      'gh',
+      ['pr', 'list', '--state', 'all', '--limit', String(limit), '--json', PR_LIST_FIELDS],
+      { cwd: first.cwd },
+    ));
+  } catch (err) {
+    const reason = toUnavailableReason(errorText(err));
+    for (const target of targets) {
+      results.set(target.id, { kind: 'unavailable', reason });
+    }
+    return results;
+  }
+  let entries: PrListEntry[];
+  let truncated: boolean;
+  try {
+    const json: unknown = JSON.parse(stdout);
+    const rows = Array.isArray(json) ? json : [];
+    entries = rows.map(toListEntry).filter((e): e is PrListEntry => e !== undefined);
+    // A full page means older PRs were cut off; only then can a known PR be missing
+    // for a reason other than "it's gone".
+    truncated = rows.length >= limit;
+  } catch {
+    for (const target of targets) {
+      results.set(target.id, { kind: 'unavailable', reason: 'unknown' });
+    }
+    return results;
+  }
+  const byBranch = indexByBranch(entries);
+  for (const target of targets) {
+    // HEAD is where the work (and its PR) actually lives; the recorded branch is the
+    // fallback. Both are local git reads — no API budget.
+    const head = await currentBranch(target.cwd, exec);
+    const match = (head ? byBranch.get(head) : undefined) ?? byBranch.get(target.branch);
+    if (match) {
+      results.set(target.id, { kind: 'found', pr: match.pr });
+    } else if (target.knownPr !== undefined && truncated) {
+      results.set(target.id, await lookupPr(target.cwd, target.branch, exec));
+    } else {
+      results.set(target.id, { kind: 'absent' });
+    }
+  }
+  return results;
+}
+
+/**
+ * Open a draft PR for `branch` (title/body auto-filled from commits) and return
+ * it. The branch must already be pushed to origin. If a PR already exists the
+ * create step fails harmlessly and we still return the existing PR via lookup.
+ * Best-effort: resolves undefined when no PR can be found/created.
+ */
+export async function createPr(
+  cwd: string,
+  branch: string,
+  exec: ExecLike = execFileAsync,
+): Promise<PrInfo | undefined> {
+  try {
+    await exec('gh', ['pr', 'create', '--draft', '--fill', '--head', branch], { cwd });
+  } catch {
+    // PR may already exist, or `gh` is unavailable — fall through to lookup.
+  }
+  const result = await lookupPr(cwd, branch, exec);
+  return result.kind === 'found' ? result.pr : undefined;
 }
 
 /** Mark a draft PR ready for review (`gh pr ready`). Throws on failure. */

@@ -105,6 +105,9 @@ export const glyph = {
   warning: '⚠', // environment-level caution (e.g. training data sharing is on)
   merged: '⑂', // PR already merged (fork mark)
   mergeable: '✓', // PR can be merged cleanly
-  conflicting: '✗', // PR has conflicts, cannot merge
+  conflicting: '✗', // PR has conflicts, or its checks failed
+  checksPending: '●', // PR checks still running
+  prLoading: '⋯', // the `gh` PR lookup is in flight (nothing to show yet)
+  prUnknown: '?', // the `gh` PR lookup failed — PR state is unknown, not absent
   update: '↑', // a newer version is available on npm
 } as const;

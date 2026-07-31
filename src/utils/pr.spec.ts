@@ -1,12 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPr, type ExecLike, lookupPr, markPrReady, prChecks } from './pr';
+import type { PrUnavailableReason } from '@/core';
+import { createPr, type ExecLike, lookupPr, lookupPrs, markPrReady } from './pr';
+
+const FIELDS = 'number,url,state,mergeable,isDraft,statusCheckRollup';
 
 /** stdout for a minimal `gh pr view` payload (number,url only → mergeStatus 'unknown'). */
 const ghPr = (number: number) =>
   JSON.stringify({ number, url: `https://github.com/o/r/pull/${number}` });
 
+/** An execFile-style rejection: `gh` exits non-zero and writes to stderr. */
+function ghError(stderr: string): Error & { stderr: string; code?: string | number } {
+  return Object.assign(new Error(`Command failed: gh\n${stderr}`), { stderr, code: 1 });
+}
+
+const NO_PR = 'no pull requests found for branch "codiva/x"';
+
 describe('lookupPr', () => {
-  it('runs `gh pr view <branch> --json number,url,state,mergeable,isDraft` and parses it', async () => {
+  it('runs one `gh pr view` with every field and parses it', async () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git'
         ? { stdout: 'codiva/feature\n' }
@@ -16,20 +26,24 @@ describe('lookupPr', () => {
               url: 'https://github.com/o/r/pull/7',
               state: 'OPEN',
               mergeable: 'MERGEABLE',
+              statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }],
             }),
           },
     );
-    const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({
-      number: 7,
-      url: 'https://github.com/o/r/pull/7',
-      mergeStatus: 'mergeable',
+    await expect(lookupPr('/wt/a', 'codiva/feature', exec)).resolves.toEqual({
+      kind: 'found',
+      pr: {
+        number: 7,
+        url: 'https://github.com/o/r/pull/7',
+        mergeStatus: 'mergeable',
+        checks: 'passing',
+      },
     });
-    expect(exec).toHaveBeenCalledWith(
-      'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url,state,mergeable,isDraft'],
-      { cwd: '/wt/a' },
-    );
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/feature', '--json', FIELDS], {
+      cwd: '/wt/a',
+    });
+    // Checks ride along in the PR view — never a second `gh` round-trip.
+    expect(exec.mock.calls.filter(([file]) => file === 'gh')).toHaveLength(1);
   });
 
   it('parses isDraft from the pr view payload', async () => {
@@ -44,12 +58,15 @@ describe('lookupPr', () => {
             }),
           },
     );
-    const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({
-      number: 7,
-      url: 'https://github.com/o/r/pull/7',
-      mergeStatus: 'unknown',
-      isDraft: true,
+    await expect(lookupPr('/wt/a', 'codiva/feature', exec)).resolves.toEqual({
+      kind: 'found',
+      pr: {
+        number: 7,
+        url: 'https://github.com/o/r/pull/7',
+        mergeStatus: 'unknown',
+        checks: 'none',
+        isDraft: true,
+      },
     });
   });
 
@@ -73,21 +90,45 @@ describe('lookupPr', () => {
             }),
           },
     );
-    const pr = await lookupPr('/wt', 'codiva/x', exec);
-    expect(pr?.mergeStatus).toBe(c.expected);
+    const result = await lookupPr('/wt', 'codiva/x', exec);
+    expect(result.kind === 'found' && result.pr.mergeStatus).toBe(c.expected);
   });
 
-  it('omits isDraft when the field is absent', async () => {
+  it.each([
+    { rollup: [], expected: 'none', label: 'no checks configured' },
+    {
+      rollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }, { state: 'SUCCESS' }],
+      expected: 'passing',
+      label: 'every check succeeded',
+    },
+    {
+      rollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }, { status: 'IN_PROGRESS' }],
+      expected: 'pending',
+      label: 'a check is still running',
+    },
+    {
+      rollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }, { state: 'PENDING' }],
+      expected: 'pending',
+      label: 'a legacy status is pending',
+    },
+    {
+      rollup: [{ status: 'IN_PROGRESS' }, { status: 'COMPLETED', conclusion: 'FAILURE' }],
+      expected: 'failing',
+      label: 'any check failed (even if others pend)',
+    },
+    {
+      rollup: 'not-an-array',
+      expected: 'none',
+      label: 'the rollup is not an array',
+    },
+  ] as const)('aggregates checks → $expected when $label', async (c) => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git'
         ? { stdout: 'codiva/x\n' }
-        : { stdout: JSON.stringify({ number: 7, url: 'https://github.com/o/r/pull/7' }) },
+        : { stdout: JSON.stringify({ number: 1, url: 'u', statusCheckRollup: c.rollup }) },
     );
-    await expect(lookupPr('/wt/a', 'codiva/x', exec)).resolves.toEqual({
-      number: 7,
-      url: 'https://github.com/o/r/pull/7',
-      mergeStatus: 'unknown',
-    });
+    const result = await lookupPr('/wt', 'codiva/x', exec);
+    expect(result.kind === 'found' && result.pr.checks).toBe(c.expected);
   });
 
   it('looks the PR up by the worktree HEAD branch, not the recorded branch', async () => {
@@ -96,53 +137,36 @@ describe('lookupPr', () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'feat/new-thing\n' } : { stdout: ghPr(7) },
     );
-    const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({
-      number: 7,
-      url: 'https://github.com/o/r/pull/7',
-      mergeStatus: 'unknown',
-    });
+    const result = await lookupPr('/wt/a', 'codiva/feature', exec);
+    expect(result.kind === 'found' && result.pr.number).toBe(7);
     expect(exec).toHaveBeenCalledWith('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: '/wt/a',
     });
-    expect(exec).toHaveBeenCalledWith(
-      'gh',
-      ['pr', 'view', 'feat/new-thing', '--json', 'number,url,state,mergeable,isDraft'],
-      { cwd: '/wt/a' },
-    );
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'feat/new-thing', '--json', FIELDS], {
+      cwd: '/wt/a',
+    });
   });
 
   it('falls back to the recorded branch when HEAD has no PR', async () => {
     const exec = vi.fn<ExecLike>(async (file, args) => {
       if (file === 'git') return { stdout: 'feat/new-thing\n' };
-      if (args[2] === 'feat/new-thing') throw new Error('no pull requests found for branch');
+      if (args[2] === 'feat/new-thing') throw ghError(NO_PR);
       return { stdout: ghPr(5) };
     });
-    const pr = await lookupPr('/wt', 'codiva/feature', exec);
-    expect(pr).toEqual({
-      number: 5,
-      url: 'https://github.com/o/r/pull/5',
-      mergeStatus: 'unknown',
+    const result = await lookupPr('/wt', 'codiva/feature', exec);
+    expect(result.kind === 'found' && result.pr.number).toBe(5);
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/feature', '--json', FIELDS], {
+      cwd: '/wt',
     });
-    expect(exec).toHaveBeenCalledWith(
-      'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url,state,mergeable,isDraft'],
-      { cwd: '/wt' },
-    );
   });
 
   it('queries only once when HEAD equals the recorded branch', async () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'codiva/feature\n' } : { stdout: ghPr(3) },
     );
-    const pr = await lookupPr('/wt', 'codiva/feature', exec);
-    expect(pr).toEqual({
-      number: 3,
-      url: 'https://github.com/o/r/pull/3',
-      mergeStatus: 'unknown',
-    });
-    const ghCalls = exec.mock.calls.filter(([file]) => file === 'gh');
-    expect(ghCalls).toHaveLength(1);
+    const result = await lookupPr('/wt', 'codiva/feature', exec);
+    expect(result.kind === 'found' && result.pr.number).toBe(3);
+    expect(exec.mock.calls.filter(([file]) => file === 'gh')).toHaveLength(1);
   });
 
   it('uses the recorded branch when HEAD cannot be resolved (git fails)', async () => {
@@ -150,54 +174,264 @@ describe('lookupPr', () => {
       if (file === 'git') throw new Error('fatal: not a git repository');
       return { stdout: ghPr(7) };
     });
-    const pr = await lookupPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({
-      number: 7,
-      url: 'https://github.com/o/r/pull/7',
-      mergeStatus: 'unknown',
+    const result = await lookupPr('/wt/a', 'codiva/feature', exec);
+    expect(result.kind === 'found' && result.pr.number).toBe(7);
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/feature', '--json', FIELDS], {
+      cwd: '/wt/a',
     });
-    expect(exec).toHaveBeenCalledWith(
-      'gh',
-      ['pr', 'view', 'codiva/feature', '--json', 'number,url,state,mergeable,isDraft'],
-      { cwd: '/wt/a' },
-    );
   });
 
   it('treats a detached HEAD as unresolvable and uses the recorded branch', async () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'HEAD\n' } : { stdout: ghPr(9) },
     );
-    const pr = await lookupPr('/wt', 'codiva/x', exec);
-    expect(pr).toEqual({
-      number: 9,
-      url: 'https://github.com/o/r/pull/9',
-      mergeStatus: 'unknown',
+    const result = await lookupPr('/wt', 'codiva/x', exec);
+    expect(result.kind === 'found' && result.pr.number).toBe(9);
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/x', '--json', FIELDS], {
+      cwd: '/wt',
     });
-    expect(exec).toHaveBeenCalledWith(
-      'gh',
-      ['pr', 'view', 'codiva/x', '--json', 'number,url,state,mergeable,isDraft'],
-      { cwd: '/wt' },
-    );
   });
 
-  it('resolves undefined when no candidate branch has a PR', async () => {
+  it('reports `absent` when `gh` says no candidate branch has a PR', async () => {
     const exec = vi.fn<ExecLike>(async (file) => {
       if (file === 'git') return { stdout: 'feat/x\n' };
-      throw new Error('no pull requests found for branch');
+      throw ghError(NO_PR);
     });
-    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toBeUndefined();
+    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({ kind: 'absent' });
   });
 
-  it('resolves undefined on malformed / partial JSON', async () => {
+  // The whole point of the three-way result: a failure must never masquerade as
+  // "this branch has no PR", or the caller clears a badge that is still valid.
+  it.each([
+    {
+      label: 'GraphQL rate limit',
+      stderr: 'GraphQL: API rate limit already exceeded for user ID 123.',
+      reason: 'rate_limit',
+    },
+    {
+      label: 'secondary rate limit',
+      stderr: 'You have exceeded a secondary rate limit',
+      reason: 'rate_limit',
+    },
+    {
+      label: 'not authenticated',
+      stderr: 'To get started with GitHub CLI, please run: gh auth login',
+      reason: 'auth',
+    },
+    { label: 'token rejected', stderr: 'HTTP 401: Bad credentials', reason: 'auth' },
+    {
+      label: 'offline',
+      stderr: 'error connecting to api.github.com: could not resolve host',
+      reason: 'network',
+    },
+    { label: 'timeout', stderr: 'request timeout', reason: 'network' },
+    { label: 'anything else', stderr: 'unexpected end of JSON input', reason: 'unknown' },
+  ] as const)('reports unavailable/$reason on $label', async (c) => {
+    const exec = vi.fn<ExecLike>(async (file) => {
+      if (file === 'git') return { stdout: 'codiva/x\n' };
+      throw ghError(c.stderr);
+    });
+    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: c.reason satisfies PrUnavailableReason,
+    });
+  });
+
+  it('reports unavailable/cli when `gh` is not installed', async () => {
+    const exec = vi.fn<ExecLike>(async (file) => {
+      if (file === 'git') return { stdout: 'codiva/x\n' };
+      throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+    });
+    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'cli',
+    });
+  });
+
+  it('prefers a failure over `absent` when only one candidate could be answered', async () => {
+    // HEAD's lookup blew up, the recorded branch genuinely has none: we can't rule
+    // out a PR on HEAD, so this is "unknown", not "no PR".
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'feat/x\n' };
+      if (args[2] === 'feat/x') throw ghError('API rate limit exceeded');
+      throw ghError(NO_PR);
+    });
+    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'rate_limit',
+    });
+  });
+
+  it('reports unavailable (not absent) on malformed / partial JSON', async () => {
     const bad = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'codiva/x\n' } : { stdout: '{ not json' },
     );
-    await expect(lookupPr('/wt', 'codiva/x', bad)).resolves.toBeUndefined();
+    await expect(lookupPr('/wt', 'codiva/x', bad)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'unknown',
+    });
 
     const partial = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'codiva/x\n' } : { stdout: JSON.stringify({ number: 3 }) },
     );
-    await expect(lookupPr('/wt', 'codiva/x', partial)).resolves.toBeUndefined();
+    await expect(lookupPr('/wt', 'codiva/x', partial)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'unknown',
+    });
+  });
+});
+
+describe('lookupPrs (batched)', () => {
+  const LIST_FIELDS = `headRefName,${FIELDS}`;
+  const targets = [
+    { id: 'a', cwd: '/wt/a', branch: 'codiva/a' },
+    { id: 'b', cwd: '/wt/b', branch: 'codiva/b' },
+    { id: 'c', cwd: '/wt/c', branch: 'codiva/c' },
+  ];
+
+  /** exec that answers `git rev-parse` with the recorded branch and `pr list` with `rows`. */
+  function listExec(rows: unknown[]) {
+    return vi.fn<ExecLike>(async (file, args, opts) => {
+      if (file === 'git') return { stdout: `codiva/${opts.cwd.slice(-1)}\n` };
+      if (args[1] === 'list') return { stdout: JSON.stringify(rows) };
+      throw ghError(NO_PR);
+    });
+  }
+
+  const row = (branch: string, number: number, over: Record<string, unknown> = {}) => ({
+    headRefName: branch,
+    number,
+    url: `https://x/${number}`,
+    state: 'OPEN',
+    mergeable: 'MERGEABLE',
+    statusCheckRollup: [{ status: 'IN_PROGRESS' }],
+    ...over,
+  });
+
+  // The point of batching: API cost stops scaling with the number of sessions.
+  it('resolves every session with a single `gh pr list`', async () => {
+    const exec = listExec([row('codiva/a', 1), row('codiva/c', 3)]);
+    const results = await lookupPrs(targets, exec);
+
+    expect(results.get('a')).toEqual({
+      kind: 'found',
+      pr: { number: 1, url: 'https://x/1', mergeStatus: 'mergeable', checks: 'pending' },
+    });
+    expect(results.get('b')).toEqual({ kind: 'absent' });
+    expect(results.get('c')?.kind).toBe('found');
+
+    const ghCalls = exec.mock.calls.filter(([file]) => file === 'gh');
+    expect(ghCalls).toHaveLength(1);
+    expect(ghCalls[0]?.[1]).toEqual([
+      'pr',
+      'list',
+      '--state',
+      'all',
+      '--limit',
+      '30',
+      '--json',
+      LIST_FIELDS,
+    ]);
+  });
+
+  it('matches the worktree HEAD branch, not just the recorded one', async () => {
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'feat/new-thing\n' };
+      if (args[1] === 'list') return { stdout: JSON.stringify([row('feat/new-thing', 9)]) };
+      throw ghError(NO_PR);
+    });
+    const results = await lookupPrs([targets[0] ?? { id: 'a', cwd: '/wt/a', branch: 'x' }], exec);
+    const result = results.get('a');
+    expect(result?.kind === 'found' && result.pr.number).toBe(9);
+  });
+
+  it('prefers an open PR over a closed one on the same branch', async () => {
+    // Newest-first ordering would otherwise pick the closed PR listed above.
+    const exec = listExec([
+      row('codiva/a', 5, { state: 'CLOSED', mergeable: 'UNKNOWN' }),
+      row('codiva/a', 4, { state: 'OPEN' }),
+    ]);
+    const results = await lookupPrs(targets, exec);
+    const result = results.get('a');
+    expect(result?.kind === 'found' && result.pr.number).toBe(4);
+  });
+
+  it('scales the page size with the number of sessions (capped at 100)', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      id: `s${i}`,
+      cwd: '/wt/x',
+      branch: `codiva/s${i}`,
+    }));
+    const exec = listExec([]);
+    await lookupPrs(many, exec);
+    const args = exec.mock.calls.find(([, a]) => a[1] === 'list')?.[1];
+    expect(args?.[5]).toBe('100');
+  });
+
+  // Same invariant as the single lookup: a failure must never read as "no PR".
+  it.each([
+    { stderr: 'GraphQL: API rate limit already exceeded', reason: 'rate_limit' },
+    { stderr: 'gh auth login', reason: 'auth' },
+  ] as const)('marks every target unavailable/$reason when the list fails', async (c) => {
+    const exec = vi.fn<ExecLike>(async (file) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      throw ghError(c.stderr);
+    });
+    const results = await lookupPrs(targets, exec);
+    for (const t of targets) {
+      expect(results.get(t.id)).toEqual({ kind: 'unavailable', reason: c.reason });
+    }
+  });
+
+  it('marks every target unavailable on malformed list output', async () => {
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      if (args[1] === 'list') return { stdout: '{ not json' };
+      throw ghError(NO_PR);
+    });
+    const results = await lookupPrs(targets, exec);
+    expect(results.get('a')).toEqual({ kind: 'unavailable', reason: 'unknown' });
+  });
+
+  it('skips unparsable rows instead of failing the whole batch', async () => {
+    const exec = listExec([null, { headRefName: 'codiva/a' }, row('codiva/b', 2)]);
+    const results = await lookupPrs(targets, exec);
+    expect(results.get('a')).toEqual({ kind: 'absent' }); // no number/url → not a match
+    expect(results.get('b')?.kind).toBe('found');
+  });
+
+  it('verifies a known PR with a targeted view when the page was truncated', async () => {
+    // 3 targets → limit 30. A full page means older PRs were cut off, so a session
+    // whose PR we already knew must not be declared gone on that basis alone.
+    const full = Array.from({ length: 30 }, (_, i) => row(`other/${i}`, 100 + i));
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      if (args[1] === 'list') return { stdout: JSON.stringify(full) };
+      return { stdout: JSON.stringify({ number: 7, url: 'u', state: 'OPEN' }) };
+    });
+    const results = await lookupPrs(
+      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: 7 }],
+      exec,
+    );
+    const result = results.get('a');
+    expect(result?.kind === 'found' && result.pr.number).toBe(7);
+    expect(exec.mock.calls.filter(([, a]) => a[1] === 'view')).toHaveLength(1);
+  });
+
+  it('reports absent (no extra call) when the page was not truncated', async () => {
+    const exec = listExec([row('other/1', 100)]);
+    const results = await lookupPrs(
+      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: 7 }],
+      exec,
+    );
+    expect(results.get('a')).toEqual({ kind: 'absent' });
+    expect(exec.mock.calls.filter(([, a]) => a[1] === 'view')).toHaveLength(0);
+  });
+
+  it('resolves an empty map for no targets (never runs `gh`)', async () => {
+    const exec = vi.fn<ExecLike>(async () => ({ stdout: '' }));
+    await expect(lookupPrs([], exec)).resolves.toEqual(new Map());
+    expect(exec).not.toHaveBeenCalled();
   });
 });
 
@@ -213,11 +447,11 @@ describe('createPr', () => {
         stdout: JSON.stringify({ number: 9, url: 'https://github.com/o/r/pull/9', isDraft: true }),
       };
     });
-    const pr = await createPr('/wt/a', 'codiva/feature', exec);
-    expect(pr).toEqual({
+    await expect(createPr('/wt/a', 'codiva/feature', exec)).resolves.toEqual({
       number: 9,
       url: 'https://github.com/o/r/pull/9',
       mergeStatus: 'unknown',
+      checks: 'none',
       isDraft: true,
     });
     expect(calls[0]).toEqual(['pr', 'create', '--draft', '--fill', '--head', 'codiva/feature']);
@@ -234,45 +468,16 @@ describe('createPr', () => {
       number: 4,
       url: 'u',
       mergeStatus: 'unknown',
+      checks: 'none',
       isDraft: false,
     });
   });
-});
 
-describe('prChecks', () => {
-  const rollup = (checks: unknown[]) =>
-    vi.fn<ExecLike>(async () => ({ stdout: JSON.stringify({ statusCheckRollup: checks }) }));
-
-  it('returns none when there are no checks', async () => {
-    await expect(prChecks('/wt', 'b', rollup([]))).resolves.toBe('none');
-  });
-
-  it('returns passing when every check-run succeeded', async () => {
-    const exec = rollup([{ status: 'COMPLETED', conclusion: 'SUCCESS' }, { state: 'SUCCESS' }]);
-    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('passing');
-  });
-
-  it('returns pending when a check is still running', async () => {
-    const exec = rollup([
-      { status: 'COMPLETED', conclusion: 'SUCCESS' },
-      { status: 'IN_PROGRESS' },
-    ]);
-    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('pending');
-  });
-
-  it('returns failing when any check failed (even if others pass/pend)', async () => {
-    const exec = rollup([
-      { status: 'IN_PROGRESS' },
-      { status: 'COMPLETED', conclusion: 'FAILURE' },
-    ]);
-    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('failing');
-  });
-
-  it('returns none on error rather than throwing', async () => {
+  it('resolves undefined when the PR cannot be looked up afterwards', async () => {
     const exec = vi.fn<ExecLike>(async () => {
-      throw new Error('no pr');
+      throw ghError('API rate limit exceeded');
     });
-    await expect(prChecks('/wt', 'b', exec)).resolves.toBe('none');
+    await expect(createPr('/wt', 'codiva/x', exec)).resolves.toBeUndefined();
   });
 });
 

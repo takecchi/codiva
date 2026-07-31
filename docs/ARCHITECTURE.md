@@ -321,7 +321,9 @@ interface SessionState {
   pendingPermission?: PermissionRequest;      // awaiting_permission / awaiting_input 時のみ
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
   model?: string;             // セッション個別のモデル上書き（/model）
-  pr?: PrInfo;                // 自動作成した PR の番号・URL・draft/checks 状態
+  pr?: PrRef;                 // 検知した PR の番号・URL（ブランチに対して不変。**永続する**）
+  prStatus?: PrStatus;        // merge 可否 / checks / draft（揺れる。transient・期限付きキャッシュ）
+  prLookup?: PrLookupState;   // 'loading'（確認中）/ 'error'（gh が答えられなかった）。transient
   conflictFiles?: string[];   // conflict 時の競合ファイル（自動解消はしない）
   startedAt: number;
   finishedAt?: number;
@@ -516,9 +518,26 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 - **PR 自動化（`autoPr`, 既定 on）**: セッションが `completed` へ遷移し、かつ base より先に
   **コミット済み差分がある**ときだけ、`worktrees.pushBranch` で push → `PrAutomation.createPr`（`gh pr create
   --draft --fill`）で **draft PR** を作成（1 セッション 1 回。`autoPrAttempted` で多重発火を防ぐ）。以降
-  `refreshPrs` の 20 秒ポーリングで、draft PR のチェックが緑（`PrAutomation.checks` = `passing`）になったら
+  `refreshPrs` の 20 秒ポーリングで、draft PR のチェックが緑（`PrInfo.checks` = `passing`）になったら
   `markReady`（`gh pr ready`）で ready 化する。`gh` 依存はすべて `utils/pr.ts` に隔離し、`PrAutomation` として
   DI（失敗は best-effort でセッションに波及させない）。
+- **PR ステータスの「分からない」を潰さない**（GitHub ステータスが時々消える不具合の修正）:
+  `lookupPr` は `found` / `absent` / `unavailable`（+ 理由）の 3 値を返し、`PrCoordinator` は
+  `unavailable` のとき**直前の PR を保持したまま** `prLookup: 'error'` を立てる。空セルは
+  「PR が無い」だけを意味し、確認中は `⋯`、確認できなかったときは `?` を出す。
+  `rate_limit` / `auth` / `cli` は 5 分（`PR_LOOKUP_BACKOFF_MS`）ポーリングを止める。
+  チェック状態は PR 情報と同じ `gh pr view` 1 回で取得する（`--json mergeable` は GraphQL
+  クォータ消費なので、毎ポーリング 2 回投げていたのを 1 回に）。
+- **PR は「識別（`pr: PrRef`）」と「状態（`prStatus: PrStatus`）」に分ける**。番号・URL は
+  ブランチに対して不変なので `state.json` に載せ、**復元直後からグリフ無しの `#<n>` を表示**する。
+  状態（マージ可否・チェック・draft）は永続せず、復元後の最初のポーリング（`prPollIntervalMs`
+  が 0 を返す）で埋める — 前回終了時の古いグリフを見せるより、まず番号だけ出す方が正しい。
+  reducer は半分ずつ比較して参照を維持するので、チェックの進行で `state.json` が再保存されない。
+- **ポーリングは「セッション数 × 20 秒」をやめる**（`core/pr-refresh.ts` / `PrCoordinator`）:
+  20 秒 tick はスケジューラで、実際に `gh` を叩くのは陳腐化したセッションだけ（チェック実行中
+  20 秒 / 未計算 60 秒 / 落ち着いた PR 180 秒 / `merged`・`archived` は永久に不要）。さらに同一
+  サイクルで 3 件以上あるときは `gh pr list` 1 回（`lookupPrs`）に畳んで突き合わせるので、
+  セッションを増やしても API コストがほぼ増えない。
 - **競合検知（自動解消しない）**: `WorktreeManager.merge` は競合時に競合ファイルを収集して
   `merge --abort` した上で `MergeConflictError` を投げる（base ツリーは汚さない）。`SessionManager.merge` は
   これを捕えて `session.markConflict(files)` → reducer が `status: 'conflict'` + `conflictFiles` を立てる。
