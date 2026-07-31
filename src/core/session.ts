@@ -18,6 +18,7 @@ import type {
   CreateSessionInput,
   PermissionRequest,
   PrInfo,
+  PrLookupState,
   QuestionSpec,
   SessionState,
 } from './types';
@@ -295,6 +296,15 @@ export class Session {
    */
   setPr(pr: PrInfo | undefined): void {
     this.dispatch({ kind: 'pr', pr, at: this.now() });
+  }
+
+  /**
+   * Record that the PR lookup is in flight (`loading`) or failed (`error`) without
+   * an answer about the PR itself, so the list can show "looking…" / "couldn't
+   * check" instead of an empty cell. Cleared by the next successful setPr().
+   */
+  setPrLookup(lookup: PrLookupState | undefined): void {
+    this.dispatch({ kind: 'pr_lookup', lookup, at: this.now() });
   }
 
   /**

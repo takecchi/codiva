@@ -24,7 +24,8 @@ import {
   type ModelOption,
   matchCommands,
   needsAttention,
-  type PrMergeStatus,
+  type PrInfo,
+  type PrLookupState,
   parseSgrMouse,
   resumableSessions,
   resumeInstruction,
@@ -78,23 +79,60 @@ export type OpenPr = (url: string) => void;
 const PR_CELL_WIDTH = 10;
 
 /**
- * Glyph + color shown before `#<number>` for a PR's merge state (⑂ = merged,
- * check = mergeable, cross = conflicting). GitHub-conventional colors: merged is
- * violet, clean is green, conflicting is red. `unknown` (GitHub still computing)
- * shows no glyph so the row stays quiet until the state is real.
+ * Glyph + color shown before `#<number>`. The cell is one column wide, so a single
+ * glyph has to carry both the merge state and the CI state; the priority is "what
+ * would make me look": merged → failing checks → running checks → conflict → clean.
+ * GitHub-conventional colors (merged violet, clean green, broken red, running amber).
+ * `unknown` (GitHub still computing, no checks configured) shows no glyph so the row
+ * stays quiet until the state is real.
  */
-function prStatusBadge(status: PrMergeStatus): { char: string; color: string } | undefined {
-  switch (status) {
-    case 'merged':
-      return { char: glyph.merged, color: statusColor.external };
-    case 'mergeable':
-      return { char: glyph.mergeable, color: statusColor.completed };
-    case 'conflicting':
-      return { char: glyph.conflicting, color: statusColor.failed };
-    default:
-      return undefined;
+function prStatusBadge(pr: PrInfo): { char: string; color: string } | undefined {
+  if (pr.mergeStatus === 'merged') {
+    return { char: glyph.merged, color: statusColor.external };
   }
+  if (pr.checks === 'failing') {
+    return { char: glyph.conflicting, color: statusColor.failed };
+  }
+  if (pr.checks === 'pending') {
+    return { char: glyph.checksPending, color: statusColor.awaitingPermission };
+  }
+  if (pr.mergeStatus === 'conflicting') {
+    return { char: glyph.conflicting, color: statusColor.failed };
+  }
+  if (pr.mergeStatus === 'mergeable') {
+    return { char: glyph.mergeable, color: statusColor.completed };
+  }
+  return undefined;
 }
+
+/**
+ * The row's trailing PR cell. An *empty* cell has to mean exactly one thing ("this
+ * branch has no PR"), so the two states where we simply don't know yet get their own
+ * marks: `⋯` while the first `gh` lookup is in flight, `?` when the last one failed
+ * (rate limit / offline / not logged in). Without these, a failed poll was
+ * indistinguishable from "no PR" and the badge looked like it randomly vanished.
+ * A draft PR's number is dimmed (still underlined — it's clickable either way).
+ */
+const PrCell: FC<{ pr?: PrInfo; lookup?: PrLookupState }> = ({ pr, lookup }) => {
+  if (pr) {
+    const badge = prStatusBadge(pr);
+    return (
+      <Text>
+        {badge ? <Text color={badge.color}>{badge.char} </Text> : null}
+        <Text color={pr.isDraft ? theme.dim : theme.accent} underline>
+          #{pr.number}
+        </Text>
+      </Text>
+    );
+  }
+  if (lookup === 'loading') {
+    return <Text dimColor>{glyph.prLoading}</Text>;
+  }
+  if (lookup === 'error') {
+    return <Text color={theme.warn}>{glyph.prUnknown}</Text>;
+  }
+  return null;
+};
 
 /** 復元・報告する一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン）。 */
 export type ListViewState = { selected: number; focus: 'composer' | 'list' };
@@ -815,17 +853,7 @@ export const SessionList: FC<{
                   {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
                       左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
                   <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
-                    {s.pr ? (
-                      <Text>
-                        {(() => {
-                          const badge = prStatusBadge(s.pr.mergeStatus);
-                          return badge ? <Text color={badge.color}>{badge.char} </Text> : null;
-                        })()}
-                        <Text color={theme.accent} underline>
-                          #{s.pr.number}
-                        </Text>
-                      </Text>
-                    ) : null}
+                    <PrCell pr={s.pr} lookup={s.prLookup} />
                   </Box>
                 </Box>
               );

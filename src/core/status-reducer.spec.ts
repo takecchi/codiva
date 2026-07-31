@@ -376,6 +376,63 @@ describe('pr event', () => {
     });
     expect(next).toBe(draft);
   });
+
+  it('re-renders when only the checks state changes (CI progress)', () => {
+    const pending: SessionState = {
+      ...initialState(BASE),
+      pr: { number: 3, url: 'u', mergeStatus: 'mergeable', checks: 'pending' },
+    };
+    const next = reduce(pending, {
+      kind: 'pr',
+      pr: { number: 3, url: 'u', mergeStatus: 'mergeable', checks: 'failing' },
+      at: 1,
+    });
+    expect(next).not.toBe(pending);
+    expect(next.pr?.checks).toBe('failing');
+  });
+});
+
+describe('pr_lookup event', () => {
+  it('stores the lookup state and no-ops when unchanged', () => {
+    const s0 = initialState(BASE);
+    expect(s0.prLookup).toBeUndefined();
+
+    const loading = reduce(s0, { kind: 'pr_lookup', lookup: 'loading', at: 1 });
+    expect(loading.prLookup).toBe('loading');
+    expect(reduce(loading, { kind: 'pr_lookup', lookup: 'loading', at: 2 })).toBe(loading);
+
+    const failed = reduce(loading, { kind: 'pr_lookup', lookup: 'error', at: 3 });
+    expect(failed.prLookup).toBe('error');
+    expect(
+      reduce(failed, { kind: 'pr_lookup', lookup: undefined, at: 4 }).prLookup,
+    ).toBeUndefined();
+  });
+
+  it('marking the lookup failed never touches a known PR', () => {
+    const withPr: SessionState = {
+      ...initialState(BASE),
+      pr: { number: 7, url: 'u', mergeStatus: 'mergeable' },
+    };
+    const next = reduce(withPr, { kind: 'pr_lookup', lookup: 'error', at: 1 });
+    expect(next.pr).toBe(withPr.pr);
+  });
+
+  it('a pr event clears the lookup mark even when the PR is unchanged', () => {
+    const pr = { number: 7, url: 'u', mergeStatus: 'mergeable' as const };
+    const stale: SessionState = { ...initialState(BASE), pr, prLookup: 'error' };
+    // A retry that finds the same PR must drop the "couldn't check" mark…
+    const next = reduce(stale, { kind: 'pr', pr: { ...pr }, at: 1 });
+    expect(next.prLookup).toBeUndefined();
+    // …while keeping the existing PR object identity (no needless re-render below).
+    expect(next.pr).toBe(pr);
+  });
+
+  it('a pr event clears a loading mark for a branch with no PR', () => {
+    const looking: SessionState = { ...initialState(BASE), prLookup: 'loading' };
+    const next = reduce(looking, { kind: 'pr', pr: undefined, at: 1 });
+    expect(next.prLookup).toBeUndefined();
+    expect(next.pr).toBeUndefined();
+  });
 });
 
 describe('conflict event', () => {

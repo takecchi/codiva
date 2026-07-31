@@ -58,13 +58,53 @@ export interface PrInfo {
   mergeStatus: PrMergeStatus;
   /** True while the PR is still a draft (auto-PR opens drafts, then readies on green checks). */
   isDraft?: boolean;
+  /** Aggregate CI state of the PR's checks; drives the checks glyph and auto-ready. */
+  checks?: PrChecksState;
 }
 
 /**
  * Aggregate CI state of a PR's checks (from `gh pr view --json statusCheckRollup`).
- * `none` = no checks or the query failed. Drives auto-ready (only `passing` readies).
+ * `none` = the PR has no checks configured. Drives auto-ready (only `passing` readies).
  */
 export type PrChecksState = 'passing' | 'pending' | 'failing' | 'none';
+
+/**
+ * Why a `gh` PR lookup couldn't answer the question:
+ *  - `cli`        — `gh` isn't installed (ENOENT)
+ *  - `auth`       — `gh` isn't authenticated / token rejected
+ *  - `rate_limit` — GitHub API quota exhausted (`gh pr view --json mergeable` spends
+ *                   the *GraphQL* budget, which the user's other tools share)
+ *  - `network`    — offline / DNS / timeout
+ *  - `unknown`    — anything else, including unparsable output
+ *
+ * Split out because the fix for each differs — and because `cli`/`auth`/`rate_limit`
+ * are worth backing off from (they can't succeed on the next 20s tick).
+ */
+export type PrUnavailableReason = 'cli' | 'auth' | 'rate_limit' | 'network' | 'unknown';
+
+/**
+ * Outcome of looking up the PR for a branch. The three cases must stay distinct:
+ * folding `unavailable` into "no PR" is what used to make a `#<n>` badge blink out
+ * of the list whenever `gh` hit a rate limit or a network hiccup, since the poll
+ * then reported "this branch has no PR" and the reducer dutifully cleared it.
+ */
+export type PrLookupResult =
+  | { kind: 'found'; pr: PrInfo }
+  /** `gh` answered: this branch has no PR. */
+  | { kind: 'absent' }
+  /** `gh` couldn't answer — the previous value (if any) must be kept. */
+  | { kind: 'unavailable'; reason: PrUnavailableReason };
+
+/**
+ * What the background PR poll is currently doing for a session, so the list can
+ * say "still looking" / "couldn't check" instead of rendering an empty cell that
+ * is indistinguishable from "this branch has no PR".
+ *  - `loading` — the first lookup is in flight and there's nothing to show yet
+ *  - `error`   — the last lookup failed; sticky until one succeeds (re-marking
+ *                `loading` on every retry would just flicker the cell)
+ * Transient — never persisted.
+ */
+export type PrLookupState = 'loading' | 'error';
 
 /** One question surfaced by the AskUserQuestion tool. */
 export interface QuestionSpec {
@@ -111,6 +151,11 @@ export interface SessionState {
   model?: string;
   /** Pull request opened for `branch`, if any (detected asynchronously via `gh`). */
   pr?: PrInfo;
+  /**
+   * Progress/health of the background `gh` lookup that fills `pr`. Undefined once a
+   * lookup has answered (whether it found a PR or not). Transient — never persisted.
+   */
+  prLookup?: PrLookupState;
   /** Files left conflicted by a failed merge into base (set with `status: 'conflict'`). */
   conflictFiles?: string[];
   startedAt: number;
@@ -182,8 +227,12 @@ export type CodivaEvent =
   // input-derived placeholder. Fired once, asynchronously, after a fresh start.
   | { kind: 'title'; title: string; at: number }
   // A pull request was detected (or cleared) for this session's branch, out of
-  // band via `gh`. Carries the info; the reducer only swaps it into state.
+  // band via `gh`. Carries the info; the reducer only swaps it into state. Only
+  // dispatched when `gh` actually answered, so it also clears `prLookup`.
   | { kind: 'pr'; pr: PrInfo | undefined; at: number }
+  // The PR lookup started / failed, without an authoritative answer about the PR
+  // itself. Drives the list's "looking…" / "couldn't check" cell.
+  | { kind: 'pr_lookup'; lookup: PrLookupState | undefined; at: number }
   // A merge of this session's branch into base hit conflicts (detected out of
   // band during the merge action). Carries the conflicted file paths.
   | { kind: 'conflict'; files: string[]; at: number }

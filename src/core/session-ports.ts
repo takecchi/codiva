@@ -1,4 +1,4 @@
-import type { PrChecksState, PrInfo, SessionState } from './types';
+import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
 import type { DiffStat, Worktree } from './worktree';
 
 /**
@@ -34,6 +34,7 @@ export interface SessionHandle {
   stop(): void;
   archive(): void;
   setPr(pr: PrInfo | undefined): void;
+  setPrLookup(lookup: PrLookupState | undefined): void;
   markConflict(files: string[]): void;
 }
 
@@ -44,14 +45,16 @@ export interface SessionHandle {
 export interface PrAutomation {
   /** Open a draft PR for a pushed branch (or return the existing one). */
   createPr(cwd: string, branch: string): Promise<PrInfo | undefined>;
-  /** Aggregate CI state of the PR's checks. */
-  checks(cwd: string, branch: string): Promise<PrChecksState>;
   /** Flip a draft PR to ready-for-review. */
   markReady(cwd: string, branch: string): Promise<void>;
 }
 
-/** Look up the open PR for a branch (via `gh`), or undefined if there is none. */
-export type PrLookup = (cwd: string, branch: string) => Promise<PrInfo | undefined>;
+/**
+ * Look up the PR for a branch (via `gh`). Returns a three-way result — found /
+ * absent / unavailable — never a bare undefined, so a failed lookup can't be
+ * mistaken for "this branch has no PR" (which would clear the badge).
+ */
+export type PrLookup = (cwd: string, branch: string) => Promise<PrLookupResult>;
 
 /** Result of a lifecycle action (merge/discard) surfaced to the UI. */
 export interface ActionResult {

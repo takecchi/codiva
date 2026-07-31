@@ -39,13 +39,24 @@
 ## PR 自動化（`utils/pr.ts`、best-effort）
 
 - 使う `gh` は次だけ。増やすときもここに閉じる:
-  `pr view <branch> --json number,url,state,mergeable,isDraft` /
-  `pr create --draft --fill --head <branch>` /
-  `pr view <branch> --json statusCheckRollup` / `pr ready <branch>`。
+  `pr view <branch> --json number,url,state,mergeable,isDraft,statusCheckRollup` /
+  `pr create --draft --fill --head <branch>` / `pr ready <branch>`。
+  **チェック状態は PR 情報と同じ 1 回の `pr view` で取る**（`--json mergeable` は GitHub の
+  **GraphQL** クォータを消費し、ユーザーの他のツールと共有の 5000/h なので、毎ポーリングで
+  2 回投げない）。
 - 方針は「足場作りは自動、確定操作は緑判定/人手」: `completed` かつコミット済み差分があれば
   push → **draft** PR（1セッション1回）、20 秒ポーリングでチェックが緑になったら ready 化。
 - `gh` 未導入・未認証・オフラインでも**セッションを壊さない**（失敗は握り潰す）。
   `PrAutomation` として DI するのはこのため。
+- **失敗と「PR が無い」を混同しない**（`lookupPr` は `found` / `absent` / `unavailable` の
+  3 値を返す）。レート制限・オフライン・未認証を `absent` として扱うと、表示中の `#<n>` が
+  ポーリングごとに消えて復活する（実際に起きた不具合）。`unavailable` のときは**直前の PR を
+  保持**し、セッションに `prLookup: 'error'` を立てて一覧に「確認できていない」印を出す。
+- **失敗の理由は分類する**（`PrUnavailableReason`）。`rate_limit` / `auth` / `cli` は次の
+  20 秒で成功し得ないので `PR_LOOKUP_BACKOFF_MS`（5 分）ポーリングを止める。`cli`（`gh` 未導入）は
+  機能自体が使えないだけなので印も出さない（全行に警告を出しても直せない）。
+- ポーリングは**多重実行しない**（`gh` が 20 秒より遅いとサイクルが重なる）。`merged` になった
+  PR と `archived` セッションは以後問い合わせない（状態が確定しているのでクォータの無駄）。
 
 ## 生成・参照するファイル
 

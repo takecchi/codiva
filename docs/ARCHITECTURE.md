@@ -320,7 +320,8 @@ interface SessionState {
   pendingPermission?: PermissionRequest;      // awaiting_permission / awaiting_input 時のみ
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
   model?: string;             // セッション個別のモデル上書き（/model）
-  pr?: PrInfo;                // 自動作成した PR の番号・URL・draft/checks 状態
+  pr?: PrInfo;                // 検知した PR の番号・URL・merge/draft/checks 状態
+  prLookup?: PrLookupState;   // 'loading'（確認中）/ 'error'（gh が答えられなかった）。transient
   conflictFiles?: string[];   // conflict 時の競合ファイル（自動解消はしない）
   startedAt: number;
   finishedAt?: number;
@@ -515,9 +516,16 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 - **PR 自動化（`autoPr`, 既定 on）**: セッションが `completed` へ遷移し、かつ base より先に
   **コミット済み差分がある**ときだけ、`worktrees.pushBranch` で push → `PrAutomation.createPr`（`gh pr create
   --draft --fill`）で **draft PR** を作成（1 セッション 1 回。`autoPrAttempted` で多重発火を防ぐ）。以降
-  `refreshPrs` の 20 秒ポーリングで、draft PR のチェックが緑（`PrAutomation.checks` = `passing`）になったら
+  `refreshPrs` の 20 秒ポーリングで、draft PR のチェックが緑（`PrInfo.checks` = `passing`）になったら
   `markReady`（`gh pr ready`）で ready 化する。`gh` 依存はすべて `utils/pr.ts` に隔離し、`PrAutomation` として
   DI（失敗は best-effort でセッションに波及させない）。
+- **PR ステータスの「分からない」を潰さない**（GitHub ステータスが時々消える不具合の修正）:
+  `lookupPr` は `found` / `absent` / `unavailable`（+ 理由）の 3 値を返し、`PrCoordinator` は
+  `unavailable` のとき**直前の PR を保持したまま** `prLookup: 'error'` を立てる。空セルは
+  「PR が無い」だけを意味し、確認中は `⋯`、確認できなかったときは `?` を出す。
+  `rate_limit` / `auth` / `cli` は 5 分（`PR_LOOKUP_BACKOFF_MS`）ポーリングを止め、
+  `merged` PR は以後問い合わせない。チェック状態は PR 情報と同じ `gh pr view` 1 回で取得する
+  （`--json mergeable` は GraphQL クォータ消費なので、毎ポーリング 2 回投げていたのを 1 回に）。
 - **競合検知（自動解消しない）**: `WorktreeManager.merge` は競合時に競合ファイルを収集して
   `merge --abort` した上で `MergeConflictError` を投げる（base ツリーは汚さない）。`SessionManager.merge` は
   これを捕えて `session.markConflict(files)` → reducer が `status: 'conflict'` + `conflictFiles` を立てる。

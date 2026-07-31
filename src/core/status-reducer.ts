@@ -267,16 +267,29 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       // No-op when unchanged so subscribers don't re-render on every poll.
       // mergeStatus is part of the identity: it flips (unknown → mergeable →
       // merged, or → conflicting) on the same PR and must repaint the glyph.
-      // isDraft likewise flips (draft → ready) and must repaint.
-      if (
+      // isDraft likewise flips (draft → ready) and must repaint, and `checks`
+      // flips (pending → passing/failing) while CI runs.
+      const same =
         state.pr?.number === event.pr?.number &&
         state.pr?.url === event.pr?.url &&
         state.pr?.mergeStatus === event.pr?.mergeStatus &&
-        state.pr?.isDraft === event.pr?.isDraft
-      ) {
+        state.pr?.isDraft === event.pr?.isDraft &&
+        state.pr?.checks === event.pr?.checks;
+      // A `pr` event means the lookup answered, so it always clears prLookup —
+      // even when the PR itself is unchanged (a successful retry must drop the
+      // "couldn't check" mark).
+      if (same && state.prLookup === undefined) {
         return state;
       }
-      return { ...state, pr: event.pr };
+      // Keep the existing object identity when the PR is unchanged.
+      return { ...state, pr: same ? state.pr : event.pr, prLookup: undefined };
+    }
+
+    case 'pr_lookup': {
+      if (state.prLookup === event.lookup) {
+        return state;
+      }
+      return { ...state, prLookup: event.lookup };
     }
 
     case 'conflict': {

@@ -23,7 +23,10 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
   `send`/`allow` が黙って no-op になる不具合を作った）。失敗も
   `reduce(state, { kind: 'aborted', error, at })` を通す。
 - `CodivaEvent` は UI/manager 由来のアクションのみ（`permission_request` / `permission_resolved` /
-  `user_input` / `model` / `title` / `pr` / `conflict` / `aborted` / `interrupted` / `archived`）。
+  `user_input` / `model` / `title` / `pr` / `pr_lookup` / `conflict` / `aborted` / `interrupted` /
+  `archived`）。`pr` は「`gh` が答えた」ときだけ流すので `prLookup` も必ずクリアする。
+  失敗（`unavailable`）は `pr_lookup: 'error'` で表現し、**`pr` を undefined で上書きしない**
+  （PR 番号がポーリングごとに消える不具合の再発防止）。
   全 variant が `at: number` を持ち、reducer は時刻を読まない（純粋・決定的）。
 - **SDK メッセージは `CodivaEvent` ではない**。生の形を知るのは `sdk-parse.ts` だけ
   （[sdk-integration.md](./sdk-integration.md)）。

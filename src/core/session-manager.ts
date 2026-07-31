@@ -135,6 +135,7 @@ export class SessionManager {
       getState: (id) => this.store.get(id),
       getSession: (id) => this.sessions.get(id),
       ids: () => this.store.ids(),
+      now: () => this.now(),
     });
   }
 
