@@ -562,3 +562,31 @@ Claude セッション自身の `gh` と分け合うので、これだけで枯�
    `--limit` は件数 × 3（30〜100）。list は新しい順なので、セッションの PR（＝最近作ったもの）は
    必ず先頭側に入る。ページが埋まっていた（＝切り詰められた）ときだけ、既知の PR が
    見つからなかったセッションを `pr view` で確認する（「消えた」と誤判定しないため）。
+
+### `gh pr list --json` の実測（gh 2.96.0, 2026-07-31）
+
+`pr list` は **JSON 配列**で、各要素は `pr view` と同じフィールド + `headRefName`。
+
+```json
+[{"headRefName":"fix/pr-status-visibility","number":78,"url":"https://github.com/o/r/pull/78",
+  "state":"OPEN","mergeable":"MERGEABLE","isDraft":false,
+  "statusCheckRollup":[{"__typename":"CheckRun","name":"check","status":"COMPLETED",
+                        "conclusion":"SUCCESS","startedAt":"…","completedAt":"…",
+                        "workflowName":"CI","detailsUrl":"…"}]}]
+```
+
+- rollup の要素は `__typename: 'CheckRun'` のとき **`state` を持たない**（`status` + `conclusion`）。
+  レガシーな commit status は `StatusContext` で `state` を持つ。`toChecksState` が両方を読むのは
+  このため（片方しか見ないと「チェック無し」に見える）。
+- **新しい順**に返る（#78 → #77 の順で観測）。セッションの PR は最近作ったものなので、
+  `--limit` で切り詰められても取りこぼさない。
+- `state: 'MERGED'` のとき `mergeable` は `UNKNOWN` に落ちる（#77 で観測）。`state` を優先する
+  `toMergeStatus` の根拠。
+
+実 API で `lookupPrs` を通した結果（1 回の `pr list` + セッションごとのローカル `git rev-parse`）:
+
+| ケース | 入力 | 結果 |
+|---|---|---|
+| HEAD にある PR | cwd=この worktree, branch=`codiva/github` | `found` #78 mergeable / passing |
+| PR 無し | cwd=main チェックアウト, branch=存在しないブランチ | **`absent`**（`unavailable` ではない） |
+| マージ済み | branch=`codiva/task-11` | `found` #77 **merged**（以後ポーリングしない） |
