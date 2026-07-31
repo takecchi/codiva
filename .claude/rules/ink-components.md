@@ -109,6 +109,17 @@
   対応だけ `ui/input.ts`（`editText`/`resolveEnter`）に置く。Shift/Meta+Enter か末尾バックスラッシュ+Enter で
   改行、他は送信。`PromptInput` は `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` で
   カーソル付近を内部スクロール。
+- **入力欄は幅を超えたら折り返す（truncate しない）**。`wrap="truncate-end"` だけだと画面端まで打った
+  時点でテキストとキャレットが `…` の裏に消え、何を打っているか読めない。折り返しの幾何は純粋な
+  `core/composer-layout.ts`（`composerLayout` / `wrapComposerRows`）に集約し、**描画・マウス当たり判定・
+  ↑↓ のキャレット移動は必ず同じ幅で同じ関数を通す**（食い違うとクリックが別の文字に当たる）。
+  - 幅は**実測**する（`useComposerWidth`）。端末幅から引き算するとダイアログ内（枠+padding）で合わない。
+    未実測の 1 フレームだけ折り返さない（= 従来の truncate）挙動に倒す。
+  - 「行」は論理行ではなく**表示行**になる。`visibleLineRange` に渡す行数、クリックの
+    `caretIndexAtClick`、選択ハイライトの `rowSelection`、詳細ビューの「複数行編集中か」判定
+    （`composerRowCount`）はすべて表示行で数える。
+  - ↑↓ は表示行で移動する（`editText` の `wrapWidth` → `moveRowUp`/`moveRowDown`）。論理行で動かすと
+    長い 1 行の途中から一気に行頭へ飛び、見えている行と操作が食い違う。
 
 ## セッション詳細（codiva 内蔵ビュー）
 

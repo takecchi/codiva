@@ -1,8 +1,8 @@
-import { Box, Text, useInput } from 'ink';
-import type { FC } from 'react';
+import { Box, type DOMElement, Text, useInput } from 'ink';
+import { type FC, useRef } from 'react';
 import { bufferOf, parseSgrMouse } from '@/core';
 import { DialogBox } from './dialog-box';
-import { useTextBufferRef } from './hooks';
+import { useComposerWidth, useTextBufferRef } from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, normalizeChord, resolveEnter } from './input';
 import { PromptInput } from './prompt-input';
@@ -29,6 +29,9 @@ export const RepoPromptEditor: FC<{
 }> = ({ initial, onSave, onCancel }) => {
   const m = useMessages();
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef(bufferOf(initial ?? ''));
+  // 折り返し幅（実測）。ダイアログ内なので端末幅からは求まらない。
+  const editorRef = useRef<DOMElement>(null);
+  const wrapWidth = useComposerWidth(editorRef);
 
   useInput((rawInput, rawKey) => {
     // Swallow SGR mouse reports first so wheel/click escape sequences never leak
@@ -51,8 +54,12 @@ export const RepoPromptEditor: FC<{
       return;
     }
     // Full caret movement (arrows + vertical) — this is a document editor, not a
-    // list where arrows navigate rows.
-    const edit = editText(bufferRef.current, input, key, { arrows: true, vertical: true });
+    // list where arrows navigate rows. ↑↓ は折り返し後の表示行で動かす。
+    const edit = editText(bufferRef.current, input, key, {
+      arrows: true,
+      vertical: true,
+      wrapWidth,
+    });
     if (edit.changed) {
       updateBuffer(edit.buffer);
     }
@@ -63,7 +70,7 @@ export const RepoPromptEditor: FC<{
       <Text color={theme.accent} bold>
         {m.prompt.title}
       </Text>
-      <Box marginTop={1} flexDirection="column">
+      <Box ref={editorRef} marginTop={1} flexDirection="column">
         <PromptInput buffer={buffer} focused placeholder={m.prompt.placeholder} />
       </Box>
       <Box marginTop={1}>

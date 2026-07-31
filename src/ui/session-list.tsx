@@ -8,6 +8,7 @@ import {
   bannerText,
   bufferOf,
   COMMANDS,
+  COMPOSER_PREFIX_CELLS,
   canSelfUpdate,
   caretIndexAtClick,
   emptyBuffer,
@@ -49,6 +50,7 @@ import {
   useBoxHeight,
   useClock,
   useCommandRunner,
+  useComposerWidth,
   useDragSelection,
   useLifecycleAction,
   useRateLimit,
@@ -203,6 +205,9 @@ export const SessionList: FC<{
   const rowsBox = useAbsolutePosition(rowsRef);
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
+  // 入力欄の折り返し幅（実測）。PromptInput が描いた折り返しと同じ値でクリック位置の
+  // 逆算・↑↓ のキャレット移動を行う（食い違うと別の文字を選ぶ）。
+  const composerWidth = useComposerWidth(composerRef);
   // ヘッダのテキスト欄（マスコットの右）。左上を実測してマウス座標から文字位置を逆算する。
   // 高さも測るのは、低い端末で欄が潰れたときに当たり判定をやめるため（下記 headerCaretAt）。
   const headerRef = useRef<DOMElement>(null);
@@ -431,8 +436,10 @@ export const SessionList: FC<{
 
   /**
    * Caret index for a mouse point inside the composer, or undefined if the point
-   * is outside it. `contentTop` skips the top border; the `-2` drops the `❯ ` /
-   * continuation prefix so `x` becomes the display column within the text.
+   * is outside it. `contentTop` skips the top border; the prefix width drops the
+   * `❯ ` / continuation glyph so `x` becomes the display column within the text.
+   * The wrap width must be the one the composer rendered with — clicks on a
+   * soft-wrapped row resolve through the same layout.
    */
   const composerCaretAt = (x: number, y: number): number | undefined => {
     if (!composerBox) {
@@ -441,8 +448,9 @@ export const SessionList: FC<{
     return caretIndexAtClick(
       bufferRef.current,
       y - (composerBox.top + 1),
-      x - composerBox.left - 2,
+      x - composerBox.left - COMPOSER_PREFIX_CELLS,
       INPUT_MAX_ROWS,
+      composerWidth,
     );
   };
 
@@ -726,7 +734,13 @@ export const SessionList: FC<{
       updateBuffer(emptyBuffer());
       return;
     }
-    const edit = editText(bufferRef.current, input, key, { arrows: true, vertical: true });
+    // ↑↓ は折り返し後の**表示行**で動かす（wrapWidth）。論理行だと長い1行の途中から
+    // 一気に先頭へ飛び、見えている行と操作が食い違う。
+    const edit = editText(bufferRef.current, input, key, {
+      arrows: true,
+      vertical: true,
+      wrapWidth: composerWidth,
+    });
     if (edit.changed) {
       updateBuffer(edit.buffer);
     }

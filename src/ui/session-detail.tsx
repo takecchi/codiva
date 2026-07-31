@@ -4,7 +4,9 @@ import {
   ARROW_SCROLL_LINES,
   bufferOf,
   COMMANDS,
+  COMPOSER_PREFIX_CELLS,
   caretIndexAtClick,
+  composerRowCount,
   type DiffStat,
   type DisplayLine,
   emptyBuffer,
@@ -36,6 +38,7 @@ import {
   useAbsolutePosition,
   useBoxHeight,
   useCommandRunner,
+  useComposerWidth,
   useDragSelection,
   useLifecycleAction,
   useRunMode,
@@ -157,6 +160,9 @@ export const SessionDetail: FC<{
   const sel = useDragSelection(onCopy);
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
+  // 入力欄の折り返し幅（実測）。PromptInput が描いた折り返しと同じ値でクリック位置の
+  // 逆算・↑↓ のキャレット移動を行う（食い違うと別の文字を選ぶ）。
+  const composerWidth = useComposerWidth(composerRef);
   // ログ表示域の実測高さ。ここに描く行数の上限であり、スクロール1回の移動量の基準
   // でもある。見積り（logViewportRows）より実測を優先するのは、可視域より多く描くと
   // Yoga が溢れた行を「上でクリップ」せず「縮小」してしまい、ログの途中の行が
@@ -277,7 +283,11 @@ export const SessionDetail: FC<{
   // 使う — 食い違うと最上部でアンカーが 1 行手前で止まり、先頭行に到達できなくなる。
   const logCap = Math.max(1, viewport - (showPreview ? 1 : 0));
 
-  /** Caret index for a mouse point inside the composer, or undefined if outside. */
+  /**
+   * Caret index for a mouse point inside the composer, or undefined if outside.
+   * Resolved through the same wrap width the composer rendered with, so a click on
+   * a soft-wrapped row lands on the character under the pointer.
+   */
   const composerCaretAt = (x: number, y: number): number | undefined => {
     if (!composerBox) {
       return undefined;
@@ -285,8 +295,9 @@ export const SessionDetail: FC<{
     return caretIndexAtClick(
       bufferRef.current,
       y - (composerBox.top + 1),
-      x - composerBox.left - 2,
+      x - composerBox.left - COMPOSER_PREFIX_CELLS,
       INPUT_MAX_ROWS,
+      composerWidth,
     );
   };
 
@@ -399,9 +410,11 @@ export const SessionDetail: FC<{
     // ↑/↓ に変換されて届く（alternate scroll mode）。これを拾わないとホイールが
     // キャレット移動になるだけで「ログが上へスクロールできない」状態になる。
     // 複数行を編集している最中だけはキャレット移動を優先する（ログは PgUp/PgDn で辿れる）。
+    // 「複数行」は**折り返し後の表示行**で数える — 長い1行も画面上は複数行なので、
+    // ↑↓ がログスクロールに吸われるとその行の中を移動できなくなる。
     if (
       (key.upArrow || key.downArrow) &&
-      (panel === 'actions' || !bufferRef.current.value.includes('\n'))
+      (panel === 'actions' || composerRowCount(bufferRef.current.value, composerWidth) <= 1)
     ) {
       setAnchor((a) =>
         key.upArrow
@@ -440,7 +453,13 @@ export const SessionDetail: FC<{
       }
       return;
     }
-    const edit = editText(bufferRef.current, input, key, { arrows: true, vertical: true });
+    // ↑↓ は折り返し後の**表示行**で動かす（wrapWidth）。論理行だと長い1行の途中から
+    // 一気に先頭へ飛び、見えている行と操作が食い違う。
+    const edit = editText(bufferRef.current, input, key, {
+      arrows: true,
+      vertical: true,
+      wrapWidth: composerWidth,
+    });
     if (edit.changed) {
       updateBuffer(edit.buffer);
     }

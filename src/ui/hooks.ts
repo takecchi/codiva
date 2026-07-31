@@ -9,6 +9,7 @@ import {
 } from 'react';
 import {
   type AccountSummary,
+  COMPOSER_PREFIX_CELLS,
   type CommandAction,
   emptyBuffer,
   FALLBACK_MODEL_OPTIONS,
@@ -147,6 +148,37 @@ export function useBoxHeight(ref: RefObject<DOMElement | null>): number | undefi
     setHeight((prev) => (prev === next ? prev : next));
   });
   return height;
+}
+
+/**
+ * Wrap width (cells) available to composer *text* inside a measured box: its
+ * computed width minus the `❯ `／`  ` row prefix. Undefined until the first
+ * measurement, which every consumer reads as "don't wrap yet" — a long line is
+ * truncated for that single frame and wraps as soon as the width lands.
+ *
+ * Both `PromptInput` (which renders the wrap) and the views that own a composer
+ * (which hit-test clicks and move the caret by display row) must derive the width
+ * this way: they measure boxes of equal width, so the geometry agrees. Deriving it
+ * from `columns` instead would break inside dialogs (borders/padding).
+ */
+export function useComposerWidth(ref: RefObject<DOMElement | null>): number | undefined {
+  const width = useBoxWidth(ref);
+  return width === undefined ? undefined : Math.max(1, width - COMPOSER_PREFIX_CELLS);
+}
+
+/**
+ * Computed content width (terminal cells) of an Ink box, measured after every
+ * render (the horizontal twin of {@link useBoxHeight}). Undefined until first
+ * measured; re-renders only when the width actually changes.
+ */
+export function useBoxWidth(ref: RefObject<DOMElement | null>): number | undefined {
+  const [width, setWidth] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    const layout = ref.current?.yogaNode?.getComputedLayout();
+    const next = layout?.width;
+    setWidth((prev) => (prev === next ? prev : next));
+  });
+  return width;
 }
 
 /** A clock that ticks every `ms` so elapsed-time displays stay current. */

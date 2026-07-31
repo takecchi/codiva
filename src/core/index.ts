@@ -3,6 +3,7 @@ export * from './ansi';
 export * from './async-queue';
 export * from './banner-lines';
 export * from './commands';
+export * from './composer-layout';
 export * from './config';
 export * from './cost';
 export * from './errors';

@@ -490,6 +490,35 @@ UI なし。すべてユニットテストで駆動する。
 > codiva 側でリンクを張り替える案は採らなかった（何が書き込み対象かは指示内容次第で、
 > 先回りして全部コピーすると symlink モードの利点が消える）。
 
+## Phase 15: 入力欄のソフト折り返し ✅
+
+**課題**: 改行せずに打ち続けると画面幅で `…` に切り捨てられ、いま何を打っているのか読めない
+（`PromptInput` が論理行を 1 表示行に `wrap="truncate-end"` で描いていたため、テキストもキャレットも
+画面外へ消えていた）。
+
+- [x] 純粋な `core/composer-layout.ts` を新設: `wrapComposerRows`（表示幅で折り返し。空白があれば
+      単語境界、無ければ強制改行。CJK は string-width で 2 セル）/ `composerLayout`（行 + キャレットの
+      表示行・列）/ `composerRowCount` / `caretIndexAtClick`（`text-buffer.ts` から移設して折り返し対応）/
+      `rowSelection` / `moveRowUp`・`moveRowDown`（表示行での↑↓）
+- [x] 折り返し境界のキャレットは**後続行の先頭**に置く（次の文字が現れる位置）。行が幅ぴったりで
+      後続が無いときは、端末のカーソル折り返しと同じく**空の表示行を1行開ける**（列を幅の外に描かない）
+- [x] 折り返し幅は Box の computed layout を**実測**（`useBoxWidth` / `useComposerWidth` =
+      実測幅 − `COMPOSER_PREFIX_CELLS`）。端末幅からの引き算ではダイアログ内（枠 + padding）で合わない。
+      未実測の 1 フレームだけ折り返さない（従来の truncate）挙動にフォールバック
+- [x] `PromptInput` は表示行を描画（`visibleLineRange` に渡す行数も表示行）。一覧・詳細のクリック逆算
+      （`caretIndexAtClick`）、↑↓（`editText` の `wrapWidth`）、詳細の「複数行編集中か」判定
+      （`composerRowCount`）を**同じ実測幅**で通す（食い違うと別の文字に当たる）
+- [x] `/prompt` エディタ（`RepoPromptEditor`）も同じ幅を測って↑↓を表示行に合わせる
+- [x] テスト: `core/composer-layout.spec.ts`（折り返し・キャレット・クリック・選択・↑↓ をテーブル
+      ドリブン）/ `ui/prompt-input.spec.tsx`（折り返しで全文字が描かれる・単語境界・折り返し行への
+      カーソル追従）
+- [x] ドキュメント: `.claude/rules/ink-components.md` / `docs/ARCHITECTURE.md` / `docs/TECH_NOTES.md` /
+      `README.md`（入力欄の節）/ `CLAUDE.md`（コードの地図）
+
+> 実績メモ: 全 1580 テスト緑・lint / typecheck / build 緑。折り返しを「横スクロール」で済ませる案は
+> 採らなかった（行頭側が見えなくなり、長い指示を投入前に読み返せない）。`wrap="truncate-end"` は
+> 実測前の 1 フレーム用の保険として残している。
+
 ---
 
 ## 各 Phase 共通の完了チェック

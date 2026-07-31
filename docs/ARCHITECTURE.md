@@ -65,7 +65,7 @@ codiva/
 │   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatDuration/clamp/…）
 │   │   ├── privacy.ts        # 学習データ利用（grove）の判定（JSON→TrainingOptIn・純粋）
 │   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts / update.ts
-│   │   ├── scroll.ts / text-buffer.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
+│   │   ├── scroll.ts / text-buffer.ts / composer-layout.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
 │   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
 │   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（sdk-parse テスト用）
 │   ├── ui/                    # Ink コンポーネント（kebab-case, 識別子は PascalCase）
@@ -436,7 +436,7 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   下部の追加指示コンポーザ（`manager.send(id, text)`）を持つ。Tab で入力↔操作パネルを切替し、
   操作パネルで m/d = マージ/破棄。`pendingPermission` があれば `PermissionDialog` に委譲。単一 `useInput` の
   state machine（panel = input | actions）でタイピングとキー操作の衝突を防ぐ。
-- `PromptInput` / `StatusFooter`: presentational。キー処理は view の単一 `useInput` に集約（ロジックは持たない）。`PromptInput` は複数行対応（純粋モデルは `core/text-buffer.ts`、キー対応は `ui/input.ts` の `editText`/`resolveEnter`）。IME 対応で実端末カーソルをキャレットに重ねる（`useCursor`）。
+- `PromptInput` / `StatusFooter`: presentational。キー処理は view の単一 `useInput` に集約（ロジックは持たない）。`PromptInput` は複数行対応（純粋モデルは `core/text-buffer.ts`、キー対応は `ui/input.ts` の `editText`/`resolveEnter`）。幅を超えたテキストは**折り返す**（truncate しない）: 折り返し後の表示行・キャレット位置・クリック逆算・選択範囲はすべて純粋な `core/composer-layout.ts`（`composerLayout`）が算出し、折り返し幅は Box の実測値（`useComposerWidth`）を描画・当たり判定・↑↓ 移動で共有する。IME 対応で実端末カーソルをキャレットに重ねる（`useCursor`）。
 - 再描画スロットリング: SessionManager の通知を UI 側で ~100ms にスロットルする。
 
 **ランモード（shift+tab トグル）**: `SessionManager.mode`（`auto` | `confirm`）を全セッション共通で保持し、`shift+tab` で `cycleMode()`。`modePolicy` は tool 実行時に `mode` を読むので、切替は稼働中セッションにも即反映される。`auto` = AskUserQuestion 以外を自動承認、`confirm` = 毎回 allow/deny を求める（→ `awaiting_permission`／一覧に「許可待ち」）。UI は `useRunMode()` で購読し、`StatusFooter` が `⏵⏵ auto mode on` / `⏸ confirm mode on` を表示。
