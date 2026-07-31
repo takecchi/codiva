@@ -2,6 +2,8 @@ import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useRef, useState } from 'react';
 import {
   activeElapsedMs,
+  atFirstComposerRow,
+  atLastComposerRow,
   type BannerLine,
   bannerCaretAt,
   bannerLines,
@@ -16,6 +18,7 @@ import {
   formatDuration,
   formatModel,
   INPUT_MAX_ROWS,
+  type InputHistory,
   isActiveStatus,
   isFullscreenViewport,
   isPrCellHit,
@@ -54,6 +57,7 @@ import {
   useCommandRunner,
   useComposerWidth,
   useDragSelection,
+  useInputHistory,
   useLifecycleAction,
   useRateLimit,
   useRunMode,
@@ -146,8 +150,16 @@ const PrCell: FC<{ pr?: PrRef; status?: PrStatus; lookup?: PrLookupState }> = ({
   return null;
 };
 
-/** 復元・報告する一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン）。 */
-export type ListViewState = { selected: number; focus: 'composer' | 'list' };
+/**
+ * 復元・報告する一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン + 入力履歴）。
+ * 履歴を含めるのは、詳細ビューへ入って戻ってくるだけで ↑ の履歴が消えないようにするため
+ * （一覧はビュー切替でアンマウントされる）。
+ */
+export type ListViewState = {
+  selected: number;
+  focus: 'composer' | 'list';
+  history: InputHistory;
+};
 
 /**
  * The single screen: composer (new-session prompt) + session rows. Two focus
@@ -224,6 +236,8 @@ export const SessionList: FC<{
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
   const { columns, rows: termRows } = useWindowSize();
   const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
+  // 送信済み指示の履歴（↑↓ で呼び出す）。再マウントしても引き継ぐ。
+  const history = useInputHistory(initialViewState?.history);
   // コンポーザのマウス範囲選択（ドラッグで選択→離すとクリップボードへコピー）。
   const composerSel = useDragSelection(onCopy);
   // ヘッダ（バナー）のマウス範囲選択。cwd の絶対パスをコピーしたいケースが主目的。
@@ -356,11 +370,11 @@ export const SessionList: FC<{
     setActionError,
     m.command.unknown,
   );
-  // 表示状態（クランプ後の選択行 + フォーカス）を親へ報告し、ビュー切替で
+  // 表示状態（クランプ後の選択行 + フォーカス + 入力履歴）を親へ報告し、ビュー切替で
   // アンマウントされても復元できるようにする。ref 書き込みなので再描画は起きない。
   useEffect(() => {
-    onViewStateChange?.({ selected, focus });
-  }, [selected, focus, onViewStateChange]);
+    onViewStateChange?.({ selected, focus, history: history.history });
+  }, [selected, focus, history.history, onViewStateChange]);
   // The dialog owns the keys only while the list side has focus, so the
   // composer is never hijacked mid-typing by a session that starts asking.
   //
@@ -771,6 +785,9 @@ export const SessionList: FC<{
         setFocus('list');
         return;
       }
+      // 送信したものは（コマンドも含めて）履歴へ積む。コマンドも積むのは shell と
+      // 同じ発想で、`/model` の打ち直しにも ↑ が効く方が自然だから。
+      history.record(enter.text);
       // 先頭が `/`、またはコマンド名そのもの（`exit` 等）はコマンド。通常の指示
       // （manager.create）と分岐する。`/model` はコマンドレジストリ経由でモデル
       // 選択ダイアログを開く。判定と実行は useCommandRunner に集約。
@@ -781,6 +798,24 @@ export const SessionList: FC<{
       manager.create(enter.text);
       updateBuffer(emptyBuffer());
       return;
+    }
+    // ↑↓ は「表示行の端でさらに押したら入力履歴」— shell / readline と同じ一般的な
+    // 仕組み。空の入力欄や1行の書きかけでは即座に履歴を呼び出し、複数行を編集している
+    // 途中ではキャレット移動を優先する（行の途中で書きかけが history に化けない）。
+    // 履歴が無い / 最古に到達 / 辿っていないのに ↓ のときは undefined が返るので、
+    // そのまま下の editText（= 従来のキャレット移動）に落ちる。
+    if (key.upArrow || key.downArrow) {
+      const atEdge = key.upArrow
+        ? atFirstComposerRow(bufferRef.current, composerWidth)
+        : atLastComposerRow(bufferRef.current, composerWidth);
+      const recalled = atEdge
+        ? history.recall(key.upArrow ? 'prev' : 'next', bufferRef.current.value)
+        : undefined;
+      if (recalled !== undefined) {
+        // キャレットは末尾へ（呼び出した指示をそのまま送る/続けて直せる位置）。
+        updateBuffer(bufferOf(recalled));
+        return;
+      }
     }
     // ↑↓ は折り返し後の**表示行**で動かす（wrapWidth）。論理行だと長い1行の途中から
     // 一気に先頭へ飛び、見えている行と操作が食い違う。

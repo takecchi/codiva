@@ -358,6 +358,73 @@ describe('App fullscreen layout', () => {
     app.unmount();
   });
 
+  it('↑↓ で送信済みの指示を入力欄に呼び戻す（履歴・書きかけの復帰込み）', async () => {
+    const manager = makeManager();
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 120);
+    /** フレーム内の出現回数（一覧の行 + 入力欄の 2 箇所を数え分けるため）。 */
+    const count = (text: string) => stripAnsi(lastFrame()).split(text).length - 1;
+
+    for (const text of ['first task', 'second task']) {
+      stdin.write(text);
+      await flush();
+      stdin.write('\r');
+      await flush();
+    }
+    // 送信後の入力欄は空（一覧の行にだけ現れる）。
+    expect(count('second task')).toBe(1);
+
+    // 書きかけを残した状態で ↑ → 最新の履歴が入る（書きかけは退避される）。
+    stdin.write('draft');
+    await flush();
+    stdin.write('\x1b[A');
+    await flush();
+    expect(count('second task')).toBe(2);
+    expect(count('draft')).toBe(0);
+
+    // さらに ↑ で 1 つ古い履歴へ。
+    stdin.write('\x1b[A');
+    await flush();
+    expect(count('first task')).toBe(2);
+
+    // ↓ で新しい方へ戻り、最新を越えると書きかけが復帰する。
+    stdin.write('\x1b[B');
+    await flush();
+    expect(count('second task')).toBe(2);
+    stdin.write('\x1b[B');
+    await flush();
+    expect(count('draft')).toBe(1);
+    app.unmount();
+  });
+
+  it('複数行を編集中の ↑ は履歴ではなくキャレット移動（行の途中で書きかけが消えない）', async () => {
+    const manager = makeManager();
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 120);
+    // 単語区切りのある指示にする（slug は 'old-task' なので、一覧のブランチ列が
+    // 'old task' として二重にヒットしない）。
+    stdin.write('old task');
+    await flush();
+    stdin.write('\r');
+    await flush();
+
+    // Shift+Enter（CSI-u）で 2 行の書きかけを作り、下の行から ↑ を押す。
+    stdin.write('line1');
+    await flush();
+    stdin.write('\x1b[27;2;13~');
+    await flush();
+    stdin.write('line2');
+    await flush();
+    stdin.write('\x1b[A');
+    await flush();
+    // 1 行目へキャレットが動くだけ（履歴は呼ばれない = 書きかけが残る）。
+    expect(lastFrame()).toContain('line1');
+    expect(lastFrame()).toContain('line2');
+    // 最上段に着いたので次の ↑ で履歴が入る。
+    stdin.write('\x1b[A');
+    await flush();
+    expect(stripAnsi(lastFrame()).split('old task').length - 1).toBe(2);
+    app.unmount();
+  });
+
   it('enables includePartialMessages so streaming state stays available', async () => {
     const out = new AsyncQueue<SDKMessage>();
     let captured: Options | undefined;

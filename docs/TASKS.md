@@ -521,6 +521,32 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 16: 入力欄の履歴（↑↓ で送信済みの指示を呼び戻す）✅
+
+**課題**: 一度送った指示をもう一度出す / 打ち間違えた長い指示を直して出し直すのに、毎回全部打ち直す
+しかなかった（shell では当たり前に `↑` で戻れる操作が無い）。
+
+- [x] 純粋な `core/input-history.ts` を新設: `recordInput`（空・直前と同じは積まない・上限
+      `INPUT_HISTORY_LIMIT` = 50）/ `recallPrev`・`recallNext`（辿り始めたときの書きかけを `draft` に
+      退避し、↓ で最新を越えたら復帰）/ `isBrowsingHistory` / `resetHistoryBrowse`
+- [x] `core/composer-layout.ts` に `atFirstComposerRow` / `atLastComposerRow`（折り返し後の**表示行**で
+      端かを判定）。行の途中では従来のキャレット移動を優先し、端でさらに押したときだけ履歴へ回す
+- [x] 共有フック `useInputHistory`（`ui/hooks.ts`）。`useTextBufferRef` と同じく ref 経由で逐次適用
+      （↑ の連打が1チャンクで届いても潰れない）
+- [x] 一覧のコンポーザに配線（送信時に `record`、↑↓ で `recall`、呼び出せなければ `editText` へ落とす）。
+      履歴は `ListViewState` に載せて `app.tsx` の ref へ預け、詳細ビューから戻っても残す
+- [x] 詳細ビューには入れない（あちらの ↑↓ は alternate scroll mode のホイール受け口なので奪えない）
+- [x] i18n: フッタヒントに `↑↓: 履歴` / `↑↓: history`（ja / en 両方）
+- [x] テスト: `core/input-history.spec.ts`（テーブルドリブン）/ `core/composer-layout.spec.ts` に端の
+      判定 / `tests/app.test.tsx` に「↑↓ で呼び戻す・書きかけが復帰する」「複数行編集中の ↑ は
+      キャレット移動」
+- [x] ドキュメント: `README.md`（入力履歴の節）/ `.claude/rules/ink-components.md` / `CLAUDE.md`（地図）
+
+> 実績メモ: 履歴の永続化（`state.json` へ保存）は入れていない。復元用メタに会話由来のテキストを
+> 増やしたくないため、履歴はアプリのプロセス内だけで持つ。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

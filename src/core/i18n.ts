@@ -299,7 +299,7 @@ const ja: Messages = {
     emptyHint: '指示を入力して Enter を押すと最初のセッションが始まります。',
     promptPlaceholder: '実装してほしいことを入力…',
     helpComposer:
-      'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ /exit: 終了 ・ Ctrl+U: 全消し',
+      'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ /exit: 終了 ・ Ctrl+U: 全消し ・ ↑↓: 履歴',
     helpList:
       '↑↓: 選択 ・ Enter/→: 詳細を開く ・ p: PRを開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
     helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
@@ -474,7 +474,8 @@ const en: Messages = {
     totalCost: (usd) => `total ${usd}`,
     emptyHint: 'Type an instruction and press Enter to start your first session.',
     promptPlaceholder: 'Describe what you want built…',
-    helpComposer: 'Enter: submit · Shift+Enter: newline · Tab: list · /exit: quit · Ctrl+U: clear',
+    helpComposer:
+      'Enter: submit · Shift+Enter: newline · Tab: list · /exit: quit · Ctrl+U: clear · ↑↓: history',
     helpList:
       '↑↓: select · Enter/→: open detail · p: open PR · m: merge · d: discard · Tab/Esc: input',
     helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',

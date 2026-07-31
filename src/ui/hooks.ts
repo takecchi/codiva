@@ -12,12 +12,18 @@ import {
   COMPOSER_PREFIX_CELLS,
   type CommandAction,
   emptyBuffer,
+  emptyInputHistory,
   FALLBACK_MODEL_OPTIONS,
+  type InputHistory,
   isCommandInput,
   type ModelOption,
   normalizeSelection,
   type RateLimitWindow,
   type RunMode,
+  recallNext,
+  recallPrev,
+  recordInput,
+  resetHistoryBrowse,
   runCommand,
   type SelectionRange,
   type SessionManager,
@@ -336,6 +342,52 @@ export function useTextBufferRef(initial?: TextBuffer): TextBufferRef {
     setBuffer(bufferRef.current);
   };
   return { buffer, bufferRef, updateBuffer };
+}
+
+export interface InputHistoryControl {
+  /** 現在の履歴。親へ報告して再マウント後も引き継ぐために公開する。 */
+  history: InputHistory;
+  /** 送信したテキストを積む（呼び出し位置もリセットされる）。 */
+  record: (text: string) => void;
+  /**
+   * ↑/↓ の履歴呼び出し。呼び出せたテキストを返し、呼び出せないとき（履歴が空・最古に
+   * 到達・辿っていないのに ↓）は undefined を返す。undefined のときは呼び出し側が
+   * 通常のキャレット移動へ委ねる。
+   */
+  recall: (dir: 'prev' | 'next', current: string) => string | undefined;
+}
+
+/**
+ * 入力欄の履歴（shell の ↑↓）。判定はすべて純粋な `core/input-history.ts` に委譲し、
+ * ここは state の保持だけを持つ。`useTextBufferRef` と同じ理由で ref 経由で逐次適用
+ * する — 端末はキー連打を1チャンクで届けるので、同一 tick に複数回呼ばれても stale な
+ * state から計算しないようにする（↑↑ が1回分に潰れない）。
+ *
+ * `initial` は再マウント時の引き継ぎ用（一覧はビュー切替でアンマウントされる）。辿り
+ * かけの位置は引き継がない — 書きかけ（draft）はバッファごと失われているため、復元
+ * すると ↓ で空文字が入る。
+ */
+export function useInputHistory(initial?: InputHistory): InputHistoryControl {
+  const [history, setHistory] = useState<InputHistory>(() =>
+    resetHistoryBrowse(initial ?? emptyInputHistory()),
+  );
+  const ref = useRef<InputHistory>(history);
+  const apply = (next: InputHistory) => {
+    ref.current = next;
+    setHistory(next);
+  };
+  return {
+    history,
+    record: (text) => apply(recordInput(ref.current, text)),
+    recall: (dir, current) => {
+      const step = dir === 'prev' ? recallPrev(ref.current, current) : recallNext(ref.current);
+      if (!step) {
+        return undefined;
+      }
+      apply(step.history);
+      return step.value;
+    },
+  };
 }
 
 export interface CommandRunner {

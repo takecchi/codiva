@@ -117,6 +117,14 @@
   対応だけ `ui/input.ts`（`editText`/`resolveEnter`）に置く。Shift/Meta+Enter か末尾バックスラッシュ+Enter で
   改行、他は送信。`PromptInput` は `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` で
   カーソル付近を内部スクロール。
+- **入力履歴は表示行の端でだけ ↑↓ を奪う**。一覧のコンポーザは `↑`（最上段の表示行）/ `↓`（最下段）で
+  送信済みの指示を呼び戻す（shell と同じ慣習）。判定・保持は純粋な `core/input-history.ts`
+  （`recallPrev` / `recallNext` / `recordInput`）+ 共有フック `useInputHistory`、端かどうかは
+  `atFirstComposerRow` / `atLastComposerRow`（折り返し後の**表示行**で数える）。行の途中で履歴に
+  化けさせないのが要点で、呼び出せないとき（履歴なし・最古・辿っていないのに ↓）は undefined を
+  返して**従来のキャレット移動へ落とす**。履歴は一覧が再マウントされても消えないよう `ListViewState`
+  に載せて親（`app.tsx` の ref）へ預ける。**詳細ビューには入れない** — あちらの ↑↓ はマウスホイールの
+  受け口（alternate scroll mode）なので、奪うとログがスクロールできなくなる。
 - **入力欄は幅を超えたら折り返す（truncate しない）**。`wrap="truncate-end"` だけだと画面端まで打った
   時点でテキストとキャレットが `…` の裏に消え、何を打っているか読めない。折り返しの幾何は純粋な
   `core/composer-layout.ts`（`composerLayout` / `wrapComposerRows`）に集約し、**描画・マウス当たり判定・

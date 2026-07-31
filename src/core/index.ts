@@ -11,6 +11,7 @@ export * from './errors';
 export * from './format';
 export * from './gauge';
 export * from './i18n';
+export * from './input-history';
 export * from './key-sequence';
 export * from './layout';
 export * from './list-hit';
