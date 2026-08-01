@@ -15,9 +15,11 @@ import type { IgnoredFilesMode } from './worktree';
 /**
  * `ignoredFiles: 'symlink'`（既定）のときにセッションへ伝える注意書き。
  *
- * symlink モードでは `node_modules/` や `dist/` などの ignore 済みパスが元リポジトリの
- * 実体を指す**共有物**なので、セッションが依存を更新したりビルドを走らせるとメイン
- * チェックアウトや並行セッションに波及する。エージェントはこの事実を知らないと
+ * symlink モードでは `node_modules/` や `.env` などの ignore 済みパスが元リポジトリの
+ * 実体を指す**共有物**なので、セッションが依存を更新したりキャッシュを消したりすると
+ * メインチェックアウトや並行セッションに波及する（ビルド生成物は
+ * `DEFAULT_IGNORED_EXCLUDES` で引き継ぎ対象から外してあるが、プロジェクト固有の
+ * 生成物はリンクとして残り得るので注意書き自体は必要）。エージェントはこの事実を知らないと
  * 「自分の worktree の中だから安全」と判断してしまうため、環境として明示する。
  *
  * 方針:
@@ -44,11 +46,13 @@ export const SHARED_IGNORED_FILES_NOTICE = `# Shared ignored files in this workt
 You are running in a git worktree created by codiva. Only git-tracked files were
 checked out here. Every path that git ignores and that already existed in the
 main repository when this worktree was created — at any depth, whatever this
-project happens to use: dependency directories, build output, caches, local env
-files — was symlinked to that same path in the main repository working tree
-instead of being copied. Those targets are shared with the main checkout and with
-the other codiva sessions running in parallel right now. (Ignored paths created
-later, here, are real files; step 1 below tells the two apart.)
+project happens to use: dependency directories, caches, local env files — was
+symlinked to that same path in the main repository working tree instead of being
+copied. Those targets are shared with the main checkout and with the other
+codiva sessions running in parallel right now. (Well-known build-output and cache
+directories are deliberately not inherited: they start out absent here, so a build
+you run writes them fresh and private to this worktree. Ignored paths created
+later, here, are real files too; step 1 below tells the two apart in every case.)
 
 Reading through these symlinks is safe and intended. Writing through one is not:
 it changes the shared original, so it can break the main checkout and other

@@ -13,7 +13,8 @@ description: codiva の設定項目（~/.codiva/config.json のキー）を追�
 ```ts
 export interface CodivaConfig {
   // 既存: language / model / effort / permissionMode / maxBudgetUsd /
-  //       notifications / mouse / followOrigin / autoPr / ignoredFiles / copyIgnored(非推奨)
+  //       notifications / mouse / followOrigin / autoPr / ignoredFiles /
+  //       ignoredFilesExclude / copyIgnored(非推奨)
   <newKey>?: <型>;
 }
 ```

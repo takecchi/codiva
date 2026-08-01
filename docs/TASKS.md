@@ -592,6 +592,42 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 18: ビルド生成物を worktree へ引き継がない（開発サーバのフリーズ対策）✅
+
+**課題**（issue #81）: `ignoredFiles: 'symlink'`（既定）が `.gitignore` 済みパスを**すべて**リンク
+していたため、`.next/` のようなビルド生成物も元リポジトリと共有されていた。worktree は
+リポジトリ配下（`.codiva/worktrees/<slug>`）にあるので、プロジェクトルートから再帰監視する
+開発サーバ（`next dev --turbopack`）からは**自分が書き込んでいる `.next` が worktree の数だけ
+別経路として見える**。報告例は worktree 6 個で CPU / メモリ / FD を食い潰し OS ごとフリーズ。
+
+- [x] `core/worktree.ts` に `DEFAULT_IGNORED_EXCLUDES`（生成物・キャッシュの既知名）と純粋な
+      `isExcludedIgnoredEntry()` / `ignoredExcludePatterns()` を追加。`ignoredCopyEntries()` は
+      除外リストを引数で受ける（既定はビルド生成物を除外）
+- [x] 一致規則: `/` 無しのパターンは**最終セグメント**（ネストした `apps/web/.next/` に効く）、
+      `*` 前置は接尾一致（`*.tsbuildinfo`）、**最後に一致したパターンが勝つ**（`!` で打ち消し）
+- [x] `'symlink'` / `'copy'` の**両モード**で除外（生成物はコピーしても無駄・古い状態を持ち込む）。
+      `node_modules/` と `.env` は引き継ぎ対象のまま（symlink モードの存在理由）
+- [x] 設定 `ignoredFilesExclude`（文字列配列）を追加: `toConfig` で検証 → `index.tsx` から
+      `WorktreeManager` へ。既定の後ろに連結するので `["!dist"]` で打ち消せる
+- [x] `SHARED_IGNORED_FILES_NOTICE` の文面を実態に合わせる（生成物は「共有物」の列挙から外し、
+      判定は引き続き `test -L` に委ねる）
+- [x] 既存 worktree の後片付け `pruneExcludedLinks()`（起動時 1 回・best-effort）: 純粋な
+      `excludedIgnoredEntries()` で対象を列挙し、**シンボリックリンクだけ**を外す
+      （実体のディレクトリ＝セッション自身のビルド結果とリンク先には触らない）
+- [x] テスト: `core/worktree.spec.ts`（テーブルドリブンで一致規則・打ち消し・部分一致の巻き込み無し）/
+      `core/config.spec.ts`（配列の検証・不正要素の落とし方）/ `utils/worktree-manager.spec.ts`
+      （実 git で `.next` / `dist` がリンクもコピーもされないこと、`!dist` で戻ること）
+- [x] ドキュメント: `README.md`（設定 + 「ビルド生成物は引き継がない」節）/ `docs/ARCHITECTURE.md` /
+      `docs/TECH_NOTES.md`（worktree がリポジトリ配下にあることの副作用）/ `.claude/rules/git-and-io.md`
+
+> 実績メモ: 「生成物かどうか」は `.gitignore` からは判別できない（依存も生成物も同じく無視される）ため、
+> **既知の名前を列挙する**しかなかった。列挙は必ず外れるので `ignoredFilesExclude` で追加・打ち消しの
+> 逃げ道を用意してある。worktree の置き場所をリポジトリ外へ移す案は取らない
+> （`.codiva/worktrees/<slug>` 前提のパス・復元・`takenSlugs()` を崩すため）。対象リポジトリの
+> `.gitignore` も書き換えない方針を維持し、監視除外の追加は README で利用者に案内する。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る
