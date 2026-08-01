@@ -47,6 +47,7 @@ import {
   useDragSelection,
   useLifecycleAction,
   useLogDragSelection,
+  useRecovery,
   useRunMode,
   useSessions,
   useTextBufferRef,
@@ -135,6 +136,10 @@ export const SessionDetail: FC<{
       }
     },
   );
+  // `/sync` · `/fix-ci`（このセッションの PR の立て直し）。エラー欄は共有する。
+  // 一覧と同じ理由で `busy`（全キーを飲む）には混ぜず、再実行の入口だけ塞ぐ。
+  const recovery = useRecovery(manager, m, setActionError);
+  const recovering = recovery.busy;
 
   const pending = session?.pendingPermission;
   const status = session?.status;
@@ -186,6 +191,25 @@ export const SessionDetail: FC<{
       model: () => setModelSelect(true),
       // `/diff` toggles the changes summary (hidden by default for log room).
       diff: () => setShowChanges((v) => !v),
+      // `/sync` merges the base branch into THIS session's worktree; a conflict is
+      // left in place and handed to this very session to resolve.
+      sync: () => {
+        if (recovering) {
+          return;
+        }
+        recovery.run(id, 'sync');
+        applyAnchor('bottom'); // the instruction lands at the tail — follow it
+      },
+      // `/fix-ci` asks this session to fix its PR's red checks.
+      fixCi: () => {
+        if (recovering) {
+          return;
+        }
+        recovery.run(id, 'ci');
+        applyAnchor('bottom');
+      },
+      // `/recover` は複数セッションが対象なので詳細ビューには置かない（ハンドラの
+      // 無いコマンドは昇格しないので、`recover` と打っても通常の指示として流れる）。
     },
     setActionError,
     m.command.unknown,
@@ -410,6 +434,8 @@ export const SessionDetail: FC<{
     // 何かキーが来たらマウス選択のハイライトは消す（自動スクロールも止める）。
     sel.clear();
     clearLogSelection();
+    // 立て直しの結果表示は次の操作で引っ込める（エラーと違い一過性の通知）。
+    recovery.setNotice(undefined);
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
     // everything here so nothing leaks through to the composer underneath.
     if (modelSelect) {
@@ -632,6 +658,11 @@ export const SessionDetail: FC<{
             <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
           ) : null}
         </Box>
+        {recovering ? (
+          <Text color={statusColor.running}>{m.recover.running}</Text>
+        ) : recovery.notice ? (
+          <Text color={statusColor.completed}>{recovery.notice}</Text>
+        ) : null}
         {actionError ? (
           <Text color={statusColor.failed}>
             {m.action.actionErrorLabel}: {actionError}

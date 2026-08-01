@@ -166,6 +166,40 @@ export interface Messages {
     allHint: (n: number) => string;
   };
   /**
+   * PR の立て直し（`/sync` / `/fix-ci` / `/recover`。判定は `core/pr-recovery.ts`）。
+   *
+   * `*Instruction` はセッションへ送る指示文で、ログにユーザー発話として残る
+   * （`resume.instruction` と同じ扱いなので、AI 向けでもここに置いて翻訳する）。
+   * 残りは操作結果を伝えるフッタ用の文言。
+   */
+  recover: {
+    /** ベース取り込みで競合したときの指示（競合を worktree に残したまま渡す）。 */
+    conflictInstruction: (base: string, files: readonly string[]) => string;
+    /** 未コミットの変更があってマージを試みなかったときの指示（取り込みごと任せる）。 */
+    dirtyInstruction: (base: string, files: readonly string[]) => string;
+    /** CI が赤いときの指示（失敗したチェック名を添える）。 */
+    ciInstruction: (branch: string, checks: readonly string[]) => string;
+    /** 取り込んで push できた（エージェントを起こしていない）。 */
+    synced: string;
+    /** 取り込むものが無かった。 */
+    upToDate: string;
+    /** 競合／CI をセッションへ引き渡した。 */
+    delegatedSync: string;
+    delegatedCi: string;
+    /** 立て直す理由が無い行で実行したとき。 */
+    skipped: string;
+    /** セッションが作業中で立て直せないとき（worktree を触らせない）。 */
+    busySession: string;
+    /** 一括立て直しの実行中。 */
+    running: string;
+    /** 一括実行の確認文（件数入り）。 */
+    allPrompt: (sync: number, ci: number) => string;
+    /** 立て直し対象があるときに常時出す案内。 */
+    allHint: (n: number) => string;
+    /** 一括実行後のフッタ通知（実際に走った件数）。 */
+    allDone: (n: number) => string;
+  };
+  /**
    * 認証切れ（`needs_login`）の案内。Claude の OAuth セッションが失効すると
    * セッションは何もできないので、「別ターミナルで `claude` にログインし直して
    * r で再開する」という手順そのものを提示する。
@@ -289,6 +323,12 @@ export interface Messages {
     clear: string;
     /** /update の説明 */
     update: string;
+    /** /sync の説明 */
+    sync: string;
+    /** /fix-ci の説明 */
+    fixCi: string;
+    /** /recover の説明 */
+    recover: string;
   };
 }
 
@@ -397,6 +437,44 @@ const ja: Messages = {
     oneKeyHint: 'Ctrl+R: 中断したところから再開',
     allHint: (n) => `Ctrl+A: 中断中の ${n} 件をまとめて再開`,
   },
+  recover: {
+    conflictInstruction: (base, files) =>
+      [
+        `${base} をこのブランチへ取り込もうとしたところ、競合しました。競合はこの worktree に残してあります。`,
+        files.length > 0 ? `競合ファイル: ${files.slice(0, 20).join(', ')}` : '',
+        '双方の意図を確認したうえで競合を解決し、変更をコミットしてから origin へ push してください。',
+        'どちらの変更を残すべきか判断できない場合は、勝手に片方を捨てずに質問してください。',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    dirtyInstruction: (base, files) =>
+      [
+        `この worktree に未コミットの変更があるため、${base} の取り込みを保留しました。`,
+        `未コミット: ${files.slice(0, 20).join(', ')}`,
+        `作業中の変更をコミット（または退避）してから ${base} を取り込み、競合があれば解決して origin へ push してください。`,
+      ].join('\n'),
+    ciInstruction: (branch, checks) =>
+      [
+        `ブランチ ${branch} の PR で CI が失敗しています。`,
+        checks.length > 0
+          ? `失敗したチェック: ${checks.join(' / ')}`
+          : '失敗したチェック名は取得できませんでした。',
+        '`gh pr checks` と `gh run view <run-id> --log-failed` で失敗ログを確認し、原因を修正してください。',
+        '修正したらローカルで同じチェックを再現して通ることを確かめ、コミットして origin へ push してください。',
+        'テストの期待値を書き換えて通すのではなく、失敗の原因そのものを直してください。',
+      ].join('\n'),
+    synced: 'ベースブランチを取り込んで push しました',
+    upToDate: 'ベースブランチは取り込み済みです',
+    delegatedSync: '競合の解決をセッションに依頼しました',
+    delegatedCi: 'CI の修正をセッションに依頼しました',
+    skipped: 'このセッションに立て直しは不要です',
+    busySession: 'セッションが作業中です（終わってから実行してください）',
+    running: 'PR を立て直しています…',
+    allPrompt: (sync, ci) =>
+      `PR が詰まっている ${sync + ci} 件を立て直します（競合 ${sync} 件 / CI 失敗 ${ci} 件）。`,
+    allHint: (n) => `Ctrl+F: PR が詰まっている ${n} 件をまとめて立て直す`,
+    allDone: (n) => `${n} 件の立て直しを実行しました`,
+  },
   auth: {
     listHint: '認証切れ ・ 別ターミナルで claude にログイン後 Ctrl+R: 再開 ・ Tab/Esc: 入力へ',
     hint: 'Claude の認証が切れています。別のターミナルで claude を起動して /login し、Ctrl+R で再開してください。',
@@ -465,6 +543,9 @@ const ja: Messages = {
     prompt: 'リポジトリの追加指示を編集',
     clear: '完了したセッションを一覧から消去（履歴は残る）',
     update: 'codiva の更新を確認して適用',
+    sync: 'ベースブランチを取り込む（競合はセッションに解決させる）',
+    fixCi: '失敗した CI をセッションに修正させる',
+    recover: 'PR が詰まっているセッションをまとめて立て直す',
   },
 };
 
@@ -571,6 +652,44 @@ const en: Messages = {
     oneKeyHint: 'Ctrl+R: resume from where it stopped',
     allHint: (n) => `Ctrl+A: resume all ${n} interrupted sessions`,
   },
+  recover: {
+    conflictInstruction: (base, files) =>
+      [
+        `Merging ${base} into this branch hit conflicts. The conflict markers are left in place in this worktree.`,
+        files.length > 0 ? `Conflicted files: ${files.slice(0, 20).join(', ')}` : '',
+        'Work out what both sides intended, resolve the conflicts, commit the result and push to origin.',
+        'If you cannot tell which side should win, ask instead of silently discarding one of them.',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    dirtyInstruction: (base, files) =>
+      [
+        `This worktree has uncommitted changes, so merging ${base} was skipped.`,
+        `Uncommitted: ${files.slice(0, 20).join(', ')}`,
+        `Commit (or stash) your work in progress, merge ${base} in, resolve any conflicts and push to origin.`,
+      ].join('\n'),
+    ciInstruction: (branch, checks) =>
+      [
+        `CI is failing on the pull request for branch ${branch}.`,
+        checks.length > 0
+          ? `Failing checks: ${checks.join(' / ')}`
+          : 'The failing check names could not be read.',
+        'Inspect the failures with `gh pr checks` and `gh run view <run-id> --log-failed`, then fix the cause.',
+        'Reproduce the same checks locally to confirm they pass, then commit and push to origin.',
+        'Fix the underlying failure — do not rewrite test expectations just to make them green.',
+      ].join('\n'),
+    synced: 'Merged the base branch and pushed',
+    upToDate: 'The base branch is already merged in',
+    delegatedSync: 'Asked the session to resolve the conflicts',
+    delegatedCi: 'Asked the session to fix CI',
+    skipped: 'This session has nothing to recover',
+    busySession: 'The session is still working (try again once it finishes)',
+    running: 'Recovering pull requests…',
+    allPrompt: (sync, ci) =>
+      `Recover ${sync + ci} stuck pull request(s) (${sync} conflicting, ${ci} with failing CI).`,
+    allHint: (n) => `Ctrl+F: recover all ${n} stuck pull request(s)`,
+    allDone: (n) => `Started recovery for ${n} session(s)`,
+  },
   auth: {
     listHint:
       'Login expired · log in to claude in another terminal, then Ctrl+R: resume · Tab/Esc: input',
@@ -636,6 +755,9 @@ const en: Messages = {
     prompt: 'Edit the repository instructions',
     clear: 'Clear finished sessions from the list (history is kept)',
     update: 'Check for a codiva update and apply it',
+    sync: 'Merge the base branch in (the session resolves any conflicts)',
+    fixCi: 'Ask the session to fix its failing CI checks',
+    recover: 'Recover every session whose pull request is stuck',
   },
 };
 

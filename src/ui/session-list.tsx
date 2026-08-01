@@ -32,6 +32,7 @@ import {
   type PrRef,
   type PrStatus,
   parseSgrMouse,
+  recoverableSessions,
   resumableSessions,
   resumeInstruction,
   rowLineAtPoint,
@@ -60,6 +61,7 @@ import {
   useInputHistory,
   useLifecycleAction,
   useRateLimit,
+  useRecovery,
   useRunMode,
   useSessions,
   useTextBufferRef,
@@ -254,6 +256,9 @@ export const SessionList: FC<{
   // 即送るが、一括は全中断セッションへ同時に指示を投げる = 誤爆が課金に直結するため
   // y/n を挟む。
   const [confirmResumeAll, setConfirmResumeAll] = useState(false);
+  // 一括立て直し（Ctrl+F）の確認中フラグ。一括再開と同じ理由で y/n を挟む
+  // （詰まっている全セッションへ同時に指示を投げる = 誤爆が課金に直結する）。
+  const [confirmRecoverAll, setConfirmRecoverAll] = useState(false);
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
   // Open when the user runs `/prompt`; the RepoPromptEditor then owns the keys.
@@ -284,6 +289,19 @@ export const SessionList: FC<{
     manager,
     target?.id,
   );
+  // `/sync` · `/fix-ci` · `/recover`（PR の立て直し）。エラーはマージ/破棄と同じ欄へ。
+  const recovery = useRecovery(manager, m, setActionError);
+  // **`recovery.busy` を全キーを飲む `busy` に混ぜない。** 一括立て直しは N 件ぶんの
+  // `git fetch`+`merge`+`push` を直列に回すので数分に及びうる。その間すべてのキーを
+  // 飲むと、Ctrl+C を拾わない（`exitOnCtrlC: false`）この TUI では `/exit` すら打てず
+  // 操作不能になる（`/update` の installing で同じ罠を踏んで Esc だけ通した）。
+  // 代わりに「もう一度立て直しを始める」入口だけを塞ぐ。
+  const recovering = recovery.busy;
+
+  // PR が詰まっている（ベースと競合 / CI が赤い）セッション。件数は案内と確認文に、
+  // 集合はそのまま一括実行に使う（`manager.recoverable()` と同じ純関数を通す）。
+  const stuck = recoverableSessions(sessions);
+  const stuckSync = stuck.filter((s) => s.kind === 'sync').length;
   /** ダイアログを閉じる（進行中の非同期結果は世代を進めて捨てる）。 */
   const closeUpdate = () => {
     updateGen.current += 1;
@@ -366,6 +384,28 @@ export const SessionList: FC<{
       clear: () => manager.clear(),
       // `/update` は npm レジストリを見て、更新があれば y/n を挟んで適用する。
       update: checkUpdate,
+      // `/sync` は選択中セッションの worktree へベースブランチを取り込む。競合したら
+      // 競合を残したままセッションへ解決を依頼する（PR の状態を待たずに実行できる）。
+      sync: () => {
+        if (target && !recovering) {
+          recovery.run(target.id, 'sync');
+        }
+      },
+      // `/fix-ci` は選択中セッションへ CI の修正を依頼する。
+      fixCi: () => {
+        if (target && !recovering) {
+          recovery.run(target.id, 'ci');
+        }
+      },
+      // `/recover` は詰まっている全セッションをまとめて立て直す（Ctrl+F と同じ）。
+      // 対象 0 件で「0 件を立て直します」と聞かないよう、Ctrl+F と同じ条件で門を張る。
+      recover: () => {
+        if (stuck.length > 0 && !recovering) {
+          setConfirmRecoverAll(true);
+        } else {
+          recovery.setNotice(m.recover.skipped);
+        }
+      },
     },
     setActionError,
     m.command.unknown,
@@ -628,6 +668,8 @@ export const SessionList: FC<{
     // 何かキーが来たらマウス選択のハイライトは消す（タイピング/カーソル移動で解除）。
     composerSel.clear();
     headerSel.clear();
+    // 立て直しの結果表示も次の操作で引っ込める（エラーと違い一過性の通知）。
+    recovery.setNotice(undefined);
     // The model picker and repo-prompt editor are modal: each owns the keys (its
     // own useInput). Ignore everything here so nothing leaks through to the list.
     if (modelSelect || promptEdit) {
@@ -705,6 +747,15 @@ export const SessionList: FC<{
       }
       return;
     }
+    if (confirmRecoverAll) {
+      if (input === 'y' || input === 'Y') {
+        recovery.runAll();
+        setConfirmRecoverAll(false);
+      } else if (input === 'n' || input === 'N' || key.escape) {
+        setConfirmRecoverAll(false);
+      }
+      return;
+    }
     // 一押し再開。フォーカスゾーンに関係なく効く chord にしてあるのが要点で、
     // 中断されたセッションを復帰させるのに「Tab で一覧へ → r」の2手を踏ませない
     // （入力欄は既定フォーカスなので、そこから直接復帰できる必要がある）。印字キーを
@@ -718,6 +769,13 @@ export const SessionList: FC<{
     // 済むので出さない（案内 `resume.allHint` の条件と必ず一致させる）。
     if (key.ctrl && (input === 'a' || input === 'A') && resumables.length > 1) {
       setConfirmResumeAll(true);
+      return;
+    }
+    // 一括立て直し。再開と同じくフォーカス横断の chord にする（詰まりに気づくのは
+    // 一覧の PR 列を眺めているときなので、入力欄にいても 1 手で打てる必要がある）。
+    // 1 件のときも出すのは、再開と違って「選択して押す」代替キーを用意していないため。
+    if (key.ctrl && (input === 'f' || input === 'F') && stuck.length > 0 && !recovering) {
+      setConfirmRecoverAll(true);
       return;
     }
     if (key.tab) {
@@ -938,6 +996,16 @@ export const SessionList: FC<{
         {resumables.length > 1 ? (
           <Text color={statusColor.interrupted}>{m.resume.allHint(resumables.length)}</Text>
         ) : null}
+        {/* PR が詰まっている行があるあいだ常時出す。Ctrl+F もフォーカス横断なので、
+            再開の案内と同じくフッタではなく独立した行に置く。 */}
+        {stuck.length > 0 ? (
+          <Text color={statusColor.failed}>{m.recover.allHint(stuck.length)}</Text>
+        ) : null}
+        {recovering ? (
+          <Text color={statusColor.running}>{m.recover.running}</Text>
+        ) : recovery.notice ? (
+          <Text color={statusColor.completed}>{recovery.notice}</Text>
+        ) : null}
         {actionError ? (
           <Text color={statusColor.failed}>
             {m.action.actionErrorLabel}: {actionError}
@@ -954,6 +1022,15 @@ export const SessionList: FC<{
               busy={false}
               count={resumables.length}
               authCount={authStalled}
+            />
+          </DialogBox>
+        ) : confirmRecoverAll ? (
+          <DialogBox>
+            <ConfirmPrompt
+              kind="recoverAll"
+              busy={busy}
+              syncCount={stuckSync}
+              ciCount={stuck.length - stuckSync}
             />
           </DialogBox>
         ) : null}

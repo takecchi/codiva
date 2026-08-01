@@ -31,6 +31,7 @@ export const fakeWorktrees: WorktreeService = {
   pushBranch: async () => {},
   diffStat: async () => ({ committed: '', uncommitted: [] }),
   merge: async () => {},
+  syncBase: async () => ({ kind: 'upToDate' }),
   remove: async () => {},
 };
 

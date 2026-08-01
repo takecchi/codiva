@@ -1,12 +1,14 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type {
-  PrChecksState,
-  PrInfo,
-  PrLookupResult,
-  PrLookupTarget,
-  PrMergeStatus,
-  PrUnavailableReason,
+import {
+  MAX_FAILING_CHECKS,
+  type PrCheckRun,
+  type PrChecksState,
+  type PrInfo,
+  type PrLookupResult,
+  type PrLookupTarget,
+  type PrMergeStatus,
+  type PrUnavailableReason,
 } from '@/core';
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +26,13 @@ export type ExecLike = (
  * for auto-ready, which doubled the API cost of every poll for no extra information.
  */
 const PR_VIEW_FIELDS = 'number,url,state,mergeable,isDraft,statusCheckRollup';
+
+/**
+ * Cap on the named failing checks we carry. A red matrix build can produce dozens
+ * of identical-looking entries; the names exist to point Claude at the right job,
+ * not to reproduce the checks tab.
+ */
+const MAX_NAMED_FAILURES = MAX_FAILING_CHECKS;
 
 /** Shape of the `gh pr view --json …` payload we care about. */
 interface PrViewJson {
@@ -63,6 +72,51 @@ interface RollupCheck {
   conclusion?: unknown;
   /** Legacy commit-status state: SUCCESS | PENDING | FAILURE | ERROR. */
   state?: unknown;
+  /** Check-run job name (`build (20.x)`). */
+  name?: unknown;
+  /** Legacy status-context id (`ci/circleci`, `codecov/patch`) — its name field. */
+  context?: unknown;
+  /** Workflow the check-run belongs to (`CI`); absent on status contexts. */
+  workflowName?: unknown;
+  /** Link to the run/context page — where `gh run view` would send you. */
+  detailsUrl?: unknown;
+  /** Legacy status-context link (same role as `detailsUrl`). */
+  targetUrl?: unknown;
+}
+
+function stringOr(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/**
+ * Name the red checks so a fix instruction can point at them. Free of charge: the
+ * rollup is already in the PR payload we fetch for the glyph — we simply stopped
+ * throwing the per-check fields away. `<workflow> / <job>` matches how GitHub
+ * labels them in the checks tab, which is also how `gh run` refers to them.
+ */
+function toFailingChecks(rollup: unknown): PrCheckRun[] {
+  const checks = Array.isArray(rollup) ? (rollup as RollupCheck[]) : [];
+  const out: PrCheckRun[] = [];
+  for (const check of checks) {
+    if (!isFailing(check) || out.length >= MAX_NAMED_FAILURES) {
+      continue;
+    }
+    // Check-runs carry `name`; legacy status contexts (CircleCI, Codecov, Jenkins…)
+    // carry `context` instead, and `isFailing` accepts both — so read both here too,
+    // or every external CI failure lands in the prompt as an unhelpful "check".
+    const job = stringOr(check.name, '') || stringOr(check.context, 'check');
+    const workflow = optionalString(check.workflowName);
+    const url = optionalString(check.detailsUrl) ?? optionalString(check.targetUrl);
+    out.push({
+      name: workflow ? `${workflow} / ${job}` : job,
+      ...(url ? { url } : {}),
+    });
+  }
+  return out;
 }
 
 const FAILING = new Set([
@@ -110,11 +164,15 @@ function toPrJson(json: PrViewJson): PrInfo | undefined {
   if (number === undefined || url === undefined) {
     return undefined;
   }
+  const checks = toChecksState(json.statusCheckRollup);
   const pr: PrInfo = {
     number,
     url,
     mergeStatus: toMergeStatus(json.state, json.mergeable),
-    checks: toChecksState(json.statusCheckRollup),
+    checks,
+    // Only carried while the aggregate is red — otherwise the field would churn the
+    // reducer's status comparison for no display or recovery benefit.
+    ...(checks === 'failing' ? { failingChecks: toFailingChecks(json.statusCheckRollup) } : {}),
   };
   return typeof json.isDraft === 'boolean' ? { ...pr, isDraft: json.isDraft } : pr;
 }

@@ -110,6 +110,13 @@ export function buildManager(opts: {
     // origin 追従 / PR 自動化は既定 on。`"followOrigin": false` / `"autoPr": false` で無効化。
     followOrigin: config.followOrigin !== false,
     autoPr: config.autoPr !== false,
+    // 立て直しの自動化は既定 off（オンにすると詰まりを見つけた時点でターンが回る =
+    // 課金が走る）。`"autoSync": true` / `"autoFixCi": true` で有効化。手動の
+    // `/sync` / `/fix-ci` / `/recover` は設定に関係なく使える。
+    autoSync: config.autoSync === true,
+    autoFixCi: config.autoFixCi === true,
+    // セッションへ送る指示文（競合解決・CI 修正）をカタログから引くために必要。
+    messages: t,
     // checks は `gh pr view` の 1 回で PrInfo に同梱されるので、専用の問い合わせは持たない
     // （API（GraphQL）呼び出しを毎ポーリングで倍にしないため）。
     prAutomation: { createPr, markReady: markPrReady },

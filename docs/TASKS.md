@@ -592,6 +592,53 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 18: 詰まった PR の立て直し（コンフリクト取り込み / CI 修正）✅
+
+**背景**: PR がコンフリクトになった／CI が落ちたことは Phase 10 から検知できていたが、一覧に
+`✗` を出すだけで何もしていなかった。並列セッションが増えるほど「main が進んで全部コンフリクト」
+「CI が赤いまま放置」が起きるので、1 件ずつ worktree に入らずに立て直せるようにする。
+
+- [x] 純粋な判定（`core/pr-recovery.ts` + spec）: `prStuckKind` / `recoveryKindFor` /
+      `recoverableSessions` / `recoveryNotice` / 指示文ビルダ（`syncInstruction` / `ciFixInstruction`）。
+      **`prStuckKind` と `recoveryKindFor` を分ける**（自動化のカウンタを走行中にリセットしないため）
+- [x] ベース取り込み（`utils/worktree-manager.ts` の `syncBase` + spec）: `upToDate` / `updated` /
+      `dirty` / `conflict` の 4 値。**競合は abort せず worktree に残す**（`merge()` とは逆）
+- [x] 落ちたチェック名の抽出（`utils/pr.ts` の `toFailingChecks` → `PrStatus.failingChecks`）。
+      既存の `gh pr view` の payload から取るので **API 呼び出しは増えない**。reducer は内容比較
+- [x] 実行（`SessionManager.recover(id, kind?)` / `recoverable()`）+ spec。
+      **worktree に触るのは手を止めているときだけ**（明示 `kind` にも効く `busy` ゲート）
+- [x] 自動化（`PrCoordinator.maybeAutoRecover` + spec）: `autoSync` / `autoFixCi`（既定 off）、
+      `MAX_AUTO_RECOVERY_ATTEMPTS` で打ち切り、詰まりが解けたらリセット
+- [x] 設定（`core/config.ts` の `autoSync` / `autoFixCi`）と配線（`bootstrap/build-manager.ts`。
+      指示文のために `messages` も注入）
+- [x] コマンド（`/sync` / `/fix-ci` / `/recover`）+ i18n（ja/en の `recover` グループ）
+- [x] UI: 共有フック `useRecovery`、一覧の `Ctrl+F` +確認（`ConfirmPrompt` の `recoverAll`）、
+      案内行、詳細ビューの `/sync` / `/fix-ci`
+- [x] `tests/app.test.tsx` にキー/コマンド配線の統合テスト（7 件）
+- [x] ドキュメント: `README.md` / `docs/ARCHITECTURE.md` / `CLAUDE.md`（地図）
+
+> 実績メモ: 設計の芯は「**codiva が決定的にできることは codiva がやる**」。クリーンに取り込め
+> たときは push まで済ませてセッションを起こさない（＝トークンを使わない）ので、`autoSync` の
+> コストは実質ゼロ。ターンが回るのは競合・未コミット・CI 赤の 3 ケースだけ。
+> 自動化の既定を off にしたのは、そのターンが課金に直結するため。
+> レビューで潰した罠（いずれもテスト付き）:
+> 1. **試行回数のリセット条件**。`recoveryKindFor` を使うと指示送信直後（走行中）にリセットされ、
+>    `prStuckKind` に直しても **push 直後の `checks: 'pending'`** でリセットされる。実際に多いのは
+>    「依頼したが直せなかった」ケースなので、緑を見たときだけ返金する `prRecovered` に落ち着いた。
+> 2. **`failingChecks` の比較**。毎ポーリング新しい配列なので参照比較だと `prStatus` の参照維持が
+>    壊れ、全行が毎 tick 再描画される（内容比較 `sameChecks` を追加）。
+> 3. **`recovery.busy` を全キーを飲む `busy` に混ぜていた**。一括は数分かかりうるので、
+>    Ctrl+C を拾わないこの TUI では `/exit` すら打てず操作不能になっていた。
+> 4. **未追跡ファイルを dirty 扱い**していた（走り書き 1 個で無課金の経路を捨ててターンを使う）。
+>    merge 途中の再実行と detached HEAD も、それぞれ実行不能な指示 / 嘘の成功報告になっていた。
+> 5. **`autoFixCi` だけ有効なとき、競合かつ赤い PR で何も起きなかった**（優先度 1 位の `sync` が
+>    無効で止まっていた）。`stuckKinds` で有効なフラグまで見て選ぶようにした。
+> 6. **一括の結果が常に成功報告**だった（全件失敗しても緑で「N 件実行しました」）。
+> 7. ついでに `git status --porcelain` のパース（`slice(3)`）が、`git()` の trim で先頭行だけ
+>    1 文字ずれる既存バグを発見・修正（`diffStat` の未コミット一覧にも影響していた）。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

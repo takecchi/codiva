@@ -56,6 +56,23 @@ export interface CodivaConfig {
    */
   autoPr?: boolean;
   /**
+   * PR が「ベースと競合している」と GitHub が報告したら、自動でベースブランチを
+   * worktree へ取り込む。競合しなければ push まで済ませる（セッションは起こさない =
+   * トークンを使わない）。競合したらセッションへ解決を依頼する。未設定は無効（false）。
+   *
+   * 既定を off にしているのは、依頼が発生した時点で課金が走るため。手動の `/sync` は
+   * 設定に関係なくいつでも使える。
+   */
+  autoSync?: boolean;
+  /**
+   * PR のチェックが赤くなったら、失敗したチェック名を添えてセッションへ修正を依頼する。
+   * 未設定は無効（false。理由は `autoSync` と同じ）。手動は `/fix-ci`。
+   *
+   * 依頼は 1 セッションあたり `MAX_AUTO_RECOVERY_ATTEMPTS` 回まで（`core/pr-recovery.ts`）。
+   * 上限が無いと「依頼したのに push されない」ときにポーリングのたび永久に投げ続ける。
+   */
+  autoFixCi?: boolean;
+  /**
    * セッション用 worktree 作成時に `.gitignore` された未追跡ファイル
    * （`node_modules/`・`.env` など）をどう引き継ぐか。未設定は `'symlink'`。
    * - `'symlink'`: 元へシンボリックリンクを張る（複製なしで即起動、実体は共有）。
@@ -95,6 +112,8 @@ interface CodivaConfigJson {
   mouse?: unknown;
   followOrigin?: unknown;
   autoPr?: unknown;
+  autoSync?: unknown;
+  autoFixCi?: unknown;
   ignoredFiles?: unknown;
   copyIgnored?: unknown;
 }
@@ -198,6 +217,14 @@ export function toConfig(json: unknown): CodivaConfig {
   const autoPr = toBoolean(raw.autoPr);
   if (autoPr !== undefined) {
     config.autoPr = autoPr;
+  }
+  const autoSync = toBoolean(raw.autoSync);
+  if (autoSync !== undefined) {
+    config.autoSync = autoSync;
+  }
+  const autoFixCi = toBoolean(raw.autoFixCi);
+  if (autoFixCi !== undefined) {
+    config.autoFixCi = autoFixCi;
   }
   const ignoredFiles = toIgnoredFilesMode(raw.ignoredFiles);
   if (ignoredFiles !== undefined) {

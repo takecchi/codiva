@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { messages } from '@/core/i18n';
 import type { RateLimitInfoJson } from '@/core/rate-limit';
 import { SessionManager } from '@/core/session-manager';
 import type { PrAutomation, SessionHandle, WorktreeService } from '@/core/session-ports';
@@ -21,6 +22,7 @@ function fakeWorktrees(overrides: Partial<WorktreeService> = {}): WorktreeServic
     pushBranch: async () => {},
     diffStat: async () => ({ committed: '', uncommitted: [] }),
     merge: async () => {},
+    syncBase: async () => ({ kind: 'upToDate' }),
     remove: async () => {},
     ...overrides,
   };
@@ -1185,6 +1187,216 @@ describe('SessionManager', () => {
       created[0]?.drive('completed');
       await flush();
       expect(pushBranch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recover() (PR stuck on a conflict or red CI)', () => {
+    const m = messages.ja;
+
+    function recoverManager(over: Partial<WorktreeService> = {}) {
+      const pushBranch = vi.fn(async () => {});
+      // `over.syncBase` を素で渡すと返り値の spy と別物になる（呼び出し回数を数えられない）
+      // ので、上書きがあってもこの spy でくるんでから WorktreeService に載せる。
+      const behavior = over.syncBase;
+      const syncBase = vi.fn<WorktreeService['syncBase']>(
+        behavior ?? (async () => ({ kind: 'upToDate' })),
+      );
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({ ...over, pushBranch, syncBase }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        messages: m,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      return { manager, created, pushBranch, syncBase };
+    }
+
+    /** Drive a freshly created session to `completed` with the given PR state. */
+    async function stuck(
+      created: FakeSession[],
+      pr: Parameters<FakeSession['setPr']>[0],
+    ): Promise<FakeSession> {
+      await flush();
+      const session = created[0];
+      if (!session) {
+        throw new Error('no session');
+      }
+      session.drive('completed');
+      session.setPr(pr);
+      return session;
+    }
+
+    it('merges the base in and pushes when it applies cleanly — no turn spent', async () => {
+      const { manager, created, pushBranch, syncBase } = recoverManager({
+        syncBase: async () => ({ kind: 'updated', ref: 'origin/main' }),
+      });
+      manager.create('feature');
+      const session = await stuck(created, { number: 3, url: 'u', mergeStatus: 'conflicting' });
+
+      await expect(manager.recover('1')).resolves.toEqual({ kind: 'synced' });
+      expect(syncBase).toHaveBeenCalledTimes(1);
+      expect(pushBranch).toHaveBeenCalledTimes(1);
+      // The whole point of the cheap path: Claude was never woken up.
+      expect(session.calls.filter((c) => c.startsWith('send:'))).toEqual([]);
+    });
+
+    it('hands a conflicted merge to the session, with the file list', async () => {
+      const { manager, created, pushBranch } = recoverManager({
+        syncBase: async () => ({ kind: 'conflict', ref: 'origin/main', files: ['a.ts'] }),
+      });
+      manager.create('feature');
+      const session = await stuck(created, { number: 3, url: 'u', mergeStatus: 'conflicting' });
+
+      await expect(manager.recover('1')).resolves.toEqual({
+        kind: 'delegated',
+        recovery: 'sync',
+      });
+      const sent = session.calls.find((c) => c.startsWith('send:'));
+      expect(sent).toContain('a.ts');
+      // Nothing is pushed: the branch is mid-merge until the session resolves it.
+      expect(pushBranch).not.toHaveBeenCalled();
+    });
+
+    it('hands an uncommitted worktree to the session instead of merging over it', async () => {
+      const { manager, created } = recoverManager({
+        syncBase: async () => ({ kind: 'dirty', files: ['wip.ts'] }),
+      });
+      manager.create('feature');
+      const session = await stuck(created, { number: 3, url: 'u', mergeStatus: 'conflicting' });
+
+      await expect(manager.recover('1')).resolves.toEqual({
+        kind: 'delegated',
+        recovery: 'sync',
+      });
+      expect(session.calls.find((c) => c.startsWith('send:'))).toContain('wip.ts');
+    });
+
+    it('reports up-to-date without pushing', async () => {
+      const { manager, created, pushBranch } = recoverManager();
+      manager.create('feature');
+      const session = await stuck(created, { number: 3, url: 'u', mergeStatus: 'conflicting' });
+
+      await expect(manager.recover('1')).resolves.toEqual({ kind: 'upToDate' });
+      expect(pushBranch).not.toHaveBeenCalled();
+      expect(session.calls.filter((c) => c.startsWith('send:'))).toEqual([]);
+    });
+
+    it('names the failing checks when asking the session to fix CI', async () => {
+      const { manager, created, syncBase } = recoverManager();
+      manager.create('feature');
+      const session = await stuck(created, {
+        number: 3,
+        url: 'u',
+        mergeStatus: 'mergeable',
+        checks: 'failing',
+        failingChecks: [{ name: 'CI / test', url: 'https://example.test/run/2' }],
+      });
+
+      await expect(manager.recover('1')).resolves.toEqual({ kind: 'delegated', recovery: 'ci' });
+      const sent = session.calls.find((c) => c.startsWith('send:'));
+      expect(sent).toContain('CI / test');
+      expect(sent).toContain('https://example.test/run/2');
+      // A red build is not a merge problem — git is left alone.
+      expect(syncBase).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a git failure instead of swallowing it', async () => {
+      const { manager, created } = recoverManager({
+        syncBase: async () => {
+          throw new Error('detached HEAD');
+        },
+      });
+      manager.create('feature');
+      await stuck(created, { number: 3, url: 'u', mergeStatus: 'conflicting' });
+
+      await expect(manager.recover('1')).resolves.toEqual({
+        kind: 'error',
+        error: 'detached HEAD',
+      });
+    });
+
+    it('skips a session with nothing wrong', async () => {
+      const { manager, created, syncBase } = recoverManager();
+      manager.create('feature');
+      await stuck(created, { number: 3, url: 'u', mergeStatus: 'mergeable', checks: 'passing' });
+
+      await expect(manager.recover('1')).resolves.toEqual({ kind: 'skipped' });
+      expect(syncBase).not.toHaveBeenCalled();
+    });
+
+    it('refuses to touch a worktree while the session is still working', async () => {
+      // `git merge` inside a worktree Claude is actively editing races with its
+      // writes, so the guard covers the explicit `/sync` too — not just the poll.
+      const { manager, created, syncBase } = recoverManager({
+        syncBase: async () => ({ kind: 'updated', ref: 'origin/main' }),
+      });
+      manager.create('feature');
+      await flush();
+      created[0]?.drive('running');
+
+      await expect(manager.recover('1', 'sync')).resolves.toEqual({ kind: 'busy' });
+      expect(syncBase).not.toHaveBeenCalled();
+    });
+
+    it('an explicit kind works before the PR poll has answered (`/sync` on any row)', async () => {
+      const { manager, created, syncBase } = recoverManager({
+        syncBase: async () => ({ kind: 'updated', ref: 'origin/main' }),
+      });
+      manager.create('feature');
+      await flush();
+      created[0]?.drive('completed');
+
+      // No pr/prStatus at all — recoveryKindFor would decline, the explicit kind wins.
+      await expect(manager.recover('1', 'sync')).resolves.toEqual({ kind: 'synced' });
+      expect(syncBase).toHaveBeenCalledTimes(1);
+    });
+
+    it('is inert without a message catalog (it must not invent prompt text)', async () => {
+      const syncBase = vi.fn<WorktreeService['syncBase']>(async () => ({ kind: 'upToDate' }));
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({ syncBase }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      manager.create('feature');
+      await stuck(created, { number: 3, url: 'u', mergeStatus: 'conflicting' });
+
+      await expect(manager.recover('1', 'sync')).resolves.toEqual({ kind: 'skipped' });
+      expect(syncBase).not.toHaveBeenCalled();
+    });
+
+    it('recoverable() lists the stuck sessions with what each one needs', async () => {
+      const { manager, created } = recoverManager();
+      manager.create('a');
+      manager.create('b');
+      manager.create('c');
+      await flush();
+      created[0]?.drive('completed');
+      created[0]?.setPr({ number: 1, url: 'u', mergeStatus: 'mergeable', checks: 'passing' });
+      created[1]?.drive('completed');
+      created[1]?.setPr({ number: 2, url: 'u', mergeStatus: 'conflicting' });
+      created[2]?.drive('completed');
+      created[2]?.setPr({ number: 3, url: 'u', mergeStatus: 'mergeable', checks: 'failing' });
+
+      expect(manager.recoverable().map((r) => [r.state.id, r.kind])).toEqual([
+        ['2', 'sync'],
+        ['3', 'ci'],
+      ]);
     });
   });
 

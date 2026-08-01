@@ -74,6 +74,22 @@ export interface PrStatus {
   isDraft?: boolean;
   /** Aggregate CI state of the PR's checks; drives the checks glyph and auto-ready. */
   checks?: PrChecksState;
+  /**
+   * The individual checks that are red, when `checks === 'failing'`. Carved out of
+   * the *same* `statusCheckRollup` payload the aggregate comes from, so naming them
+   * costs no extra API call — and knowing *which* job failed is what turns
+   * "CI is red" into an instruction Claude can act on (`core/pr-recovery.ts`).
+   * Capped (see `MAX_FAILING_CHECKS`) so a fan-out matrix can't flood the prompt.
+   */
+  failingChecks?: readonly PrCheckRun[];
+}
+
+/** One red check on a PR: what to call it and where its log lives. */
+export interface PrCheckRun {
+  /** Job/context name as GitHub reports it (`build (20.x)`, `lint`, …). */
+  name: string;
+  /** Link to the run's details page, when the rollup carried one. */
+  url?: string;
 }
 
 /**

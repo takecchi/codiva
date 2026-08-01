@@ -7,10 +7,30 @@ import type {
   CreateSessionInput,
   LogEntry,
   LogKind,
+  PrCheckRun,
   PrStatus,
   SessionState,
   TodoItem,
 } from './types';
+
+/**
+ * Content equality for the named failing checks. Needed because each poll parses a
+ * brand-new array out of the `gh` payload: without this the `pr` event would always
+ * look like a status change and rebuild `prStatus` (and re-render every row) on
+ * every tick, even while CI sat still.
+ */
+function sameChecks(
+  a: readonly PrCheckRun[] | undefined,
+  b: readonly PrCheckRun[] | undefined,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b || a.length !== b.length) {
+    return false;
+  }
+  return a.every((check, i) => check.name === b[i]?.name && check.url === b[i]?.url);
+}
 
 /**
  * True when an error/result string signals a genuine usage- or rate-limit stop
@@ -275,7 +295,11 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       const sameStatus =
         state.prStatus?.mergeStatus === event.pr?.mergeStatus &&
         state.prStatus?.isDraft === event.pr?.isDraft &&
-        state.prStatus?.checks === event.pr?.checks;
+        state.prStatus?.checks === event.pr?.checks &&
+        // Compared by content, not reference: every poll builds a fresh array, so a
+        // reference compare would report "changed" on every tick and defeat the
+        // identity preservation the other three fields are here for.
+        sameChecks(state.prStatus?.failingChecks, event.pr?.failingChecks);
       // A `pr` event means the lookup answered, so it always clears prLookup —
       // even when nothing changed (a successful retry must drop the "couldn't
       // check" mark).
@@ -288,6 +312,9 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
             mergeStatus: event.pr.mergeStatus,
             ...(event.pr.isDraft === undefined ? {} : { isDraft: event.pr.isDraft }),
             ...(event.pr.checks === undefined ? {} : { checks: event.pr.checks }),
+            ...(event.pr.failingChecks === undefined
+              ? {}
+              : { failingChecks: event.pr.failingChecks }),
           }
         : undefined;
       return {

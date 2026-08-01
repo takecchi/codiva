@@ -1,7 +1,16 @@
 import { type AccountSummary, sameAccountSummary } from './account';
 import { errorMessage } from './errors';
+import type { Messages } from './i18n';
 import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
 import { PrCoordinator } from './pr-coordinator';
+import {
+  ciFixInstruction,
+  type RecoveryKind,
+  type RecoveryOutcome,
+  recoverableSessions,
+  recoveryKindFor,
+  syncInstruction,
+} from './pr-recovery';
 import {
   mergeEventWindow,
   type RateLimitInfoJson,
@@ -28,7 +37,7 @@ import { isResumable, isTerminalStatus } from './status-meta';
 import { accrueActive, initialState, reduce } from './status-reducer';
 import type { CreateSessionInput, LogEntry, SessionState } from './types';
 import { mergeUsageWindow, type UsageSnapshot } from './usage';
-import type { DiffStat, Worktree } from './worktree';
+import type { DiffStat, SyncBaseResult, Worktree } from './worktree';
 
 export interface SessionManagerDeps {
   worktrees: WorktreeService;
@@ -65,6 +74,24 @@ export interface SessionManagerDeps {
    * once checks pass. Default off unless wired.
    */
   autoPr?: boolean;
+  /**
+   * When true, a PR the poll reports as `conflicting` gets the base branch merged
+   * in automatically (pushed when clean, handed to the session when it conflicts).
+   * Default off — the conflicting case spends a turn. See `core/pr-recovery.ts`.
+   */
+  autoSync?: boolean;
+  /**
+   * When true, a PR whose checks go red automatically asks its session to fix them.
+   * Default off (it spends a turn), and bounded per session by
+   * `MAX_AUTO_RECOVERY_ATTEMPTS` so a session that never pushes can't loop forever.
+   */
+  autoFixCi?: boolean;
+  /**
+   * Message catalog, used for the text of instructions sent to a session on the
+   * user's behalf (PR recovery). Without it `recover()` is a no-op — the manager
+   * must not invent English prompts of its own (regulation: i18n.md).
+   */
+  messages?: Messages;
   /** PR automation seam (create/checks/ready via `gh`); required for autoPr. */
   prAutomation?: PrAutomation;
   /** Factory for a session; defaults to constructing a real Session. `resume`/`restored` are set when rehydrating. */
@@ -142,6 +169,12 @@ export class SessionManager {
       prAutomation: deps.prAutomation,
       lookupPr: deps.lookupPr,
       lookupPrs: deps.lookupPrs,
+      autoSync: deps.autoSync,
+      autoFixCi: deps.autoFixCi,
+      // Bound lazily (the arrow captures `this`, which is fully built by the time a
+      // poll can fire) so the coordinator can trigger recovery without knowing how
+      // it works — it only decides *when*.
+      recover: (id, kind) => this.recover(id, kind),
       getMeta: (id) => this.worktreeMeta.get(id),
       getState: (id) => this.store.get(id),
       getSession: (id) => this.sessions.get(id),
@@ -492,6 +525,72 @@ export class SessionManager {
     return meta ? sessionDiffStat(this.deps.worktrees, meta) : undefined;
   }
 
+  // ── PR recovery (conflicts / red CI) ───────────────────────────────
+  /**
+   * Sessions whose PR is stuck (base moved on and conflicts, or CI is red), with
+   * what each one needs. Drives the bulk action and its hint/confirm counts.
+   */
+  recoverable(): { state: SessionState; kind: RecoveryKind }[] {
+    return recoverableSessions(this.store.getSnapshot());
+  }
+
+  /**
+   * Un-stick one session's PR: merge the base branch in when GitHub reports a
+   * conflict, or hand the red CI to the session with the failing check names.
+   * Chooses by {@link recoveryKindFor} unless `kind` forces one (the explicit
+   * `/sync` / `/fix-ci` commands, which must work before a poll has answered).
+   *
+   * The cheap outcomes cost nothing: a clean base merge is pushed straight away
+   * without waking Claude, and an already-merged base is a no-op. Only a conflict,
+   * a dirty worktree or a red build actually spends a turn.
+   */
+  async recover(id: string, kind?: RecoveryKind): Promise<RecoveryOutcome> {
+    const t = this.deps.messages;
+    const meta = this.worktreeMeta.get(id);
+    const state = this.store.get(id);
+    const session = this.sessions.get(id);
+    if (!t || !meta || !state || !session) {
+      return { kind: 'skipped' };
+    }
+    const wanted = kind ?? recoveryKindFor(state);
+    if (!wanted) {
+      return { kind: 'skipped' };
+    }
+    // Applies to the explicit `/sync` / `/fix-ci` too, which is the whole reason this
+    // check isn't folded into `recoveryKindFor`: running `git merge` inside a worktree
+    // Claude is actively editing races with its writes, and queueing a follow-up
+    // instruction mid-turn just fights the work already in flight.
+    if (!isTerminalStatus(state.status) || state.status === 'archived') {
+      return { kind: 'busy' };
+    }
+    if (wanted === 'ci') {
+      session.send(ciFixInstruction(state.branch, state.prStatus?.failingChecks, t));
+      return { kind: 'delegated', recovery: 'ci' };
+    }
+    let result: SyncBaseResult;
+    try {
+      result = await this.deps.worktrees.syncBase(meta.worktree, meta.base);
+    } catch (err) {
+      return { kind: 'error', error: errorMessage(err) };
+    }
+    const instruction = syncInstruction(result, meta.base, t);
+    if (instruction !== undefined) {
+      session.send(instruction);
+      return { kind: 'delegated', recovery: 'sync' };
+    }
+    if (result.kind === 'upToDate') {
+      return { kind: 'upToDate' };
+    }
+    // A clean merge is only worth anything once GitHub can see it, and pushing a
+    // fast-forwardable merge is deterministic enough to do without asking Claude.
+    try {
+      await this.deps.worktrees.pushBranch(meta.worktree);
+    } catch (err) {
+      return { kind: 'error', error: errorMessage(err) };
+    }
+    return { kind: 'synced' };
+  }
+
   /** Merge a session's branch into base, then archive it. */
   async merge(id: string): Promise<ActionResult> {
     const meta = this.worktreeMeta.get(id);
@@ -510,6 +609,7 @@ export class SessionManager {
     const result = await discardSession(this.deps.worktrees, meta, this.sessions.get(id), opts);
     if (result.ok) {
       this.worktreeMeta.delete(id);
+      this.prs.forget(id);
     }
     return result;
   }
@@ -537,6 +637,7 @@ export class SessionManager {
       this.sessions.get(id)?.stop();
       this.sessions.delete(id);
       this.worktreeMeta.delete(id);
+      this.prs.forget(id);
       this.store.remove(id);
     }
     this.deps.onPersist?.();
