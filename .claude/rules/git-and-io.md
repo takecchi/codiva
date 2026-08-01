@@ -25,6 +25,16 @@
   `'copy'`（完全独立）/ `'none'`。列挙結果のフィルタは純関数 `ignoredCopyEntries()` で、
   **`.codiva/` と `.git` は必ず除外**（再帰・内部状態破壊の防止）。実体化は entry 単位の
   ベストエフォート（1件失敗しても worktree 作成を止めない）。
+- **ビルド生成物・キャッシュは引き継がない**（`DEFAULT_IGNORED_EXCLUDES`。モード共通）。
+  worktree はリポジトリ配下にあるため、`.next` 等を共有するとルートで再帰監視している
+  開発サーバが自分の書き込みを worktree の数だけ再検知して OS ごと固まる（issue #81）。
+  判定は純関数 `isExcludedIgnoredEntry()`（`/` 無しは最終セグメント一致・`*` 前置は接尾一致・
+  **最後に一致したパターンが勝つ**）。設定 `ignoredFilesExclude` で追加／`!` 打ち消しができる。
+  **依存（`node_modules/`）と環境ファイル（`.env`）は引き継ぎ対象のまま**にする（symlink モードの
+  存在理由なので、この既定を生成物と一緒に切らない）。
+- 起動時の後片付け `pruneExcludedLinks()`: 既存 worktree に残る「もう引き継がないパス」の
+  **シンボリックリンクだけ**を外す（best-effort）。**実体のディレクトリは絶対に消さない**
+  （セッション自身のビルド結果でありうる）。ここを `rm -r` に緩めない。
 - **`'symlink'` のときは「実体が共有である」ことをセッションにも伝える**（`core/system-prompt.ts` の
   `SHARED_IGNORED_FILES_NOTICE` が systemPrompt に載る）。依存更新やビルドはリンク越しに
   メインチェックアウトと他セッションへ波及するため、エージェント側で**書き込む前にそのパスだけ

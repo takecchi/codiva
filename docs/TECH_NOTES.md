@@ -130,6 +130,9 @@ const options = {
     のときだけ載る。実測（このリポジトリ自身のセッション worktree）で `node_modules` / `dist` /
     `coverage` が元リポジトリを指すリンクになっており、worktree 内で `npm run build` すると
     **メインチェックアウトの `dist/` を書き換えてしまう**（他セッションのビルド結果も踏む）。
+    ※ `dist` / `coverage` のような**既知の生成物は後に引き継ぎ対象から外した**（issue #81 /
+    `DEFAULT_IGNORED_EXCLUDES`）ので現在はリンクにならないが、プロジェクト固有の生成物は
+    依然リンクとして現れ得るため注意書き自体は必要。
     エージェントは「自分の worktree の中だから安全」と判断するのでこれは防げず、環境として
     伝えるしかない。必須要素は「書き込む前に該当パスだけリンクを切る」「`rm -rf <path>/` や
     `<path>/*` はリンクを辿って共有先を消すので禁止」「読むだけ・触らない作業では何もしない」の
@@ -325,6 +328,18 @@ git merge --no-ff codiva/<slug>
 - 同名ブランチ/worktree の衝突: slug に連番を付与。
 - `.git/info/exclude` への追記は `# codiva` マーカー行で冪等にする。
 - git 実行は必ず `execFile`（シェル経由禁止。slug はサニタイズ済みだが多層防御）。
+- **worktree がリポジトリ配下にあることの副作用（issue #81 の実測）**: `.codiva/worktrees/<slug>` は
+  プロジェクトルートの下なので、**ルートから再帰的にファイル監視する開発サーバ**（Next.js /
+  Turbopack の `next dev --turbopack`。macOS では FSEvents）の監視対象に入る。ここに
+  `<worktree>/.next -> <root>/.next` のようなリンクがあると、開発サーバが**自分で書き込んでいる
+  ディレクトリ**を worktree の数だけ別経路として再検知する。報告例は worktree 6 個で
+  CPU / メモリ / FD を食い潰し **OS ごとフリーズ**（`node_modules` も同様に多重経路になる）。
+  → 対策として、ビルド生成物・キャッシュは引き継ぎ対象から外した（`DEFAULT_IGNORED_EXCLUDES`。
+  `node_modules` は依存なので引き継ぎを維持 —— Next.js / Vite 等の監視は `node_modules` を
+  既定で除外する）。監視そのものを軽くしたい場合は、利用者側で `.codiva` を `.gitignore` と
+  開発サーバの監視除外に足すのが確実（**codiva は対象リポジトリの `.gitignore` を書き換えない**ので、
+  git 用の除外は `.git/info/exclude` までに留める）。worktree の置き場所をリポジトリ外へ移す案は
+  取らない（`.codiva/worktrees/<slug>` 前提のパス・復元・`takenSlugs()` を崩さないため）。
 
 ## テスト戦略
 

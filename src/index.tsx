@@ -58,8 +58,10 @@ async function main(): Promise<void> {
   // `.gitignore` された node_modules/.env 等は git worktree に引き継がれないため、
   // 既定でリポジトリルートへシンボリックリンクを張る（設定 `"ignoredFiles"`: 'symlink' |
   // 'copy' | 'none' で切替。非推奨の `copyIgnored` も後方互換で解釈する）。
+  // ビルド生成物・キャッシュは既定で引き継がない（設定 `"ignoredFilesExclude"` で調整）。
   const worktrees = new WorktreeManager(repoRoot, {
     ignoredFiles: resolveIgnoredFilesMode(config),
+    ignoredFilesExclude: config.ignoredFilesExclude,
   });
   try {
     await worktrees.preflight();
@@ -67,6 +69,10 @@ async function main(): Promise<void> {
     process.stderr.write(`codiva: ${errorMessage(err)}\n`);
     process.exit(1);
   }
+  // 以前のバージョン（あるいは前回の設定）が張った「もう引き継がないパス」のリンクを外す。
+  // 残っていると生成物の共有＝開発サーバのフリーズ要因も残るため（issue #81）。リンクだけを
+  // 外すので指し先は無傷。best-effort で起動は止めない。
+  await worktrees.pruneExcludedLinks().catch(() => undefined);
 
   // Persist controller reads the manager lazily, so it can be created first and
   // wired as the manager's onPersist dirty signal.

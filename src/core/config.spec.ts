@@ -142,6 +142,25 @@ describe('toConfig', () => {
     expect(toConfig({ ignoredFiles })).toEqual({});
   });
 
+  it('keeps a list of exclude patterns and trims them', () => {
+    expect(toConfig({ ignoredFilesExclude: ['  .next ', '!dist'] })).toEqual({
+      ignoredFilesExclude: ['.next', '!dist'],
+    });
+  });
+
+  it('drops non-string and empty entries from ignoredFilesExclude', () => {
+    expect(toConfig({ ignoredFilesExclude: ['dist', 1, null, '', '   ', {}] })).toEqual({
+      ignoredFilesExclude: ['dist'],
+    });
+  });
+
+  it.each([['dist'], [1], [null], [{ dist: true }], [[]], [['', '  ']]])(
+    'drops invalid ignoredFilesExclude: %o',
+    (ignoredFilesExclude) => {
+      expect(toConfig({ ignoredFilesExclude })).toEqual({});
+    },
+  );
+
   it('collects all valid keys together', () => {
     expect(
       toConfig({
@@ -156,6 +175,7 @@ describe('toConfig', () => {
         followOrigin: false,
         autoPr: true,
         ignoredFiles: 'copy',
+        ignoredFilesExclude: ['!dist'],
         copyIgnored: false,
       }),
     ).toEqual({
@@ -170,6 +190,7 @@ describe('toConfig', () => {
       followOrigin: false,
       autoPr: true,
       ignoredFiles: 'copy',
+      ignoredFilesExclude: ['!dist'],
       copyIgnored: false,
     });
   });
