@@ -1,10 +1,22 @@
-import { appendFile, cp, mkdir, readFile, rm, symlink } from 'node:fs/promises';
+import {
+  appendFile,
+  cp,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  unlink,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   CODIVA_DIR,
   type DiffStat,
+  excludedIgnoredEntries,
   type IgnoredFilesMode,
   ignoredCopyEntries,
+  ignoredExcludePatterns,
   MergeConflictError,
   type SyncBaseResult,
   type Worktree,
@@ -42,12 +54,15 @@ function porcelainPaths(raw: string): string[] {
  */
 export class WorktreeManager {
   private readonly ignoredFiles: IgnoredFilesMode;
+  /** 引き継ぎから除外するパターン（既定のビルド生成物 + 設定の追加分）。 */
+  private readonly ignoredExcludes: readonly string[];
 
   constructor(
     private readonly repoRoot: string,
     options: WorktreeOptions = {},
   ) {
     this.ignoredFiles = options.ignoredFiles ?? 'symlink';
+    this.ignoredExcludes = ignoredExcludePatterns(options.ignoredFilesExclude);
   }
 
   /** The base branch worktrees are cut from and merged back into. */
@@ -138,6 +153,11 @@ export class WorktreeManager {
    * - `'copy'`: 実体を複製する。worktree 完全独立で作業が絶対に重複しない代わりに、
    *   `node_modules/` が巨大だとコピーが重い。
    *
+   * どちらのモードでも、ビルド生成物・キャッシュ（`.next/` / `dist/` / `target/` など）は
+   * 引き継がない（`DEFAULT_IGNORED_EXCLUDES`）。共有すると開発サーバ同士が同じ実体へ書き込み、
+   * ルートで再帰監視している開発サーバからは同じディレクトリが worktree の数だけ見えて
+   * フリーズし得るため（issue #81）。設定 `ignoredFilesExclude` で足す／打ち消せる。
+   *
    * ベストエフォート: 個々の失敗（競合・権限等）は worktree 作成を巻き込まずスキップする
    * （環境ファイルが1つ欠けても致命ではない）。
    */
@@ -149,7 +169,7 @@ export class WorktreeManager {
       '--exclude-standard',
       '--directory',
     ]).catch(() => '');
-    for (const entry of ignoredCopyEntries(raw)) {
+    for (const entry of ignoredCopyEntries(raw, this.ignoredExcludes)) {
       // `--directory` はディレクトリを末尾 `/` 付き（例 `node_modules/`）で返す。
       // path.join は末尾スラッシュを保持し、symlink はスラッシュ終端パスに ENOENT を返すため剥がす。
       const isDir = entry.endsWith('/');
@@ -170,6 +190,55 @@ export class WorktreeManager {
         // best-effort: 1エントリの失敗で worktree 作成全体を止めない
       }
     }
+  }
+
+  /**
+   * 既存 worktree に残っている「もう引き継がないパス」へのリンクを外す（起動時に1回）。
+   *
+   * 除外リストを増やしても、以前のバージョンが張ったリンクは残り続ける。`.next` のような
+   * 生成物のリンクが残っているとフリーズの原因もそのまま残るので（issue #81）、リンクだけを
+   * 外して worktree 側を独立させる。安全のための制約:
+   *
+   * - **シンボリックリンクしか消さない**。実体のディレクトリはセッション自身のビルド結果で
+   *   ありえるので絶対に触らない（リンクを消しても指し先＝元リポジトリの中身は無傷）。
+   * - 対象は「いまの設定なら引き継がないエントリ」だけ（`excludedIgnoredEntries`）。worktree の
+   *   中を走査しないので、数万ファイルのツリーでもコスト一定。
+   * - ベストエフォート（失敗は黙って無視。起動を止めない）。
+   */
+  async pruneExcludedLinks(): Promise<string[]> {
+    const raw = await git(this.repoRoot, [
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+    ]).catch(() => '');
+    const excluded = excludedIgnoredEntries(raw, this.ignoredExcludes);
+    if (excluded.length === 0) {
+      return [];
+    }
+    const root = join(this.repoRoot, WORKTREES_SUBDIR);
+    const dirs = await readdir(root, { withFileTypes: true }).catch(() => []);
+    const removed: string[] = [];
+    for (const dir of dirs) {
+      if (!dir.isDirectory()) {
+        continue;
+      }
+      for (const entry of excluded) {
+        const path = join(root, dir.name, entry.replace(/\/$/, ''));
+        const stat = await lstat(path).catch(() => undefined);
+        if (!stat?.isSymbolicLink()) {
+          continue;
+        }
+        try {
+          await unlink(path);
+          removed.push(path);
+        } catch {
+          // best-effort: 消せなくても起動は続ける
+        }
+      }
+    }
+    return removed;
   }
 
   /**

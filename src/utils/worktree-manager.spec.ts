@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -318,12 +318,17 @@ describe('WorktreeManager', () => {
     beforeEach(async () => {
       repo = await makeRepo(true);
       // ignore node_modules/ and .env, then leave them untracked on disk
-      await writeFile(join(repo, '.gitignore'), 'node_modules/\n.env\n.codiva/\n');
+      await writeFile(join(repo, '.gitignore'), 'node_modules/\n.env\n.codiva/\n.next/\ndist/\n');
       await g(repo, 'add', '.gitignore');
       await g(repo, 'commit', '-m', 'add gitignore');
       await mkdir(join(repo, 'node_modules', 'dep'), { recursive: true });
       await writeFile(join(repo, 'node_modules', 'dep', 'index.js'), 'module.exports = 1\n');
       await writeFile(join(repo, '.env'), 'SECRET=1\n');
+      // ビルド生成物（開発サーバが書き込み続ける実体）も untracked で置いておく
+      await mkdir(join(repo, '.next', 'cache'), { recursive: true });
+      await writeFile(join(repo, '.next', 'cache', 'chunk.js'), '// built\n');
+      await mkdir(join(repo, 'dist'), { recursive: true });
+      await writeFile(join(repo, 'dist', 'index.js'), '// bundled\n');
     });
 
     it('symlinks ignored files/dirs to the repo root by default', async () => {
@@ -367,6 +372,64 @@ describe('WorktreeManager', () => {
       const wm = new WorktreeManager(repo, { ignoredFiles: 'none' });
       const wt = await wm.add('bare');
       await expect(readFile(join(wt.path, '.env'), 'utf8')).rejects.toBeTruthy();
+    });
+
+    // issue #81: 生成物を共有すると、ルートで再帰監視している開発サーバから
+    // 同じディレクトリが worktree の数だけ見えて変更通知が多重に跳ね返る。
+    it.each([['symlink'], ['copy']] as const)(
+      'never inherits build output/caches (%s mode)',
+      async (mode) => {
+        const wm = new WorktreeManager(repo, { ignoredFiles: mode });
+        const wt = await wm.add(`no-artifacts-${mode}`);
+        await expect(lstat(join(wt.path, '.next'))).rejects.toBeTruthy();
+        await expect(lstat(join(wt.path, 'dist'))).rejects.toBeTruthy();
+        // 依存・環境ファイルは従来どおり引き継ぐ
+        expect(await readFile(join(wt.path, '.env'), 'utf8')).toBe('SECRET=1\n');
+      },
+    );
+
+    it('lets ignoredFilesExclude negate a default exclude', async () => {
+      const wm = new WorktreeManager(repo, { ignoredFilesExclude: ['!dist'] });
+      const wt = await wm.add('keeps-dist');
+      expect((await lstat(join(wt.path, 'dist'))).isSymbolicLink()).toBe(true);
+      // 打ち消していない生成物は引き続き除外される
+      await expect(lstat(join(wt.path, '.next'))).rejects.toBeTruthy();
+    });
+
+    // 以前のバージョンが張ったリンクは設定を変えても残るので、起動時に外す。
+    it('prunes leftover links to now-excluded paths, keeping real dirs and wanted links', async () => {
+      const wm = new WorktreeManager(repo);
+      // 旧挙動を再現: 生成物へのリンクを手で張る
+      const wt = await wm.add('legacy');
+      await symlink(join(repo, '.next'), join(wt.path, '.next'), 'dir');
+      // セッション自身が作った実体のビルド出力（消してはいけない）
+      await mkdir(join(wt.path, 'dist'), { recursive: true });
+      await writeFile(join(wt.path, 'dist', 'own.js'), '// mine\n');
+
+      const removed = await wm.pruneExcludedLinks();
+
+      expect(removed).toEqual([join(wt.path, '.next')]);
+      await expect(lstat(join(wt.path, '.next'))).rejects.toBeTruthy();
+      // リンク先（元リポジトリ）は無傷
+      expect(await readFile(join(repo, '.next', 'cache', 'chunk.js'), 'utf8')).toBe('// built\n');
+      // 実体のディレクトリと引き継ぎ対象のリンクは残す
+      expect(await readFile(join(wt.path, 'dist', 'own.js'), 'utf8')).toBe('// mine\n');
+      expect((await lstat(join(wt.path, 'node_modules'))).isSymbolicLink()).toBe(true);
+    });
+
+    it('prunes nothing when every ignored path is inherited', async () => {
+      const wm = new WorktreeManager(repo, {
+        ignoredFilesExclude: ['!.next', '!dist', '!coverage', '!target'],
+      });
+      await wm.add('keeps-all');
+      await expect(wm.pruneExcludedLinks()).resolves.toEqual([]);
+    });
+
+    it('lets ignoredFilesExclude add a project-specific path', async () => {
+      const wm = new WorktreeManager(repo, { ignoredFilesExclude: ['.env'] });
+      const wt = await wm.add('no-env');
+      await expect(lstat(join(wt.path, '.env'))).rejects.toBeTruthy();
+      expect((await lstat(join(wt.path, 'node_modules'))).isSymbolicLink()).toBe(true);
     });
   });
 

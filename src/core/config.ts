@@ -81,6 +81,13 @@ export interface CodivaConfig {
    */
   ignoredFiles?: IgnoredFilesMode;
   /**
+   * 引き継ぎから除外する追加パターン。既定（`DEFAULT_IGNORED_EXCLUDES` = ビルド生成物・
+   * キャッシュ）の**後ろ**に足され、最後に一致したパターンが勝つ。`!` 前置で既定の除外を
+   * 打ち消せる（例: `["!dist", ".venv"]` = `dist/` は引き継ぐ・`.venv/` は引き継がない）。
+   * `/` を含まないパターンはパスの最終セグメントに一致（`apps/web/.next/` にも効く）。
+   */
+  ignoredFilesExclude?: string[];
+  /**
    * @deprecated `ignoredFiles` を使う。後方互換のためだけに残す:
    * `true`→`'copy'` 相当、`false`→`'none'` 相当として解釈される（`resolveIgnoredFilesMode`）。
    */
@@ -115,6 +122,7 @@ interface CodivaConfigJson {
   autoSync?: unknown;
   autoFixCi?: unknown;
   ignoredFiles?: unknown;
+  ignoredFilesExclude?: unknown;
   copyIgnored?: unknown;
 }
 
@@ -140,6 +148,21 @@ function toMaxBudget(value: unknown): number | undefined {
 
 function toBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * 文字列パターンの配列を検証する。配列でなければ落とし、文字列以外の要素と空文字は捨てる
+ * （設定ミスの1要素で TUI を落とさない）。1件も残らなければ未設定扱い。
+ */
+function toPatternList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const patterns = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return patterns.length > 0 ? patterns : undefined;
 }
 
 function toIgnoredFilesMode(value: unknown): IgnoredFilesMode | undefined {
@@ -229,6 +252,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const ignoredFiles = toIgnoredFilesMode(raw.ignoredFiles);
   if (ignoredFiles !== undefined) {
     config.ignoredFiles = ignoredFiles;
+  }
+  const ignoredFilesExclude = toPatternList(raw.ignoredFilesExclude);
+  if (ignoredFilesExclude !== undefined) {
+    config.ignoredFilesExclude = ignoredFilesExclude;
   }
   const copyIgnored = toBoolean(raw.copyIgnored);
   if (copyIgnored !== undefined) {
