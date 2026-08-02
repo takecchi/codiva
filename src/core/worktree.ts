@@ -46,6 +46,25 @@ export class MergeConflictError extends Error {
   }
 }
 
+/**
+ * `syncBase()` の結果 — セッションの worktree へベースブランチを取り込もうとして
+ * 何が起きたか。**投げずに返す**のは、4 つのどれもが正常な分岐だから（呼び出し側は
+ * 競合と「取り込むものが無かった」を区別してから次の手を決める）。
+ *
+ *  - `upToDate` … 既にベースを含んでいた（何もしていない）
+ *  - `updated`  … マージコミットができた（`ref` は取り込んだ ref。`origin/main` 等）
+ *  - `dirty`    … 未コミットの変更があるので**マージを試みていない**（`files` はそのパス）
+ *  - `conflict` … 競合した。**worktree には競合を残したまま**にする（`git merge --abort`
+ *    しない）ので、そのままエージェントに解決させられる。ベースへのマージ（`merge()`）が
+ *    abort するのとは意図的に逆: あちらは共有されるベースツリーを汚さないのが目的で、
+ *    こちらはセッション専用の worktree なので競合を残すほうが直せる。
+ */
+export type SyncBaseResult =
+  | { kind: 'upToDate' }
+  | { kind: 'updated'; ref: string }
+  | { kind: 'dirty'; files: string[] }
+  | { kind: 'conflict'; ref: string; files: string[] };
+
 export interface DiffStat {
   /** `git diff --stat` summary against the base branch (committed changes). */
   committed: string;

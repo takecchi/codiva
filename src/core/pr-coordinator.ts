@@ -1,3 +1,11 @@
+import {
+  MAX_AUTO_RECOVERY_ATTEMPTS,
+  prRecovered,
+  type RecoveryKind,
+  type RecoveryOutcome,
+  recoveryKindFor,
+  stuckKinds,
+} from './pr-recovery';
 import { isPrRefreshDue, PR_BATCH_MIN_SESSIONS } from './pr-refresh';
 import type {
   PrAutomation,
@@ -23,6 +31,15 @@ export interface PrCoordinatorDeps {
    * API cost flat as sessions pile up. Falls back to `lookupPr` when absent.
    */
   lookupPrs?: PrBatchLookup;
+  /** Auto-merge the base branch into a PR the poll reports as `conflicting`. */
+  autoSync?: boolean;
+  /** Auto-ask a session to fix its PR's failing checks. */
+  autoFixCi?: boolean;
+  /**
+   * Run one recovery (injected by SessionManager, which owns the git/send side).
+   * Required for autoSync / autoFixCi to do anything.
+   */
+  recover?: (id: string, kind: RecoveryKind) => Promise<RecoveryOutcome>;
   getMeta: (id: string) => WorktreeMeta | undefined;
   getState: (id: string) => SessionState | undefined;
   getSession: (id: string) => SessionHandle | undefined;
@@ -77,6 +94,14 @@ export class PrCoordinator {
    * `isPrRefreshDue`. Failures are deliberately not stamped so they retry promptly.
    */
   private readonly lastFetched = new Map<string, number>();
+  /**
+   * How many times auto-recovery has fired per `<id>:<kind>`. Bounded because the
+   * trigger is a *state*, not an event: if we ask a session to fix CI and it
+   * finishes without pushing, the checks stay red and the very next poll would ask
+   * again — forever, spending a turn each time. Reset when the condition clears, so
+   * a session that recovers and later breaks again gets a fresh budget.
+   */
+  private readonly recoveries = new Map<string, number>();
   /** Guards against overlapping refresh cycles (a slow `gh` outliving the 20s timer). */
   private refreshing = false;
   /** Epoch ms until which polling is suspended after a rate-limit/auth/cli failure. */
@@ -264,6 +289,72 @@ export class PrCoordinator {
     } catch {
       // best-effort — readying is a convenience; the PR stays a draft otherwise
     }
+    // Read the state back rather than reusing `state`: the target was snapshotted
+    // before this lookup, so its pr/prStatus are exactly the values we just replaced.
+    await this.maybeAutoRecover(id, session);
     return undefined;
+  }
+
+  /**
+   * Act on a PR that came back stuck — merge the base branch in when it conflicts,
+   * or hand the red build to the session. Opt-in per kind (`autoSync` /
+   * `autoFixCi`), capped per session, and swallowed on failure like everything else
+   * here. No-op while a session is working: `recoveryKindFor` only fires on idle
+   * rows, so a recovery already in flight can't be re-triggered by the next tick.
+   */
+  private async maybeAutoRecover(id: string, session: SessionHandle): Promise<void> {
+    const run = this.deps.recover;
+    if (!run) {
+      return;
+    }
+    const state = session.getState();
+    if (prRecovered(state)) {
+      // Give the budget back so a *future* breakage is acted on instead of being
+      // locked out by an old attempt. The condition is deliberately "green", not
+      // merely "not stuck": every push moves the PR through `checks: 'pending'` /
+      // `mergeStatus: 'unknown'`, which are not stuck either. Refunding there would
+      // make the cap unenforceable in the case it exists for — the agent pushes a
+      // fix that doesn't work, so the cycle red → ask → pending → red repeats
+      // forever, one billed turn each time.
+      this.recoveries.delete(`${id}:sync`);
+      this.recoveries.delete(`${id}:ci`);
+      return;
+    }
+    if (!recoveryKindFor(state)) {
+      return; // mid-turn, or nothing actionable right now — leave the counters be
+    }
+    // Walk every applicable kind rather than only the highest-priority one: a PR
+    // that both conflicts and is red would otherwise do nothing at all for a user
+    // who enabled `autoFixCi` but not `autoSync`.
+    for (const kind of stuckKinds(state)) {
+      const enabled = kind === 'sync' ? this.deps.autoSync : this.deps.autoFixCi;
+      const key = `${id}:${kind}`;
+      const attempts = this.recoveries.get(key) ?? 0;
+      if (!enabled || attempts >= MAX_AUTO_RECOVERY_ATTEMPTS) {
+        continue;
+      }
+      this.recoveries.set(key, attempts + 1);
+      try {
+        await run(id, kind);
+      } catch {
+        // best-effort — a failed git/gh step must not disrupt the poll or the session
+      }
+      // One recovery per cycle: it just changed the session/PR, so any second kind
+      // must be re-judged against fresh state on the next poll.
+      return;
+    }
+  }
+
+  /**
+   * Drop every per-session record (called when a session leaves the store via
+   * `/clear` or discard). Ids are never reused, so this is hygiene rather than
+   * correctness — but without it these maps grow for the life of the process.
+   */
+  forget(id: string): void {
+    this.attempted.delete(id);
+    this.answered.delete(id);
+    this.lastFetched.delete(id);
+    this.recoveries.delete(`${id}:sync`);
+    this.recoveries.delete(`${id}:ci`);
   }
 }

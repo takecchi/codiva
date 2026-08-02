@@ -1,5 +1,5 @@
 import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
-import type { DiffStat, Worktree } from './worktree';
+import type { DiffStat, SyncBaseResult, Worktree } from './worktree';
 
 /**
  * The dependency-injection seams the session layer drives. Kept in one leaf
@@ -17,6 +17,8 @@ export interface WorktreeService {
   pushBranch(wt: Worktree): Promise<void>;
   diffStat(wt: Worktree, base: string): Promise<DiffStat>;
   merge(wt: Worktree, base: string): Promise<void>;
+  /** Take `base` into the session's branch (the other direction from `merge`). */
+  syncBase(wt: Worktree, base: string): Promise<SyncBaseResult>;
   remove(wt: Worktree, opts?: { force?: boolean }): Promise<void>;
 }
 

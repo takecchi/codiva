@@ -64,6 +64,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | セッションのライフサイクル | `core/session.ts`（1 query）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
 | worktree・マージ・破棄 | `utils/worktree-manager.ts`（I/O）/ `core/worktree.ts`（型・純関数）/ `core/session-actions.ts` |
 | PR 自動化 | `core/pr-coordinator.ts` / `utils/pr.ts`（`gh` はここだけ） |
+| 詰まった PR の立て直し | `core/pr-recovery.ts`（判定・指示文・純粋）/ `SessionManager.recover()` / `utils/worktree-manager.ts` の `syncBase`（ベース取り込み）/ `ui/hooks.ts` の `useRecovery` |
 | 一覧画面 | `ui/session-list.tsx`（composer / list の2フォーカス） |
 | 詳細画面 | `ui/session-detail.tsx`（ログ + 追加指示 + 操作パネル） |
 | 入力欄・キー処理 | `core/text-buffer.ts`（純粋モデル）/ `core/composer-layout.ts`（折り返し・表示行の幾何）/ `core/input-history.ts`（↑↓ の入力履歴）/ `ui/input.ts`（キー→操作）/ `ui/prompt-input.tsx` |

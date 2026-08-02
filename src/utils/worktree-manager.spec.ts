@@ -208,6 +208,112 @@ describe('WorktreeManager', () => {
     });
   });
 
+  describe('syncBase (take the base branch into the session branch)', () => {
+    beforeEach(async () => {
+      repo = await makeRepo(true);
+    });
+
+    /** Move the repo's `main` forward by one commit touching `file`. */
+    async function advanceBase(file: string, body: string): Promise<void> {
+      await writeFile(join(repo, file), body);
+      await g(repo, 'add', '-A');
+      await g(repo, 'commit', '-m', `base: ${file}`);
+    }
+
+    it('reports up-to-date when the branch already contains base', async () => {
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('fresh');
+      await expect(wm.syncBase(wt, 'main')).resolves.toEqual({ kind: 'upToDate' });
+    });
+
+    it('merges a moved-on base into the session branch', async () => {
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('behind');
+      await writeFile(join(wt.path, 'mine.txt'), 'mine\n');
+      await g(wt.path, 'add', '-A');
+      await g(wt.path, 'commit', '-m', 'session work');
+      await advanceBase('theirs.txt', 'theirs\n');
+
+      const result = await wm.syncBase(wt, 'main');
+      expect(result).toEqual({ kind: 'updated', ref: 'main' });
+      // Both sides are present afterwards: base was taken in, our work survived.
+      await expect(readFile(join(wt.path, 'theirs.txt'), 'utf8')).resolves.toBe('theirs\n');
+      await expect(readFile(join(wt.path, 'mine.txt'), 'utf8')).resolves.toBe('mine\n');
+    });
+
+    it('leaves the conflict in the worktree instead of aborting', async () => {
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('clash');
+      await writeFile(join(wt.path, 'shared.txt'), 'session side\n');
+      await g(wt.path, 'add', '-A');
+      await g(wt.path, 'commit', '-m', 'session edit');
+      await advanceBase('shared.txt', 'base side\n');
+
+      const result = await wm.syncBase(wt, 'main');
+      expect(result).toEqual({ kind: 'conflict', ref: 'main', files: ['shared.txt'] });
+      // The whole point: markers stay so the session can resolve them. `merge()`
+      // aborts because it dirties the shared base tree; this one must not.
+      const conflicted = await readFile(join(wt.path, 'shared.txt'), 'utf8');
+      expect(conflicted).toContain('<<<<<<<');
+      const unmerged = await g(wt.path, 'diff', '--name-only', '--diff-filter=U');
+      expect(unmerged.stdout.trim()).toBe('shared.txt');
+    });
+
+    it('refuses to merge over uncommitted work and names it', async () => {
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('busy');
+      await advanceBase('theirs.txt', 'theirs\n');
+      // A *tracked* file edited in place — this is what genuinely tangles with a merge.
+      await writeFile(join(wt.path, 'README.md'), '# edited in the session\n');
+
+      const result = await wm.syncBase(wt, 'main');
+      expect(result).toEqual({ kind: 'dirty', files: ['README.md'] });
+      // Nothing was merged — the base-only file is still absent.
+      await expect(readFile(join(wt.path, 'theirs.txt'), 'utf8')).rejects.toThrow();
+    });
+
+    it('ignores untracked files: they never block a merge, so they must not cost a turn', async () => {
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('scratch');
+      await advanceBase('theirs.txt', 'theirs\n');
+      // Agent scratch notes / an un-ignored build artifact / a leftover *.orig.
+      await writeFile(join(wt.path, 'notes.txt'), 'scratch\n');
+
+      const result = await wm.syncBase(wt, 'main');
+      expect(result).toEqual({ kind: 'updated', ref: 'main' });
+      await expect(readFile(join(wt.path, 'theirs.txt'), 'utf8')).resolves.toBe('theirs\n');
+      // The untracked file survives the merge untouched.
+      await expect(readFile(join(wt.path, 'notes.txt'), 'utf8')).resolves.toBe('scratch\n');
+    });
+
+    it('reports a worktree already left mid-merge as conflicted, not dirty', async () => {
+      // Second `/sync` on a branch whose previous sync conflicted. The dirty gate
+      // would otherwise fire (unmerged paths show in --porcelain) and the session
+      // would be told to "commit or stash", which is impossible with MERGE_HEAD set.
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('again');
+      await writeFile(join(wt.path, 'shared.txt'), 'session side\n');
+      await g(wt.path, 'add', '-A');
+      await g(wt.path, 'commit', '-m', 'session edit');
+      await advanceBase('shared.txt', 'base side\n');
+      expect(await wm.syncBase(wt, 'main')).toMatchObject({ kind: 'conflict' });
+
+      const again = await wm.syncBase(wt, 'main');
+      expect(again).toEqual({ kind: 'conflict', ref: 'main', files: ['shared.txt'] });
+    });
+
+    it('refuses a detached HEAD instead of reporting a push that changes nothing', async () => {
+      // The merge commit would land on HEAD, the branch ref would not move, the push
+      // would be a no-op — and we would have claimed success while the PR stayed stuck.
+      const wm = new WorktreeManager(repo);
+      const wt = await wm.add('floating');
+      await g(wt.path, 'checkout', '--detach');
+      await advanceBase('theirs.txt', 'theirs\n');
+
+      await expect(wm.syncBase(wt, 'main')).rejects.toThrow(/detached HEAD/);
+    });
+  });
+
   describe('linking/copying .gitignore-d files into a new worktree', () => {
     beforeEach(async () => {
       repo = await makeRepo(true);

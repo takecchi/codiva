@@ -18,6 +18,7 @@ import {
   ignoredCopyEntries,
   ignoredExcludePatterns,
   MergeConflictError,
+  type SyncBaseResult,
   type Worktree,
   type WorktreeOptions,
 } from '@/core';
@@ -25,6 +26,22 @@ import { GitError, git } from './git';
 
 const WORKTREES_SUBDIR = join(CODIVA_DIR, 'worktrees');
 const EXCLUDE_MARKER = '# codiva';
+
+/**
+ * Paths out of `git status --porcelain` output.
+ *
+ * Not a fixed `slice(3)`: `git()` trims the whole stdout, so the *first* line loses
+ * its leading space whenever the index half of the two-letter XY code is blank
+ * (` M file` arrives as `M file`) and a fixed slice eats the first character of the
+ * filename. Strip the code and its separator instead.
+ */
+function porcelainPaths(raw: string): string[] {
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^\S{1,2}\s+/, ''));
+}
 
 /**
  * Creates and tears down git worktrees for sessions. Every worktree lives under
@@ -249,15 +266,88 @@ export class WorktreeManager {
     await git(wt.path, ['push', '-u', 'origin', wt.branch]);
   }
 
+  /**
+   * Take the base branch *into* the session's branch — the opposite direction from
+   * {@link merge}, and run inside the worktree rather than the repo root. This is
+   * what un-sticks a PR that GitHub reports as `CONFLICTING` because base moved on.
+   *
+   * Prefers the freshly fetched `origin/<base>` and falls back to the local base
+   * ref when there is no usable upstream (no remote / offline), so it still works
+   * on a repo that was never pushed.
+   *
+   * Two deliberate departures from {@link merge}:
+   *  - A worktree with uncommitted changes is left completely alone (`dirty`).
+   *    Merging over an agent's work in progress tangles the two beyond repair.
+   *  - A conflict is **not** aborted. The worktree belongs to exactly one session,
+   *    so leaving the markers in place is what lets that session resolve them; the
+   *    "never auto-resolve" rule is about `-X ours`-style silent resolution, which
+   *    this still doesn't do.
+   */
+  async syncBase(wt: Worktree, base: string): Promise<SyncBaseResult> {
+    // A detached HEAD would take the merge commit and leave the *branch* ref where
+    // it was, so the push would be a no-op and the PR would never change — while we
+    // happily reported success. Refuse instead of lying.
+    await git(wt.path, ['symbolic-ref', '--quiet', 'HEAD']).catch(() => {
+      throw new Error(`${wt.path} has a detached HEAD; check out ${wt.branch} first`);
+    });
+    // Already mid-merge (a previous syncBase conflicted and we left the markers in
+    // place). Report that rather than falling through to the dirty branch below: git
+    // would refuse the merge anyway, and "commit or stash your work" is impossible
+    // advice with unmerged paths in the index.
+    const merging = await git(wt.path, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])
+      .then(() => true)
+      .catch(() => false);
+    if (merging) {
+      return { kind: 'conflict', ref: base, files: await this.unmergedFiles(wt) };
+    }
+    // `--untracked-files=no`: a stray untracked file (agent scratch notes, an
+    // un-ignored build artifact, a leftover *.orig) does not block `git merge`, so
+    // treating it as "dirty" would give up the free deterministic path and spend a
+    // turn asking the session to tidy up a file it may not even own.
+    const status = await git(wt.path, ['status', '--porcelain', '--untracked-files=no']).catch(
+      () => '',
+    );
+    const dirty = porcelainPaths(status);
+    if (dirty.length > 0) {
+      return { kind: 'dirty', files: dirty };
+    }
+    // Fetch is best-effort: an offline run should still be able to merge whatever
+    // the local base ref already points at.
+    const ref = (await this.syncedStartPoint(base).catch(() => undefined)) ?? base;
+    // Already contains the base tip → nothing to do (and no empty merge commit).
+    const contained = await git(wt.path, ['merge-base', '--is-ancestor', ref, 'HEAD'])
+      .then(() => true)
+      .catch(() => false);
+    if (contained) {
+      return { kind: 'upToDate' };
+    }
+    try {
+      await git(wt.path, ['merge', '--no-edit', ref]);
+      return { kind: 'updated', ref };
+    } catch (err) {
+      if (err instanceof GitError) {
+        const files = await this.unmergedFiles(wt);
+        if (files.length > 0) {
+          return { kind: 'conflict', ref, files };
+        }
+      }
+      // A merge that failed without conflicted paths isn't something the session can
+      // resolve (bad ref, hook rejection, …) — surface it instead of pretending.
+      throw err;
+    }
+  }
+
+  /** Paths git currently reports as unmerged in `wt` (empty when not conflicted). */
+  private async unmergedFiles(wt: Worktree): Promise<string[]> {
+    const raw = await git(wt.path, ['diff', '--name-only', '--diff-filter=U']).catch(() => '');
+    return raw.split('\n').filter(Boolean);
+  }
+
   /** Committed diff stat vs. the base branch plus any uncommitted paths. */
   async diffStat(wt: Worktree, base: string): Promise<DiffStat> {
     const committed = await git(wt.path, ['diff', '--stat', `${base}...HEAD`]).catch(() => '');
     const status = await git(wt.path, ['status', '--porcelain']).catch(() => '');
-    const uncommitted = status
-      .split('\n')
-      .filter(Boolean)
-      .map((l) => l.slice(3));
-    return { committed, uncommitted };
+    return { committed, uncommitted: porcelainPaths(status) };
   }
 
   /**

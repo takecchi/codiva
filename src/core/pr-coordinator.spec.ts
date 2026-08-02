@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PR_LOOKUP_BACKOFF_MS, PrCoordinator, type PrCoordinatorDeps } from './pr-coordinator';
+import { MAX_AUTO_RECOVERY_ATTEMPTS, type RecoveryKind } from './pr-recovery';
 import { PR_BATCH_MIN_SESSIONS, PR_POLL_SOON_MS, PR_POLL_STABLE_MS } from './pr-refresh';
 import type {
   PrAutomation,
@@ -19,6 +20,7 @@ const worktrees: WorktreeService = {
   pushBranch: async () => {},
   diffStat: async () => ({ committed: '', uncommitted: [] }),
   merge: async () => {},
+  syncBase: async () => ({ kind: 'upToDate' }),
   remove: async () => {},
 };
 
@@ -55,7 +57,15 @@ function fakeSession(state: SessionState) {
     },
     markConflict() {},
   };
-  return { handle, calls, current: () => state };
+  return {
+    handle,
+    calls,
+    current: () => state,
+    /** Move the session's lifecycle status (recovery only fires on idle rows). */
+    drive(status: SessionState['status']) {
+      state = { ...state, status };
+    },
+  };
 }
 
 function stateFor(id: string, over: Partial<SessionState> = {}): SessionState {
@@ -79,6 +89,10 @@ interface Harness {
   tick: (ms: number) => void;
   calls: (id?: string) => string[];
   state: (id?: string) => SessionState;
+  /** Move a session's lifecycle status (auto-recovery only fires on idle rows). */
+  drive: (status: SessionState['status'], id?: string) => void;
+  /** `<id>:<kind>` for every auto-recovery the coordinator triggered, in order. */
+  recoveries: string[];
 }
 
 /**
@@ -93,6 +107,10 @@ function harness(
     autoPr?: boolean;
     prAutomation?: PrAutomation;
     lookupPrs?: PrCoordinatorDeps['lookupPrs'];
+    autoSync?: boolean;
+    autoFixCi?: boolean;
+    /** Extra behaviour to run when a recovery fires (e.g. flip the row to running). */
+    onRecover?: (id: string, kind: RecoveryKind) => void;
   } = {},
 ): Harness {
   const ids = over.ids ?? ['s1'];
@@ -106,12 +124,20 @@ function harness(
     });
   }
   const now = { value: 0 };
+  const recoveries: string[] = [];
   const deps: PrCoordinatorDeps = {
     worktrees,
     lookupPr: lookup,
     lookupPrs: over.lookupPrs,
     autoPr: over.autoPr,
     prAutomation: over.prAutomation,
+    autoSync: over.autoSync,
+    autoFixCi: over.autoFixCi,
+    recover: async (id, kind) => {
+      recoveries.push(`${id}:${kind}`);
+      over.onRecover?.(id, kind);
+      return { kind: 'delegated', recovery: kind };
+    },
     getMeta: (id) => metas.get(id),
     getState: (id) => sessions.get(id)?.current(),
     getSession: (id) => sessions.get(id)?.handle,
@@ -133,6 +159,8 @@ function harness(
     },
     calls: (id) => pick(id).calls,
     state: (id) => pick(id).current(),
+    drive: (status, id) => pick(id).drive(status),
+    recoveries,
   };
 }
 
@@ -497,5 +525,182 @@ describe('PrCoordinator batching (one `gh pr list` for many sessions)', () => {
     b.tick(1000);
     await b.refresh();
     expect(b.lookupPrs).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PrCoordinator auto-recovery (autoSync / autoFixCi)', () => {
+  const CONFLICTING: PrInfo = { number: 42, url: 'u', mergeStatus: 'conflicting' };
+  const RED: PrInfo = { number: 42, url: 'u', mergeStatus: 'mergeable', checks: 'failing' };
+
+  it('merges the base in when the poll reports a conflicting PR', async () => {
+    const h = harness(async () => found(CONFLICTING), { autoSync: true });
+    await h.refresh();
+    expect(h.recoveries).toEqual(['s1:sync']);
+  });
+
+  it('asks the session to fix CI when the checks go red', async () => {
+    const h = harness(async () => found(RED), { autoFixCi: true });
+    await h.refresh();
+    expect(h.recoveries).toEqual(['s1:ci']);
+  });
+
+  it.each([
+    { label: 'conflicting with autoSync off', pr: CONFLICTING, flags: { autoFixCi: true } },
+    { label: 'red CI with autoFixCi off', pr: RED, flags: { autoSync: true } },
+    { label: 'both flags off', pr: CONFLICTING, flags: {} },
+  ])('stays inert: $label', async ({ pr, flags }) => {
+    const h = harness(async () => found(pr), flags);
+    await h.refresh();
+    expect(h.recoveries).toEqual([]);
+  });
+
+  it('leaves a healthy PR alone', async () => {
+    const h = harness(async () => found(PR), { autoSync: true, autoFixCi: true });
+    await h.refresh();
+    expect(h.recoveries).toEqual([]);
+  });
+
+  it('never interrupts a session that is mid-turn', async () => {
+    const h = harness(async () => found(RED), { autoFixCi: true });
+    h.drive('running');
+    await h.refresh();
+    expect(h.recoveries).toEqual([]);
+  });
+
+  it('gives up after MAX_AUTO_RECOVERY_ATTEMPTS on a session that stays red', async () => {
+    // The realistic failure mode: we ask, the session works and finishes without
+    // pushing, so the checks are still red on the next poll. Without a cap this
+    // spends a turn every 20s forever.
+    const h = harness(async () => found(RED), {
+      autoFixCi: true,
+      onRecover: (_id, _kind) => h.drive('running'),
+    });
+    for (let i = 0; i < MAX_AUTO_RECOVERY_ATTEMPTS + 3; i += 1) {
+      h.drive('completed');
+      h.tick(STALE);
+      await h.refresh();
+    }
+    expect(h.recoveries).toHaveLength(MAX_AUTO_RECOVERY_ATTEMPTS);
+  });
+
+  it('the cap survives the busy window right after an instruction is sent', async () => {
+    // While the session runs, `recoveryKindFor` is undefined — but the PR is still
+    // stuck, so the budget must NOT be handed back (that would make the cap moot).
+    const h = harness(async () => found(RED), { autoFixCi: true });
+    h.tick(STALE);
+    await h.refresh();
+    expect(h.recoveries).toEqual(['s1:ci']);
+    h.drive('running');
+    h.tick(STALE);
+    await h.refresh();
+    h.drive('completed');
+    h.tick(STALE);
+    await h.refresh();
+    expect(h.recoveries).toEqual(['s1:ci', 's1:ci']);
+    h.tick(STALE);
+    await h.refresh();
+    expect(h.recoveries).toHaveLength(MAX_AUTO_RECOVERY_ATTEMPTS);
+  });
+
+  it('refunds the budget once the PR actually goes green', async () => {
+    let pr = RED;
+    const h = harness(async () => found(pr), { autoFixCi: true });
+    for (let i = 0; i < MAX_AUTO_RECOVERY_ATTEMPTS; i += 1) {
+      h.tick(STALE);
+      await h.refresh();
+    }
+    expect(h.recoveries).toHaveLength(MAX_AUTO_RECOVERY_ATTEMPTS);
+    // CI goes green: the counter resets, so a later regression is acted on again.
+    pr = PR;
+    h.tick(STALE);
+    await h.refresh();
+    pr = RED;
+    h.tick(STALE);
+    await h.refresh();
+    expect(h.recoveries).toHaveLength(MAX_AUTO_RECOVERY_ATTEMPTS + 1);
+  });
+
+  it('does NOT refund on the transient states every push produces', async () => {
+    // The cap's real target: the agent pushes a fix that doesn't work. Every push
+    // moves the PR through `checks: 'pending'` (and `mergeStatus: 'unknown'`), which
+    // is "not stuck" — refunding there would let red → ask → pending → red bill a
+    // turn forever, and `MAX_AUTO_RECOVERY_ATTEMPTS` would mean nothing.
+    let pr = RED;
+    const h = harness(async () => found(pr), { autoFixCi: true });
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      pr = RED;
+      h.tick(STALE);
+      await h.refresh();
+      pr = { ...PR, checks: 'pending' }; // the agent pushed something
+      h.tick(STALE);
+      await h.refresh();
+    }
+    expect(h.recoveries).toHaveLength(MAX_AUTO_RECOVERY_ATTEMPTS);
+  });
+
+  it('falls through to the enabled kind when the higher-priority one is off', async () => {
+    // Conflicting *and* red, but only autoFixCi is on. Picking the top-priority kind
+    // (`sync`) and stopping would leave the user's enabled automation doing nothing.
+    const both: PrInfo = { ...PR, mergeStatus: 'conflicting', checks: 'failing' };
+    const h = harness(async () => found(both), { autoFixCi: true });
+    await h.refresh();
+    expect(h.recoveries).toEqual(['s1:ci']);
+  });
+
+  it('prefers sync over ci when both are enabled (base first, checks re-run anyway)', async () => {
+    const both: PrInfo = { ...PR, mergeStatus: 'conflicting', checks: 'failing' };
+    const h = harness(async () => found(both), { autoSync: true, autoFixCi: true });
+    await h.refresh();
+    expect(h.recoveries).toEqual(['s1:sync']);
+  });
+
+  it("forget(id) releases a discarded session's records", async () => {
+    const session = fakeSession(stateFor('s1', { status: 'completed' }));
+    const recoveries: string[] = [];
+    let clock = 0;
+    const coordinator = new PrCoordinator({
+      worktrees,
+      lookupPr: async () => found(RED),
+      autoFixCi: true,
+      recover: async (id, kind) => {
+        recoveries.push(`${id}:${kind}`);
+        return { kind: 'delegated', recovery: kind };
+      },
+      getMeta: () => ({
+        worktree: { slug: 's1', branch: 'codiva/s1', path: '/wt/s1' },
+        base: 'main',
+      }),
+      getState: () => session.current(),
+      getSession: () => session.handle,
+      ids: () => ['s1'],
+      now: () => clock,
+    });
+    for (let i = 0; i < MAX_AUTO_RECOVERY_ATTEMPTS + 1; i += 1) {
+      clock += STALE;
+      await coordinator.refreshPrs();
+    }
+    expect(recoveries).toHaveLength(MAX_AUTO_RECOVERY_ATTEMPTS);
+    coordinator.forget('s1');
+    clock += STALE;
+    await coordinator.refreshPrs();
+    expect(recoveries).toHaveLength(MAX_AUTO_RECOVERY_ATTEMPTS + 1);
+  });
+
+  it('does nothing without a recover port wired', async () => {
+    const session = fakeSession(stateFor('s1', { status: 'completed' }));
+    const coordinator = new PrCoordinator({
+      worktrees,
+      lookupPr: async () => found(RED),
+      autoFixCi: true,
+      getMeta: () => ({
+        worktree: { slug: 's1', branch: 'codiva/s1', path: '/wt/s1' },
+        base: 'main',
+      }),
+      getState: () => session.current(),
+      getSession: () => session.handle,
+      ids: () => ['s1'],
+      now: () => 0,
+    });
+    await expect(coordinator.refreshPrs()).resolves.toBeUndefined();
   });
 });

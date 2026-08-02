@@ -57,7 +57,8 @@ codiva/
 │   │   ├── session-store.ts   # 購読可能スナップショット（順序・状態・参照同一性保持）
 │   │   ├── session-manager.ts # create/restore/dispose + passthrough のファサード
 │   │   ├── session-actions.ts # merge/discard/diffStat（git 操作の純粋オーケストレーション）
-│   │   ├── pr-coordinator.ts  # PrCoordinator（autoPr/refreshPrs）
+│   │   ├── pr-coordinator.ts  # PrCoordinator（autoPr/refreshPrs/自動立て直し）
+│   │   ├── pr-recovery.ts    # 詰まった PR の立て直し判定・指示文（純粋）
 │   │   ├── run-mode.ts        # RunMode + createModePolicy
 │   │   ├── session-ports.ts   # DI seam の interface 集約（WorktreeService/SessionHandle/…）
 │   │   ├── worktree.ts        # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
@@ -378,7 +379,8 @@ interface SessionState {
 - **責務分割**: SessionManager はライフサイクルと配線のファサードで、以下を委譲する:
   - `core/session-store.ts`（`SessionStore`）… 購読可能スナップショット（順序・状態・参照同一性保持）
   - `core/session-actions.ts` … `mergeSession` / `discardSession` / `sessionDiffStat`（git 操作）
-  - `core/pr-coordinator.ts`（`PrCoordinator`）… `maybeAutoPr` / `refreshPrs`（PR 自動化）
+  - `core/pr-coordinator.ts`（`PrCoordinator`）… `maybeAutoPr` / `refreshPrs` / `maybeAutoRecover`（PR 自動化）
+  - `core/pr-recovery.ts` … 詰まった PR の立て直し判定と指示文（純粋）
   - `core/run-mode.ts` … `RunMode` + `createModePolicy`（shift+tab のツール許可モード）
   - `core/persistence.ts` の `assemblePersistedState` … state.json スナップショットの組み立て
   - DI seam の interface（`WorktreeService` / `SessionHandle` / `PrAutomation` / `PrLookup` / `ActionResult`）は `core/session-ports.ts`（leaf）に集約し循環を防ぐ。
@@ -475,7 +477,7 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 純粋ロジックは core、副作用は utils／合成ルートという分離をそのまま踏襲する。
 
 - **設定ファイル拡張**: `~/.codiva/config.json` に `model` / `effort` / `permissionMode` / `maxBudgetUsd` /
-  `notifications` / `updateCheck` / `mouse` / `followOrigin` / `autoPr` を追加。検証変換は `core/config.ts` の `toConfig()` に
+  `notifications` / `updateCheck` / `mouse` / `followOrigin` / `autoPr` / `autoSync` / `autoFixCi` を追加。検証変換は `core/config.ts` の `toConfig()` に
   集約し、不正値は静かに既定へ落とす。合成ルート（`index.tsx`）が `SessionOptions` に束ねて `SessionManager`
   へ注入する。`followOrigin` / `autoPr` は真偽値（既定 on。`false` 明示で無効）。
 - **コスト表示**: reducer は `result.total_cost_usd` を `state.totalCostUsd` として既に保持。UI 用の導出だけ
@@ -553,6 +555,82 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   これを捕えて `session.markConflict(files)` → reducer が `status: 'conflict'` + `conflictFiles` を立てる。
   **自動解消はしない**（`-X ours/theirs` 等でコードを無言に捨てない）。UI はバッジ表示のみで、解消は人手。
   `conflict` は詳細ビューでも終端状態扱い（差分・操作を表示）で、破棄や再マージは一覧/詳細から可能。
+
+## 詰まった PR の立て直し（コンフリクト取り込み / CI 修正）
+
+Phase 10 で作った検知（`prStatus.mergeStatus === 'conflicting'` / `checks === 'failing'`）は
+グリフを描くだけで終わっていた。それを**行動に繋げる**のがこの層。方針は Phase 10 と同じで、
+**codiva 自身が決定的にできることは codiva がやり（無課金）、判断が要るところだけセッションへ渡す**。
+
+- **判定は純粋（`core/pr-recovery.ts`）**。2 段に分かれているのが要点:
+  - `prStuckKind(state)` … **PR だけ**を見た詰まり方（`sync` = 競合 / `ci` = 赤いチェック）。
+    競合を CI より優先する（ベースを取り込めばチェックは回り直すので、先に CI を直しても無駄）。
+  - `recoveryKindFor(state)` … 上に「**セッションが手を止めている**」（`isTerminalStatus` かつ
+    `archived` でない）を掛けたもの。走行中に指示を割り込ませても、そのターンの作業と競合するだけ。
+
+  - `stuckKinds(state)` … 該当する詰まり方を**全部**（競合と CI 失敗は同時に起きる）。
+  - `prRecovered(state)` … PR が**確かに健全になった**か（緑 or マージ済み）。
+
+  **分けたのは自動化の試行回数を正しく数えるため**。素朴に「詰まっていないならリセット」と
+  すると 2 段階で壊れる:
+  1. 「今は走っているから対象外」と「もう詰まっていない」を同じ関数で表すと、指示を送った
+     直後（= 走行中）にリセットされる → 完了 → まだ赤い → また送る、の無限ループ。
+  2. それを直しても、**push 直後の PR は必ず `checks: 'pending'` / `mergeStatus: 'unknown'` を
+     経由する**（= 詰まってはいない）ので、そこでリセットされる → 赤い → 依頼 → pending →
+     赤い、で上限が無意味になる。実際に多いのは「依頼したが直せなかった」ほうなので、これを
+     塞がないと意味が無い。
+
+  なので**返金は `prRecovered`（緑を見た）ときだけ**。試すかどうかは `recoveryKindFor`、
+  どの種類を試すかは `stuckKinds` を**有効なフラグと突き合わせて先頭から**選ぶ（`autoFixCi`
+  だけ有効な人の「競合していて、かつ赤い」PR で、優先度 1 位の `sync` が無効だからと
+  諦めてしまわないように）。
+- **取り込みは `WorktreeManager.syncBase(wt, base)`**（`utils`）。`merge()` と向きも cwd も逆で、
+  **worktree の中**で `origin/<base>`（fetch 失敗時はローカル `<base>`）を取り込む。返り値は
+  `SyncBaseResult` の 4 値で、投げない:
+  | 結果 | 意味 | 次の手 |
+  |---|---|---|
+  | `upToDate` | 既にベースを含む | 何もしない |
+  | `updated` | クリーンにマージできた | `pushBranch` して終わり（**セッションを起こさない**） |
+  | `dirty` | 未コミット変更があるので**マージしていない** | 作業の持ち主（セッション）にまとめて任せる |
+  | `conflict` | 競合した | **`merge --abort` せず競合を残す** → セッションに解決させる |
+
+  `merge()` が abort するのは共有されるベースツリーを汚さないためで、`syncBase` の worktree は
+  1 セッション専用だから残すほうが直せる。どちらも `-X ours` 相当の**自動解消はしない**（規約）。
+  細かいが効く判断が 3 つ:
+  - **未追跡ファイルは `dirty` にしない**（`--untracked-files=no`）。`git merge` は未追跡ファイルが
+    あっても普通に通るので、エージェントの走り書き 1 個で無課金の経路を捨ててターンを使うのは損。
+  - **既に merge 途中（`MERGE_HEAD` あり）なら `conflict` を返す**。dirty 判定に落とすと
+    「コミットか stash してから取り込め」という**実行不能な**指示を送ってしまう。
+  - **detached HEAD は拒否する**。マージコミットは HEAD に載るがブランチ ref は動かないので、
+    push は no-op、PR は詰まったまま、なのに「取り込んで push しました」と報告してしまう。
+- **CI 修正は追加の API を使わない**。`gh pr view --json …statusCheckRollup` の payload から
+  落ちたチェック名と `detailsUrl` を拾う（`utils/pr.ts` の `toFailingChecks` → `PrStatus.failingChecks`。
+  `MAX_FAILING_CHECKS` 件で打ち切り）。ログの取得（`gh run view --log-failed`）と修正はセッションが行う。
+  `failingChecks` は `checks === 'failing'` のときだけ載せ、reducer は**内容比較**する
+  （毎ポーリング新しい配列になるので参照比較だと必ず「変わった」ことになり、`prStatus` の
+  参照維持が壊れる）。
+- **実行は `SessionManager.recover(id, kind?)`**（git と `send` の両方を触れる唯一の層）。`kind`
+  省略時は `recoveryKindFor` が決め、明示すると `/sync` / `/fix-ci` としてポーリング前でも効く。
+  セッションへ送る指示文は i18n カタログ（`m.recover.*`）から引く — ログにユーザー発話として
+  残るので `resume.instruction` と同じ扱い（`messages` 未注入なら `recover` は no-op）。
+- **自動化は `PrCoordinator` が「いつ」だけを決める**。`autoSync` / `autoFixCi`（**既定 off**。
+  依頼が発生した時点でターンが回る = 課金）で有効化し、実行は DI された `recover` を呼ぶ。
+  1 セッション・1 種類あたり `MAX_AUTO_RECOVERY_ATTEMPTS`（2）回で打ち切る — トリガーが
+  イベントではなく**状態**なので、「依頼したのに push されない」と毎ポーリング投げ続けてしまう。
+- **UI は共有フック `useRecovery`**（`ui/hooks.ts`）。一覧は `/sync`・`/fix-ci`（選択行）と
+  `Ctrl+F` = `/recover`（全件、`y`/`n` 確認）、詳細は `/sync`・`/fix-ci`（そのセッション）。
+  `Ctrl+F` をフォーカス横断の chord にするのは `Ctrl+R` / `Ctrl+A` と同じ理由。一括は
+  **逐次実行**する（同一リポジトリの worktree 群なので git の index/ref ロックで潰し合う）。
+  - **`recovery.busy` を「全キーを飲む」`busy` に混ぜない**。一括は N 件ぶんの git を直列に
+    回すので数分に及びうる。全キーを飲むと Ctrl+C を拾わない（`exitOnCtrlC: false`）この TUI
+    では `/exit` すら打てず操作不能になる（`/update` の installing で踏んだ罠と同じ）。
+    塞ぐのは「もう一度立て直しを始める」入口だけにして、実行中は独立した行で知らせる。
+  - **一括の結果は実際に成功した件数で報告する**。全部失敗（`gh` 未認証など）したのに
+    「N 件を実行しました」と緑で出さない — 最初のエラーはエラー欄へ回す。
+- **worktree に触るのはセッションが手を止めているときだけ**。この門は `recoveryKindFor` では
+  なく `SessionManager.recover` 側にある — 明示 `kind` を渡す `/sync` / `/fix-ci` にも効かせる
+  必要があるから（Claude が編集中の worktree で `git merge` を回すと書き込みと競合する）。
+  弾いたときは `{ kind: 'busy' }` を返して「作業中です」と出す。
 
 ## 学習データ利用（grove）の警告
 

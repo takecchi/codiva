@@ -13,7 +13,8 @@ export type ConfirmKind = 'merge' | 'discard';
  */
 export type ConfirmPromptProps =
   | { kind: ConfirmKind; busy: boolean }
-  | { kind: 'resumeAll'; busy: boolean; count: number; authCount: number };
+  | { kind: 'resumeAll'; busy: boolean; count: number; authCount: number }
+  | { kind: 'recoverAll'; busy: boolean; syncCount: number; ciCount: number };
 
 /**
  * The confirm line — `<prompt> Proceed? y / n [busy]`. Just the text row (no
@@ -31,9 +32,11 @@ export const ConfirmPrompt: FC<ConfirmPromptProps> = (props) => {
   const prompt =
     props.kind === 'resumeAll'
       ? m.action.resumeAllPrompt(props.count, props.authCount)
-      : props.kind === 'merge'
-        ? m.action.mergePrompt
-        : m.action.discardPrompt;
+      : props.kind === 'recoverAll'
+        ? m.recover.allPrompt(props.syncCount, props.ciCount)
+        : props.kind === 'merge'
+          ? m.action.mergePrompt
+          : m.action.discardPrompt;
   return (
     <Text>
       {prompt} {m.action.confirmRun} <Text color={theme.yes}>y</Text> /{' '}

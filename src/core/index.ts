@@ -24,6 +24,7 @@ export * from './mouse';
 export * from './notify';
 export * from './persistence';
 export * from './pr-coordinator';
+export * from './pr-recovery';
 export * from './pr-refresh';
 export * from './privacy';
 export * from './rate-limit';

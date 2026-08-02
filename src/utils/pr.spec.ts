@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PrUnavailableReason } from '@/core';
+import { MAX_FAILING_CHECKS, type PrUnavailableReason } from '@/core';
 import { createPr, type ExecLike, lookupPr, lookupPrs, markPrReady } from './pr';
 
 const FIELDS = 'number,url,state,mergeable,isDraft,statusCheckRollup';
@@ -129,6 +129,78 @@ describe('lookupPr', () => {
     );
     const result = await lookupPr('/wt', 'codiva/x', exec);
     expect(result.kind === 'found' && result.pr.checks).toBe(c.expected);
+  });
+
+  describe('failingChecks (named red checks, carved out of the same payload)', () => {
+    /** Resolve a PR whose rollup is `rollup`, and hand back the parsed PrInfo. */
+    async function pr(rollup: unknown) {
+      const exec = vi.fn<ExecLike>(async (file) =>
+        file === 'git'
+          ? { stdout: 'codiva/x\n' }
+          : { stdout: JSON.stringify({ number: 1, url: 'u', statusCheckRollup: rollup }) },
+      );
+      const result = await lookupPr('/wt', 'codiva/x', exec);
+      return result.kind === 'found' ? result.pr : undefined;
+    }
+
+    it('names each failing check as <workflow> / <job> with its link', async () => {
+      const info = await pr([
+        { status: 'COMPLETED', conclusion: 'SUCCESS', name: 'lint', workflowName: 'CI' },
+        {
+          status: 'COMPLETED',
+          conclusion: 'FAILURE',
+          name: 'test (20.x)',
+          workflowName: 'CI',
+          detailsUrl: 'https://example.test/run/9',
+        },
+      ]);
+      expect(info?.failingChecks).toEqual([
+        { name: 'CI / test (20.x)', url: 'https://example.test/run/9' },
+      ]);
+    });
+
+    it('falls back to the legacy status-context fields', async () => {
+      // External CI (CircleCI, Codecov, Jenkins…) arrives as a StatusContext, which
+      // carries `context`/`targetUrl` instead of `name`/`detailsUrl`. Reading only the
+      // check-run fields would name every one of them a useless "check".
+      const info = await pr([
+        { state: 'ERROR', context: 'ci/circleci: build', targetUrl: 'https://example.test/cci' },
+      ]);
+      expect(info?.failingChecks).toEqual([
+        { name: 'ci/circleci: build', url: 'https://example.test/cci' },
+      ]);
+    });
+
+    it('names an unlabelled failure rather than dropping it', async () => {
+      const info = await pr([{ status: 'COMPLETED', conclusion: 'FAILURE' }]);
+      expect(info?.failingChecks).toEqual([{ name: 'check' }]);
+    });
+
+    it('caps a fan-out matrix so the fix instruction stays readable', async () => {
+      const info = await pr(
+        Array.from({ length: MAX_FAILING_CHECKS + 4 }, (_, i) => ({
+          status: 'COMPLETED',
+          conclusion: 'FAILURE',
+          name: `job-${i}`,
+        })),
+      );
+      expect(info?.failingChecks).toHaveLength(MAX_FAILING_CHECKS);
+    });
+
+    it.each(['passing', 'pending', 'none'] as const)(
+      'is absent while the aggregate is %s (it would only churn the reducer)',
+      async (expected) => {
+        const rollup =
+          expected === 'passing'
+            ? [{ status: 'COMPLETED', conclusion: 'SUCCESS' }]
+            : expected === 'pending'
+              ? [{ status: 'IN_PROGRESS' }]
+              : [];
+        const info = await pr(rollup);
+        expect(info?.checks).toBe(expected);
+        expect(info?.failingChecks).toBeUndefined();
+      },
+    );
   });
 
   it('looks the PR up by the worktree HEAD branch, not the recorded branch', async () => {

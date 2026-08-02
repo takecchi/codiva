@@ -9,7 +9,7 @@ import type { QueryFn } from '@/core/session';
 import { SessionManager } from '@/core/session-manager';
 import type { PrLookup, WorktreeService } from '@/core/session-ports';
 import { reduce } from '@/core/status-reducer';
-import type { PrLookupResult, SessionState } from '@/core/types';
+import type { PrInfo, PrLookupResult, SessionState } from '@/core/types';
 import { glyph } from '@/ui/theme';
 import {
   flush,
@@ -1807,5 +1807,184 @@ describe('PR セル（GitHub ステータスの表示）', () => {
     const passing = `${glyph.mergeable} #42`;
     expect(await settledFrame(lastFrame, (f) => f.includes(passing))).toContain(passing);
     app.unmount();
+  });
+});
+
+/**
+ * PR が詰まったときの立て直し（`/sync` · `/fix-ci` · Ctrl+F）の配線。
+ *
+ * 判定そのものは `core/pr-recovery.spec.ts`、git/gh の実行は
+ * `core/session-manager.spec.ts` と `utils/worktree-manager.spec.ts` が持つ。ここで
+ * 見るのは「キー/コマンド → manager の呼び出し」と、確認を挟むこと。
+ */
+describe('PR の立て直し（/sync · /fix-ci · Ctrl+F）', () => {
+  const CONFLICTING: PrInfo = {
+    number: 42,
+    url: 'https://x/pull/42',
+    mergeStatus: 'conflicting',
+  };
+  const RED: PrInfo = {
+    number: 43,
+    url: 'https://x/pull/43',
+    mergeStatus: 'mergeable',
+    checks: 'failing',
+  };
+
+  /**
+   * A manager whose sessions land in `completed` with the given PR already known,
+   * recording every `syncBase` / `send` so the test can see what a key triggered.
+   */
+  function stuckManager(pr: PrInfo, count = 1) {
+    const syncs: string[] = [];
+    const sends: { id: string; text: string }[] = [];
+    const manager = new SessionManager({
+      worktrees: {
+        ...worktrees,
+        syncBase: async (wt) => {
+          syncs.push(wt.slug);
+          return { kind: 'updated', ref: 'origin/main' };
+        },
+      },
+      queryFn: (() => {
+        throw new Error('unused');
+      }) as never,
+      now: () => 0,
+      messages: messages.ja,
+      createSession: ({ input, onChange }) => {
+        const session = noopSession(input);
+        session.state = { ...session.state, status: 'completed' };
+        session.send = (text: string) => {
+          sends.push({ id: input.id, text });
+        };
+        session.setPr = (next) => {
+          session.state = reduce(session.state, { kind: 'pr', pr: next, at: 0 });
+          onChange(session.state);
+        };
+        return session;
+      },
+    });
+    return { manager, syncs, sends, count, pr };
+  }
+
+  /** Type a slash command into whichever composer has focus and submit it. */
+  async function runCommand(stdin: { write: (s: string) => void }, text: string) {
+    stdin.write(text);
+    await flush();
+    stdin.write('\r');
+    await flush(200);
+  }
+
+  /** Create `count` sessions and stamp each with the stuck PR. */
+  async function seedStuck(
+    stdin: { write: (s: string) => void },
+    ctx: ReturnType<typeof stuckManager>,
+  ) {
+    for (let i = 0; i < ctx.count; i++) {
+      // 本文と Enter は別々に書く — 1 チャンクで届くと Ink は `key.return` を立てず、
+      // 文字列がそのまま入力欄に残る（既存の `seed` ヘルパと同じ理由）。
+      stdin.write(`task-${i}`);
+      await flush();
+      stdin.write('\r');
+      await flush();
+    }
+    // Same path the poll takes, so the reducer splits pr / prStatus for real.
+    const sessions = (
+      ctx.manager as unknown as { sessions: Map<string, { setPr: (p: unknown) => void }> }
+    ).sessions;
+    expect(sessions.size).toBe(ctx.count);
+    for (const s of ctx.manager.getSnapshot()) {
+      sessions.get(s.id)?.setPr(ctx.pr);
+    }
+    await flush(150);
+  }
+
+  it('`/sync` は選択中セッションの worktree へベースを取り込んで push する', async () => {
+    const ctx = stuckManager(CONFLICTING);
+    const { stdin, lastFrame } = render(<App manager={ctx.manager} />);
+    await seedStuck(stdin, ctx);
+
+    await runCommand(stdin, '/sync');
+    expect(ctx.syncs).toHaveLength(1);
+    // 競合しなかったのでセッションは起こさない（= トークンを使わない）。
+    expect(ctx.sends).toEqual([]);
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.recover.synced);
+  });
+
+  it('`/fix-ci` は失敗したチェック名を添えてセッションへ修正を依頼する', async () => {
+    const ctx = stuckManager({ ...RED, failingChecks: [{ name: 'CI / test' }] });
+    const { stdin } = render(<App manager={ctx.manager} />);
+    await seedStuck(stdin, ctx);
+
+    await runCommand(stdin, '/fix-ci');
+    expect(ctx.syncs).toEqual([]); // 赤いビルドは merge の問題ではない
+    expect(ctx.sends).toHaveLength(1);
+    expect(ctx.sends[0]?.text).toContain('CI / test');
+  });
+
+  it('詰まっている行があるあいだ Ctrl+F の案内を出す', async () => {
+    const ctx = stuckManager(CONFLICTING, 2);
+    const { stdin, lastFrame } = render(<App manager={ctx.manager} />);
+    await seedStuck(stdin, ctx);
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.recover.allHint(2));
+  });
+
+  it('Ctrl+F は件数を見せて確認してから全件を立て直す', async () => {
+    const ctx = stuckManager(CONFLICTING, 2);
+    const { stdin, lastFrame } = render(<App manager={ctx.manager} />);
+    await seedStuck(stdin, ctx);
+
+    stdin.write('\x06'); // Ctrl+F
+    await flush();
+    // 一括は課金に直結しうるので、再開（Ctrl+A）と同じく確認を挟む。
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.recover.allPrompt(2, 0));
+    expect(ctx.syncs).toEqual([]);
+
+    stdin.write('y');
+    await flush(200);
+    expect(ctx.syncs).toHaveLength(2);
+  });
+
+  it('Ctrl+F を n で取り消すと何も起きない', async () => {
+    const ctx = stuckManager(CONFLICTING, 2);
+    const { stdin, lastFrame } = render(<App manager={ctx.manager} />);
+    await seedStuck(stdin, ctx);
+    stdin.write('\x06');
+    await flush();
+    stdin.write('n');
+    await flush(150);
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain(messages.ja.recover.allPrompt(2, 0));
+    expect(ctx.syncs).toEqual([]);
+  });
+
+  it('詰まっていなければ案内も出ないし Ctrl+F も無反応', async () => {
+    const ctx = stuckManager({
+      number: 44,
+      url: 'https://x/pull/44',
+      mergeStatus: 'mergeable',
+      checks: 'passing',
+    });
+    const { stdin, lastFrame } = render(<App manager={ctx.manager} />);
+    await seedStuck(stdin, ctx);
+
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain(messages.ja.recover.allHint(1));
+    stdin.write('\x06');
+    await flush(150);
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain(messages.ja.recover.allPrompt(1, 0));
+    expect(ctx.syncs).toEqual([]);
+  });
+
+  it('詳細ビューの `/sync` はそのセッションだけを対象にする', async () => {
+    const ctx = stuckManager(CONFLICTING, 2);
+    const { stdin } = render(<App manager={ctx.manager} />);
+    await seedStuck(stdin, ctx);
+    stdin.write('\t'); // list focus
+    await flush();
+    stdin.write('\x1b[A'); // select the first row
+    await flush();
+    stdin.write('\r'); // open the detail view
+    await flush();
+
+    await runCommand(stdin, '/sync');
+    expect(ctx.syncs).toEqual(['task-0']);
   });
 });

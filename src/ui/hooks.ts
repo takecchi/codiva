@@ -14,20 +14,24 @@ import {
   type DisplayLine,
   emptyBuffer,
   emptyInputHistory,
+  errorMessage,
   FALLBACK_MODEL_OPTIONS,
   type InputHistory,
   isCommandInput,
   type LogPoint,
   type LogRange,
   logSelectionText,
+  type Messages,
   type ModelOption,
   normalizeLogSelection,
   normalizeSelection,
   type RateLimitWindow,
+  type RecoveryKind,
   type RunMode,
   recallNext,
   recallPrev,
   recordInput,
+  recoveryNotice,
   resetHistoryBrowse,
   runCommand,
   type SelectionRange,
@@ -591,6 +595,93 @@ export function useLogDragSelection(onCopy?: (text: string) => void): LogDragSel
     }
   };
   return { selection, dragging, begin, extend, end, clear };
+}
+
+export interface RecoveryAction {
+  /** One-line result of the last recovery (success path); cleared on the next key. */
+  notice: string | undefined;
+  setNotice: (notice: string | undefined) => void;
+  /** True while a git/gh step is in flight (the base merge + push). */
+  busy: boolean;
+  /** Recover one session. `kind` forces sync/CI; omit to let the PR state decide. */
+  run: (id: string, kind?: RecoveryKind) => void;
+  /** Recover every session whose PR is stuck, in list order. */
+  runAll: () => void;
+}
+
+/**
+ * The `/sync` · `/fix-ci` · `/recover` flow shared by both views: run the manager's
+ * recovery, then report the outcome as a notice (or an error).
+ *
+ * Kept out of the views because the mapping outcome → wording must not drift
+ * between them, and because the "cheap outcomes are silent successes, not errors"
+ * distinction is easy to get wrong — merging a base that was already merged is a
+ * perfectly good result and must not paint the error row red.
+ */
+export function useRecovery(
+  manager: SessionManager,
+  m: Messages,
+  onError: (message: string | undefined) => void,
+): RecoveryAction {
+  const [notice, setNotice] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const run = (id: string, kind?: RecoveryKind) => {
+    setBusy(true);
+    manager
+      .recover(id, kind)
+      .then((outcome) => {
+        setBusy(false);
+        if (outcome.kind === 'error') {
+          setNotice(undefined);
+          onError(outcome.error);
+          return;
+        }
+        onError(undefined);
+        setNotice(recoveryNotice(outcome, m));
+      })
+      .catch(() => setBusy(false));
+  };
+  const runAll = () => {
+    const targets = manager.recoverable();
+    if (targets.length === 0) {
+      setNotice(m.recover.skipped);
+      return;
+    }
+    setBusy(true);
+    let done = 0;
+    let failure: string | undefined;
+    // Sequential on purpose: each `sync` runs `git fetch` + `git merge` + `git push`
+    // in a worktree of the same repository, and git takes a repo-wide index/ref lock.
+    // Firing them together would make some of them fail on a lock they can't see.
+    void targets
+      .reduce<Promise<void>>(
+        (chain, { state, kind }) =>
+          chain.then(() =>
+            manager
+              .recover(state.id, kind)
+              .then((outcome) => {
+                // Count only what actually happened, and keep the first failure:
+                // reporting "recovered N" when `gh` was unauthenticated and every
+                // one of them failed is worse than reporting nothing.
+                if (outcome.kind === 'error') {
+                  failure ??= outcome.error;
+                  return;
+                }
+                done += 1;
+              })
+              .catch((err: unknown) => {
+                failure ??= errorMessage(err);
+              }),
+          ),
+        Promise.resolve(),
+      )
+      .then(() => {
+        setBusy(false);
+        onError(failure);
+        setNotice(done > 0 ? m.recover.allDone(done) : undefined);
+      });
+  };
+  return { notice, setNotice, busy, run, runAll };
 }
 
 export interface LifecycleAction {
