@@ -632,7 +632,9 @@ export const SessionList: FC<{
       // モーダル表示中はマウスも飲む。クリックを通すと `setFocus('list')` で背後の
       // 許可ダイアログが立ち上がり（`pending` の条件が focus 依存）、モーダルの
       // 相互排他が崩れる。ホイールでの選択移動も同じ経路なので一律で無視する。
-      if (update) {
+      // `/prompt` のエディタは自前でドラッグ範囲選択を持つので、ここで飲まないと
+      // 同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで動いてしまう。
+      if (update || modelSelect || promptEdit) {
         return;
       }
       if (mouse.kind === 'wheel') {
@@ -1062,6 +1064,7 @@ export const SessionList: FC<{
             setPromptEdit(false);
           }}
           onCancel={() => setPromptEdit(false)}
+          onCopy={onCopy}
         />
       ) : pending && target ? (
         <PermissionDialog
