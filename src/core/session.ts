@@ -253,7 +253,12 @@ export class Session {
    */
   setModel(model: string | undefined): void {
     this.modelOverride = { overridden: true, model };
-    void this.handle?.setModel?.(model);
+    // setModel は SDK の control request で、サブプロセスがもう居ない transport への
+    // write は reject する（EPIPE / stream destroyed）。`handle` はターンが終わっても
+    // 残るので、終了済みセッションの詳細で /model を押すと裸の void が unhandled
+    // rejection になりアプリごと落ちていた。切替えは best-effort（下の dispatch で
+    // 次回起動時のモデルは確定する）なので握り潰す。
+    void Promise.resolve(this.handle?.setModel?.(model)).catch(() => undefined);
     this.dispatch({ kind: 'model', model, at: this.now() });
   }
 

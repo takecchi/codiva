@@ -85,6 +85,8 @@
 | `<repo>/.codiva/prompt.md` | リポジトリ追加指示（空保存で削除） | `utils/repo-prompt.ts` |
 | `<repo>/.git/info/exclude` | `# codiva` + `.codiva/` を追記 | `WorktreeManager` |
 | `~/.codiva/config.json` | ユーザー設定 | `utils/config.ts` |
+| `~/.codiva/logs/crash-<時刻>-<pid>.log` | クラッシュレポート（20 件でローテーション。**同期書き込み**） | `utils/crash-log.ts` |
+| `~/.codiva/logs/report.*.json` | Node の診断レポート（OOM 等 JS が動けない死に方の唯一の記録） | Node（`process.report`） |
 | `~/.claude/projects/<cwd の非英数字を '-' 化>/<sessionId>.jsonl` | CLI のトランスクリプト（**読み取り専用**） | Claude CLI |
 | `~/.claude.json` / `~/.claude/.credentials.json` / Keychain `Claude Code-credentials` | 学習データ利用の判定に使う Claude Code の状態・OAuth トークン（**読み取り専用**。`utils/privacy.ts`） | Claude CLI |
 | `scripts/fixtures/*.jsonl` | spike の生ログ（gitignore） | `scripts/spike.ts` |
@@ -99,6 +101,17 @@
 - 端末モード（alt screen / SGR マウス）は `utils/alt-screen.ts` / `utils/mouse.ts` で
   **冪等な enter/leave**（共通化は `utils/terminal-mode.ts` の `toggleEscape`）。
   クラッシュで端末を壊さないよう `process.on('exit')` に leave を保険登録する。
+- **`process.on('exit')` だけを頼りにしない**。強制終了（OOM の abort・SIGKILL・segfault）では
+  JS が一切走らず、マウス捕捉が残った端末はスクロールが大量の文字入力に化ける。3 層で守る:
+  (1) teardown、(2) `bootstrap/crash-handler.ts`（捕捉できた例外）、(3) **起動時の自動修復**
+  （`setupTerminal()` 冒頭の `disableMouseReports()`）と脱出口 `codiva --reset-terminal`
+  （`resetTerminalModes()`）。(3) を消さない — 強制終了に対して in-process の後始末は原理的に無力。
+- **異常終了の理由はファイルに残す**（`bootstrap/crash-handler.ts` → `utils/crash-log.ts`）。
+  alt screen のまま死ぬと stderr の内容は画面ごと消えるため、ログが唯一の手がかりになる。
+  JS で拾えない死に方は Node の診断レポート（`process.report.reportOnFatalError`）に任せる。
+- **`void` した Promise には必ず catch を付ける**。TUI の unhandled rejection はプロセス死
+  （= 上記のクラッシュ経路）になる。とくに定期タイマー（PR ポーリング）と SDK の control
+  request（`setModel` 等。サブプロセスが居ないと reject する）は裸で投げない。
 - **デスクトップ通知は OSC（端末自身に出させる）を優先**する（`utils/notify.ts`）。
   `osascript` の `display notification` は **Script Editor 名義**になり、クリックすると
   スクリプトエディタが開いてしまう（バンドルを持たないプロセスの通知は AppleScript の

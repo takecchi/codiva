@@ -52,17 +52,24 @@ import {
 export function useSessions(manager: SessionManager): SessionState[] {
   const subscribe = useCallback(
     (onChange: () => void) => {
-      let scheduled = false;
-      return manager.subscribe(() => {
-        if (scheduled) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const unsubscribe = manager.subscribe(() => {
+        if (timer !== undefined) {
           return;
         }
-        scheduled = true;
-        setTimeout(() => {
-          scheduled = false;
+        timer = setTimeout(() => {
+          timer = undefined;
           onChange();
         }, 100);
       });
+      // 保留中の tick も止める（アンマウント後に onChange が発火しないように）。
+      return () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        unsubscribe();
+      };
     },
     [manager],
   );
@@ -712,12 +719,22 @@ export function useLifecycleAction(
     }
     setBusy(true);
     const promise = action === 'merge' ? manager.merge(id) : manager.discard(id, { force: true });
-    promise.then((result) => {
-      setBusy(false);
-      setConfirm(null);
-      setActionError(result.ok ? undefined : result.error);
-      onDone?.(result.ok);
-    });
+    // 第 2 引数（reject ハンドラ）で受ける。`.catch()` を後段に付けると成功ハンドラ内の
+    // 例外まで飲んでしまうため。manager 側は失敗を ActionResult に畳むが、その手前
+    // （abort → 通知 → 購読者）で throw されると裸の then が unhandled rejection になる。
+    promise.then(
+      (result) => {
+        setBusy(false);
+        setConfirm(null);
+        setActionError(result.ok ? undefined : result.error);
+        onDone?.(result.ok);
+      },
+      (err: unknown) => {
+        setBusy(false);
+        setConfirm(null);
+        setActionError(errorMessage(err));
+      },
+    );
   };
   return { confirm, setConfirm, busy, actionError, setActionError, run };
 }

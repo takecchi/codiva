@@ -286,6 +286,35 @@ function toUserMessage(text: string): SDKUserMessage {
 - 再描画スロットリング: コアからの onChange を UI 側で ~100ms デバウンス。`useSyncExternalStore` の getSnapshot が返す参照が変わらなければ再描画されない点を利用する。
 - **alt screen（代替スクリーンバッファ）**: 全画面レイアウトでも通常バッファのままだとシェルの過去出力がスクロールバックに残り、上へスクロールできてしまう。起動時に `\x1b[?1049h` で alt screen に入り、終了時に `\x1b[?1049l` で抜ける（`utils/alt-screen.ts`）。alt screen にはスクロールバックが存在しないため vim / htop と同様にスクロールがロックされ、終了すると元の画面が復元される。enter するのは「TTY かつ起動時の rows が `MIN_FULLSCREEN_ROWS` 以上」のときだけ（インライン描画フォールバック時はスクロールバックに頼るため通常バッファのまま）。終了時の残存 worktree 案内は leave 後に書き、通常バッファに残す。クラッシュ時の取り残し防止に `process.on('exit')` で leave を保険登録する。
 
+## 端末モードの取り残しとクラッシュ診断（2026-08-03）
+
+- **強制終了では `process.on('exit')` が走らない**。V8 のヒープ枯渇（`FATAL ERROR: Reached heap
+  limit … JavaScript heap out of memory`）は `abort()` で即死し、`SIGKILL` / `SIGSEGV` も同様に
+  JS を一切実行しない。よって `toggleEscape` の exit フックは**捕捉できる死に方にしか効かない**。
+  取り残されるのはマウスレポート（?1002/?1006）で、症状は「ターミナルに戻ったあと、スクロールすると
+  `[<64;12;5M` のような文字列が大量に入力される」（端末が SGR マウスレポートを送り続けている）。
+- 復旧手段は 2 つ用意した。(1) **起動時に無効化してから** alt screen へ入る
+  （`setupTerminal()` 冒頭の `disableMouseReports()`。次回起動で勝手に治る）、
+  (2) 保守用フラグ `codiva --reset-terminal`（`resetTerminalModes()` = ?1000/?1002/?1003/?1006/?1015
+  → ?2004l → ?25h → ?1049l を 1 回の write で送る）。off を送るのは冪等なので、有効でないモードへ
+  送っても無害。
+- **`process.report`（Node 診断レポート）は fatal error でも書かれる**。C++ 層が abort の**前に**
+  書くため、JS ハンドラでは絶対に拾えない OOM / ネイティブクラッシュの唯一の記録になる。
+  実行時に `process.report.directory` を設定して `reportOnFatalError = true` にするだけで有効
+  （`reportOnSignal` / `reportOnUncaughtException` は自前のハンドラと二重になるので off）。
+  出力は `report.<日時>.<pid>.<tid>.<seq>.json` で、`header.trigger`（OOM なら `OOMError`）・
+  `javascriptHeap`（heapTotal / heapUsed / 各 space の使用量）・`nativeStack`・`resourceUsage`・
+  **環境変数**まで含む（実測: Node 24 で `--max-old-space-size=24` を枯渇させて確認）。
+  環境変数は `ANTHROPIC_API_KEY` を含み得るので、`process.report.excludeEnv`（Node 23.3+）が
+  あるときは必ず立てる（古い Node には無いので `'excludeEnv' in report` で判定する）。
+- **alt screen の中に stderr を出しても残らない**。leave すると画面ごと復元されるため、例外の
+  スタックはユーザーの目に触れない（「突然ターミナルに戻った」に見えていた原因）。クラッシュ
+  ハンドラは**先に端末を戻してから**書く。
+- Ink 7 は children を ErrorBoundary で包み `onError` で `exit(error)` するので、**描画中の
+  throw は `waitUntilExit()` の reject** として出てくる（= `main()` の reject → クラッシュ経路）。
+  この場合 `index.tsx` の shutdown 列（ポーリング停止・`persist.flushAsync()`・teardown）は
+  丸ごとスキップされるため、クラッシュハンドラ側にも同期 flush と端末復元を持たせている。
+
 ## デスクトップ通知の実装メモ
 
 - **macOS の `osascript display notification` は「Script Editor」名義になる**（実測 / macOS 15）。通知センターは通知を**アプリバンドル単位**で管理し、`osascript` は自前のバンドルを持たないため AppleScript の代表バンドル `com.apple.ScriptEditor2` に紐づく。通知クリックは「送信元アプリのアクティベート」なので、codiva の完了通知を押すと**スクリプトエディタが開く**（同じ症状の報告: [opencode#23446](https://github.com/anomalyco/opencode/issues/23446)）。`-sender` 相当の指定は `osascript` には無く、`tell application id "…" to display notification` で端末アプリ名義にする手は TCC（自動化）許可プロンプトが必要になる。

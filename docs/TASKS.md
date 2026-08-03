@@ -717,6 +717,44 @@ UI なし。すべてユニットテストで駆動する。
 
 ---
 
+## Phase 21: クラッシュ耐性（端末の復旧 / クラッシュログ）✅
+
+**課題**: codiva が落ちるとターミナルに戻るものの、**スクロールすると大量の文字が入力される**
+（マウスレポート ?1002/?1006 が有効なまま残る）。かつ alt screen のまま死ぬので例外の内容が
+画面ごと消え、**なぜ落ちたのか手がかりが何も残らない**。
+
+- [x] **端末の復旧**: `utils/terminal-mode.ts` に `resetTerminalModes()`（マウス全モード +
+      bracketed paste + カーソル + alt screen を 1 回の write で戻す）、`utils/mouse.ts` に
+      `disableMouseReports()`。`setupTerminal()` は**起動時にマウスレポートを消してから**
+      alt screen に入り（前回の強制終了の取り残しをここで治す）、teardown で一括リセットを送る
+- [x] **脱出口 `codiva --reset-terminal`**（`core/cli.ts` の `parseCliArgs`）。git リポジトリ判定より
+      前に処理するのでどこでも実行できる。強制終了（OOM の abort / SIGKILL）では
+      `process.on('exit')` すら走らないため、in-process の後始末だけでは原理的に足りない
+- [x] **クラッシュログ**: `core/crash.ts`（レポート整形・ファイル名・ローテーション・純粋）/
+      `utils/crash-log.ts`（同期書き込み・`~/.codiva/logs/`・20 件保持）/
+      `bootstrap/crash-handler.ts`（`uncaughtException` / `unhandledRejection` →
+      **端末を戻す → flush → 通常バッファへ理由を出す → ログ**→ exit(1)）
+- [x] **JS で拾えない死に方**（V8 のヒープ枯渇・ネイティブクラッシュ）は Node の診断レポート
+      （`process.report.reportOnFatalError`）に任せる。設定 `crashLog: false` で両方を止められる
+- [x] シグナル（SIGTERM / SIGHUP）で殺されたときも記録する（クラッシュとの切り分け用）
+- [x] 診断情報: バージョン / node / platform / 端末 / ビューポート / uptime /
+      **メモリ使用量** / セッションのステータス内訳（OOM 仮説の裏取り）
+- [x] 見つかっていた unhandled rejection の口を塞ぐ（落ちる原因そのものの候補）:
+      `Session.setModel` の control request（終了済みセッションの `/model` で確実に reject）/
+      `PrCoordinator.refreshPrs`（20 秒ごとの `void`）/ `useLifecycleAction` の `then`（マージ・破棄）
+- [x] `useSessions` のスロットルは unsubscribe で `clearTimeout`、`utils/pr.ts` の `gh` 実行に
+      `maxBuffer` 8MB（既定 1MB 超過で PR 列が丸ごと落ちる）
+- [x] ドキュメント: `README.md`（トラブルシューティング + 設定 `crashLog`）/ `docs/ARCHITECTURE.md` /
+      `.claude/rules/git-and-io.md` / `CLAUDE.md`
+
+> 実績メモ: 全テスト緑・lint / typecheck / build 緑。**残る OOM 候補は未対応**（別 Phase）:
+> `state.messages` が無制限に伸びる（追記ごとに全体コピー = O(n²)）／詳細ビューが更新ごとに
+> ログ全体を markdown 再パースする（`logLines` にエントリ単位のキャッシュが無い）。
+> どちらもログが長い・セッションが多いほど効くので、クラッシュログの `memory` 行と
+> `report.*.json` が出てきたらそこから着手する。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

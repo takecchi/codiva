@@ -80,7 +80,8 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | モデル選択 | `core/models.ts` / `utils/model-catalog.ts` / `ui/model-select.tsx` |
 | 選択肢リストの表示（質問・モデル） | `core/choice-lines.ts`（折返し・純粋）/ `ui/choice-row.tsx`（1件の描画） |
 | アップデート通知・`/update` | `core/update.ts`（比較・判定・DI 境界）/ `utils/update.ts`（registry fetch・経路判定・`npm install`）/ `ui/update-dialog.tsx` |
-| 起動・副作用の配線 | `src/index.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / runtime） |
+| 起動・副作用の配線 | `src/index.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / crash-handler / runtime） |
+| クラッシュ時の後始末・原因調査 | `core/crash.ts`（レポート整形・純粋）/ `utils/crash-log.ts`（`~/.codiva/logs/`・同期書き込み・診断レポート）/ `bootstrap/crash-handler.ts`（配線）/ `core/cli.ts` + `utils/terminal-mode.ts` の `resetTerminalModes`（`--reset-terminal`） |
 | 共有 UI フック | `ui/hooks.ts`（`useSessions` / `useCommandRunner` / `useLifecycleAction` / `useTextBufferRef` / `useComposerSelection` …） |
 
 > 落とし穴: `config.ts` / `notify.ts` / `mouse.ts` / `transcript.ts` / `repo-prompt.ts` / `privacy.ts` / `worktree*.ts` は

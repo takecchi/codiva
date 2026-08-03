@@ -3,16 +3,21 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
 import {
   errorMessage,
+  formatMemoryUsage,
   messages,
+  parseCliArgs,
   resolveIgnoredFilesMode,
   resolveLang,
   type SessionManager,
+  summarizeStatuses,
 } from '@/core';
 import {
   copyToClipboard,
   createUpdateService,
+  defaultLogDir,
   defaultStatePath,
   detectInstallKind,
+  enableFatalErrorReports,
   fetchModelCatalog,
   fetchTrainingOptIn,
   fetchUsageSnapshot,
@@ -20,17 +25,22 @@ import {
   loadRepoPrompt,
   openUrl,
   packageRootFrom,
+  resetTerminalModes,
   WorktreeManager,
+  writeCrashLogSync,
 } from '@/utils';
 import { App } from './app';
 import {
   buildManager,
   createPersistController,
+  type Diagnostic,
+  installCrashHandlers,
   installHardExitFlush,
   restoreSessions,
   setupTerminal,
   startPrPolling,
   startUsagePolling,
+  type TerminalSetup,
 } from './bootstrap';
 
 // バージョンは package.json を唯一の出所にする。エントリ（src/index.tsx / dist/index.js）
@@ -53,6 +63,16 @@ async function main(): Promise<void> {
         locale: process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG,
       })
     ];
+
+  // 保守用フラグ `--reset-terminal`: 端末モード（マウス捕捉・代替スクリーン・カーソル）を
+  // 戻すだけで終了する。強制終了（OOM の abort / SIGKILL）で codiva が死ぬと
+  // `process.on('exit')` すら走らずマウスレポートが残り、スクロールが大量の文字入力に
+  // 化けるため、その脱出口。git リポジトリ判定より前に処理する（どこでも実行できるべき）。
+  if (parseCliArgs(process.argv.slice(2)).kind === 'reset-terminal') {
+    resetTerminalModes(process.stdout);
+    process.stdout.write(`${t.crash.resetDone}\n`);
+    return;
+  }
 
   const repoRoot = process.cwd();
   // `.gitignore` された node_modules/.env 等は git worktree に引き継がれないため、
@@ -88,6 +108,41 @@ async function main(): Promise<void> {
     worktrees,
     onPersist: persist.schedule,
     appendSystemPrompt,
+  });
+
+  // クラッシュ時の後始末を配線する。alt screen のまま死ぬと例外の内容が画面ごと消え、
+  // ユーザーには「突然ターミナルに戻った」としか見えない（そのうえマウスレポートが
+  // 残って入力が壊れる）。ハンドラは (1) 端末を戻し (2) 状態を flush し (3) 理由を
+  // 通常バッファへ出し (4) `~/.codiva/logs/` にレポートを残す。
+  const crashLogEnabled = config.crashLog !== false;
+  const logDir = defaultLogDir();
+  if (crashLogEnabled) {
+    // V8 のヒープ枯渇（OOM）やネイティブのクラッシュは JS に通知が来ないため、
+    // C++ 層が abort 前に書く Node の診断レポートだけが証拠を残せる。
+    enableFatalErrorReports(logDir);
+  }
+  const diagnostics = (): readonly Diagnostic[] => [
+    ['codiva', appVersion ?? 'unknown'],
+    ['node', process.version],
+    ['platform', `${process.platform} ${process.arch}`],
+    ['terminal', `${process.env.TERM ?? '-'} / ${process.env.TERM_PROGRAM ?? '-'}`],
+    [
+      'viewport',
+      `${process.stdout.columns ?? 0}x${process.stdout.rows ?? 0} tty=${process.stdout.isTTY === true}`,
+    ],
+    ['uptime', `${Math.round(process.uptime())}s`],
+    ['memory', formatMemoryUsage(process.memoryUsage())],
+    ['sessions', summarizeStatuses(manager.getSnapshot().map((session) => session.status))],
+  ];
+  let terminal: TerminalSetup | undefined;
+  const crash = installCrashHandlers({
+    messages: t,
+    restore: () => terminal?.teardown(),
+    flush: persist.flushSync,
+    diagnostics,
+    write: crashLogEnabled
+      ? (report, at) => writeCrashLogSync(report, { at, dir: logDir })
+      : undefined,
   });
 
   // `/model` の選択肢は Claude Code のカタログを唯一の出所にする（直書きしない）。
@@ -144,8 +199,9 @@ async function main(): Promise<void> {
 
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);
-  installHardExitFlush(persist.flushSync);
-  const terminal = setupTerminal(config.mouse !== false);
+  // シグナルで殺されたときも記録する（クラッシュと「kill された」の切り分けに使う）。
+  installHardExitFlush(persist.flushSync, crash.record);
+  terminal = setupTerminal(config.mouse !== false);
 
   const { waitUntilExit } = render(
     <App
@@ -174,6 +230,9 @@ async function main(): Promise<void> {
   updateAbort.abort();
   await persist.flushAsync();
   terminal.teardown();
+  // 後片付け（flush 含む）が終わってから外す。先に外すと shutdown 中の例外だけ
+  // 記録が残らない。
+  crash.uninstall();
 }
 
 await main();

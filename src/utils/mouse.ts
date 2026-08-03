@@ -11,9 +11,19 @@ import { toggleEscape, type WritableLike } from './terminal-mode';
  * parseSgrMouse が行う。無効化は保険で ?1000l も送る（過去モードの取り残し対策）。
  */
 const ENABLE_MOUSE = '\x1b[?1002h\x1b[?1006h';
-const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1002l\x1b[?1000l';
+const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l';
 
 export type MouseStream = WritableLike;
+
+/**
+ * マウスレポートを無効化するだけの単発書き込み。前回の codiva が**強制終了**
+ * （OOM の abort / SIGKILL）して `process.on('exit')` すら走らなかった場合、
+ * 端末には ?1002/?1006 が残る（スクロールが大量の文字入力に化ける）。起動時に
+ * これを送っておけば、次に codiva を立ち上げた時点で自動的に治る。
+ */
+export function disableMouseReports(stream: MouseStream = process.stdout): void {
+  stream.write(DISABLE_MOUSE);
+}
 
 /** マウスレポートを有効化し、無効化する関数を返す（冪等・exit 保険付き。terminal-mode 参照）。 */
 export function enableMouse(stream: MouseStream = process.stdout): () => void {

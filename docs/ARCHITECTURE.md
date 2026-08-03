@@ -46,6 +46,7 @@ codiva/
 │   │   ├── build-manager.ts   # config + I/O seam → SessionManager 組み立て + /model の config 永続・/prompt の prompt.md 永続
 │   │   ├── restore-sessions.ts # state.json + transcript から復元
 │   │   ├── persist-controller.ts # debounce保存 / SIGTERM同期flush / 最終flush を集約
+│   │   ├── crash-handler.ts   # uncaughtException/unhandledRejection → 端末復元 + クラッシュログ
 │   │   └── runtime.ts         # PRポーリング・alt-screen/mouse・SIGTERM/SIGHUP フラッシュ
 │   ├── core/                  # 純粋ドメイン（Ink/React/node/utils 非依存。SDK は型 + 定数のみ）
 │   │   ├── index.ts           # バレル（export *）
@@ -712,6 +713,39 @@ npm 配信された自分自身の更新を検知して知らせ、安全に確�
   最長 `INSTALL_TIMEOUT_MS` のあいだ何もできなくなる。Esc はダイアログを閉じるだけで npm は続行する。
 - **設定**: `updateCheck`（既定 on）。`false` で起動時の通信を完全に止める（`/update` は
   `unavailable` を返すだけになる）。
+
+## クラッシュ時の後始末（端末の復旧 / クラッシュログ）
+
+TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異常終了は 2 つの被害を同時に出す。
+
+1. **端末が壊れたまま残る**。マウス捕捉が有効なままだとスクロールのたびに端末が
+   `\x1b[<64;…M` を送り、シェルには**大量の文字が入力されたように見える**。
+2. **理由が残らない**。例外のスタックは stderr へ出るが、alt screen を抜けた瞬間に画面ごと消える
+   （ユーザーには「突然ターミナルに戻った」としか見えない）。
+
+対策は 3 層。**どの層も他の層の代わりにはならない**（下に行くほど強い死に方に対応する）。
+
+| 層 | 実装 | 効く死に方 |
+|---|---|---|
+| teardown（`toggleEscape` の `process.on('exit')` + `setupTerminal().teardown`） | `utils/alt-screen.ts` / `utils/mouse.ts` / `utils/terminal-mode.ts` | 正常終了・`process.exit`・捕捉できた例外 |
+| クラッシュハンドラ | `bootstrap/crash-handler.ts` | `uncaughtException` / `unhandledRejection` |
+| 起動時の自動修復 + `--reset-terminal` | `setupTerminal()` 冒頭の `disableMouseReports()` / `core/cli.ts` | **強制終了**（OOM の abort・SIGKILL・segfault。JS が一切走らない） |
+
+- クラッシュハンドラの順序は **端末復元 → 状態 flush → レポート組み立て → 通常バッファへ出力 →
+  ログ書き出し → `exit(1)`**。端末を先に戻すのは、以降の出力をスクロールバックに残すため。
+- ログは `~/.codiva/logs/crash-<ISO時刻>-<pid>.log`（20 件でローテーション）。書き込みは
+  **同期**（直後に process が消えるので非同期では間に合わない）。整形・ファイル名・
+  ローテーション判定は純粋な `core/crash.ts`、I/O は `utils/crash-log.ts`。
+- 診断情報にメモリ使用量とセッションのステータス内訳を含める。1 セッション = `claude`
+  サブプロセス 1 本（最大 ~1GiB）なので、OOM 仮説の裏取りにはこの 2 つが要る。
+- **V8 のヒープ枯渇は JS ハンドラで拾えない**（abort で即死する）。この経路だけは Node の
+  診断レポート（`process.report.reportOnFatalError`）に任せ、`report.*.json` を同じ
+  `~/.codiva/logs/` へ出す。`reportOnSignal` / `reportOnUncaughtException` は自前ハンドラと
+  二重になるので off。
+- シグナル（SIGTERM / SIGHUP）で殺された場合も `kind: signal` で記録する。「落ちた」と
+  「kill された（端末を閉じた等）」を後から切り分けるため。
+- 設定 `crashLog: false` でファイル出力（自前レポート + 診断レポート）を止められる。
+  理由の表示と端末の復元は設定に関係なく行う。
 
 ## 設計判断
 

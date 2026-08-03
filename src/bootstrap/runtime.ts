@@ -1,5 +1,11 @@
-import { isFullscreenViewport, type SessionManager } from '@/core';
-import { createMouseControl, enterAltScreen } from '@/utils';
+import type { CrashKind, SessionManager } from '@/core';
+import { isFullscreenViewport } from '@/core';
+import {
+  createMouseControl,
+  disableMouseReports,
+  enterAltScreen,
+  resetTerminalModes,
+} from '@/utils';
 
 /**
  * 端末セットアップの結果。マウス捕捉は**起動から終了まで有効のまま**にする（一覧・詳細の
@@ -20,14 +26,27 @@ export interface TerminalSetup {
  */
 export function setupTerminal(mouseEnabled: boolean): TerminalSetup {
   const useAltScreen = process.stdout.isTTY && isFullscreenViewport(process.stdout.rows ?? 0);
-  const leaveAltScreen = useAltScreen ? enterAltScreen(process.stdout) : undefined;
+  if (!useAltScreen) {
+    // Inline rendering sets no terminal mode, so it must not write escapes either
+    // (stdout may be a pipe, where they would corrupt the output).
+    return { teardown: () => undefined };
+  }
+  // Heal a terminal left in mouse-reporting mode by a previous run that died hard
+  // (an OOM abort or SIGKILL skips `process.on('exit')`, so its teardown never
+  // ran). Without this, scrolling keeps injecting `\x1b[<64;…M` as input.
+  disableMouseReports(process.stdout);
+  const leaveAltScreen = enterAltScreen(process.stdout);
   // Mouse coordinates only match the output origin under the alt-screen fullscreen.
-  const mouse = useAltScreen && mouseEnabled ? createMouseControl(process.stdout) : undefined;
+  const mouse = mouseEnabled ? createMouseControl(process.stdout) : undefined;
   mouse?.enable();
   return {
     teardown: () => {
       mouse?.disable();
-      leaveAltScreen?.();
+      leaveAltScreen();
+      // Belt and braces: one sequence that clears every mode we could have set
+      // (including ones an aborted previous run may have left behind). Idempotent,
+      // so it is safe after the individual teardowns above.
+      resetTerminalModes(process.stdout);
     },
   };
 }
@@ -49,12 +68,21 @@ export function startPrPolling(manager: SessionManager): () => void {
  * Flush the restore state synchronously on hard termination (kill / terminal
  * close), where the debounced async save wouldn't run before the process dies.
  * Normal exit goes through `/exit`; Ctrl+C is ignored, so only SIGTERM/SIGHUP.
+ *
+ * `record` (optional) notes the signal in the crash log, so a session that
+ * "just vanished" can be told apart from a real crash afterwards. The terminal
+ * itself is restored by the `process.on('exit')` hooks that `toggleEscape`
+ * installs, which `process.exit()` below still runs.
  */
-export function installHardExitFlush(flushSync: () => void): void {
-  const handler = (code: number) => () => {
+export function installHardExitFlush(
+  flushSync: () => void,
+  record?: (kind: CrashKind, summary: string) => void,
+): void {
+  const handler = (signal: string, code: number) => () => {
     flushSync();
+    record?.('signal', `terminated by ${signal}`);
     process.exit(code);
   };
-  process.once('SIGTERM', handler(143));
-  process.once('SIGHUP', handler(129));
+  process.once('SIGTERM', handler('SIGTERM', 143));
+  process.once('SIGHUP', handler('SIGHUP', 129));
 }
