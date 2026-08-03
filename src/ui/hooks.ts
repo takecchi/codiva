@@ -203,6 +203,78 @@ export function useBoxWidth(ref: RefObject<DOMElement | null>): number | undefin
   return width;
 }
 
+/**
+ * 現在ブランチの読み直し間隔。ブランチは codiva の外（別ターミナルの `git switch`）でも
+ * 変わるので購読できる相手がおらず、定期的に読み直すしかない。1 回の問い合わせは
+ * `git symbolic-ref` 1 本（数 ms、ネットワークなし）なので秒単位で回して差し支えないが、
+ * 「切り替えたのに古いまま」の窓が数秒あっても実害はない程度の間隔にしてある。
+ */
+export const BRANCH_POLL_INTERVAL_MS = 5_000;
+
+/**
+ * 対象リポジトリが今チェックアウトしているブランチ（ヘッダに出す）。取得は合成ルートが
+ * 注入する（`utils/worktree-manager.ts` の `currentBranch()`）。未注入・detached HEAD・
+ * git の失敗はすべて undefined で、そのときヘッダはブランチを表示しない。
+ *
+ * 呼ぶのは**ビュー切替でアンマウントされない場所**（`app.tsx`）にする。一覧の中で呼ぶと
+ * 詳細ビューへ行って戻るたびにタイマーが張り替わり、戻った直後の 1 フレームだけ
+ * ブランチが消える。
+ *
+ * **`load` を undefined にするとポーリングだけ止まり、値は保たれる**。ヘッダを描いていない
+ * 間（詳細ビュー）に git を呼び続けないための入口で、一覧へ戻ると即座に 1 回読み直す。
+ * state はこのフック（= `app.tsx`）に残るので、戻った瞬間から前の値が出る。
+ *
+ * 取得関数は ref 経由で読み、effect の依存には**注入されているか**だけを載せる。
+ * インラインの arrow を渡されても（描画ごとに identity が変わる）タイマーを張り替えず、
+ * git を呼び続けないため。
+ */
+export function useBranch(
+  load?: () => Promise<string | undefined>,
+  intervalMs = BRANCH_POLL_INTERVAL_MS,
+): string | undefined {
+  const [branch, setBranch] = useState<string | undefined>(undefined);
+  const loadRef = useRef(load);
+  // ref の更新は描画中ではなく effect で行う（React は描画中の ref 書き込みを禁じている。
+  // タイマーが読むのは commit 後なので、これで最新の関数が渡る）。
+  useEffect(() => {
+    loadRef.current = load;
+  });
+  const enabled = load !== undefined;
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    let alive = true;
+    const read = () => {
+      try {
+        // 表示のためだけの問い合わせなので、失敗しても直前の表示を保って黙る。
+        // 同期 throw も拾う（`void p.then(…)` だけでは呼び出し自体の例外が漏れ、
+        // 5 秒ごとの uncaughtException で TUI が落ちる）。
+        void loadRef.current?.().then(
+          (next) => {
+            if (alive) {
+              setBranch((prev) => (prev === next ? prev : next));
+            }
+          },
+          () => undefined,
+        );
+      } catch {
+        // 同上（次の tick で読み直す）。
+      }
+    };
+    // ref を更新する effect は**この effect より先に宣言**してあるので、ここに来た時点で
+    // `loadRef.current` は最新（React は effect を宣言順に流す）。
+    read();
+    const timer = setInterval(read, intervalMs);
+    timer.unref?.();
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [enabled, intervalMs]);
+  return branch;
+}
+
 /** A clock that ticks every `ms` so elapsed-time displays stay current. */
 export function useClock(ms = 1000): number {
   const [now, setNow] = useState(() => Date.now());

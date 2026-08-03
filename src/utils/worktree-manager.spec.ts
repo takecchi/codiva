@@ -50,6 +50,29 @@ describe('WorktreeManager', () => {
     });
   });
 
+  describe('currentBranch', () => {
+    it('チェックアウト中のブランチ名を返す', async () => {
+      repo = await makeRepo(true);
+      await expect(new WorktreeManager(repo).currentBranch()).resolves.toBe('main');
+      await g(repo, 'switch', '-c', 'feature/x');
+      await expect(new WorktreeManager(repo).currentBranch()).resolves.toBe('feature/x');
+    });
+
+    it('detached HEAD では undefined（`baseBranch()` の "HEAD" を表示に使わない）', async () => {
+      repo = await makeRepo(true);
+      const head = await g(repo, 'rev-parse', 'HEAD');
+      await g(repo, 'checkout', '--detach', head.stdout.trim());
+      const wm = new WorktreeManager(repo);
+      await expect(wm.baseBranch()).resolves.toBe('HEAD');
+      await expect(wm.currentBranch()).resolves.toBeUndefined();
+    });
+
+    it('git リポジトリでなくても throw しない（表示のためだけの問い合わせ）', async () => {
+      repo = await mkdtemp(join(tmpdir(), 'codiva-nogit-'));
+      await expect(new WorktreeManager(repo).currentBranch()).resolves.toBeUndefined();
+    });
+  });
+
   describe('lifecycle: add → diff → merge → remove', () => {
     beforeEach(async () => {
       repo = await makeRepo(true);

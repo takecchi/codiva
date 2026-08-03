@@ -39,6 +39,12 @@ export interface BannerInput {
   /** ログイン中のアカウント（プラン名・組織名）。SDK probe 由来で、無ければ出さない。 */
   account?: AccountSummary;
   /**
+   * 対象リポジトリが今チェックアウトしているブランチ（新しいセッションの分岐元 =
+   * マージ先）。detached HEAD や git の呼び出しに失敗したときは undefined で、
+   * その場合は表示しない（プラン名と同じく「取れなければ出さない」扱い）。
+   */
+  branch?: string;
+  /**
    * npm に出ている新しいバージョン（起動時チェックの結果）。undefined なら
    * 「最新」「未確認」「チェック無効」のいずれかで、その区別はここでは出さない
    * （更新が無いときにヘッダを 1 行増やさないため）。
@@ -49,12 +55,15 @@ export interface BannerInput {
 /** 新しいバージョンがあることを示す記号（翻訳対象ではない）。 */
 const UPDATE_MARK = '↑';
 
-/** 同じ行に複数の項目（Plan / Model、セッション数 / 合計コスト）を並べるときの間隔。 */
+/**
+ * 同じ行に複数の項目を並べるときの間隔（プラン / モデル / ブランチ、
+ * バージョン / セッション数 / 合計コスト）。
+ */
 const FIELD_GAP = '   ';
 
 /**
- * The header's text block, one entry per rendered row: wordmark / plan + model /
- * cwd / update notice.
+ * The header's text block, one entry per rendered row: wordmark /
+ * plan + model + branch / cwd / update notice.
  *
  * 使用状況（ゲージ付き）は**この行リストに含めない** — 記号（█ / ░）は `ui/theme.ts` が
  * 持ち、行はドラッグでコピーする対象でもないので、`ui/banner.tsx` が
@@ -91,6 +100,13 @@ export function bannerLines(m: Messages, input: BannerInput): BannerLine[] {
     });
   }
   identity.push({ text: m.banner.model(input.model ?? m.banner.defaultModel), tone: 'dim' });
+  // 現在のブランチも**この行**に並べる（cwd 行ではなく）。理由は 2 つ:
+  // (1) cwd は長くなりがちで、`wrap="truncate-end"` の行末に置くと狭い端末で真っ先に
+  //     切り落とされる。(2) cwd 行はドラッグでパスを取り出す用途なので、行末へ丸める
+  //     drag（`bannerCaretAt` の 'clamp'）でブランチ名まで一緒にコピーされてしまう。
+  if (input.branch) {
+    identity.push({ text: `${FIELD_GAP}${m.banner.branch(input.branch)}`, tone: 'dim' });
+  }
   lines.push({ segments: identity });
 
   if (input.cwd) {

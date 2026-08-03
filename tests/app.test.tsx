@@ -523,6 +523,24 @@ describe('App (list view)', () => {
     expect(lastFrame()).not.toContain('学習データ利用');
   });
 
+  // index.tsx → App(useBranch) → SessionList → Banner の配線。どこかで prop を落とすと
+  // 「ブランチが一度も出ない」= 気付きにくい壊れ方になるので通しで検証する。
+  it('対象リポジトリの現在ブランチをヘッダに出す', async () => {
+    const { lastFrame } = render(
+      <App manager={makeManager()} loadBranch={async () => 'feature/login'} />,
+    );
+    await flush();
+    expect(lastFrame()).toContain('ブランチ: feature/login');
+  });
+
+  it('ブランチが取れないときはヘッダに出さない（detached HEAD / git 失敗）', async () => {
+    const { lastFrame } = render(
+      <App manager={makeManager()} loadBranch={async () => undefined} />,
+    );
+    await flush();
+    expect(lastFrame()).not.toContain('ブランチ:');
+  });
+
   it('renders in English when the en catalog is injected', () => {
     // The path index.tsx uses: resolved catalog → App messages prop → provider → components.
     const { lastFrame } = render(<App manager={makeManager()} messages={messages.en} />);
@@ -893,6 +911,43 @@ describe('App detail view (in-app connection)', () => {
     stdin.write('\x1b'); // Esc → back to the list
     await flush();
     expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
+  });
+
+  // 現在ブランチの state は `App` に置く（一覧に置くと詳細から戻った 1 フレームだけ消え、
+  // 戻るたびに取り直しになる）。詳細の間はポーリングを止め、戻ったら 1 回読み直す
+  // （止まっていること自体は `ui/hooks.spec.tsx` が短い間隔で検証する）。
+  it('現在ブランチは詳細ビューを往復しても消えず、戻ったら読み直す', async () => {
+    const { manager, out } = drivenManager();
+    let calls = 0;
+    const { stdin, lastFrame } = render(
+      <App
+        manager={manager}
+        loadBranch={async () => {
+          calls += 1;
+          return 'main';
+        }}
+      />,
+    );
+    stdin.write('open me');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-branch' }));
+    await flush();
+    expect(lastFrame()).toContain('ブランチ: main');
+
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // Enter → detail
+    await flush();
+    const paused = calls;
+
+    stdin.write('\x1b'); // Esc → list
+    await flush();
+    // 戻った時点で前の値がそのまま出る（取得の往復を待たない）。
+    expect(lastFrame()).toContain('ブランチ: main');
+    // 一覧へ戻ったので取得も再開している（詳細の間は止まっていた）。
+    expect(calls).toBeGreaterThan(paused);
   });
 
   it('Ctrl+U clears the follow-up composer in the detail view', async () => {

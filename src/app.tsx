@@ -14,6 +14,7 @@ import {
   MessagesProvider,
   SessionDetail,
   SessionList,
+  useBranch,
   useModelCatalog,
   useTrainingOptIn,
   useUpdateCheck,
@@ -48,6 +49,13 @@ export const App: FC<{
    * 何もしない。
    */
   updater?: UpdateService;
+  /**
+   * 対象リポジトリの現在ブランチを読む（`WorktreeManager.currentBranch()`）。ヘッダ表示
+   * だけに使うので、失敗・detached HEAD は undefined で構わない。codiva の外でも切り替わる
+   * ため定期的に読み直す（`useBranch`）。値をここで持つのはビュー切替で失わないため、
+   * 取得を一覧のときだけに絞るのは詳細ビューで無駄なプロセスを立てないため。
+   */
+  loadBranch?: () => Promise<string | undefined>;
   /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
   onOpenPr?: (url: string) => void;
   /** Copy a mouse selection (composer / header / detail log) to the clipboard (OSC 52). */
@@ -62,6 +70,7 @@ export const App: FC<{
   modelCatalog,
   trainingOptIn,
   updater,
+  loadBranch,
   onOpenPr,
   onCopy,
 }) => {
@@ -70,6 +79,12 @@ export const App: FC<{
   const training = useTrainingOptIn(trainingOptIn);
   const { info: updateInfo, clear: clearUpdateInfo } = useUpdateCheck(updater?.initial);
   const [view, setView] = useState<View>({ mode: 'list' });
+  // 現在ブランチはここで持つ（一覧はビュー切替でアンマウントされるので、あちらで持つと
+  // 詳細から戻った 1 フレームだけブランチが消え、そのたびに git を呼び直す）。ただし
+  // **ヘッダを描いていない詳細ビューの間は取得を止める**（誰も読まない値のために 5 秒ごとに
+  // git のプロセスを立てない）。値はこのフックに残るので、戻った瞬間から前の値が出て、
+  // 同時に 1 回だけ読み直される。
+  const branch = useBranch(view.mode === 'list' ? loadBranch : undefined);
   // 一覧はビュー切替でアンマウントされ内部 state（選択行・フォーカス）が失われる。
   // 詳細から戻ったときに「前見ていた箇所」を復元できるよう、最新の表示状態をここに
   // 保持し、再マウント時の初期値として渡す（選択行 = スクロール状態なので一緒に戻る）。
@@ -112,6 +127,7 @@ export const App: FC<{
             onOpenPr={onOpenPr}
             onQuit={quit}
             cwd={cwd}
+            branch={branch}
             model={model}
             models={models}
             version={version}

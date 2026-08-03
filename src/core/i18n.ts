@@ -223,6 +223,12 @@ export interface Messages {
      */
     plan: (plan: string, organization?: string) => string;
     /**
+     * 対象リポジトリが今チェックアウトしているブランチ（= 新しいセッションの分岐元・
+     * マージ先）。detached HEAD では表示しない（`WorktreeManager.currentBranch()` が
+     * undefined を返す）。
+     */
+    branch: (name: string) => string;
+    /**
      * claude.ai サブスクリプションの使用リミット表示（SDK の rate_limit_event 由来）。
      * ウィンドウ見出しのキーは core の RateLimitLabelKey と一致させる。
      */
@@ -500,6 +506,7 @@ const ja: Messages = {
     defaultModel: 'CLI 既定',
     plan: (plan, organization) =>
       organization ? `プラン: ${plan} (${organization})` : `プラン: ${plan}`,
+    branch: (name) => `ブランチ: ${name}`,
     usage: {
       heading: '使用状況',
       session: '現在のセッション',
@@ -723,6 +730,7 @@ const en: Messages = {
     defaultModel: 'CLI default',
     plan: (plan, organization) =>
       organization ? `Plan: ${plan} (${organization})` : `Plan: ${plan}`,
+    branch: (name) => `Branch: ${name}`,
     usage: {
       heading: 'Usage',
       session: 'Current session',
