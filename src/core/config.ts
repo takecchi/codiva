@@ -88,6 +88,15 @@ export interface CodivaConfig {
    */
   ignoredFilesExclude?: string[];
   /**
+   * クラッシュ時に `~/.codiva/logs/` へレポートを残すか。未設定は有効（true）。
+   *
+   * 有効なときは (1) 捕捉できた例外のレポート（`crash-<時刻>-<pid>.log`）と
+   * (2) Node の診断レポート（`report.*.json`。V8 のヒープ枯渇のように JS へ
+   * 通知が来ない死に方でも C++ 層が書く）の 2 種類を出す。`false` にすると
+   * どちらも書かず、理由の表示と端末の復元だけを行う。
+   */
+  crashLog?: boolean;
+  /**
    * @deprecated `ignoredFiles` を使う。後方互換のためだけに残す:
    * `true`→`'copy'` 相当、`false`→`'none'` 相当として解釈される（`resolveIgnoredFilesMode`）。
    */
@@ -123,6 +132,7 @@ interface CodivaConfigJson {
   autoFixCi?: unknown;
   ignoredFiles?: unknown;
   ignoredFilesExclude?: unknown;
+  crashLog?: unknown;
   copyIgnored?: unknown;
 }
 
@@ -256,6 +266,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const ignoredFilesExclude = toPatternList(raw.ignoredFilesExclude);
   if (ignoredFilesExclude !== undefined) {
     config.ignoredFilesExclude = ignoredFilesExclude;
+  }
+  const crashLog = toBoolean(raw.crashLog);
+  if (crashLog !== undefined) {
+    config.crashLog = crashLog;
   }
   const copyIgnored = toBoolean(raw.copyIgnored);
   if (copyIgnored !== undefined) {

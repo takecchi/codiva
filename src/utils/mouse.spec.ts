@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { createMouseControl, enableMouse } from './mouse';
+import { createMouseControl, disableMouseReports, enableMouse } from './mouse';
 
 const ENABLE = '\x1b[?1002h\x1b[?1006h';
-const DISABLE = '\x1b[?1006l\x1b[?1002l\x1b[?1000l';
+// Every mouse mode we could have set — plus the ones an aborted previous run may
+// have left behind (a hard kill skips the exit hooks).
+const DISABLE = '\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l';
+
+describe('disableMouseReports', () => {
+  it('writes the disable sequence on its own (healing a hard-killed previous run)', () => {
+    const writes: string[] = [];
+    disableMouseReports({ write: (t) => writes.push(t) });
+    expect(writes).toEqual([DISABLE]);
+  });
+});
 
 describe('enableMouse', () => {
   it('writes the enable sequence and disables once (idempotent)', () => {

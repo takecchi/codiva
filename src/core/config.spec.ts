@@ -94,6 +94,17 @@ describe('toConfig', () => {
   it.each([
     [true, true],
     [false, false],
+  ])('keeps boolean crashLog %o', (input, expected) => {
+    expect(toConfig({ crashLog: input })).toEqual({ crashLog: expected });
+  });
+
+  it.each([['yes'], [1], [null]])('drops invalid crashLog: %o', (crashLog) => {
+    expect(toConfig({ crashLog })).toEqual({});
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
   ])('keeps boolean updateCheck %o', (input, expected) => {
     expect(toConfig({ updateCheck: input })).toEqual({ updateCheck: expected });
   });

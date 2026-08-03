@@ -176,6 +176,10 @@ export class PrCoordinator {
       if (reasons.some((reason) => reason !== undefined && BACKOFF_REASONS.has(reason))) {
         this.backoffUntil = this.now() + PR_LOOKUP_BACKOFF_MS;
       }
+    } catch {
+      // PR 自動化は best-effort（git-and-io.md）。ここは 20 秒ごとの `void` 呼び出し
+      // なので、抜けた例外は unhandled rejection になってアプリを落とす。反映側
+      // （setPr → reducer → 購読者）の失敗も含めて飲み、次の tick に任せる。
     } finally {
       this.refreshing = false;
     }

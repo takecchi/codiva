@@ -330,6 +330,22 @@ export interface Messages {
     /** /recover の説明 */
     recover: string;
   };
+  /**
+   * クラッシュ時に通常バッファ（シェルへ戻ったあとの画面）へ出す文言。
+   * 端末を戻したあとに出すので、ここだけは Ink ではなく stderr に直接書かれる。
+   */
+  crash: {
+    /** 見出し（予期せぬ終了の通知） */
+    title: string;
+    /** 書き出せたクラッシュログのパス */
+    log: (path: string) => string;
+    /** ログを書けなかったとき */
+    logFailed: string;
+    /** 端末表示が乱れたときの復旧コマンド案内 */
+    reset: string;
+    /** `--reset-terminal` を実行したときの完了メッセージ */
+    resetDone: string;
+  };
 }
 
 const ja: Messages = {
@@ -547,6 +563,13 @@ const ja: Messages = {
     fixCi: '失敗した CI をセッションに修正させる',
     recover: 'PR が詰まっているセッションをまとめて立て直す',
   },
+  crash: {
+    title: 'codiva が予期せず終了しました',
+    log: (path) => `クラッシュログ: ${path}`,
+    logFailed: 'クラッシュログを書き出せませんでした',
+    reset: '端末の表示や入力が乱れている場合は `codiva --reset-terminal` を実行してください',
+    resetDone: '端末のモード（マウス捕捉・代替スクリーン・カーソル）をリセットしました',
+  },
 };
 
 const en: Messages = {
@@ -758,6 +781,13 @@ const en: Messages = {
     sync: 'Merge the base branch in (the session resolves any conflicts)',
     fixCi: 'Ask the session to fix its failing CI checks',
     recover: 'Recover every session whose pull request is stuck',
+  },
+  crash: {
+    title: 'codiva exited unexpectedly',
+    log: (path) => `Crash log: ${path}`,
+    logFailed: 'Could not write the crash log',
+    reset: 'If the terminal looks or behaves oddly, run `codiva --reset-terminal`',
+    resetDone: 'Reset the terminal modes (mouse reporting, alternate screen, cursor)',
   },
 };
 

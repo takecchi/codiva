@@ -1,6 +1,7 @@
 export * from './alt-screen';
 export * from './clipboard';
 export * from './config';
+export * from './crash-log';
 export * from './exec';
 export * from './git';
 export * from './model-catalog';

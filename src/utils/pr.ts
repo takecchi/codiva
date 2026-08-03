@@ -11,7 +11,20 @@ import {
   type PrUnavailableReason,
 } from '@/core';
 
-const execFileAsync = promisify(execFile);
+/**
+ * `gh pr list --json …` は最大 100 件ぶんのチェック rollup を運ぶため、execFile 既定の
+ * 1MB を超え得る（超えると ERR_CHILD_PROCESS_STDIO_MAXBUFFER で PR 列が丸ごと出なく
+ * なる）。`utils/git.ts` が 32MB を指定しているのと同じ理由。
+ */
+const MAX_GH_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+const execFileRaw = promisify(execFile);
+const execFileAsync = (
+  file: string,
+  args: string[],
+  opts: { cwd: string },
+): Promise<{ stdout: string }> =>
+  execFileRaw(file, args, { ...opts, maxBuffer: MAX_GH_OUTPUT_BYTES });
 
 /** execFile-shaped runner, injectable so PR helpers can be unit-tested without `gh`/`git`. */
 export type ExecLike = (
