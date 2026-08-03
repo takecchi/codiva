@@ -71,6 +71,22 @@
   と共用する。コピー関数は合成ルート
   （`index.tsx`→`App`→両 view の `onCopy`）で注入する（ui は utils を直接 import しない）。
   ドラッグごとに送らない（再描画毎コピーは他 TUI で既知のバグ）。
+  - **`PromptInput` を持つモーダルにも同じ選択を載せる**（`/prompt` の `RepoPromptEditor`）。
+    エディタは `.codiva/prompt.md` のビューアも兼ねるので、読んだ内容を持ち出せないと入力欄と
+    体験が食い違う。当たり判定は自分で実測した Box（`useAbsolutePosition` + `useComposerWidth`）
+    から `caretIndexAtClick` で逆算する（端末幅からは求まらない）。
+  - **選択中はキャレットを動かさない**。`PromptInput` の表示ウィンドウ（`visibleLineRange`）は
+    **キャレット行から決まる**ので、press / drag でキャレットを動かすと `INPUT_MAX_ROWS` を
+    超える内容では画面がその場でスクロールし、描かれている行と当たり判定が食い違って
+    「触っていない行」がコピーされる。キャレットを置くのは**ドラッグにならずに離したとき
+    （= 単なるクリック）だけ**にする（press/drag/release の各 index は ref に持って比較する）。
+  - **描いた行数を実測高さで検算する**。縦に潰れて行が抜けている（実測高さ < 描いた行数）間は
+    当たり判定そのものをやめる（ヘッダの `headerHeight < lines.length` と同じ方針）。前段として
+    `DialogBox` に `flexShrink={0}` があり、潰れる役は内部スクロールを持つ領域（一覧・ログ）に寄せる。
+  - **モーダルを開いている間は背後の view がマウスレポートも飲む**。`parseSgrMouse` で弾くのは
+    自分のハンドラを守るだけで、同じ生入力は兄弟の `useInput` にも届く。飲まないと、モーダル上の
+    1 回のドラッグでヘッダや一覧の選択まで動く（`session-list.tsx` の `update || modelSelect ||
+    promptEdit` ガード）。
 - **ヘッダの範囲選択コピー**: 一覧のヘッダ（`Banner`）も同じ `useDragSelection` で選択・コピーできる
   （主用途は cwd の絶対パスの取り出し）。**選択領域ごとに 1 インスタンス**にする — caret index は
   その領域のテキスト（コンポーザは buffer、ヘッダは `bannerText(lines)`）が基準なので、共有すると
