@@ -177,6 +177,12 @@ export const SessionList: FC<{
   onOpenPr?: OpenPr;
   onQuit: () => void;
   cwd?: string;
+  /**
+   * 対象リポジトリの現在ブランチ（ヘッダに出す）。取得と定期更新は親（`app.tsx` の
+   * `useBranch`）が持ち、ここは受け渡すだけ。undefined（detached HEAD / 取得失敗 /
+   * 未解決）なら表示しない。
+   */
+  branch?: string;
   model?: string;
   /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
   models?: readonly ModelOption[];
@@ -217,6 +223,7 @@ export const SessionList: FC<{
   onOpenPr,
   onQuit,
   cwd,
+  branch,
   model,
   models,
   version,
@@ -487,6 +494,7 @@ export const SessionList: FC<{
   // 行 index = 表示行という前提を共有しているので、片方だけ差し替えると選択がズレる。
   const headerLines = bannerLines(m, {
     cwd,
+    branch,
     model,
     version,
     sessionCount: sessions.length,

@@ -404,10 +404,21 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
 
 - `App`: 全画面レイアウトの root と Ctrl+C の安全網。**list ⇔ detail のビュー切替**を `View` state で持ち、
   一覧で Enter/→ すると `onOpen(id)` で詳細へ、詳細で Esc すると `onBack` で一覧へ戻る。
-- `Banner`: 起動時ヘッダ（マスコット + ワードマーク / プラン + モデル / cwd + 使用状況ゲージ）。枠なしで
+- `Banner`: 起動時ヘッダ（マスコット + ワードマーク / プラン + モデル + ブランチ / cwd + 使用状況ゲージ）。枠なしで
   一覧上部に表示。**純粋に presentational** で、表示行は core の `bannerLines()`（`core/banner-lines.ts`）が
   組む（`BannerLine[]` = 1 要素 1 表示行。色は `BannerTone` という抽象で受け取り、実際の色は `theme.ts`）。
-  可読性のため**プランとモデルは 1 行にまとめ**（`Plan: Claude Max   Model: sonnet`）、サブタイトルは出さない。
+  可読性のため**プラン・モデル・現在ブランチは 1 行にまとめ**（`Plan: Claude Max   Model: sonnet   Branch: main`）、
+  サブタイトルは出さない。ブランチを cwd 行ではなくここに置くのは、(1) cwd は長くなりがちで行末が
+  `truncate-end` で切れる（狭い端末で真っ先に消える）、(2) cwd 行はパスを取り出すドラッグ用途なので、
+  行末へ丸める drag（`bannerCaretAt` の `'clamp'`）でブランチ名まで一緒にコピーされる、の 2 点。
+  値は `app.tsx` の `useBranch`（合成ルートが注入する `WorktreeManager.currentBranch()` を 5 秒ごとに
+  読み直す）が供給する。codiva の外（別ターミナルの `git switch`）でも変わるので購読できる相手が
+  おらず、定期的に読み直すしかない。**state を `App` に置くのはビュー切替で失わないため**（一覧に
+  置くと詳細から戻った 1 フレームだけ消え、戻るたびに取り直しになる）で、**取得は一覧のときだけ**
+  （`view.mode === 'list' ? loadBranch : undefined`）。ヘッダを描いていない詳細ビューの間、誰も読まない
+  値のために git のプロセスを立てない。一覧へ戻ると即座に 1 回読み直す。detached HEAD（`symbolic-ref` が失敗）と git の失敗は undefined =
+  **表示しない**（`rev-parse --abbrev-ref` の `'HEAD'` を出すと「HEAD というブランチ」に見えるため、
+  `baseBranch()` とは別メソッドにしてある）。
   ヘッダのテキストはドラッグで範囲選択してコピーできる（cwd の絶対パスを取り出す用途）。当たり判定は
   「行 index = 表示行」を前提に `bannerCaretAt()` で逆算するため、**行は `wrap="truncate-end"` で 1 行 1 行に
   固定し、選択可能なテキスト塊（`textRef` の Box）の中に margin を入れない**（折返し・margin が入ると以降の

@@ -213,6 +213,7 @@ async function main(): Promise<void> {
       modelCatalog={modelCatalog}
       trainingOptIn={trainingOptIn}
       updater={updater}
+      loadBranch={() => worktrees.currentBranch()}
       onOpenPr={openUrl}
       onCopy={(text) => copyToClipboard(text)}
     />,

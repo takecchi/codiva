@@ -753,6 +753,36 @@ UI なし。すべてユニットテストで駆動する。
 > どちらもログが長い・セッションが多いほど効くので、クラッシュログの `memory` 行と
 > `report.*.json` が出てきたらそこから着手する。
 
+## Phase 22: ヘッダに現在ブランチを表示 ✅
+
+> 一覧のヘッダは cwd までしか出しておらず、「いまどのブランチを分岐元にしているのか」が
+> 画面から読めなかった（セッション行のブランチは `codiva/<slug>` なので基準が分からない）。
+> 表示だけの追加で、worktree 作成・マージの経路には触らない。
+
+- [x] 文言 `banner.branch`（ja `ブランチ: main` / en `Branch: main`）を ja/en 対で追加
+- [x] `BannerInput.branch` を追加し、**プラン + モデルと同じ行**に並べる（`core/banner-lines.ts`）。
+      cwd 行に置かない理由は 2 つ: cwd は長くなりがちで `truncate-end` の行末から先に消える／
+      cwd 行はパスを取り出すドラッグ用途なので、行末へ丸める drag（`'clamp'`）でブランチ名まで
+      一緒にコピーされる
+- [x] `WorktreeManager.currentBranch()`（`symbolic-ref --quiet --short HEAD`）を追加。**detached HEAD と
+      git の失敗は undefined**（`baseBranch()` の `rev-parse --abbrev-ref` は `'HEAD'` を返すので、
+      表示にそのまま使うと「HEAD というブランチ」に見える）
+- [x] `useBranch`（`ui/hooks.ts`、5 秒ごとに読み直し）。codiva の外（別ターミナルの `git switch`）でも
+      変わるので購読相手がおらず定期取得しかない。**state を持つのは `app.tsx`**（一覧で持つと詳細から
+      戻った 1 フレームだけ消える）、**取得するのは一覧のときだけ**（`view.mode === 'list' ? loadBranch :
+      undefined`。ヘッダを描かない詳細ビューで無駄なプロセスを立てない。戻ると即 1 回読み直す）。
+      取得関数は ref 経由で読み（ref の更新は描画中ではなく effect）、effect の依存は「注入されているか」
+      だけ（インライン arrow を渡されても再取得ループにならない）。同期 throw も try/catch で拾う
+      （タイマー内の裸の例外は 5 秒ごとに TUI を落とす）
+- [x] テスト: `core/banner-lines.spec.ts`（同じ行に並ぶ / 取れないときは出さない / プラン無しでも
+      モデルの右）/ `ui/hooks.spec.tsx`（追従・失敗時は直前を保持・アンマウントで止まる・identity が
+      変わっても張り替えない・load を外すと止まって値は残る）/ `utils/worktree-manager.spec.ts`
+      （切替 / detached HEAD / 非 git）/ `tests/app.test.tsx`（配線 / 詳細ビュー往復で消えない）
+- [x] ドキュメント: `README.md`（機能一覧・ヘッダの例・コピー対象）/ `docs/ARCHITECTURE.md`（`Banner`）
+
+> 実績メモ: lint / typecheck / test / build 緑。ヘッダの行数は増えていない（プラン + モデルの行に
+> 並べただけなので `bannerCaretAt` の「行 index = 表示行」も不変）。実機での体感確認はユーザーに依頼。
+
 ---
 
 ## 各 Phase 共通の完了チェック

@@ -71,6 +71,19 @@ export class WorktreeManager {
   }
 
   /**
+   * 表示用の現在ブランチ（ヘッダに出す）。**`baseBranch()` とは返り値の契約が違う**:
+   * detached HEAD では `symbolic-ref` が失敗するので undefined を返す（`rev-parse
+   * --abbrev-ref` の `'HEAD'` という文字列をそのままヘッダに出すと「HEAD という
+   * ブランチ」に見える）。git の呼び出し自体が失敗したときも undefined —
+   * 表示のためだけの問い合わせなので、失敗して表示が消えるだけに留める。
+   */
+  async currentBranch(): Promise<string | undefined> {
+    return git(this.repoRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(
+      () => undefined,
+    );
+  }
+
+  /**
    * Verify the repo can host worktrees: it must be a git repo with at least one
    * commit (you cannot branch from an empty HEAD).
    */

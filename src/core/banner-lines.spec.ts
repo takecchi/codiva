@@ -50,6 +50,34 @@ describe('bannerLines', () => {
     expect(lines).toHaveLength(3);
   });
 
+  it('現在ブランチはプラン・モデルと同じ行に並べる（cwd 行は汚さない）', () => {
+    const lines = rows(
+      bannerLines(m, {
+        sessionCount: 0,
+        model: 'sonnet',
+        cwd: '/tmp/repo',
+        branch: 'main',
+        account: { plan: 'Max' },
+      }),
+    );
+    expect(lines[1]).toBe('Plan: Max   Model: sonnet   Branch: main');
+    expect(lines[2]).toBe('/tmp/repo');
+    expect(lines).toHaveLength(3);
+  });
+
+  it('ブランチが取れないときは表示しない（detached HEAD / git 失敗）', () => {
+    const base = { sessionCount: 0, model: 'sonnet', cwd: '/tmp/repo' };
+    const expected = rows(bannerLines(m, base));
+    for (const branch of [undefined, '']) {
+      expect(rows(bannerLines(m, { ...base, branch }))).toEqual(expected);
+    }
+  });
+
+  it('プランが取れなくてもブランチはモデルの右に並ぶ', () => {
+    const lines = rows(bannerLines(m, { sessionCount: 0, model: 'sonnet', branch: 'feat/x' }));
+    expect(lines[1]).toBe('Model: sonnet   Branch: feat/x');
+  });
+
   it('プランが取れないときはモデルだけの行にする（行 index をずらさない）', () => {
     const base = rows(bannerLines(m, { sessionCount: 0, cwd: '/tmp/repo' }));
     for (const account of [undefined, {}, { organization: 'Acme' }]) {
