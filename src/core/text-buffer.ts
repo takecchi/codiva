@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { GRAPHEMES } from './graphemes';
 import { clamp } from './math';
 
 /**
@@ -146,22 +147,49 @@ export function moveDown(buf: TextBuffer): TextBuffer {
  * `column` display cells from the start of `text`. A click anywhere on a wide
  * (2-cell) character places the caret before it; past the end goes to the end.
  * Display-width based (`string-width`) so CJK/emoji map correctly.
+ *
+ * **グラフェム単位で歩く**（`GRAPHEMES`）。折り返し（`wrapDisplayLines` /
+ * `wrapComposerRows`）も同じ単位で測っているので、これが厳密な逆写像になる。
+ * コードポイント単位だと異体字セレクタ付き絵文字（`⚠️`）で 1 セルずつズレ、
+ * グラフェムの途中に caret が入る（詳細は `core/graphemes.ts`）。
  */
 export function caretIndexForColumn(text: string, column: number): number {
-  if (column <= 0) {
-    return 0;
+  return walkToColumn(text, column).index;
+}
+
+/**
+ * `caretIndexForColumn` の「**行末より右は当たりにしない**」版。範囲（リンク）の
+ * 当たり判定用で、行の表示幅より右の列は undefined を返す。
+ *
+ * 「幅を別に測って比べる」のではなく 1 回の走査で判定するのが要点 — 判定と逆算で
+ * 別の測り方をすると（例: 全体の `stringWidth` とコードポイントごとの合計）単位が
+ * 食い違って端が 1 セルずれる。
+ */
+export function charIndexAtColumn(text: string, column: number): number | undefined {
+  if (column < 0) {
+    return undefined;
   }
+  const { index, cells } = walkToColumn(text, column);
+  return column < cells ? index : undefined;
+}
+
+/**
+ * `column` セル目に来るグラフェムの開始 index と、`text` 全体の表示幅を返す。
+ * 列が行末より右のときは `index = text.length`（`cells` と併せて呼び出し側が判定する）。
+ */
+function walkToColumn(text: string, column: number): { index: number; cells: number } {
   let cells = 0;
   let index = 0;
-  for (const ch of text) {
-    const w = stringWidth(ch);
-    if (cells + w > column) {
-      return index;
+  let found: number | undefined = column <= 0 ? 0 : undefined;
+  for (const { segment } of GRAPHEMES.segment(text)) {
+    const w = stringWidth(segment);
+    if (found === undefined && cells + w > column) {
+      found = index;
     }
     cells += w;
-    index += ch.length;
+    index += segment.length;
   }
-  return text.length;
+  return { index: found ?? text.length, cells };
 }
 
 /**
