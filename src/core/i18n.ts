@@ -49,6 +49,11 @@ export interface Messages {
     discardAction: string;
     /** セッションを一覧から完全に削除する操作（worktree/ブランチも消す） */
     removeAction: string;
+    /**
+     * 進行中のターンを中断できることの案内（`Ctrl+C`）。フォーカス横断の chord なので
+     * フッタヒントではなく独立した行に出す（再開の `resume.oneKeyHint` と同じ扱い）。
+     */
+    cancelHint: string;
     helpPending: string;
     helpActions: string;
     helpInput: string;
@@ -390,6 +395,7 @@ const ja: Messages = {
     mergeAction: 'マージ（--no-ff）',
     discardAction: '破棄（worktree削除）',
     removeAction: '削除（一覧から消す）',
+    cancelHint: 'Ctrl+C: 実行中のターンを中断（あとで再開できます）',
     helpPending: 'Esc: 一覧へ戻る',
     helpActions: 'm/d/x: 操作 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 入力へ ・ Esc: 戻る',
     helpInput:
@@ -620,6 +626,7 @@ const en: Messages = {
     mergeAction: 'Merge (--no-ff)',
     discardAction: 'Discard (remove worktree)',
     removeAction: 'Remove (drop from the list)',
+    cancelHint: 'Ctrl+C: interrupt the current turn (you can resume it later)',
     helpPending: 'Esc: back to list',
     helpActions: 'm/d/x: actions · ↑↓/PgUp/PgDn: log · Tab: input · Esc: back',
     helpInput:

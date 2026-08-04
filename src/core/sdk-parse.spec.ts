@@ -98,10 +98,17 @@ describe('applySdkMessage over real fixtures', () => {
     expect(state.sdkSessionId).toBe([...ids][0]);
   });
 
-  it('marks a session failed when the turn ends in error_during_execution', () => {
+  // 実データ: interrupt() を呼ぶと CLI は `[Request interrupted by user]` の user メッセージ →
+  // `error_during_execution` + `terminal_reason: 'aborted_streaming'` の result でターンを閉じる。
+  // 自分で止めたのだから失敗ではない = 再開できる `interrupted` に落とす（`failed` だと
+  // 再開アクションが出ず、内部診断テキストがエラーとしてログに残る）。
+  it('lands on interrupted (resumable) when the user aborted the turn', () => {
     const state = replay(interrupted);
-    expect(state.status).toBe('failed');
-    expect(state.error).toContain('error');
+    expect(state.status).toBe('interrupted');
+    expect(state.error).toBeUndefined();
+    expect(state.messages.at(-1)?.text).toBe('interrupted by user');
+    // CLI の内部診断（[ede_diagnostic] …）はログに出さない。
+    expect(state.messages.some((entry) => entry.text.includes('ede_diagnostic'))).toBe(false);
   });
 
   it('reaches completed on a session that delegated to a sub-agent (Task tool)', () => {

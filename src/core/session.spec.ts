@@ -330,6 +330,84 @@ describe('Session', () => {
     expect(fake.wasInterrupted()).toBe(true);
   });
 
+  // 詳細ビューの Ctrl+C。ユーザーが自分で止めたのだから失敗ではない — 再開できる
+  // `interrupted` に落とし、SDK の応答を待たずに（体感のため）先に確定させる。
+  it('interrupt() marks the session interrupted (resumable), not failed', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    expect(session.getState().status).toBe('running');
+    await session.interrupt();
+    expect(session.getState().status).toBe('interrupted');
+    expect(session.getState().error).toBeUndefined();
+    expect(session.getState().messages.at(-1)?.text).toBe('interrupted by user');
+  });
+
+  // 実測（__fixtures__/session-interrupt.jsonl）: interrupt すると CLI は
+  // `error_during_execution` + `terminal_reason: 'aborted_streaming'` でターンを閉じる。
+  // 診断（先に立てた interrupted）を維持し、ログ行も二重にしない。
+  it('keeps interrupted when the CLI closes the turn with aborted_streaming', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    await session.interrupt();
+    fake.emit({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      terminal_reason: 'aborted_streaming',
+      total_cost_usd: 0.02,
+      errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
+    });
+    await tick();
+    expect(session.getState().status).toBe('interrupted');
+    expect(session.getState().totalCostUsd).toBe(0.02);
+    expect(
+      session.getState().messages.filter((entry) => entry.text === 'interrupted by user'),
+    ).toHaveLength(1);
+  });
+
+  it('interrupt() is a no-op once the turn is over (nothing to interrupt)', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    fake.emit(initMsg());
+    fake.emit(resultOk());
+    await tick();
+    expect(session.getState().status).toBe('completed');
+    await session.interrupt();
+    expect(fake.wasInterrupted()).toBe(false);
+    expect(session.getState().status).toBe('completed');
+  });
+
+  // 許可/質問待ちのまま中断すると canUseTool の promise が永遠に残る。未応答の tool_use で
+  // 終わる transcript は後の resume を壊すので、deny で閉じてから中断する（stop() と同じ理由）。
+  it('interrupt() denies a pending permission so the transcript closes cleanly', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      now: () => 1,
+      policy: () => 'ask',
+    });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    const decision = fake.call('Bash', { command: 'ls' });
+    await tick();
+    expect(session.getState().status).toBe('awaiting_permission');
+
+    await session.interrupt();
+    expect(await decision).toMatchObject({ behavior: 'deny' });
+    expect(fake.wasInterrupted()).toBe(true);
+    expect(session.getState().status).toBe('interrupted');
+    expect(session.getState().pendingPermission).toBeUndefined();
+  });
+
   it('abort() marks a running session failed and stops the stream', async () => {
     const fake = makeFakeQuery();
     const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });

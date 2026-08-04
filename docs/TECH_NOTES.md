@@ -479,6 +479,12 @@ observed した tool_use: `TaskCreate`, `TaskUpdate`, `AskUserQuestion`, `Write`
 
 - `q.interrupt()` を呼ぶと現ターンが打ち切られ、`result/**error_during_execution**` が届く（`success` ではない）。
 - streaming input が開いていればセッション自体は生存し追加 push で継続可能。codiva の「中断して再指示」に使える。
+- 打ち切られた result の中身（実測 = `__fixtures__/session-interrupt.jsonl`）:
+  `is_error: true` / **`terminal_reason: 'aborted_streaming'`** / `errors: ['[ede_diagnostic] result_type=user …']`
+  / `result` フィールドは無し。直前に `[Request interrupted by user]` を本文に持つ `user` メッセージが 1 通入る。
+- **`is_error` なので素直に扱うと `failed` になる**が、ユーザーが自分で止めたのだから失敗ではない。
+  codiva は `terminal_reason` の**構造**で判定して `interrupted`（resumable）に落とす（`errors[]` は CLI の
+  内部診断なので表示しない）。詳細は [ARCHITECTURE.md](./ARCHITECTURE.md)「ユーザーによる中断」。
 
 ### 6. acceptEdits でも **`Write` は canUseTool に来る**
 
@@ -489,7 +495,7 @@ observed した tool_use: `TaskCreate`, `TaskUpdate`, `AskUserQuestion`, `Write`
 
 - `sdkSessionId`: 最初の `system/init.session_id`（以降変わらない）。
 - `todos`: TaskCreate/TaskUpdate から構築（上記1）。`progress = {done, total}`。
-- `status`: `system/init`→running、`AskUserQuestion`(canUseTool)→awaiting_input、その他 canUseTool→awaiting_permission、`result/success`→completed、`result/error_*`→failed。
+- `status`: `system/init`→running、`AskUserQuestion`(canUseTool)→awaiting_input、その他 canUseTool→awaiting_permission、`result/success`→completed、`result/error_*`→failed（ただし `terminal_reason` が `aborted_streaming`＝ユーザーの中断 / 一時的な `api_error` なら `interrupted`、認証切れ・レート制限はそれぞれの状態へ）。
 - ログ: `assistant` の text ブロック、tool_use の1行要約、`result.result`。
 
 ## プラン / 使用状況の取得（実測 / SDK v0.3.214, Claude Team, 2026-07-30）

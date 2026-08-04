@@ -12,6 +12,7 @@ import {
   emptyBuffer,
   INPUT_MAX_ROWS,
   isFullscreenViewport,
+  isInterruptible,
   isResumable,
   isTerminalStatus,
   LOG_EDGE_SCROLL_MS,
@@ -152,6 +153,9 @@ export const SessionDetail: FC<{
   const pending = session?.pendingPermission;
   const status = session?.status;
   const isTerminal = status !== undefined && isTerminalStatus(status);
+  // 進行中のターンがあるか（= Ctrl+C で中断できるか）。許可/質問待ちも対象
+  // （ターンは生きていて回答待ちで止まっているだけ）。
+  const interruptible = status !== undefined && isInterruptible(status);
   // A session cut off by a dropped connection (a rate limit, an expired login)
   // can be resumed: sending a follow-up restarts the SDK query with `resume`.
   // Surfaced as an explicit action so the user can continue without typing.
@@ -166,6 +170,24 @@ export const SessionDetail: FC<{
       setPanel('input');
       applyAnchor('bottom');
     }
+  };
+
+  /**
+   * 実行中のターンを中断する（`Ctrl+C`）。Claude Code の Ctrl+C と同じ「いま走っている
+   * 作業をやめる」操作で、セッションは `interrupted`（再開可能）として残る（破棄ではない）。
+   *
+   * 対象判定（= 連打の吸収）は `manager.interrupt` に任せる — ここの `status` は
+   * スロットルされた購読値なので「もう中断済み」を同期的には知らない（`resume` と同じ）。
+   */
+  const cancel = () => {
+    if (!session || !interruptible) {
+      return;
+    }
+    // 中断のログ行は末尾に付くので、過去ログを見ていても結果が見えるところへ戻す。
+    applyAnchor('bottom');
+    // interrupt は SDK の control request（await で返る）。サブプロセスがもう居ない等で
+    // reject し得るので裸で投げない（unhandled rejection = TUI の死。git-and-io.md）。
+    void manager.interrupt(session.id).catch(() => undefined);
   };
 
   // Fetch the diff summary once the session reaches a terminal state.
@@ -481,6 +503,16 @@ export const SessionDetail: FC<{
     if (busy) {
       return;
     }
+    // Ctrl+C = 実行中のターンを中断（Claude Code の Ctrl+C と同じ操作）。Ink は
+    // `exitOnCtrlC: false` で起動しているので、このキーはアプリ終了ではなくここへ届く。
+    //
+    // **`pending` ガードより前**に置く: 許可/質問ダイアログが出ている間も中断したい
+    // （回答したくない作業をやめる唯一の出口。deny は「その1ツールを断る」だけで
+    // ターンは続く）。ダイアログ側の useInput は ctrl chord を無視するので競合しない。
+    if (key.ctrl && (input === 'c' || input === 'C')) {
+      cancel();
+      return;
+    }
     if (pending) {
       return; // PermissionDialog owns the keys
     }
@@ -665,7 +697,8 @@ export const SessionDetail: FC<{
         {/* 認証切れはアプリ内では解決できない（別ターミナルでの再ログインが必要）ので、
             操作パネルを開いているかに関係なく手順を常に出す。それ以外の中断状態
             （通信断・レート制限）は一押し再開キーを同じ位置に出す — Ctrl+R は操作パネルを
-            開かずに効くので、パネル内の `r` だけでは気づけない。 */}
+            開かずに効くので、パネル内の `r` だけでは気づけない。まだ走っている（中断できる）
+            セッションでは同じ位置に Ctrl+C の案内を出す（1行を状態で使い分ける）。 */}
         {/* `flexShrink={0}`: Yoga は溢れた子を縮小するので、付けないと低い端末で案内が
             高さ0に潰れて消える。縮む役は flexGrow のログ領域（内部スクロールで収まる）。 */}
         <Box flexShrink={0}>
@@ -673,6 +706,10 @@ export const SessionDetail: FC<{
             <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
           ) : resumable ? (
             <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
+          ) : interruptible ? (
+            // 中断も Ctrl+R と同じフォーカス横断の chord なので、フッタではなく独立した
+            // 行で案内する（フッタヒントは入力欄/操作パネルで切り替わってしまう）。
+            <Text dimColor>{m.detail.cancelHint}</Text>
           ) : null}
         </Box>
         {recovering ? (

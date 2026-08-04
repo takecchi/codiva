@@ -897,6 +897,41 @@ zsh: abort      codiva
 
 ---
 
+## Phase 24: 実行中のターンを中断する（詳細ビューの `Ctrl+C`）✅
+
+> 走り出したセッションを止める手段が「破棄（`d`）」しか無かった。**やめたいのはターンだけで、
+> worktree と会話は残したい**（Claude Code の `Ctrl+C` と同じ期待）。`Session.interrupt()` は
+> 以前からあったが UI から呼ばれておらず、しかも素直に呼ぶと CLI の打ち切り result
+> （`is_error: true`）が `failed` に分類されて**再開できない**状態になっていた。
+
+- [x] `STATUS_META` に `interruptible` を追加（`running` / `awaiting_*` = ターンが生きている区間。
+      `active` と別フラグにするのは awaiting_* が「動いていないが中断できる」ため）+ `isInterruptible`
+- [x] `Session.interrupt()`: `isInterruptible` でゲートし、**SDK の応答を待たずに先に**
+      `{ kind: 'interrupted', error: USER_INTERRUPT_DETAIL }` を dispatch → `Query.interrupt()`
+      は best-effort（reject を握り潰す。サブプロセス消失後の write は EPIPE）。許可待ちで押された
+      場合は既存の `commit()` 経路が canUseTool を deny で閉じる
+- [x] `sdk-parse`: `terminal_reason: 'aborted_streaming'` を `interrupted` に分類（実測フィクスチャ準拠）。
+      文言ではなく構造で判定し、ログには `USER_INTERRUPT_DETAIL`（CLI の `[ede_diagnostic] …` は出さない）。
+      先に立てた診断と同文なので `toInterrupted` の重複畳み込みで二重ログにならない
+- [x] `SessionManager.interrupt(id): Promise<boolean>`: ストアの現在値で判定（連打の吸収は `resume` と同じ
+      理由で core 側）
+- [x] 詳細ビュー: `Ctrl+C` を **`pending` ガードより前**に処理（許可/質問ダイアログ表示中も中断できる）。
+      案内は独立した 1 行で `detail.cancelHint`（実行中）⇄ `resume.oneKeyHint`（中断後）
+- [x] `Messages` に `detail.cancelHint`（ja/en 対）
+- [x] テスト: `status-meta.spec.ts`（`isInterruptible` の表）/ `session.spec.ts`（interrupted になる・
+      `aborted_streaming` の result で `failed` に落ちない・ログが 1 行・終端では no-op・pending を deny）/
+      `session-manager.spec.ts`（対象/非対象の表 + 未知 id）/ `sdk-parse.spec.ts`（実フィクスチャが
+      `interrupted`）/ `tests/app.test.tsx`（Ctrl+C で `interrupted` + 案内の入れ替え、許可ダイアログ中の中断）
+- [x] ドキュメント: `docs/ARCHITECTURE.md`（状態機械 + 「ユーザーによる中断」節）/ `docs/TECH_NOTES.md`
+      （interrupt の実測フィールド）/ `.claude/rules/session-domain.md` / `.claude/rules/ink-components.md` /
+      `.claude/skills/add-session-status/SKILL.md`（7 フィールド）/ `README.md`
+
+> 実績メモ: lint / typecheck / test / build 緑。中断は**詳細ビューだけ**の操作にした（一覧で
+> フォーカス横断の `Ctrl+C` にすると、選択行を取り違えたときに走っている別のセッションを止めてしまう）。
+> 実機での体感確認はユーザーに依頼。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

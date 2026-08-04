@@ -602,6 +602,8 @@ describe('SessionManager', () => {
     manager.answer(id, { q: 'yes' });
     manager.allow(id);
     manager.deny(id, 'no');
+    // interrupt はターンが走っているセッションだけが対象（下の describe を参照）。
+    created[0]?.drive('running');
     await manager.interrupt(id);
     manager.setSessionModel(id, 'claude-fable-5');
 
@@ -677,10 +679,52 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('interrupt() (Ctrl+C in the detail view)', () => {
+    it('forwards to a session whose turn is in flight', async () => {
+      const { manager, created } = makeManager();
+      const id = manager.create('a');
+      await flush();
+      created[0]?.drive('running');
+      await expect(manager.interrupt(id)).resolves.toBe(true);
+      expect(created[0]?.calls).toEqual(['interrupt']);
+    });
+
+    // 許可/質問待ちもターンは生きている（回答待ちで止まっているだけ）ので中断できる。
+    it('forwards while the session waits on a permission/question', async () => {
+      const { manager, created } = makeManager();
+      const id = manager.create('a');
+      await flush();
+      created[0]?.drive('awaiting_permission');
+      await expect(manager.interrupt(id)).resolves.toBe(true);
+      created[0]?.drive('awaiting_input');
+      await expect(manager.interrupt(id)).resolves.toBe(true);
+      expect(created[0]?.calls).toEqual(['interrupt', 'interrupt']);
+    });
+
+    // 止めるターンが無い状態では何もしない。判定をここ（ストアの現在値）で行うのは
+    // resume() と同じ理由 — UI の購読はスロットルされているので連打を弾けない。
+    it.each<SessionState['status']>(['creating', 'completed', 'interrupted', 'failed', 'archived'])(
+      'is a no-op for a %s session',
+      async (status) => {
+        const { manager, created } = makeManager();
+        const id = manager.create('a');
+        await flush();
+        created[0]?.drive(status);
+        await expect(manager.interrupt(id)).resolves.toBe(false);
+        expect(created[0]?.calls).toEqual([]);
+      },
+    );
+
+    it('is a no-op for an unknown id', async () => {
+      const { manager } = makeManager();
+      await expect(manager.interrupt('nope')).resolves.toBe(false);
+    });
+  });
+
   it('ignores UI actions for unknown session ids', async () => {
     const { manager } = makeManager();
     expect(() => manager.send('x', 'y')).not.toThrow();
-    await expect(manager.interrupt('x')).resolves.toBeUndefined();
+    await expect(manager.interrupt('x')).resolves.toBe(false);
     expect(() => manager.setSessionModel('x', 'claude-fable-5')).not.toThrow();
   });
 

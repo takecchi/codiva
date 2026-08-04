@@ -33,7 +33,7 @@ import type {
 } from './session-ports';
 import { SessionStore } from './session-store';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
-import { isResumable, isTerminalStatus } from './status-meta';
+import { isInterruptible, isResumable, isTerminalStatus } from './status-meta';
 import { accrueActive, initialState, reduce } from './status-reducer';
 import type { CreateSessionInput, LogEntry, SessionState } from './types';
 import { mergeUsageWindow, type UsageSnapshot } from './usage';
@@ -513,8 +513,21 @@ export class SessionManager {
   deny(id: string, message: string): void {
     this.sessions.get(id)?.denyPending(message);
   }
-  async interrupt(id: string): Promise<void> {
+  /**
+   * 進行中のターンを中断する（詳細ビューの `Ctrl+C`）。中断を試みたかを返す。
+   *
+   * 対象かどうかの判定は `resume()` と同じ理由でここ（core 側）に置く: UI のストア購読は
+   * ~100ms スロットルなので、View の `status` は「もう中断済み」を知らない。連打で
+   * 2 回目の interrupt が飛んでも、ストアの現在値（`Session.interrupt` が同期的に
+   * `interrupted` へ進める）で弾ける。
+   */
+  async interrupt(id: string): Promise<boolean> {
+    const state = this.store.get(id);
+    if (state === undefined || !isInterruptible(state.status)) {
+      return false;
+    }
     await this.sessions.get(id)?.interrupt();
+    return true;
   }
   /**
    * Switch the model for a single running session (the detail view's /model).

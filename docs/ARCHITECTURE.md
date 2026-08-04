@@ -132,13 +132,15 @@ codiva/
  needs_login ──(再ログイン後 追加指示 / 再開アクション)──▶ running # 認証が戻れば同じ SDK 会話を resume
  needs_login ──(アプリ終了 → 保存)───────────▶ interrupted # 次回起動時には再ログイン済みかもしれない
  interrupted ──(追加指示送信 / 再開アクションで resume)───────▶ running # 生存中セッションもその場で再開（consume ループ再起動）
+ running/awaiting_* ──(ユーザーが Ctrl+C)─────▶ interrupted # 詳細ビューの中断。resumable（後述）
 ```
 
-`interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は3つ:
+`interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は4つ:
 (1) **通信断**（`Session.consume` の for-await が throw、または接続断を示すエラー `result`。`core/errors.ts`
 の `isConnectionError` で判定し、resume 元となる `sdkSessionId` がある場合のみ。無い＝init 前の早期失敗は
 `failed`）。(2) **応答途中の API エラー**（後述）。(3) **アプリ終了時の丸め**（`restorableStatus` が実行中/
-入力待ちを保存時に `interrupted` にする。`stop()` はメモリ上の状態を変えない）。いずれも `completed` と同じく idle で resumable。追加指示または
+入力待ちを保存時に `interrupted` にする。`stop()` はメモリ上の状態を変えない）。(4) **ユーザーによる中断**
+（詳細ビューの `Ctrl+C`。後述）。いずれも `completed` と同じく idle で resumable。追加指示または
 **再開アクション（一覧/詳細の `r`）** で resume できる — 送信すると `SessionManager.send` → `Session.send`
 が（通信断で終了した）consume ループを `resume: sdkSessionId` 付きで**再起動**し、同じ SDK 会話を続行する
 （生存中セッションでもその場で再開でき、アプリ再起動を待たなくてよい）。通信断遷移時はデスクトップ通知
@@ -167,6 +169,33 @@ codiva/
 キーの連打・オートリピートで同じ指示が2回積まれると二重課金＋ログ二重化になる。`resume()` は
 **ストアの現在値**（`send` が同期的に `running` へ進める）で `isResumable` を確かめてから送り、送ったかを
 返す。View（`Ctrl+R` / 一覧の `r` / 一括）はすべてこれを経由する。
+
+**ユーザーによる中断（詳細ビューの `Ctrl+C`）**: 走っているターンを止めたいだけで、セッションを捨てたい
+わけではない（Claude Code の `Ctrl+C` と同じ操作）。`SessionDetail` → `SessionManager.interrupt(id)` →
+`Session.interrupt()` → SDK の `Query.interrupt()` で、状態は **`interrupted`（idle & resumable）** に落ちる。
+`stop()`（状態を変えずプロセスだけ落とす）/ `abort()`（`failed` にする）とは別物。
+
+- **状態は SDK の応答を待たずに先に確定させる**。理由は2つ。(a) 体感: interrupt は control request なので
+  CLI の応答まで待つと押しても数百 ms 反応しない。(b) 分類: CLI は中断されたターンを
+  `subtype: 'error_during_execution'` + `is_error: true` + **`terminal_reason: 'aborted_streaming'`** の
+  result で閉じる（実測: `__fixtures__/session-interrupt.jsonl`）ため、診断が無いと `failed` に落ちる。
+  先に `interrupted` を立てておけば、result 側は**すでに resumable なら診断を維持**するロールアップガード
+  （`isResumable`）でコストだけを拾う。
+- **`sdk-parse` 側も `aborted_streaming` を `interrupted` に分類する**（保険）。中断のあとに assistant
+  メッセージが 1 通挟まって status が `running` へ戻っても、ターンの終わりは `failed` にならない。ログに
+  書くのは `USER_INTERRUPT_DETAIL`（= `'interrupted by user'`）で、CLI の内部診断
+  （`errors: ['[ede_diagnostic] …']`）は出さない。2 経路で**同じ文言**を使うので `toInterrupted` の
+  重複畳み込みが効き、ログは 1 行だけになる。
+- **許可/質問待ちでも中断できる**（`isInterruptible` = `running` / `awaiting_permission` / `awaiting_input`）。
+  ダイアログの `n`（deny）は「その 1 ツールを断る」だけでターンは続くので、「この作業自体をやめる」出口は
+  これしかない。`Ctrl+C` は詳細ビューの `useInput` で**`pending` ガードより前**に処理し、`toInterrupted` が
+  `pendingPermission` を落とすことで `commit()` の既存経路が canUseTool の promise を deny で閉じる
+  （未応答の `tool_use` で終わる transcript は後の resume を壊す ⇒ `stop()` と同じ理由）。
+- **連打の吸収は `SessionManager.interrupt(id)`**（`resume()` と同じ理由で core 側。UI の購読は
+  ~100ms スロットルされていて「もう中断済み」を同期的に知らない）。ストアの現在値で `isInterruptible` を
+  確かめ、中断を試みたかを返す。
+- 中断後は `interrupted` なので**そのまま `Ctrl+R` / 追加指示で続けられる**。案内も `detail.cancelHint`
+  （実行中）→ `resume.oneKeyHint`（中断後）と同じ 1 行を状態で入れ替える。
 
 **応答途中の API エラー（`API Error: Connection closed mid-response.`）**: ストリーミング中に接続が切れると
 CLI は「そこまでの部分応答を確定させて」ターンを終える。ワイヤ上は `error: 'server_error'` を立てた
@@ -357,7 +386,7 @@ interface SessionState {
 - streaming input mode を常用: `query()` の prompt に自前の `AsyncGenerator<SDKUserMessage>` を渡し、内部キュー（push可能な async queue）で管理。`send(text)` でいつでも追加メッセージを投入できる。
 - 受信ループ: `for await (const msg of query)` で各 SDK メッセージを `applySdkMessage()`（`core/sdk-parse.ts`）に畳み込む。SDK メッセージ形状の解釈はここに閉じ、純粋 reducer（`reduce(state, CodivaEvent)`）は型付きイベントだけを扱う。UI アクション（追加指示・許可・モデル切替等）は `reduce` へ dispatch。変更のたびに `onChange` を発火。
 - `respondToPermission(result)`: 保留中の canUseTool Promise を resolve。
-- `interrupt()` / `abort()`: SDK の interrupt / AbortController。
+- `interrupt()` / `abort()`: SDK の interrupt / AbortController。**`interrupt()` は「走っているターンだけをやめる」**（詳細ビューの `Ctrl+C`）: サブプロセスは生かしたまま `interrupted`（idle & resumable）にし、追加指示 / `Ctrl+R` で同じ SDK 会話を続けられる状態にする。状態は SDK の応答を待たずに**先に**確定させる（体感 + 分類。下記「ユーザーによる中断」を参照）。許可/質問待ちで呼ばれた場合は `commit()` の既存経路が canUseTool の promise を deny で閉じる（未応答の `tool_use` は後の resume を壊す）。`isInterruptible` でない状態では何もしない。
 - `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`/`appendSystemPrompt`/`ignoredFiles`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
 - **systemPrompt の組み立ては純関数 `core/system-prompt.ts`（`composeSystemPrompt`）**。要素は「worktree の環境説明」→「リポジトリ追加指示」の順（前提の説明が先、著者の具体的な指示が後）で、どちらも無ければ `undefined`（= `systemPrompt` を渡さない）。`session.ts` は文言も結合順も持たない。
 - **worktree の環境説明（共有 symlink の注意書き）**: `ignoredFiles: 'symlink'`（既定）では ignore 済みパスが元リポジトリの実体を指すため、セッションが依存更新やビルドを走らせるとメインチェックアウトと並行セッションに波及する。そこで**このモードのときだけ** `SHARED_IGNORED_FILES_NOTICE` を systemPrompt に載せ、「読むのは安全 / 書く前にそのパスだけリンクを切って独立させる / リンク越しに消さない（`rm -rf <path>/` 禁止）/ 触らない作業では何もしない」を伝える。モードは合成レイヤの `sessionOptionsFrom(config, appendSystemPrompt)`（`bootstrap/build-manager.ts`。config → `SessionOptions` の対応付けだけを持つ純関数で、spec で固定してある）が `resolveIgnoredFilesMode(config)` で解決して `SessionOptions.ignoredFiles` へ渡す。解決箇所は合成レイヤの2つ（`index.tsx` の `WorktreeManager` 生成とここ）だが、どちらも同じ config 由来なので一致する。**既知の制約**: モードは state.json に永続していないので、`symlink` で作った worktree を後から `copy` / `none` 設定で復元すると注意書きが載らない（設定を変えた場合のみ。逆向き＝実体があるのに注意書きが載るケースは、手順1の `test -L` 判定で無害化される）。**codiva 側でリンクを張り替えることはしない** — 何が書き込み対象かは指示内容次第で、先回りして全部コピーすると symlink モードの利点（複製コストゼロ）が消えるため、判断はセッションに委ねる。文言は AI 向けなので英語・i18n カタログ対象外（`utils/title.ts` と同じ扱い）。

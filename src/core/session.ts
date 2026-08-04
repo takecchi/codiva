@@ -11,7 +11,8 @@ import { AsyncQueue } from './async-queue';
 import { errorMessage, isAuthError, isConnectionError } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
 import { applySdkMessage } from './sdk-parse';
-import { accrueActive, initialState, reduce } from './status-reducer';
+import { isInterruptible } from './status-meta';
+import { accrueActive, initialState, reduce, USER_INTERRUPT_DETAIL } from './status-reducer';
 import { composeSystemPrompt } from './system-prompt';
 import type {
   CodivaEvent,
@@ -239,9 +240,36 @@ export class Session {
     this.resolvePending({ behavior: 'deny', message });
   }
 
-  /** Interrupt the current turn (ends it with an error result); session stays alive. */
+  /**
+   * 進行中のターンを中断する（詳細ビューの `Ctrl+C`）。セッション自体は生かしたまま
+   * `interrupted`（idle & resumable）へ落とし、追加指示 / `Ctrl+R` で同じ SDK 会話を
+   * 続けられる状態にする。`stop()`（プロセスだけ落とす）や `abort()`（`failed` にする）
+   * とは別物。
+   *
+   * 状態は SDK の応答を待たずに**先に**確定させる。理由は2つ:
+   * - 体感: interrupt は control request なので CLI の応答まで数百 ms かかる。押した瞬間に
+   *   「中断」になってほしい。
+   * - 分類: CLI が返すターン終了 result は `is_error: true` なので、診断が無いと
+   *   `failed` に落ちる。先に `interrupted` を立てておけば sdk-parse のロールアップ
+   *   ガード（`isResumable`）がコストだけ拾って状態を維持する（`aborted_streaming` の
+   *   判定も同じ文言なので二重ログにならない）。
+   *
+   * 許可/質問待ちで押された場合、`commit()` が「pending が消えた」ことを検知して
+   * canUseTool の promise を deny で解決する（未応答の tool_use で終わる transcript は
+   * 後の resume を壊すため）。
+   */
   async interrupt(): Promise<void> {
-    await this.handle?.interrupt?.();
+    if (!isInterruptible(this.state.status)) {
+      return;
+    }
+    this.dispatch({ kind: 'interrupted', error: USER_INTERRUPT_DETAIL, at: this.now() });
+    try {
+      await this.handle?.interrupt?.();
+    } catch {
+      // best-effort: サブプロセスがもう居ない transport への write は reject する
+      // （setModel と同じ）。中断できなかった場合もストリームは生きているので、
+      // 次のメッセージが状態を `running` へ戻す（= 表示が実態に追いつく）。
+    }
   }
 
   /**

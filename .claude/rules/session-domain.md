@@ -68,6 +68,7 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
 | `terminal` | 終端＝差分/操作を出す | `isTerminalStatus`（detail/list/manager） |
 | `attention` | 一覧の ● 強調 | `needsAttention`（list） |
 | `active` | 稼働時間を積算する区間 | `isActiveStatus`（`accrueActive`） |
+| `interruptible` | `Ctrl+C` で中断できる（ターンが進行中） | `isInterruptible`（detail / `SessionManager.interrupt`） |
 | `resumable` | 再開アクション `r` の可否 | `isResumable`（両 view） |
 | `restoreAs` | 保存時に丸める先 | `persistence.restorableStatus` |
 | `notifyKey` | デスクトップ通知の文言キー | `core/notify.ts` |
@@ -92,6 +93,13 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
 
 - アプリ終了は `stop()`（quiet 停止。状態を変えずサブプロセスだけ落とす）。`abort()` は
   `failed` にするので「1件破棄」専用。両者を混同しない。
+- **中断（`interrupt()`、詳細ビューの `Ctrl+C`）は3つ目の別物**: 走っているターンだけをやめ、
+  サブプロセスは生かしたまま `interrupted`（idle & resumable）にする。状態は **SDK の応答を
+  待たずに先に確定**させる — CLI が返すターン終了 result は `is_error: true` なので、
+  診断が無いと `failed` に落ちる（sdk-parse は `terminal_reason: 'aborted_streaming'` も
+  同じ `USER_INTERRUPT_DETAIL` で `interrupted` にするので、二重ログにも `failed` にもならない）。
+  対象判定（`isInterruptible`）は `SessionManager.interrupt` に置く（`resume` と同じ理由 =
+  UI の購読はスロットルされていて連打を弾けない）。
 - `stop()` / 再開可能状態へ落ちる前に**保留中の許可を deny で解決**する。未応答の `tool_use`
   で終わるトランスクリプトは後の resume を壊す。
 - 復元セッションは `start()` せず、最初の `send()` で遅延 resume（起動時にサブプロセスを乱立させない）。
