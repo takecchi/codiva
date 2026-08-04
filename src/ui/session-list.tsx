@@ -23,6 +23,7 @@ import {
   isFullscreenViewport,
   isPrCellHit,
   isResumable,
+  isTerminalStatus,
   listView,
   listViewportRows,
   type ModelOption,
@@ -309,6 +310,9 @@ export const SessionList: FC<{
   // 集合はそのまま一括実行に使う（`manager.recoverable()` と同じ純関数を通す）。
   const stuck = recoverableSessions(sessions);
   const stuckSync = stuck.filter((s) => s.kind === 'sync').length;
+  // `/clear` で消える件数（終端状態のみ）。判定は core の STATUS_META を通し、確認文の
+  // 件数と実際に消える件数を必ず一致させる（`manager.clear()` も同じ述語で選ぶ）。
+  const clearable = sessions.filter((s) => isTerminalStatus(s.status)).length;
   /** ダイアログを閉じる（進行中の非同期結果は世代を進めて捨てる）。 */
   const closeUpdate = () => {
     updateGen.current += 1;
@@ -386,9 +390,21 @@ export const SessionList: FC<{
       model: () => setModelSelect(true),
       // `/prompt` はリポジトリ追加指示（.codiva/prompt.md）のエディタを開く。
       prompt: () => setPromptEdit(true),
-      // `/clear` は完了したセッションを一覧から消去する（worktree/履歴は残す）。
-      // 実行中セッションは残るため確認は不要（core 側で終端状態のみ対象にする）。
-      clear: () => manager.clear(),
+      // `/remove` は選択中のセッションを一覧から削除する（worktree とブランチも消す）。
+      // `x` と同じ確認ダイアログを通す — 破棄より強い操作を無確認で走らせない。
+      remove: () => {
+        if (target) {
+          setConfirm('remove');
+        }
+      },
+      // `/clear` は終端状態のセッションをまとめて削除する。worktree とブランチまで
+      // 消えるので必ず件数を見せて y/n を取る（実行中セッションは core 側で対象外）。
+      // 0 件で「0 件を削除します」と聞かないよう、ここで門を張る。
+      clear: () => {
+        if (clearable > 0) {
+          setConfirm('clear');
+        }
+      },
       // `/update` は npm レジストリを見て、更新があれば y/n を挟んで適用する。
       update: checkUpdate,
       // `/sync` は選択中セッションの worktree へベースブランチを取り込む。競合したら
@@ -818,6 +834,13 @@ export const SessionList: FC<{
         setConfirm('discard');
         return;
       }
+      // 破棄（`d`）との違いは「行を残さない」こと。過去に PR を出したセッションは
+      // archived で残ると一括立て直し（Ctrl+F）の候補に挙がり続けるので、記録ごと
+      // 消す入口を用意する。worktree とブランチも消えるので必ず確認を挟む。
+      if (input === 'x' || input === 'X') {
+        setConfirm('remove');
+        return;
+      }
       // Resume a session that was cut off (connection interrupted / rate limited /
       // login expired): sends a "continue" instruction, which restarts the SDK
       // query with `resume` so Claude picks up where it left off. Only meaningful
@@ -1021,7 +1044,12 @@ export const SessionList: FC<{
             {m.action.actionErrorLabel}: {actionError}
           </Text>
         ) : null}
-        {confirm ? (
+        {confirm === 'clear' ? (
+          <DialogBox>
+            {/* 件数付きなので他の lifecycle 確認とは別 variant（kind と件数がずれない）。 */}
+            <ConfirmPrompt kind="clear" busy={busy} count={clearable} />
+          </DialogBox>
+        ) : confirm ? (
           <DialogBox>
             <ConfirmPrompt kind={confirm} busy={busy} />
           </DialogBox>

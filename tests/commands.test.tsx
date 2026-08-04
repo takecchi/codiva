@@ -2,7 +2,38 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { messages } from '@/core/i18n';
-import { flush, makeManager, renderFullscreen, stripAnsi } from './helpers';
+import { SessionManager } from '@/core/session-manager';
+import { reduce } from '@/core/status-reducer';
+import {
+  fakeWorktrees,
+  flush,
+  makeManager,
+  noopSession,
+  renderFullscreen,
+  stripAnsi,
+} from './helpers';
+
+/**
+ * A manager whose sessions land in a terminal state as soon as they start — the
+ * only thing `/clear` acts on (`makeManager`'s sessions stay in `creating`).
+ */
+function makeFinishedManager(): SessionManager {
+  return new SessionManager({
+    worktrees: fakeWorktrees,
+    queryFn: (() => {
+      throw new Error('unused');
+    }) as never,
+    now: () => 0,
+    createSession: ({ input, onChange }) => {
+      const session = noopSession(input);
+      session.start = () => {
+        session.state = reduce(session.state, { kind: 'interrupted', at: 0 });
+        onChange(session.state);
+      };
+      return session;
+    },
+  });
+}
 
 // Feature test for slash commands driven through the whole App. Pure parsing is
 // unit-tested in src/core/commands.spec.ts; this checks the UI wiring: the
@@ -238,15 +269,80 @@ describe('slash commands', () => {
     expect(frame).toContain(messages.ja.command.clear); // description shown
   });
 
-  it('/clear clears the session list and creates no session', async () => {
-    const manager = makeManager();
+  // worktree とブランチまで消す操作になったので、件数を見せて y を取ってから実行する。
+  it('/clear asks first (with the count) and clears on y', async () => {
+    const manager = makeFinishedManager();
     const clear = vi.spyOn(manager, 'clear');
-    const { stdin } = render(<App manager={manager} />);
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('finish me');
+    await flush();
+    stdin.write('\r'); // 1 セッション作成 → 終端状態（中断）になる
+    await flush();
     stdin.write('/clear');
     await flush();
     stdin.write('\r');
     await flush();
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.action.clearPrompt(1));
+    expect(clear).not.toHaveBeenCalled(); // 確認前は実行しない
+    stdin.write('y');
+    await flush();
     expect(clear).toHaveBeenCalledOnce();
+    expect(manager.getSnapshot()).toHaveLength(0);
+  });
+
+  it('/clear does nothing when no session has finished', async () => {
+    const manager = makeManager(); // sessions stay in `creating`
+    const clear = vi.spyOn(manager, 'clear');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('/clear');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(clear).not.toHaveBeenCalled();
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain(messages.ja.action.clearPrompt(0));
+  });
+
+  it('lists /remove in the command palette and asks before removing', async () => {
+    const manager = makeManager();
+    const remove = vi.spyOn(manager, 'remove');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('build a thing');
+    await flush();
+    stdin.write('\r'); // create the session /remove will target
+    await flush();
+    stdin.write('/remove');
+    await flush();
+    expect(lastFrame() ?? '').toContain(messages.ja.command.remove);
+    stdin.write('\r');
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.action.removePrompt);
+    expect(remove).not.toHaveBeenCalled();
+    stdin.write('y');
+    await flush();
+    expect(remove).toHaveBeenCalledOnce();
+    // 破棄と違い行も残らない（= 一括立て直しの対象からも外れる）。
+    expect(manager.getSnapshot()).toHaveLength(0);
+  });
+
+  it('x on the selected row removes it after the confirmation', async () => {
+    const manager = makeManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('build a thing');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    stdin.write('\t'); // Tab → list focus（印字キーが操作キーになる）
+    await flush();
+    stdin.write('x');
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.action.removePrompt);
+    stdin.write('n'); // n で取りやめ → 行は残る
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(1);
+    stdin.write('x');
+    await flush();
+    stdin.write('y');
+    await flush();
     expect(manager.getSnapshot()).toHaveLength(0);
   });
 

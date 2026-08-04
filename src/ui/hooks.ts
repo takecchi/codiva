@@ -9,6 +9,7 @@ import {
 } from 'react';
 import {
   type AccountSummary,
+  type ActionResult,
   COMPOSER_PREFIX_CELLS,
   type CommandAction,
   type DisplayLine,
@@ -763,34 +764,74 @@ export function useRecovery(
   return { notice, setNotice, busy, run, runAll };
 }
 
-export interface LifecycleAction {
-  confirm: 'merge' | 'discard' | null;
-  setConfirm: (confirm: 'merge' | 'discard' | null) => void;
-  busy: boolean;
-  actionError: string | undefined;
-  setActionError: (error: string | undefined) => void;
-  run: (action: 'merge' | 'discard') => void;
+/**
+ * Dispatch one lifecycle action to the manager, normalizing `/clear`'s outcome
+ * (a count + an optional failure) into the same ActionResult the single-session
+ * operations return, so the shared flow below has exactly one shape to handle.
+ * `id` is guaranteed present for everything but `clear` (checked by the caller).
+ */
+function runLifecycle(
+  manager: SessionManager,
+  id: string | undefined,
+  action: LifecycleKind,
+): Promise<ActionResult> {
+  if (action === 'clear') {
+    return manager
+      .clear()
+      .then((outcome) =>
+        outcome.error === undefined ? { ok: true } : { ok: false, error: outcome.error },
+      );
+  }
+  if (id === undefined) {
+    return Promise.resolve({ ok: false, error: 'no session selected' });
+  }
+  if (action === 'merge') {
+    return manager.merge(id);
+  }
+  // 未コミットの変更ごと消す（force）。破棄・削除はどちらも確認ダイアログを通るので、
+  // ここで git に拒否されて「y を押したのに何も起きない」状態にしない。
+  return action === 'discard'
+    ? manager.discard(id, { force: true })
+    : manager.remove(id, { force: true });
 }
 
 /**
- * The merge/discard confirm → busy → run → error flow shared by both views.
- * `run` no-ops when `id` is undefined (nothing selected). `onDone(ok)` fires after
- * completion so a view can react (e.g. the detail view returns to its input panel).
+ * The confirmed lifecycle operations. `merge` / `discard` / `remove` act on the
+ * selected session; `clear` is the only one that fans out (every finished session)
+ * and therefore the only one that ignores `id`.
+ */
+export type LifecycleKind = 'merge' | 'discard' | 'remove' | 'clear';
+
+export interface LifecycleAction {
+  confirm: LifecycleKind | null;
+  setConfirm: (confirm: LifecycleKind | null) => void;
+  busy: boolean;
+  actionError: string | undefined;
+  setActionError: (error: string | undefined) => void;
+  run: (action: LifecycleKind) => void;
+}
+
+/**
+ * The merge/discard/remove/clear confirm → busy → run → error flow shared by both
+ * views. `run` no-ops when a session-scoped action has no `id` (nothing selected).
+ * `onDone(ok, action)` fires after completion so a view can react — the detail view
+ * returns to its input panel, and goes back to the list when the session it was
+ * showing is the one that was just removed.
  */
 export function useLifecycleAction(
   manager: SessionManager,
   id: string | undefined,
-  onDone?: (ok: boolean) => void,
+  onDone?: (ok: boolean, action: LifecycleKind) => void,
 ): LifecycleAction {
-  const [confirm, setConfirm] = useState<'merge' | 'discard' | null>(null);
+  const [confirm, setConfirm] = useState<LifecycleKind | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
-  const run = (action: 'merge' | 'discard') => {
-    if (id === undefined) {
+  const run = (action: LifecycleKind) => {
+    if (id === undefined && action !== 'clear') {
       return;
     }
     setBusy(true);
-    const promise = action === 'merge' ? manager.merge(id) : manager.discard(id, { force: true });
+    const promise = runLifecycle(manager, id, action);
     // 第 2 引数（reject ハンドラ）で受ける。`.catch()` を後段に付けると成功ハンドラ内の
     // 例外まで飲んでしまうため。manager 側は失敗を ActionResult に畳むが、その手前
     // （abort → 通知 → 購読者）で throw されると裸の then が unhandled rejection になる。
@@ -799,7 +840,7 @@ export function useLifecycleAction(
         setBusy(false);
         setConfirm(null);
         setActionError(result.ok ? undefined : result.error);
-        onDone?.(result.ok);
+        onDone?.(result.ok, action);
       },
       (err: unknown) => {
         setBusy(false);

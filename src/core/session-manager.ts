@@ -104,6 +104,14 @@ export interface SessionManagerDeps {
   }) => SessionHandle;
 }
 
+/** Outcome of `/clear`: how many rows went away, plus the first failure (if any). */
+export interface ClearOutcome {
+  /** Sessions actually dropped from the list. */
+  cleared: number;
+  /** First worktree removal failure; the rows that failed are still in the list. */
+  error?: string;
+}
+
 /** Fields that end up in the persisted snapshot (see persistence.toPersistedSession). */
 function persistRelevantChanged(prev: SessionState, next: SessionState): boolean {
   return (
@@ -615,33 +623,86 @@ export class SessionManager {
   }
 
   /**
-   * Clear finished sessions from the list (the `/clear` command). Every terminal
-   * session (completed/interrupted/rate_limited/failed/conflict/archived) is
-   * dropped from the store and from the persisted snapshot, so it stays gone after
-   * a restart — persistableState() reads the store, and a session no longer there
-   * is never written to state.json nor restored. In-flight sessions
-   * (creating/running/awaiting_*) are kept: clearing them would orphan a live SDK
-   * conversation. Worktrees/branches are left on disk (history is preserved); only
-   * the codiva session entry is forgotten. The reserved slug is intentionally not
-   * freed — the worktree still exists on disk, so its slug stays taken.
-   * Returns the number of sessions cleared.
+   * Remove one session outright (`x` / `/remove`): the worktree + branch are
+   * deleted **and** the list row is dropped. This is the difference from discard,
+   * which leaves the row behind as `archived`: a lingering row keeps showing up in
+   * the list and — for a session whose PR is old and no longer interesting — makes
+   * the bulk recovery pass (`recoverableSessions`, which reads the store) offer it
+   * again on every Ctrl+F. Dropping the row also keeps it out of state.json
+   * (persistableState() reads the store), so it stays gone after a restart.
+   *
+   * A row whose worktree is already gone (a session discarded earlier) is still
+   * removable: missing metadata is not an error here, since forgetting the row is
+   * the whole point of the command.
    */
-  clear(): number {
-    const removed = this.store
+  async remove(id: string, opts: { force?: boolean } = {}): Promise<ActionResult> {
+    if (this.store.get(id) === undefined) {
+      return { ok: false, error: 'session not found' };
+    }
+    const meta = this.worktreeMeta.get(id);
+    if (meta) {
+      const result = await discardSession(this.deps.worktrees, meta, this.sessions.get(id), opts);
+      if (!result.ok) {
+        return result;
+      }
+    }
+    this.forget(id);
+    this.deps.onPersist?.();
+    return { ok: true };
+  }
+
+  /**
+   * Clear finished sessions (the `/clear` command). Every terminal session
+   * (completed/interrupted/rate_limited/failed/conflict/archived) has its worktree
+   * and branch removed and its row dropped, so nothing is left behind on disk or
+   * in state.json. In-flight sessions (creating/running/awaiting_*) are kept:
+   * clearing them would orphan a live SDK conversation.
+   *
+   * Sequential on purpose: `git worktree remove` + `git branch -D` take a
+   * repo-wide lock, so firing them together would make some of them fail on a lock
+   * they can't see (same reason as the bulk recovery pass).
+   *
+   * A worktree that refuses to go is reported and its row is **kept** — dropping
+   * the row would hide a directory that is still on disk.
+   */
+  async clear(): Promise<ClearOutcome> {
+    const targets = this.store
       .ids()
       .filter((id) => isTerminalStatus(this.store.get(id)?.status ?? 'running'));
-    if (removed.length === 0) {
-      return 0;
+    let cleared = 0;
+    let error: string | undefined;
+    for (const id of targets) {
+      const meta = this.worktreeMeta.get(id);
+      if (meta) {
+        try {
+          await this.deps.worktrees.remove(meta.worktree, { force: true });
+        } catch (err) {
+          error ??= errorMessage(err);
+          continue;
+        }
+      }
+      this.forget(id);
+      cleared += 1;
     }
-    for (const id of removed) {
-      this.sessions.get(id)?.stop();
-      this.sessions.delete(id);
-      this.worktreeMeta.delete(id);
-      this.prs.forget(id);
-      this.store.remove(id);
+    if (cleared > 0) {
+      this.deps.onPersist?.();
     }
-    this.deps.onPersist?.();
-    return removed.length;
+    return { cleared, error };
+  }
+
+  /**
+   * Drop every trace of a session from memory, list row included. Stops the SDK
+   * process quietly (stop(), not abort(): the status no longer matters once the row
+   * is gone, and abort would fire a state change nobody reads). The reserved slug
+   * is intentionally **not** freed — handing a brand-new session the branch name of
+   * one the user just deleted would be confusing, and slugs are cheap.
+   */
+  private forget(id: string): void {
+    this.sessions.get(id)?.stop();
+    this.sessions.delete(id);
+    this.worktreeMeta.delete(id);
+    this.prs.forget(id);
+    this.store.remove(id);
   }
 
   /**

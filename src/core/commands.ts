@@ -20,6 +20,7 @@ export type CommandAction =
   | 'model'
   | 'diff'
   | 'prompt'
+  | 'remove'
   | 'clear'
   | 'update'
   | 'sync'
@@ -51,6 +52,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   // そのまま完全一致で引ける（別名 `fixci` はハイフンを打ち忘れたとき用）。
   { name: 'fix-ci', aliases: ['fixci'], action: 'fixCi', describe: (m) => m.command.fixCi },
   { name: 'recover', action: 'recover', describe: (m) => m.command.recover },
+  { name: 'remove', action: 'remove', describe: (m) => m.command.remove },
   { name: 'clear', action: 'clear', describe: (m) => m.command.clear },
   { name: 'update', action: 'update', describe: (m) => m.command.update },
   { name: 'help', aliases: ['?'], action: 'help', describe: (m) => m.command.help },

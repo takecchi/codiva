@@ -99,6 +99,9 @@ describe('matchCommands', () => {
     expect(matchCommands('/mo').map((c) => c.name)).toEqual(['model']);
     expect(matchCommands('/pr').map((c) => c.name)).toEqual(['prompt']);
     expect(matchCommands('/cl').map((c) => c.name)).toEqual(['clear']);
+    // `/re` は「立て直し」と「削除」の両方に当たる（レジストリ順で出す）。
+    expect(matchCommands('/re').map((c) => c.name)).toEqual(['recover', 'remove']);
+    expect(matchCommands('/rem').map((c) => c.name)).toEqual(['remove']);
   });
   it('does not match the retired /quit alias', () => {
     expect(matchCommands('/q').map((c) => c.name)).toEqual([]);
@@ -124,6 +127,9 @@ describe('runCommand', () => {
   });
   it('resolves /clear to the clear command', () => {
     expect(runCommand('/clear')).toEqual({ kind: 'run', command: findCommand('clear') });
+  });
+  it('resolves /remove to the remove command', () => {
+    expect(runCommand('/remove')).toEqual({ kind: 'run', command: findCommand('remove') });
   });
   it('resolves /update to the update command', () => {
     expect(runCommand('/update')).toEqual({ kind: 'run', command: findCommand('update') });

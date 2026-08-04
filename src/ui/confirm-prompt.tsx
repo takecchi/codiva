@@ -3,16 +3,18 @@ import type { FC } from 'react';
 import { useMessages } from './i18n-context';
 import { theme } from './theme';
 
-/** The single-session lifecycle confirmations (both act on the selected session). */
-export type ConfirmKind = 'merge' | 'discard';
+/** The single-session lifecycle confirmations (all act on the selected session). */
+export type ConfirmKind = 'merge' | 'discard' | 'remove';
 
 /**
  * Props are a discriminated union so the counts can't drift from the kind: a
  * `resumeAll` line must state how many sessions it will restart (and how many of
- * those need a login first), and the lifecycle kinds have no counts at all.
+ * those need a login first), a `clear` line how many rows it will drop, and the
+ * single-session lifecycle kinds have no counts at all.
  */
 export type ConfirmPromptProps =
   | { kind: ConfirmKind; busy: boolean }
+  | { kind: 'clear'; busy: boolean; count: number }
   | { kind: 'resumeAll'; busy: boolean; count: number; authCount: number }
   | { kind: 'recoverAll'; busy: boolean; syncCount: number; ciCount: number };
 
@@ -34,9 +36,13 @@ export const ConfirmPrompt: FC<ConfirmPromptProps> = (props) => {
       ? m.action.resumeAllPrompt(props.count, props.authCount)
       : props.kind === 'recoverAll'
         ? m.recover.allPrompt(props.syncCount, props.ciCount)
-        : props.kind === 'merge'
-          ? m.action.mergePrompt
-          : m.action.discardPrompt;
+        : props.kind === 'clear'
+          ? m.action.clearPrompt(props.count)
+          : props.kind === 'merge'
+            ? m.action.mergePrompt
+            : props.kind === 'discard'
+              ? m.action.discardPrompt
+              : m.action.removePrompt;
   return (
     <Text>
       {prompt} {m.action.confirmRun} <Text color={theme.yes}>y</Text> /{' '}

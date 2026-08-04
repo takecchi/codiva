@@ -435,7 +435,7 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   `flexShrink={0}`**（横方向の縮小でアスキーアートが折り返して崩れるのを防ぐ。縦の譲り合いには効かない）。
 - `SessionList`: 一覧画面。`Banner` + 一覧 + 下部 `PromptInput`/`StatusFooter`。フォーカスは
   `composer`（起動時既定。タイピング + 矢印キャレット移動）と `list`（↑↓選択・Enter/→ = 詳細を開く・
-  m/d = マージ/破棄）の2ゾーンで Tab 切替。選択セッションの `PermissionDialog` は list フォーカス時のみ
+  m/d/x = マージ/破棄/削除）の2ゾーンで Tab 切替。選択セッションの `PermissionDialog` は list フォーカス時のみ
   アクティブ。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で行選択・キャレット移動。
   コンポーザ上のドラッグで範囲選択し、離すとクリップボードへコピー（OSC 52 = `utils/clipboard.ts`。
   純粋ロジックは `core/text-selection.ts`、状態は共有フック `useDragSelection`）。詳細ビューの
@@ -461,7 +461,8 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   多く描くと行が虫食いで欠落する）、
   `streamingText` のタイピング風プレビュー、
   下部の追加指示コンポーザ（`manager.send(id, text)`）を持つ。Tab で入力↔操作パネルを切替し、
-  操作パネルで m/d = マージ/破棄。`pendingPermission` があれば `PermissionDialog` に委譲。単一 `useInput` の
+  操作パネルで m/d/x = マージ/破棄/削除（`x` は行ごと消すので成功時は一覧へ戻る）。
+  `pendingPermission` があれば `PermissionDialog` に委譲。単一 `useInput` の
   state machine（panel = input | actions）でタイピングとキー操作の衝突を防ぐ。
 - `PromptInput` / `StatusFooter`: presentational。キー処理は view の単一 `useInput` に集約（ロジックは持たない）。`PromptInput` は複数行対応（純粋モデルは `core/text-buffer.ts`、キー対応は `ui/input.ts` の `editText`/`resolveEnter`）。幅を超えたテキストは**折り返す**（truncate しない）: 折り返し後の表示行・キャレット位置・クリック逆算・選択範囲はすべて純粋な `core/composer-layout.ts`（`composerLayout`）が算出し、折り返し幅は Box の実測値（`useComposerWidth`）を描画・当たり判定・↑↓ 移動で共有する。IME 対応で実端末カーソルをキャレットに重ねる（`useCursor`）。
 - 再描画スロットリング: SessionManager の通知を UI 側で ~100ms にスロットルする。
@@ -765,6 +766,8 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
 | 復元は「メタ + SDK resume」で、ログは永続しない | state.json を小さく保つ。会話履歴は SDK の resume が持つので二重管理しない。復元直後はアイドル表示、追加指示で継続 |
 | 復元セッションは遅延 resume（起動時に起こさない） | セッション毎に ~1GiB のサブプロセスを起動時に乱立させない。触られたものだけ起こす |
 | 終了は `abort()` ではなく `stop()`（quiet） | 実行中セッションを failed にせず resumable のまま保存するため（quit と「1件破棄」を区別） |
+| 「破棄（`d`）」と「削除（`x` / `/remove` / `/clear`）」を分ける | 破棄は worktree を消して行を `archived` として残す（作業の記録が見える）。だがブランチに古い PR が付いていると、その行は一括立て直し（`Ctrl+F` = `recoverableSessions`）の候補として毎回挙がり続ける。削除は store から行ごと落とすので、記録も一括操作の対象も同時に消える。`/clear` も worktree/ブランチを残さない（残すと「消したのにディスクに残る」ぶんが見えない負債になる） |
+| 削除で worktree の除去に失敗したら行を残す | ディスクにディレクトリが残っているのに一覧から消すと、存在するものが見えなくなる。エラーを出して行を残し、`/clear` は成功した件数だけ数える |
 | 通知の発火判定は純粋関数・遷移時のみ | テスト可能にし、ストリーミングの連続更新で鳴り続けるのを防ぐ。OS I/O は utils に隔離し best-effort |
 | 設定検証は `toConfig()` に集約・不正値は既定へ | 設定ミスで TUI をクラッシュさせない。SDK union は実行時リテラルで検証（型が変われば型エラー） |
 | 分離手段は git worktree | 同一リポジトリの並列作業では最軽量。ブランチがそのまま成果物になる。Docker 等はMVPではオーバーキル |

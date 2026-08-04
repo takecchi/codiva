@@ -22,7 +22,17 @@ export const CommandPalette: FC<{
 }> = ({ title, commands, describeOverrides }) => {
   const m = useMessages();
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.dim} paddingX={1}>
+    // `flexShrink={0}`: コマンドが増えて縦に入り切らなくなると Yoga はこの枠を
+    // **縮める**（クリップではなく行が潰れて混ざる）ため、`/help` の一覧が
+    // 「/diffpt」のような読めない行になる。縮む役は内部スクロールを持つ一覧側に寄せる
+    // （規約: ink-components.md）。
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      borderStyle="round"
+      borderColor={theme.dim}
+      paddingX={1}
+    >
       <Text color={theme.accent} bold>
         {glyph.star} {title}
       </Text>

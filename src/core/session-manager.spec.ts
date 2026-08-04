@@ -366,9 +366,103 @@ describe('SessionManager', () => {
     expect(after[1]).not.toBe(before[1]); // changed row is a new object
   });
 
+  describe('remove()', () => {
+    it('removes the worktree AND drops the row (gone from the list and state.json)', async () => {
+      const remove = vi.fn(async () => {});
+      const created: FakeSession[] = [];
+      const onPersist = vi.fn();
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({ remove }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        onPersist,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      const id = manager.create('old pr');
+      await flush();
+      created[0]?.drive('completed', 'sdk-0');
+      onPersist.mockClear();
+
+      const result = await manager.remove(id, { force: true });
+
+      expect(result.ok).toBe(true);
+      expect(remove).toHaveBeenCalledWith(expect.anything(), { force: true });
+      // Unlike discard, no `archived` row is left behind — the session is forgotten,
+      // so the bulk recovery pass can never pick it up again.
+      expect(manager.get(id)).toBeUndefined();
+      expect(manager.getSnapshot()).toEqual([]);
+      expect(manager.persistableState().sessions).toEqual([]);
+      expect(created[0]?.stopped).toBe(true);
+      expect(onPersist).toHaveBeenCalled(); // state.json を書き直させる
+    });
+
+    it('keeps the row when the worktree refuses to go', async () => {
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({
+          remove: async () => {
+            throw new Error('worktree is dirty');
+          },
+        }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      const id = manager.create('feature');
+      await flush();
+
+      const result = await manager.remove(id);
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('worktree is dirty');
+      expect(manager.get(id)).toBeDefined(); // still listed — the directory is still there
+    });
+
+    it('forgets a row whose worktree is already gone (discarded earlier)', async () => {
+      const { manager } = makeManager();
+      const id = manager.create('feature');
+      await flush();
+      await manager.discard(id); // worktree + meta gone, row stays as archived
+
+      const result = await manager.remove(id);
+
+      expect(result.ok).toBe(true);
+      expect(manager.get(id)).toBeUndefined();
+    });
+
+    it('remove on an unknown id returns an error', async () => {
+      const { manager } = makeManager();
+      expect((await manager.remove('nope')).ok).toBe(false);
+    });
+  });
+
   describe('clear()', () => {
-    it('drops finished sessions (stopped, forgotten) but keeps in-flight ones', async () => {
-      const { manager, created } = makeManager();
+    it('drops finished sessions (worktree removed, row forgotten) but keeps in-flight ones', async () => {
+      const removed: string[] = [];
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({
+          remove: async (wt) => {
+            removed.push(wt.slug);
+          },
+        }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 100,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
       manager.create('done'); // 0 → completed
       manager.create('busy'); // 1 → running (kept)
       manager.create('gone'); // 2 → interrupted
@@ -377,9 +471,12 @@ describe('SessionManager', () => {
       created[1]?.drive('running', 'sdk-1');
       created[2]?.drive('interrupted', 'sdk-2');
 
-      const cleared = manager.clear();
+      const { cleared, error } = await manager.clear();
 
       expect(cleared).toBe(2);
+      expect(error).toBeUndefined();
+      // Worktrees of the finished sessions are gone; the running one is untouched.
+      expect(removed).toEqual(['done', 'gone']);
       // Only the in-flight (running) session remains in the list.
       expect(manager.getSnapshot().map((s) => s.title)).toEqual(['busy']);
       // Cleared sessions were quietly stopped (not aborted), running one untouched.
@@ -396,7 +493,7 @@ describe('SessionManager', () => {
       created[0]?.drive('completed', 'sdk-0');
       expect(manager.persistableState().sessions).toHaveLength(1);
 
-      manager.clear();
+      await manager.clear();
 
       expect(manager.persistableState().sessions).toEqual([]);
     });
@@ -424,7 +521,7 @@ describe('SessionManager', () => {
       manager.subscribe(listener);
       onPersist.mockClear();
 
-      manager.clear();
+      await manager.clear();
 
       expect(onPersist).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalled(); // store rebuild notified subscribers
@@ -444,9 +541,43 @@ describe('SessionManager', () => {
       manager.create('busy');
       await flush();
       onPersist.mockClear();
-      expect(manager.clear()).toBe(0);
+      expect(await manager.clear()).toEqual({ cleared: 0, error: undefined });
       expect(onPersist).not.toHaveBeenCalled();
       expect(manager.getSnapshot()).toHaveLength(1);
+    });
+
+    it('keeps the rows whose worktree could not be removed and reports the failure', async () => {
+      const created: FakeSession[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees({
+          remove: async (wt) => {
+            if (wt.slug === 'stuck') {
+              throw new Error('worktree locked');
+            }
+          },
+        }),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 100,
+        createSession: ({ input, onChange }) => {
+          const s = new FakeSession(input, onChange);
+          created.push(s);
+          return s;
+        },
+      });
+      manager.create('stuck');
+      manager.create('fine');
+      await flush();
+      created[0]?.drive('completed', 'sdk-0');
+      created[1]?.drive('completed', 'sdk-1');
+
+      const { cleared, error } = await manager.clear();
+
+      // The directory is still on disk, so hiding its row would be a lie.
+      expect(cleared).toBe(1);
+      expect(error).toContain('worktree locked');
+      expect(manager.getSnapshot().map((s) => s.title)).toEqual(['stuck']);
     });
   });
 

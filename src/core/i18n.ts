@@ -47,6 +47,8 @@ export interface Messages {
     actionsTitle: string;
     mergeAction: string;
     discardAction: string;
+    /** セッションを一覧から完全に削除する操作（worktree/ブランチも消す） */
+    removeAction: string;
     helpPending: string;
     helpActions: string;
     helpInput: string;
@@ -59,6 +61,10 @@ export interface Messages {
     actionErrorLabel: string;
     mergePrompt: string;
     discardPrompt: string;
+    /** 1件削除の確認文（破棄と違い一覧の行も残らないことを伝える） */
+    removePrompt: string;
+    /** /clear の確認文。`n` = 消える件数（worktree とブランチも消えるので必ず確認する） */
+    clearPrompt: (n: number) => string;
     /**
      * 一括再開の確認文。`n` = 対象件数、`auth` = そのうち認証切れの件数。
      * 認証切れには「ログインし直した」という指示文を送るので、まだログインして
@@ -325,6 +331,8 @@ export interface Messages {
     diff: string;
     /** /prompt の説明 */
     prompt: string;
+    /** /remove の説明 */
+    remove: string;
     /** /clear の説明 */
     clear: string;
     /** /update の説明 */
@@ -363,7 +371,7 @@ const ja: Messages = {
     helpComposer:
       'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ /exit: 終了 ・ Ctrl+U: 全消し ・ ↑↓: 履歴',
     helpList:
-      '↑↓: 選択 ・ Enter/→: 詳細を開く ・ p: PRを開く ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
+      '↑↓: 選択 ・ Enter/→: 詳細を開く ・ p: PR ・ m: マージ ・ d: 破棄 ・ x: 削除 ・ Tab/Esc: 入力へ',
     helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
     moreAbove: (n) => `↑ 他 ${n} 件`,
     moreBelow: (n) => `↓ 他 ${n} 件`,
@@ -381,8 +389,9 @@ const ja: Messages = {
     actionsTitle: '操作',
     mergeAction: 'マージ（--no-ff）',
     discardAction: '破棄（worktree削除）',
+    removeAction: '削除（一覧から消す）',
     helpPending: 'Esc: 一覧へ戻る',
-    helpActions: 'm/d: 操作 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 入力へ ・ Esc: 戻る',
+    helpActions: 'm/d/x: 操作 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 入力へ ・ Esc: 戻る',
     helpInput:
       'Enter: 送信 ・ Shift+Enter: 改行 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ ・ Ctrl+U: 全消し',
   },
@@ -390,6 +399,9 @@ const ja: Messages = {
     actionErrorLabel: '操作エラー',
     mergePrompt: 'ベースへマージします。',
     discardPrompt: 'worktree とブランチを破棄します。',
+    removePrompt: 'このセッションを一覧から削除します（worktree とブランチも消えます）。',
+    clearPrompt: (n) =>
+      `完了したセッション ${n} 件を一覧から削除します（worktree とブランチも消えます）。`,
     resumeAllPrompt: (n, auth) =>
       auth > 0
         ? `中断中の ${n} 件を続きから再開します（認証切れ ${auth} 件を含む — 先に別ターミナルで claude にログインしてください）。`
@@ -454,7 +466,7 @@ const ja: Messages = {
     authInstruction:
       '認証切れで中断しました。ログインし直したので、中断したところから作業を続けてください。',
     listHint:
-      '↑↓: 選択 ・ r/Ctrl+R: 再開 ・ Enter/→: 詳細 ・ m: マージ ・ d: 破棄 ・ Tab/Esc: 入力へ',
+      '↑↓: 選択 ・ r/Ctrl+R: 再開 ・ Enter/→: 詳細 ・ m: マージ ・ d: 破棄 ・ x: 削除 ・ Tab/Esc: 入力へ',
     action: '再開（続行）',
     oneKeyHint: 'Ctrl+R: 中断したところから再開',
     allHint: (n) => `Ctrl+A: 中断中の ${n} 件をまとめて再開`,
@@ -564,7 +576,8 @@ const ja: Messages = {
     model: 'モデルを切り替え',
     diff: '変更差分サマリの表示を切り替え',
     prompt: 'リポジトリの追加指示を編集',
-    clear: '完了したセッションを一覧から消去（履歴は残る）',
+    remove: '選択中のセッションを削除（worktree とブランチも消す）',
+    clear: '完了したセッションをまとめて削除（worktree とブランチも消す）',
     update: 'codiva の更新を確認して適用',
     sync: 'ベースブランチを取り込む（競合はセッションに解決させる）',
     fixCi: '失敗した CI をセッションに修正させる',
@@ -588,7 +601,7 @@ const en: Messages = {
     helpComposer:
       'Enter: submit · Shift+Enter: newline · Tab: list · /exit: quit · Ctrl+U: clear · ↑↓: history',
     helpList:
-      '↑↓: select · Enter/→: open detail · p: open PR · m: merge · d: discard · Tab/Esc: input',
+      '↑↓: select · Enter/→: open detail · p: PR · m: merge · d: discard · x: remove · Tab/Esc: input',
     helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
     moreAbove: (n) => `↑ ${n} more`,
     moreBelow: (n) => `↓ ${n} more`,
@@ -606,8 +619,9 @@ const en: Messages = {
     actionsTitle: 'Actions',
     mergeAction: 'Merge (--no-ff)',
     discardAction: 'Discard (remove worktree)',
+    removeAction: 'Remove (drop from the list)',
     helpPending: 'Esc: back to list',
-    helpActions: 'm/d: actions · ↑↓/PgUp/PgDn: log · Tab: input · Esc: back',
+    helpActions: 'm/d/x: actions · ↑↓/PgUp/PgDn: log · Tab: input · Esc: back',
     helpInput:
       'Enter: send · Shift+Enter: newline · ↑↓/PgUp/PgDn: log · Tab: actions · Esc: back · Ctrl+U: clear',
   },
@@ -615,6 +629,9 @@ const en: Messages = {
     actionErrorLabel: 'Action error',
     mergePrompt: 'Merge into the base branch.',
     discardPrompt: 'Discard the worktree and branch.',
+    removePrompt: 'Remove this session from the list (its worktree and branch are deleted too).',
+    clearPrompt: (n) =>
+      `Remove ${n} finished session${n === 1 ? '' : 's'} from the list (worktrees and branches are deleted too).`,
     resumeAllPrompt: (n, auth) =>
       auth > 0
         ? `Resume all ${n} interrupted sessions from where they stopped (${auth} need a login first — log in to claude in another terminal).`
@@ -677,7 +694,7 @@ const en: Messages = {
     authInstruction:
       'This session stopped because authentication expired. I have logged back in — continue from where you left off.',
     listHint:
-      '↑↓: select · r/Ctrl+R: resume · Enter/→: open detail · m: merge · d: discard · Tab/Esc: input',
+      '↑↓: select · r/Ctrl+R: resume · Enter/→: open detail · m: merge · d: discard · x: remove · Tab/Esc: input',
     action: 'Resume (continue)',
     oneKeyHint: 'Ctrl+R: resume from where it stopped',
     allHint: (n) => `Ctrl+A: resume all ${n} interrupted sessions`,
@@ -784,7 +801,8 @@ const en: Messages = {
     model: 'Switch the model',
     diff: 'Toggle the changes summary',
     prompt: 'Edit the repository instructions',
-    clear: 'Clear finished sessions from the list (history is kept)',
+    remove: 'Remove the selected session (worktree and branch deleted too)',
+    clear: 'Remove every finished session (worktrees and branches deleted too)',
     update: 'Check for a codiva update and apply it',
     sync: 'Merge the base branch in (the session resolves any conflicts)',
     fixCi: 'Ask the session to fix its failing CI checks',
