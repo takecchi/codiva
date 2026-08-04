@@ -56,8 +56,11 @@ export const App: FC<{
    * 取得を一覧のときだけに絞るのは詳細ビューで無駄なプロセスを立てないため。
    */
   loadBranch?: () => Promise<string | undefined>;
-  /** Open a PR URL in the browser. Injected from index.tsx (fire-and-forget). */
-  onOpenPr?: (url: string) => void;
+  /**
+   * URL をブラウザで開く（index.tsx が `openUrl` を注入。fire-and-forget）。
+   * 一覧の PR セルのクリックと、詳細ログ内の URL のクリックが共有する。
+   */
+  onOpenUrl?: (url: string) => void;
   /** Copy a mouse selection (composer / header / detail log) to the clipboard (OSC 52). */
   onCopy?: (text: string) => void;
 }> = ({
@@ -71,7 +74,7 @@ export const App: FC<{
   trainingOptIn,
   updater,
   loadBranch,
-  onOpenPr,
+  onOpenUrl,
   onCopy,
 }) => {
   const { exit } = useApp();
@@ -119,12 +122,13 @@ export const App: FC<{
             models={models}
             onBack={() => setView({ mode: 'list' })}
             onCopy={onCopy}
+            onOpenUrl={onOpenUrl}
           />
         ) : (
           <SessionList
             manager={manager}
             onOpen={(id) => setView({ mode: 'detail', id })}
-            onOpenPr={onOpenPr}
+            onOpenPr={onOpenUrl}
             onQuit={quit}
             cwd={cwd}
             branch={branch}

@@ -23,6 +23,7 @@ import {
   logEdgeAt,
   logEdgePoint,
   logLines,
+  logLinkAt,
   logRowSelection,
   logViewportRows,
   logWindow,
@@ -83,7 +84,16 @@ export const SessionDetail: FC<{
   onBack: () => void;
   /** マウス選択（コンポーザ・ログ）をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
   onCopy?: (text: string) => void;
-}> = ({ manager, id, models, onBack, onCopy }) => {
+  /**
+   * ログ内の URL をブラウザで開く（index.tsx が `openUrl` を注入）。
+   *
+   * 端末任せ（Cmd+click）にできないのは、主端末の Ghostty がマウス捕捉中はリンク検出
+   * そのものを止めるため。SGR マウスレポートに Cmd/Super のビットも無いので、
+   * **codiva 自身がクリックを取って開く**のが全端末で唯一同じに動く経路になる
+   * （OSC 8 は対応端末向けの上乗せ。`ui/log-line.tsx`）。
+   */
+  onOpenUrl?: (url: string) => void;
+}> = ({ manager, id, models, onBack, onCopy, onOpenUrl }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -96,6 +106,13 @@ export const SessionDetail: FC<{
   const logSel = useLogDragSelection(onCopy);
   // ドラッグが可視域の外へ出ている向き。ここにあるあいだ自動スクロールし続ける。
   const [edge, setEdge] = useState<LogEdge | undefined>(undefined);
+  /**
+   * press した位置にあった URL。**離すまで開かない**ための保留で、途中で drag が
+   * 来たら取り消す（範囲選択のつもりの操作でブラウザを開かないため）。state ではなく
+   * ref なのは、同一 tick に複数のマウスレポートがまとまって届いても順に読めるように
+   * するため（`bufferRef` / `anchorRef` と同じ理由）。
+   */
+  const pendingLinkRef = useRef<string | undefined>(undefined);
   const composerRef = useRef<DOMElement>(null);
   const composerBox = useAbsolutePosition(composerRef);
   // 入力欄の折り返し幅（実測）。PromptInput が描いた折り返しと同じ値でクリック位置の
@@ -421,6 +438,13 @@ export const SessionDetail: FC<{
     // editText に流れ込み「スクロールしようとすると文字が入力される」のを防ぐ）。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
+      // モーダル表示中はマウスも飲む（一覧の `session-list.tsx` と同じ方針）。
+      // `parseSgrMouse` で弾くのは自分のハンドラを守るだけで、同じ生入力は兄弟の
+      // useInput にも届く。飲まないとダイアログ上の 1 クリックで背後のログの選択が
+      // 動き、URL の上ならブラウザまで開いてしまう（許可待ちの最中に）。
+      if (modelSelect || pending) {
+        return;
+      }
       if (mouse.kind === 'wheel') {
         applyAnchor(
           mouse.dir === 'up'
@@ -432,12 +456,21 @@ export const SessionDetail: FC<{
         // 範囲選択を始める（どちらでもなければ両方のハイライトを解除）。
         const index = composerCaretAt(mouse.x, mouse.y);
         if (index !== undefined) {
+          pendingLinkRef.current = undefined;
           updateBuffer(bufferOf(bufferRef.current.value, index));
           sel.begin(index);
           clearLogSelection();
         } else {
           sel.clear();
           setEdge(undefined);
+          // URL の上で押したら「離すまでドラッグしなければ開く」候補として覚える。
+          // 押した時点では開かない — ドラッグで範囲選択を始めた場合に開いてしまう。
+          // **左ボタンだけ**: 右クリック（端末のコンテキストメニューを期待した操作）や
+          // 中クリック（貼り付け）でブラウザを開くのは意図しない副作用になる。
+          pendingLinkRef.current =
+            logView && mouse.button === 'left'
+              ? logLinkAt(lines, logView, mouse.x, mouse.y)
+              : undefined;
           const point = logAnchorAt(mouse.x, mouse.y);
           if (point) {
             logSel.begin(point);
@@ -446,6 +479,8 @@ export const SessionDetail: FC<{
           }
         }
       } else if (mouse.kind === 'drag') {
+        // ドラッグになった = 範囲選択なので、リンクを開く候補は取り消す。
+        pendingLinkRef.current = undefined;
         if (sel.dragging()) {
           const index = composerCaretAt(mouse.x, mouse.y);
           if (index !== undefined) {
@@ -461,6 +496,12 @@ export const SessionDetail: FC<{
         sel.end(bufferRef.current.value);
         logSel.end(lines);
         setEdge(undefined);
+        // ドラッグにならずに URL の上で離した = 単なるクリック → ブラウザで開く。
+        const url = pendingLinkRef.current;
+        pendingLinkRef.current = undefined;
+        if (url !== undefined && onOpenUrl) {
+          onOpenUrl(url);
+        }
       }
       return;
     }
@@ -471,6 +512,8 @@ export const SessionDetail: FC<{
     // 何かキーが来たらマウス選択のハイライトは消す（自動スクロールも止める）。
     sel.clear();
     clearLogSelection();
+    // press の release が届かないまま（端末外で離した等）保留が残るのを防ぐ。
+    pendingLinkRef.current = undefined;
     // 立て直しの結果表示は次の操作で引っ込める（エラーと違い一過性の通知）。
     recovery.setNotice(undefined);
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow

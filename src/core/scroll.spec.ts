@@ -110,6 +110,84 @@ describe('wrapDisplayLines', () => {
   });
 });
 
+describe('logLines: クリックできる URL の範囲（links）', () => {
+  const prefixFor = (kind: LogKind) => (kind === 'user' ? '> ' : '');
+
+  it('プレーン行の裸 URL に範囲が付き、prefix のぶんずれる', () => {
+    const [row] = logLines([{ seq: 1, kind: 'user', text: 'see https://x.dev/a' }], 60, prefixFor);
+    // prefix '> ' が 2 文字。'see ' が 4 文字なので 6..
+    expect(row?.text).toBe('> see https://x.dev/a');
+    expect(row?.links).toEqual([{ from: 6, to: 21, url: 'https://x.dev/a' }]);
+    expect(row?.text.slice(6, 21)).toBe('https://x.dev/a');
+  });
+
+  it('URL の無い行に links を付けない（大多数の行のコストをゼロに保つ）', () => {
+    expect(logLines([{ seq: 2, kind: 'user', text: 'no links' }], 60, prefixFor)[0]?.links).toBe(
+      undefined,
+    );
+  });
+
+  it('折り返しで URL が割れても、どちらの行も URL 全体を指す', () => {
+    // 幅 12・prefix なし → content 12。URL が 2 行に割れる。
+    const rows = logLines(
+      [{ seq: 3, kind: 'system', text: 'https://x.dev/abcdefgh' }],
+      12,
+      prefixFor,
+    );
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row.links?.[0]?.url).toBe('https://x.dev/abcdefgh');
+    }
+    // 各行の範囲はその行のテキスト内に収まる
+    for (const row of rows) {
+      const link = row.links?.[0];
+      expect(link?.from).toBeGreaterThanOrEqual(0);
+      expect(link?.to).toBeLessThanOrEqual(row.text.length);
+    }
+  });
+
+  it('複数行のうち URL がある行だけに範囲が付く', () => {
+    const rows = logLines(
+      [{ seq: 4, kind: 'system', text: 'plain\nhttps://x.dev/a\nplain again' }],
+      60,
+      prefixFor,
+    );
+    expect(rows.map((r) => r.links !== undefined)).toEqual([false, true, false]);
+  });
+
+  it('Markdown の [label](url) は label の範囲に href が付く', () => {
+    const [row] = logLines(
+      [{ seq: 5, kind: 'assistant_text', text: 'see [docs](https://x.dev/d)' }],
+      60,
+      prefixFor,
+    );
+    expect(row?.text).toBe('see docs');
+    expect(row?.links).toEqual([{ from: 4, to: 8, url: 'https://x.dev/d' }]);
+  });
+
+  it('コードブロック内の裸 URL も拾う（href が付かない経路の受け皿）', () => {
+    const rows = logLines(
+      [{ seq: 6, kind: 'assistant_text', text: '```\nhttps://x.dev/c\n```' }],
+      60,
+      prefixFor,
+    );
+    const hit = rows.find((r) => r.text.includes('https://x.dev/c'));
+    expect(hit?.links?.[0]?.url).toBe('https://x.dev/c');
+  });
+
+  it('隣り合う別リンクを 1 スパンに畳まない', () => {
+    const [row] = logLines(
+      [{ seq: 7, kind: 'assistant_text', text: '[a](https://a.test)[b](https://b.test)' }],
+      60,
+      prefixFor,
+    );
+    expect(row?.links).toEqual([
+      { from: 0, to: 1, url: 'https://a.test' },
+      { from: 1, to: 2, url: 'https://b.test' },
+    ]);
+  });
+});
+
 describe('logLines (entries → physical rows)', () => {
   const prefixFor = (kind: LogKind) => (kind === 'user' ? '> ' : '');
 

@@ -1,7 +1,8 @@
 import { clamp } from './math';
 import type { DisplayLine, LogWindow } from './scroll';
-import { caretIndexForColumn } from './text-buffer';
+import { caretIndexForColumn, charIndexAtColumn } from './text-buffer';
 import type { RowSelection } from './text-selection';
+import { linkAt } from './url';
 
 /**
  * 詳細ビューのログ内の 1 点。**文書全体の表示行 index**（`row`）と、その行のテキスト内の
@@ -102,6 +103,38 @@ export function logCaretAt(
     return undefined;
   }
   return { row, col: caretIndexForColumn(lines[row]?.text ?? '', x - view.left) };
+}
+
+/**
+ * マウス位置にあるクリック可能な URL（無ければ undefined）。
+ *
+ * `logCaretAt` と違い**行末より右は当たりにしない**。選択のアンカーは「短い行の右の
+ * 余白からドラッグを始める」ために行末へ丸めてよいが、リンクを丸めると URL で終わる
+ * 行の右の余白をクリックしただけでブラウザが開いてしまう（意図しない副作用）。
+ *
+ * 桁の逆算は描画と同じ**グラフェム単位の表示幅**（`charIndexAtColumn`）で行い、得られた
+ * index の文字が範囲に入っているかを見る。判定（行末か）と逆算を 1 回の走査でまとめて
+ * やるのが要点 — 別々に測ると単位が食い違い、絵文字を含む行で端が 1 セルずれる
+ * （`core/graphemes.ts`）。折り返しで URL が割れていても各行が URL 全体を指しているので、
+ * どちらの行でも同じ先が返る。
+ */
+export function logLinkAt(
+  lines: readonly DisplayLine[],
+  view: LogViewport,
+  x: number,
+  y: number,
+): string | undefined {
+  const row = logRowAt(view, y);
+  if (row === undefined) {
+    return undefined;
+  }
+  const line = lines[row];
+  if (!line?.links || line.links.length === 0) {
+    return undefined;
+  }
+  // 行末より右・行の左外は当たりにしない（`charIndexAtColumn` が undefined を返す）。
+  const index = charIndexAtColumn(line.text, x - view.left);
+  return index === undefined ? undefined : linkAt(line.links, index);
 }
 
 /** ドラッグが可視域の外へ出た向き（自動スクロールの向き）。 */

@@ -4,6 +4,7 @@ import {
   bufferLines,
   bufferOf,
   caretIndexForColumn,
+  charIndexAtColumn,
   clearBuffer,
   cursorRowCol,
   emptyBuffer,
@@ -186,7 +187,54 @@ describe('caretIndexForColumn', () => {
     ['boundary between wide chars', 'あい', 2, 1],
     ['mixed ascii + cjk', 'fix バグ', 6, 5], // 'fix ' (4 cells) + バ (2 cells) -> before グ
     ['emoji is a 2-cell surrogate pair', '🍣x', 2, 2],
+    // グラフェム単位で歩く（コードポイント単位だとここから先が 1 セルずれる）。
+    // '⚠️' は U+26A0 + U+FE0F の 2 コードポイント = 1 グラフェム = 2 セル。
+    ['VS16 emoji occupies 2 cells', '⚠️ab', 0, 0],
+    ['click after a VS16 emoji is not shifted', '⚠️ab', 2, 2],
+    ['click on the char after a VS16 emoji', '⚠️ab', 3, 3],
   ])('%s', (_desc, text, column, expected) => {
     expect(caretIndexForColumn(text, column)).toBe(expected);
+  });
+
+  it('グラフェムの途中に caret を置かない', () => {
+    // U+FE0F（index 1）を指してはいけない。
+    for (const column of [0, 1]) {
+      expect(caretIndexForColumn('⚠️ab', column)).toBe(0);
+    }
+  });
+});
+
+describe('charIndexAtColumn（行末より右は当たりにしない）', () => {
+  it.each([
+    ['行頭', 'abc', 0, 0],
+    ['行内', 'abc', 2, 2],
+    ['最終セル', 'abc', 2, 2],
+    ['行末のちょうど右 → undefined', 'abc', 3, undefined],
+    ['さらに右 → undefined', 'abc', 99, undefined],
+    ['負の列 → undefined', 'abc', -1, undefined],
+    ['空文字はどの列でも undefined', '', 0, undefined],
+    ['全角の 2 セル目は同じ文字', 'あい', 1, 0],
+    ['全角の行末の右 → undefined', 'あい', 4, undefined],
+  ])('%s', (_desc, text, column, expected) => {
+    expect(charIndexAtColumn(text, column)).toBe(expected);
+  });
+
+  /**
+   * Regression: 判定（全体の `stringWidth` = グラフェム基準）と逆算（コードポイント基準）で
+   * 単位が食い違い、VS16 絵文字より後ろの当たり判定が 1 セルずれていた。結果、URL の
+   * **手前の空白**をクリックするとブラウザが開き、URL の**最後の文字**は反応しなかった。
+   */
+  it('VS16 絵文字を含む行でも列と文字が 1 対 1 で対応する', () => {
+    const text = '⚠️ check https://x.dev/a for details';
+    const urlFrom = text.indexOf('https');
+    const urlTo = urlFrom + 'https://x.dev/a'.length;
+    const inUrl = (column: number) => {
+      const index = charIndexAtColumn(text, column);
+      return index !== undefined && index >= urlFrom && index < urlTo;
+    };
+    expect(inUrl(urlFrom - 1)).toBe(false); // URL 直前の空白では開かない
+    expect(inUrl(urlFrom)).toBe(true); // URL の先頭
+    expect(inUrl(urlTo - 1)).toBe(true); // URL の末尾の文字も当たる
+    expect(inUrl(urlTo)).toBe(false); // URL の直後
   });
 });

@@ -10,16 +10,23 @@ import type { CreateSessionInput, SessionState } from '@/core/types';
 export const flush = (ms = 150): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // 制御文字を正規表現リテラルに直接書くと Biome の noControlCharactersInRegex に触れるので組み立てる。
-const SGR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+const ESC = String.fromCharCode(27);
+const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'g');
+/**
+ * OSC（`ESC ] … BEL` / `ESC ] … ESC \\`）。詳細ログの URL は OSC 8 ハイパーリンクで
+ * 包まれて出るので、これを外さないと**エスケープの中の URL 文字列**が
+ * `indexOf` に引っかかり、そこから求めた列は表示位置とまるで違う場所になる。
+ */
+const OSC = new RegExp(`${ESC}\\][\\s\\S]*?(?:${String.fromCharCode(7)}|${ESC}\\\\)`, 'g');
 
 /**
- * Drop SGR (color/style) escapes from a frame. Necessary whenever a test derives a
- * *column* from `lastFrame()` (e.g. to synthesize a mouse report): with colors
- * enabled the raw string index includes escape sequences, so the click would land
- * somewhere else entirely.
+ * Drop SGR (color/style) and OSC escapes from a frame. Necessary whenever a test
+ * derives a *column* from `lastFrame()` (e.g. to synthesize a mouse report): with
+ * colors (or OSC 8 links) enabled the raw string index includes escape sequences,
+ * so the click would land somewhere else entirely.
  */
 export function stripAnsi(frame: string): string {
-  return frame.replace(SGR, '');
+  return frame.replace(OSC, '').replace(SGR, '');
 }
 
 /** A no-op WorktreeService that reports predictable slugs/paths for the fakes. */

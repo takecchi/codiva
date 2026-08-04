@@ -6,6 +6,7 @@ import {
   logCaretAt,
   logEdgeAt,
   logEdgePoint,
+  logLinkAt,
   logRowAt,
   logRowSelection,
   logSelectionText,
@@ -166,5 +167,63 @@ describe('logSelectionText', () => {
   it('全行の選択は全文を返す', () => {
     const range = { start: { row: 0, col: 0 }, end: { row: 4, col: 5 } };
     expect(logSelectionText(LINES, range)).toBe('alpha\nbravo\n\ndelta\n日本語の行');
+  });
+});
+
+describe('logLinkAt', () => {
+  const URL = 'https://x.dev/a';
+  /** 行 1 = `ab https://x.dev/a` （URL は 3..18）。可視域は VIEW（left=2, 先頭行=1）。 */
+  const linked: DisplayLine[] = [
+    line('row0'),
+    { key: '1:0', kind: 'system', text: `ab ${URL}`, links: [{ from: 3, to: 18, url: URL }] },
+    line('row2', 2),
+  ];
+
+  it('URL の上をクリックすると URL を返す', () => {
+    // 文書行 1 は可視域の 1 行目（y = top = 5）。x = left + col。
+    expect(logLinkAt(linked, VIEW, 2 + 3, 5)).toBe(URL);
+    expect(logLinkAt(linked, VIEW, 2 + 10, 5)).toBe(URL);
+    expect(logLinkAt(linked, VIEW, 2 + 17, 5)).toBe(URL);
+  });
+
+  it('URL の手前・直後は返さない', () => {
+    expect(logLinkAt(linked, VIEW, 2 + 0, 5)).toBeUndefined();
+    expect(logLinkAt(linked, VIEW, 2 + 2, 5)).toBeUndefined();
+  });
+
+  it('行末より右の余白は当たりにしない（丸めない）', () => {
+    // 行の表示幅は 18。col 18 以上は URL で終わる行でも undefined。
+    expect(logLinkAt(linked, VIEW, 2 + 18, 5)).toBeUndefined();
+    expect(logLinkAt(linked, VIEW, 2 + 40, 5)).toBeUndefined();
+  });
+
+  it('可視域の左外は当たりにしない', () => {
+    expect(logLinkAt(linked, VIEW, 0, 5)).toBeUndefined();
+  });
+
+  it('links を持たない行・ログ行の外は undefined', () => {
+    expect(logLinkAt(linked, VIEW, 2 + 1, 6)).toBeUndefined(); // 文書行 2（links なし）
+    expect(logLinkAt(linked, VIEW, 2 + 1, 99)).toBeUndefined(); // ログ行の外
+  });
+
+  it('選択のアンカー（logCaretAt）とは違い、行末で丸めない', () => {
+    // 同じ座標で logCaretAt は「行末」を返す = 選択は始められる。
+    expect(logCaretAt(linked, VIEW, 2 + 40, 5)).toEqual({ row: 1, col: 18 });
+    expect(logLinkAt(linked, VIEW, 2 + 40, 5)).toBeUndefined();
+  });
+
+  it('CJK を含む行でも表示幅で当たる', () => {
+    const lines: DisplayLine[] = [
+      line('row0'),
+      {
+        key: '1:0',
+        kind: 'system',
+        // '日本語 ' = 7 セル（3 文字 + 空白）。URL は文字 index 4..19。
+        text: `日本語 ${URL}`,
+        links: [{ from: 4, to: 19, url: URL }],
+      },
+    ];
+    expect(logLinkAt(lines, VIEW, 2 + 7, 5)).toBe(URL); // URL 先頭のセル
+    expect(logLinkAt(lines, VIEW, 2 + 1, 5)).toBeUndefined(); // 日本語の上
   });
 });
