@@ -785,6 +785,37 @@ UI なし。すべてユニットテストで駆動する。
 > 実績メモ: lint / typecheck / test / build 緑。ヘッダの行数は増えていない（プラン + モデルの行に
 > 並べただけなので `bannerCaretAt` の「行 index = 表示行」も不変）。実機での体感確認はユーザーに依頼。
 
+## Phase 23: セッションを 1 件ずつ削除する（`x` / `/remove`） ✅
+
+> 一覧から 1 件だけ消す手段が無かった。`d`（破棄）は worktree とブランチを消すが行を
+> `archived` として残すため、**古い PR が付いたセッションが `Ctrl+F`（一括立て直し）の
+> 候補に挙がり続ける**。`/clear` は行を消す代わりに worktree を残していたので、
+> 「消したのにディスクには残る」ぶんが見えない負債になっていた。両方を揃える。
+
+- [x] `SessionManager.remove(id, opts)`: 破棄 + `store.remove` + `onPersist`（= state.json からも消える）。
+      worktree が既に無い行（過去に `d` した archived）も**エラーにせず**行だけ落とす。
+      共通の後始末は private `forget(id)` に切り出し（`stop()` → `sessions`/`worktreeMeta`/`prs`/`store`）
+- [x] `SessionManager.clear()` を async 化し、**worktree とブランチも削除**（`ClearOutcome`
+      = `{ cleared, error }`）。git はリポジトリ全体のロックを取るので**直列**。除去に失敗した行は
+      **残す**（ディスクにあるものを一覧から隠さない）
+- [x] `CommandAction`/`COMMANDS` に `remove`、`Messages` に `command.remove` / `action.removePrompt` /
+      `action.clearPrompt(n)` / `detail.removeAction`（ja/en 対）。フッタヒントに `x: 削除`
+- [x] `useLifecycleAction` を `merge | discard | remove | clear` に拡張（`clear` だけ id 不要）。
+      `onDone(ok, action)` にして、詳細ビューは削除成功時だけ `onBack()`（消えたセッションの
+      「見つかりません」を見せない）
+- [x] 一覧: `x` キー + `/remove`、`/clear` は**件数付きの確認**を挟む（0 件なら聞かない）。
+      詳細: 操作パネルの `x` + `/remove`
+- [x] `CommandPalette` に `flexShrink={0}`（コマンドが 1 つ増えて `/help` 一覧が縦に入らなくなると、
+      Yoga が枠を縮めて行が混ざり `/diffpt` のような読めない表示になっていた）
+- [x] テスト: `session-manager.spec.ts`（remove の 4 ケース / clear の worktree 削除・失敗時に行を残す）/
+      `commands.spec.ts`（`/re` は recover と remove の両方に前方一致）/ `tests/commands.test.tsx`
+      （`/clear` の確認 → y、0 件では何もしない、`/remove`、`x` の n/y）
+- [x] ドキュメント: `README.md`（「セッションを消す」節 = `d` / `x` / `/clear` の対比表）/
+      `docs/ARCHITECTURE.md`（キー割当 + 設計判断 2 行）
+
+> 実績メモ: lint / typecheck / test 緑。リモートブランチと GitHub の PR には触らない（ローカルのみ）。
+> 未コミット変更は `force` で消えるため、確認文で明示している。実機での体感確認はユーザーに依頼。
+
 ---
 
 ## Phase 23: ヒープ枯渇（OOM）対策 ✅

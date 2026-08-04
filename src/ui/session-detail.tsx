@@ -126,14 +126,22 @@ export const SessionDetail: FC<{
   const [diff, setDiff] = useState<DiffStat | undefined>(undefined);
   // 変更差分サマリは既定で畳んでおき（ログの縦幅を優先）、`/diff` でトグルする。
   const [showChanges, setShowChanges] = useState(false);
-  // 確認/実行中/エラー + マージ・破棄の実行は共有フックへ。成功時は入力パネルへ戻す。
+  // 確認/実行中/エラー + マージ・破棄・削除の実行は共有フックへ。成功時は入力パネルへ戻す。
   const { confirm, setConfirm, busy, actionError, setActionError, run } = useLifecycleAction(
     manager,
     id,
-    (ok) => {
-      if (ok) {
-        setPanel('input');
+    (ok, action) => {
+      if (!ok) {
+        return;
       }
+      // 削除すると開いている当のセッションが store から消える（= このビューは
+      // 「セッションが見つかりません」になる）ので一覧へ戻す。マージ/破棄は行が
+      // 残るので詳細に留まる。
+      if (action === 'remove') {
+        onBack();
+        return;
+      }
+      setPanel('input');
     },
   );
   // `/sync` · `/fix-ci`（このセッションの PR の立て直し）。エラー欄は共有する。
@@ -208,8 +216,10 @@ export const SessionDetail: FC<{
         recovery.run(id, 'ci');
         applyAnchor('bottom');
       },
-      // `/recover` は複数セッションが対象なので詳細ビューには置かない（ハンドラの
-      // 無いコマンドは昇格しないので、`recover` と打っても通常の指示として流れる）。
+      // `/remove` はこのセッションを記録ごと削除する（操作パネルの `x` と同じ確認へ）。
+      remove: () => setConfirm('remove'),
+      // `/recover` と `/clear` は複数セッションが対象なので詳細ビューには置かない
+      // （ハンドラの無いコマンドは昇格しないので、打っても通常の指示として流れる）。
     },
     setActionError,
     m.command.unknown,
@@ -525,6 +535,8 @@ export const SessionDetail: FC<{
         setConfirm('merge');
       } else if (input === 'd' || input === 'D') {
         setConfirm('discard');
+      } else if (input === 'x' || input === 'X') {
+        setConfirm('remove');
       } else if ((input === 'r' || input === 'R') && resumable) {
         resume();
       }
@@ -702,7 +714,9 @@ export const SessionDetail: FC<{
           />
         ) : panel === 'actions' ? (
           <DialogBox flexDirection="column">
-            {confirm ? (
+            {/* `clear` は一覧ビュー専用（件数付きの variant）。詳細では立てないが、
+                共有フックの型に含まれるのでここで除外して narrowing する。 */}
+            {confirm && confirm !== 'clear' ? (
               <ConfirmPrompt kind={confirm} busy={busy} />
             ) : (
               <>
@@ -717,6 +731,9 @@ export const SessionDetail: FC<{
                 <Text>
                   <Text color={theme.yes}>m</Text>: {m.detail.mergeAction} ・{' '}
                   <Text color={theme.no}>d</Text>: {m.detail.discardAction}
+                </Text>
+                <Text>
+                  <Text color={theme.no}>x</Text>: {m.detail.removeAction}
                 </Text>
               </>
             )}
