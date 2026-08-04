@@ -319,7 +319,7 @@ interface SessionState {
   worktreePath: string;
   todos: TodoItem[];          // TaskCreate/TaskUpdate（+ 旧 TodoWrite）から構築した最新スナップショット
   progress?: { done: number; total: number }; // todos から導出
-  messages: LogEntry[];       // 整形済みログ。SessionDetail のログビューで表示し、復元時は SDK transcript から再構築
+  messages: LogEntry[];       // 整形済みログ（**上限付き**: core/log-buffer.ts）。SessionDetail のログビューで表示し、復元時は SDK transcript から再構築
   pendingPermission?: PermissionRequest;      // awaiting_permission / awaiting_input 時のみ
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
   model?: string;             // セッション個別のモデル上書き（/model）
@@ -444,7 +444,8 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   フォーカスも選択行も動かさない（パスをコピーしたいだけの操作でタイピング位置を奪わない）。
 - `SessionDetail`: 詳細画面。**ステータスヘッダは持たず**、コンテンツ（末尾ビューポートのログ）+ フッタ
   （追加指示コンポーザ）だけの構成。SDK セッションに**直結**し、末尾ビューポートにログを描画（`core/scroll.ts` の
-  `logLines` でエントリを CJK 幅対応で折り返した**物理行**（`DisplayLine[]`）へ展開してから、
+  `logLines` でエントリを CJK 幅対応で折り返した**物理行**（`DisplayLine[]`）へ展開してから
+  （展開は**エントリ単位でメモ化**する。下記「ログのメモリ上限」参照）、
   `logWindow`/`scrollUp`/`scrollDown` で PgUp/PgDn（半画面）・↑/↓（1行 = `ARROW_SCROLL_LINES`）・
   ホイール（`WHEEL_SCROLL_LINES`）スクロール。マウスレポートは `parseSgrMouse` で useInput の先頭で
   先取り解釈し、コンポーザへ文字入力として漏れないようにする（マウス無効環境では端末がホイールを
@@ -757,6 +758,38 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
   「kill された（端末を閉じた等）」を後から切り分けるため。
 - 設定 `crashLog: false` でファイル出力（自前レポート + 診断レポート）を止められる。
   理由の表示と端末の復元は設定に関係なく行う。
+
+## ログのメモリ上限（OOM 対策）
+
+実際に `FATAL ERROR: Ineffective mark-compacts near heap limit` で落ちた。原因は
+「**保持しすぎ**」と「**確保しすぎ**」の 2 つで、対策も 2 つに分かれる。
+
+| 問題 | 対策 | 場所 |
+|---|---|---|
+| `SessionState.messages` が無制限に伸び、追記ごとに全体コピー（O(n²)） | 件数 `MAX_LOG_ENTRIES`（古い方から落とす）+ 1 件あたり `MAX_LOG_ENTRY_CHARS`（`…` を付けて切る） | `core/log-buffer.ts` の `pushLogEntry` |
+| 詳細ビューが**更新ごとにログ全体**を折り返し + Markdown 再パース | エントリ単位のメモ化（`WeakMap<LogEntry, rows>`。幅とプレフィックスが同じなら再利用） | `core/scroll.ts` の `logLines` |
+| ツール結果の巨大ペイロード（10MB の `Read` / `Bash`）を平坦化 → 全行 `split` | 読む 200 文字だけ材質化（`asStringHead`） | `core/sdk-parse.ts` |
+| `streamingText` に 1 メッセージ全体を溜め、毎フレーム全体を `split` | 末尾 `MAX_STREAM_PREVIEW_CHARS` だけ保持（描くのは最後の 1 行） | `core/log-buffer.ts` の `clipStreamText` |
+| 復元時に全セッションのトランスクリプト（各数 MB）を同時読み込み | 1 本ずつ読む（変換後すぐ回収される）+ `capLogEntries` | `bootstrap/restore-sessions.ts` / `core/transcript.ts` |
+
+前提として **ログは会話の「記録」ではなく「表示」**である。正本は CLI のトランスクリプト
+（`~/.claude/projects/…`、復元は `core/transcript.ts`）なので、古い行を落としても読み返す手段は残る。
+
+不変条件:
+
+- **追記の経路は `pushLogEntry` だけ**。`[...state.messages, entry]` を新しく書かない
+  （`appendLog` と `sdk-parse` の直書きはすべてここを通す）。
+- **`seq` は振り直さない**。描画キー・スクロールのアンカー・範囲選択が seq の連続性ではなく
+  同一性に依存している（トリムしても既存行の意味は変わらない）。
+- **`logLines` の返す行は read-only**。メモ化で複数フレームに共有されるため、
+  呼び出し側で書き換えない（`selectionSlices` のように必ず新しい配列を作る）。
+
+既知のトレードオフ: スクロール位置（`ScrollAnchor` の数値）と選択位置（`LogPoint`）は
+**文書先頭からの表示行 index** なので、上限に達したログが古い行を落とすとその分だけ意味がズレる
+（上へスクロールして読んでいる最中に新しい行が来ると、ビューが落ちた行数ぶん新しい方へ動く）。
+起きるのは「2000 件を超えた」かつ「スクロール中」かつ「追記が続いている」の同時成立時だけで、
+落ちる（= 全部読めなくなる）よりは軽い副作用として受け入れている。直すなら行 index ではなく
+`DisplayLine.key`（`<seq>:<行>`。トリムでも追記でも不変）を基準にする必要がある。
 
 ## 設計判断
 

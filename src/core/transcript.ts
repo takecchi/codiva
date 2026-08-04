@@ -1,3 +1,4 @@
+import { capLogEntries } from './log-buffer';
 import { summarizeToolUse, toolResultSummary } from './sdk-parse';
 import type { LogEntry } from './types';
 
@@ -116,6 +117,11 @@ function appendAssistantLine(
  * summarized `tool_use`. Meta/sidechain lines and non-message records
  * (queue-operation, attachment, ai-title, last-prompt, pr-link, …) are skipped.
  * Malformed lines are ignored — a corrupt transcript must not break restore.
+ *
+ * The result is bounded like the live log (`capLogEntries`): a months-old
+ * transcript is tens of MB, and restoring several of them at launch used to put
+ * all of it back on the heap at once. `seq` numbering is kept as-is so the
+ * restored `logSeq` still continues past the newest line.
  */
 export function transcriptLogEntries(jsonl: string): LogEntry[] {
   const out: LogEntry[] = [];
@@ -152,5 +158,5 @@ export function transcriptLogEntries(jsonl: string): LogEntry[] {
       appendAssistantLine(out, message?.content, timestamp);
     }
   }
-  return out;
+  return capLogEntries(out);
 }

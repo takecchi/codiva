@@ -6,6 +6,7 @@ import {
   isTransientApiErrorKind,
   isTransientApiStatus,
 } from './errors';
+import { clipStreamText, pushLogEntry } from './log-buffer';
 import { isResumable } from './status-meta';
 import {
   appendLog,
@@ -58,6 +59,32 @@ function asString(v: unknown): string {
 }
 
 /**
+ * Like {@link asString} but materializes at most `limit` characters. Tool results
+ * carry whole file reads and command outputs (megabytes), and only their first
+ * ~200 characters are ever shown: flattening the entire payload — and then
+ * splitting it into every one of its lines — allocated the whole thing on the
+ * heap just to throw it away, once per tool call.
+ */
+function asStringHead(v: unknown, limit: number): string {
+  if (typeof v === 'string') {
+    return v.slice(0, limit);
+  }
+  if (Array.isArray(v)) {
+    let out = '';
+    for (const b of v) {
+      if (out.length >= limit) {
+        break;
+      }
+      if (b && typeof b === 'object' && 'text' in b) {
+        out += String((b as { text: unknown }).text).slice(0, limit - out.length);
+      }
+    }
+    return out;
+  }
+  return v == null ? '' : JSON.stringify(v).slice(0, limit);
+}
+
+/**
  * Flatten an error `result`'s `errors: string[]` into one string. The error result
  * variants have no `result` field, so this is the only description they carry.
  */
@@ -86,12 +113,19 @@ export function summarizeToolUse(name: string, input: Record<string, unknown>): 
   }
 }
 
+/** How many characters of a tool_result's first line the log keeps. */
+const TOOL_RESULT_SUMMARY_CHARS = 200;
+
 /**
  * One-line log summary for a tool_result block's content (first line, capped).
  * Shared with `transcript.ts` so restored history matches the live log format.
+ * Only the first {@link TOOL_RESULT_SUMMARY_CHARS} characters are read out of the
+ * payload — the rest of a multi-megabyte result is never materialized.
  */
 export function toolResultSummary(content: unknown): string {
-  return asString(content).split('\n')[0]?.slice(0, 200) ?? '';
+  const head = asStringHead(content, TOOL_RESULT_SUMMARY_CHARS);
+  const br = head.search(/[\r\n]/);
+  return br === -1 ? head : head.slice(0, br);
 }
 
 /** Apply a TaskCreate/TaskUpdate/TodoWrite tool_use block to the todo list. */
@@ -272,17 +306,19 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
       const text = (raw as TextBlock).text.trim();
       if (text.length > 0) {
         const seq = logSeq + 1;
-        messages = [...messages, { seq, kind: 'assistant_text', text, timestamp }];
+        messages = pushLogEntry(messages, { seq, kind: 'assistant_text', text, timestamp });
         logSeq = seq;
       }
     } else if (block.type === 'tool_use') {
       const tu = raw as ToolUseBlock;
       todos = applyTaskTool(todos, tu);
       const seq = logSeq + 1;
-      messages = [
-        ...messages,
-        { seq, kind: 'tool_use', text: summarizeToolUse(tu.name, tu.input ?? {}), timestamp },
-      ];
+      messages = pushLogEntry(messages, {
+        seq,
+        kind: 'tool_use',
+        text: summarizeToolUse(tu.name, tu.input ?? {}),
+        timestamp,
+      });
       logSeq = seq;
     }
   }
@@ -338,7 +374,9 @@ function reduceStreamEvent(state: SessionState, message: Record<string, unknown>
         // Keep a blocked session (pendingPermission) in its awaiting_* status;
         // only an unblocked stream implies the model is actively running.
         status: state.pendingPermission ? state.status : 'running',
-        streamingText: (state.streamingText ?? '') + delta.text,
+        // Only the tail is ever rendered (one preview line), and the buffer is
+        // re-split on every frame — so don't carry a whole message around.
+        streamingText: clipStreamText((state.streamingText ?? '') + delta.text),
       };
     }
   }
@@ -356,7 +394,7 @@ function reduceUser(state: SessionState, message: Record<string, unknown>): Sess
       const text = toolResultSummary(tr.content);
       if (text.length > 0) {
         const seq = logSeq + 1;
-        messages = [...messages, { seq, kind: 'tool_result', text }];
+        messages = pushLogEntry(messages, { seq, kind: 'tool_result', text });
         logSeq = seq;
       }
     }

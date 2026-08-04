@@ -39,6 +39,20 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
 - 状態の確定は `Session.commit` の単一経路。ここが `accrueActive` を呼ぶので、
   個別の遷移に稼働時間の計算を散らさない。
 
+## ログ（`messages`）は上限付き
+
+- **追記の経路は `core/log-buffer.ts` の `pushLogEntry` だけ**（`appendLog` と `sdk-parse` の
+  直書きもここを通す）。`[...state.messages, entry]` を新しく書かない — 上限なしの追記 +
+  全体コピーが**実際にヒープ枯渇で TUI を落とした**（`FATAL ERROR: Ineffective mark-compacts`）。
+- 上限は件数 `MAX_LOG_ENTRIES`（古い方から落とす）と 1 件あたり `MAX_LOG_ENTRY_CHARS`
+  （`…` を付けて切る）。**ログは会話の「記録」ではなく「表示」**で、正本は CLI の
+  トランスクリプトなので古い行を落としてよい。
+- **`seq` は振り直さない**。描画キー・スクロールのアンカー・範囲選択が seq の同一性に依存する。
+- 復元（`transcriptLogEntries`）も `capLogEntries` で同じ上限に収める。
+- 詳細ビューの行展開（`core/scroll.ts` の `logLines`）は**エントリ単位でメモ化**されている。
+  エントリが immutable であること（変更時は必ず別オブジェクト）が前提なので、
+  `LogEntry` をその場で書き換えない。返る `DisplayLine` は read-only 扱い。
+
 ## 状態の「性質」は STATUS_META が唯一の表
 
 `core/status-meta.ts` の `STATUS_META: Record<SessionStatus, StatusMeta>` に集約する。

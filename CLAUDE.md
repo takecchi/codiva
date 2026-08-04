@@ -68,7 +68,8 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 一覧画面 | `ui/session-list.tsx`（composer / list の2フォーカス） |
 | 詳細画面 | `ui/session-detail.tsx`（ログ + 追加指示 + 操作パネル） |
 | 入力欄・キー処理 | `core/text-buffer.ts`（純粋モデル）/ `core/composer-layout.ts`（折り返し・表示行の幾何）/ `core/input-history.ts`（↑↓ の入力履歴）/ `ui/input.ts`（キー→操作）/ `ui/prompt-input.tsx` |
-| ログ描画・スクロール | `core/scroll.ts` / `core/markdown.ts` / `core/ansi.ts` / `ui/log-line.tsx`（1 行の描画） |
+| ログ描画・スクロール | `core/scroll.ts`（`logLines` は**エントリ単位でメモ化**）/ `core/markdown.ts` / `core/ansi.ts` / `ui/log-line.tsx`（1 行の描画） |
+| ログの上限・メモリ | `core/log-buffer.ts`（件数/文字数の上限・`pushLogEntry` が唯一の追記経路） |
 | マウス・範囲選択 | `core/mouse.ts` / `core/list-hit.ts` / `core/text-selection.ts` / `core/log-selection.ts`（詳細ログの選択・端の自動スクロール） / `utils/mouse.ts` / `utils/clipboard.ts` |
 | 文言・言語 | `core/i18n.ts`（カタログ）/ `ui/i18n-context.tsx`（`useMessages`） |
 | 色・記号 | `ui/theme.ts`（`.tsx` に生 ANSI 名を書かない） |
@@ -97,6 +98,8 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 6. **git は `utils/git.ts` の `git(cwd, args)`**（execFile + 引数配列。シェル禁止）。**マージ競合は自動解消しない。**
 7. **`any` / default export 禁止**、import は**拡張子なし**（`@/core`）、ファイル名は kebab-case。
 8. **worktree を勝手に消さない**。終了は `stop()`（quiet）で resumable なまま保存する。
+9. **ログは上限付き**。追記は `core/log-buffer.ts` の `pushLogEntry` だけを通す（`[...messages, entry]`
+   を新しく書かない）。無制限に伸びる配列 + 更新ごとの全ログ再パースで**実際にヒープ枯渇で落ちた**。
 
 ## ビルド/モジュール構成（変えない）
 

@@ -1,5 +1,6 @@
 import { USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
 import { isAuthError } from './errors';
+import { pushLogEntry } from './log-buffer';
 import { makeTitle } from './slug';
 import { isActiveStatus } from './status-meta';
 import type {
@@ -107,6 +108,9 @@ export function progressOf(todos: TodoItem[]): { done: number; total: number } |
 /**
  * Append a log entry and bump the monotonic seq. Shared with `sdk-parse.ts` so the
  * live SDK stream and the reducer's own events produce identically-sequenced logs.
+ * The log is bounded (`pushLogEntry`): oversized texts are clipped and the oldest
+ * entries fall off, so a long-lived session can't grow the heap without limit
+ * (see `core/log-buffer.ts`).
  */
 export function appendLog(
   state: SessionState,
@@ -116,7 +120,7 @@ export function appendLog(
 ): { messages: LogEntry[]; logSeq: number } {
   const seq = state.logSeq + 1;
   const entry: LogEntry = { seq, kind, text, timestamp };
-  return { messages: [...state.messages, entry], logSeq: seq };
+  return { messages: pushLogEntry(state.messages, entry), logSeq: seq };
 }
 
 /**

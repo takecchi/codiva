@@ -10,13 +10,16 @@ import { loadState, loadTranscriptText, pruneMissingWorktrees } from '@/utils';
 export async function restoreSessions(manager: SessionManager, statePath: string): Promise<void> {
   const persisted = pruneMissingWorktrees(await loadState(statePath));
   const histories = new Map<string, LogEntry[]>();
-  await Promise.all(
-    persisted.sessions.map(async (p) => {
-      const text = await loadTranscriptText(p.worktreePath, p.sdkSessionId);
-      if (text !== undefined) {
-        histories.set(p.id, transcriptLogEntries(text));
-      }
-    }),
-  );
+  // One transcript at a time on purpose. Reading them in parallel held every raw
+  // JSONL (a busy session's is several MB) in the heap simultaneously, on top of
+  // the parsed entries — a launch-time spike that scales with the number of
+  // restored sessions. Sequentially, each text is collectable as soon as it has
+  // been converted, and the (bounded) entries are all that stay.
+  for (const p of persisted.sessions) {
+    const text = await loadTranscriptText(p.worktreePath, p.sdkSessionId);
+    if (text !== undefined) {
+      histories.set(p.id, transcriptLogEntries(text));
+    }
+  }
   manager.restore(persisted, histories);
 }

@@ -315,6 +315,36 @@ function toUserMessage(text: string): SDKUserMessage {
   この場合 `index.tsx` の shutdown 列（ポーリング停止・`persist.flushAsync()`・teardown）は
   丸ごとスキップされるため、クラッシュハンドラ側にも同期 flush と端末復元を持たせている。
 
+## ヒープ枯渇の実測（2026-08-04）
+
+報告された落ち方（node 22 / 既定のヒープ上限）:
+
+```
+FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
+ 8: … v8::internal::MinorGCJob::Task::RunInternal()
+zsh: abort      codiva
+```
+
+- **`Ineffective mark-compacts` は「回収が確保に追いつかない」**の意味で、`Reached heap limit` と
+  違って「巨大な 1 個」ではなく**確保レートが高い**ときに出る（ネイティブスタックの最上位が
+  `MinorGCJob` = 新世代 GC のジョブなのがその印）。だから犯人は「捨てているのに作り続けている」
+  コード = **毎更新でログ全体を作り直していた `logLines`** だった。
+- **実測**（2,000 文字級の Markdown エントリ 500 件、幅 100 セル、「1 件追記 → 再描画」を 500 回
+  = 実際の追記ごと再描画と同じ形）:
+
+  | | 所要 | 生成した `DisplayLine` |
+  |---|---|---|
+  | メモ化なし（従来） | **23.3 秒** | 約 75 万個（+ `spans` 配列） |
+  | エントリ単位メモ化 | **0.10 秒** | 3,000 個（最終フレームぶんだけ） |
+
+  226 倍。ログが伸びるほど差が開く（従来は追記 n 件目のコストが O(n)）。
+- 併せて保持側にも上限を掛けた（`core/log-buffer.ts`）。`SessionState.messages` は上限なしで、
+  かつ追記が `[...messages, entry]` = **全体コピー**だったため、長いセッションでは保持量と
+  確保量が同時に増えていた。
+- **1 セッション = `claude` サブプロセス 1 本（最大 ~1GiB）**という別枠のメモリもあるので、
+  「codiva 本体のヒープ」と「サブプロセスの合計」を混同しないこと。前者はクラッシュログの
+  `memory` 行（rss / heapUsed / heapTotal）、後者は `ps` で見る。
+
 ## デスクトップ通知の実装メモ
 
 - **macOS の `osascript display notification` は「Script Editor」名義になる**（実測 / macOS 15）。通知センターは通知を**アプリバンドル単位**で管理し、`osascript` は自前のバンドルを持たないため AppleScript の代表バンドル `com.apple.ScriptEditor2` に紐づく。通知クリックは「送信元アプリのアクティベート」なので、codiva の完了通知を押すと**スクリプトエディタが開く**（同じ症状の報告: [opencode#23446](https://github.com/anomalyco/opencode/issues/23446)）。`-sender` 相当の指定は `osascript` には無く、`tell application id "…" to display notification` で端末アプリ名義にする手は TCC（自動化）許可プロンプトが必要になる。

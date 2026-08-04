@@ -170,6 +170,54 @@ describe('logLines (entries → physical rows)', () => {
     expect(lines[0]?.spans).toEqual([{ text: 'aaaaa', tone: 'code' }]);
     expect(lines[1]?.spans).toEqual([{ text: 'a', tone: 'code' }]);
   });
+
+  // 追記のたびにログ全体を再展開（= Markdown 再パース）していたのが OOM の主因なので、
+  // 「同じエントリは 2 度展開しない」ことをオブジェクト同一性で担保する。
+  describe('per-entry memoization', () => {
+    it('reuses the same row objects for an unchanged entry', () => {
+      const entry: LogEntry = { seq: 1, kind: 'assistant_text', text: 'hello **world**' };
+      const first = logLines([entry], 40, prefixFor);
+      const second = logLines([entry], 40, prefixFor);
+      expect(second[0]).toBe(first[0]);
+    });
+
+    it('only expands the newly appended entry (older rows stay identical)', () => {
+      const old: LogEntry = { seq: 1, kind: 'assistant_text', text: 'first' };
+      const before = logLines([old], 40, prefixFor);
+      const after = logLines(
+        [old, { seq: 2, kind: 'assistant_text', text: 'second' }],
+        40,
+        prefixFor,
+      );
+      expect(after[0]).toBe(before[0]);
+      expect(after).toHaveLength(2);
+    });
+
+    it('re-wraps when the width changes', () => {
+      const entry: LogEntry = { seq: 1, kind: 'system', text: 'abcd' };
+      expect(logLines([entry], 40, prefixFor)).toEqual([
+        { key: '1:0', kind: 'system', text: 'abcd' },
+      ]);
+      expect(logLines([entry], 2, prefixFor).map((l) => l.text)).toEqual(['ab', 'cd']);
+      // 元の幅に戻せば元の行に戻る（キャッシュが幅を跨いで漏れない）
+      expect(logLines([entry], 40, prefixFor).map((l) => l.text)).toEqual(['abcd']);
+    });
+
+    it('re-expands when the prefix for the kind changes', () => {
+      const entry: LogEntry = { seq: 1, kind: 'user', text: 'hi' };
+      expect(logLines([entry], 40, prefixFor)[0]?.text).toBe('> hi');
+      expect(logLines([entry], 40, () => '# ')[0]?.text).toBe('# hi');
+    });
+
+    it('a rewritten entry (new object, same seq) is expanded again', () => {
+      expect(
+        logLines([{ seq: 1, kind: 'system', text: 'api retry 1/10' }], 40, prefixFor)[0]?.text,
+      ).toBe('api retry 1/10');
+      expect(
+        logLines([{ seq: 1, kind: 'system', text: 'api retry 2/10' }], 40, prefixFor)[0]?.text,
+      ).toBe('api retry 2/10');
+    });
+  });
 });
 
 describe('wrapRichLine', () => {
