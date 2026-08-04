@@ -19,13 +19,14 @@ description: codiva の SessionStatus（running / completed / rate_limited な�
 
 ## 2. 性質を決める — `src/core/status-meta.ts`
 
-`STATUS_META` に1行足す。6フィールドすべてを意識して決める:
+`STATUS_META` に1行足す。7フィールドすべてを意識して決める:
 
 | フィールド | 問い |
 |---|---|
 | `terminal` | 差分・マージ/破棄操作を出す状態か |
 | `attention` | 一覧で ● 強調してユーザーの操作を促すか |
 | `active` | 稼働時間（`activeMs`）を積算する区間か（＝実際に動いているか） |
+| `interruptible` | `Ctrl+C`（中断）が意味を持つか（＝ターンが進行中か。`active` と違い `awaiting_*` も true） |
 | `resumable` | `r`（再開）で SDK 会話を続行できるか |
 | `restoreAs` | アプリ終了時に何へ丸めて保存するか（`undefined` = 保存しない） |
 | `notifyKey` | デスクトップ通知の文言キー（`Messages['notify']` のキー。不要なら省略） |

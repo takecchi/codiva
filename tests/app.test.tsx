@@ -973,6 +973,97 @@ describe('App detail view (in-app connection)', () => {
     expect(lastFrame()).toContain('追加の指示を入力'); // placeholder is back
   });
 
+  /**
+   * Ctrl+C = 実行中のターンを中断（Claude Code の Ctrl+C と同じ操作）。Ink は
+   * `exitOnCtrlC: false` なのでアプリは終了せず、セッションは「失敗」ではなく
+   * 再開できる `interrupted` として残る。
+   */
+  it('Ctrl+C interrupts the running turn and leaves the session resumable', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    let interrupts = 0;
+    const queryFn = (() => {
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {
+        interrupts += 1;
+      };
+      return gen;
+    }) as unknown as QueryFn;
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('long task');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-cancel' }));
+    await flush();
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+    // 走っている間は中断の案内が出る（入力欄にフォーカスがあっても効く chord なので、
+    // フッタヒントではなく独立した行）。
+    expect(lastFrame()).toContain('Ctrl+C');
+
+    stdin.write('\x03'); // Ctrl+C
+    await flush();
+    expect(interrupts).toBe(1);
+    expect(manager.getSnapshot()[0]?.status).toBe('interrupted');
+    // 中断は失敗ではないので、案内はそのまま再開（Ctrl+R）へ入れ替わる。
+    expect(lastFrame()).toContain('Ctrl+R');
+    expect(lastFrame()).toContain('中断');
+  });
+
+  // 許可/質問ダイアログが出ている間も中断できる（ダイアログにキーを委譲する前に
+  // Ctrl+C を拾う）。deny は「その1ツールを断る」だけでターンは続くので、
+  // 「この作業自体をやめる」出口はこれしかない。
+  it('Ctrl+C interrupts while a permission dialog is open', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    let captured: Options | undefined;
+    let interrupts = 0;
+    const queryFn = ((params: { options: Options }) => {
+      captured = params.options;
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {
+        interrupts += 1;
+      };
+      return gen;
+    }) as unknown as QueryFn;
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    // confirm モード（ツールが許可待ちへ上がる）。キー（Shift+Tab）の配線は別テストで
+    // 見ているので、ここは manager を直に切り替えて許可ダイアログの状況だけを作る。
+    manager.cycleMode();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('ask me');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-cancel-pending' }));
+    await flush();
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    const ctx = { signal: new AbortController().signal } as unknown as Parameters<
+      NonNullable<Options['canUseTool']>
+    >[2];
+    const decision = captured?.canUseTool?.('Bash', { command: 'rm -rf /' }, ctx);
+    await flush();
+    expect(manager.getSnapshot()[0]?.status).toBe('awaiting_permission');
+
+    stdin.write('\x03'); // Ctrl+C
+    await flush();
+    expect(interrupts).toBe(1);
+    expect(manager.getSnapshot()[0]?.status).toBe('interrupted');
+    // 未応答の tool_use を残すと後の resume が壊れるので deny で閉じる。
+    expect(await decision).toMatchObject({ behavior: 'deny' });
+    expect(lastFrame()).not.toContain('rm -rf /'); // ダイアログは閉じている
+  });
+
   // 詳細ビューの `/exit` はアプリ終了ではなく「セッションを閉じて一覧へ戻る」
   // （終了は一覧ビューの `/exit` = commands.test.tsx でカバー）。
   it('/exit in the detail view returns to the list without quitting the app', async () => {

@@ -26,6 +26,9 @@
 
 - **1画面につき `useInput` は1つ**（view コンポーネントに置く）。`PromptInput` 等は presentational にして、キー処理は view 側の単一ハンドラに集約する（複数 `useInput` の競合を避ける）。
 - モーダルな状態（`pendingPermission` あり）では、そのダイアログにキーを委譲し、背後の view はキーを処理しない。
+  例外は**中断（`Ctrl+C`）だけ**で、詳細ビューは `pending` ガードより前にこれを処理する（ダイアログの
+  `n` は「そのツール1回を断る」だけなので、作業自体をやめる出口が他に無い）。`editText` は ctrl chord を
+  無視するので、ダイアログ側の入力とは競合しない。
   例外として**モーダル自身は `useInput` を持つ**（`permission-dialog` / `model-select` / `repo-prompt-editor`）。
   成立条件は「背後の view がモーダル表示中に全キーを飲む」こと（`pending` / `modelSelect` / `promptEdit` の
   ガードが view の `useInput` の先頭にある）。モーダルを増やすときはこのガードを必ず追加する。
@@ -39,7 +42,8 @@
   composer に戻ってそのまま挿入される。選択中セッションの許可/質問ダイアログは
   **list フォーカス時のみ**アクティブ（composer のタイピングを乗っ取らない）。
 - **フォーカスに依存しない操作は chord にする**。中断セッションの復帰（`Ctrl+R` = 選択中を再開、
-  `Ctrl+A` = 一括再開）は一覧・詳細のどちらでも、フォーカスゾーン／操作パネルの状態に関係なく効く。
+  `Ctrl+A` = 一括再開）と実行中ターンの中断（詳細ビューの `Ctrl+C`）は、フォーカスゾーン／操作
+  パネルの状態に関係なく効く。
   印字キー（`r`）だけにすると既定フォーカス（composer / 入力欄）から「Tab → r」の2手になり、
   復帰が「ワンプッシュ」にならない。逆に印字キーをフォーカス横断で奪うとタイピングが壊れるので、
   **横断させたいものは必ず ctrl 付き**にする（`editText` は ctrl chord を無視するので競合しない）。
@@ -168,6 +172,11 @@
 - ビュー切替は `App` の `View` state（`{mode:'list'}` | `{mode:'detail', id}`）。Enter/→ で `onOpen(id)`、
   Esc で `onBack`。詳細ビューは単一 `useInput` の state machine（panel = input | actions）で、
   タイピング（追加指示）と操作キー（m/d = マージ/破棄）の衝突を防ぐ。
+- **`Ctrl+C` は実行中のターンの中断**（`manager.interrupt(id)`。Claude Code と同じ操作）。Ink は
+  `exitOnCtrlC: false` なのでアプリ終了ではなくこのハンドラへ届く。破棄ではないので案内文（`detail.cancelHint`）
+  は「あとで再開できる」ことを伝え、中断後は同じ行が `resume.oneKeyHint` に入れ替わる。対象判定
+  （連打の吸収）は core 側（`SessionManager.interrupt`）に置く — ここの `status` はスロットルされた
+  購読値なので「もう中断済み」を同期的に知らない（`resume` と同じ）。
 - **スラッシュ無しでもコマンド名と完全一致すればコマンド**（`core/commands.ts` の `toCommandInput`）。
   正式名のみ（別名 `?`/`changes` は昇格させない = 1文字の `?` を送れる余地を残す）。判定と実行・
   パレット表示は `useCommandRunner` が返す `run`/`preview` を共有して**必ず同じ条件**にする

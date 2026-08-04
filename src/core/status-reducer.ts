@@ -150,6 +150,16 @@ export function toRateLimited(
 }
 
 /**
+ * ユーザー操作による中断（詳細ビューの `Ctrl+C`）のログ/詳細文。
+ *
+ * 同じ中断が **2 経路**で届く: (1) `Session.interrupt()` が SDK へ interrupt 制御要求を
+ * 出す前に立てる診断（UI を即座に「中断」にするため）、(2) CLI がターンを閉じる
+ * `result`（`terminal_reason: 'aborted_streaming'`。`sdk-parse.ts`）。両方で**同じ文言**を
+ * 使うことで `toInterrupted` の重複畳み込みが効き、ログが二重にならない。
+ */
+export const USER_INTERRUPT_DETAIL = 'interrupted by user';
+
+/**
  * Transition into the `interrupted` state: the live query dropped mid-flight
  * because the connection was interrupted (not a clean finish, not a real
  * failure). Idle & resumable — sending a follow-up (or the explicit "resume"

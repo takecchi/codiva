@@ -21,6 +21,15 @@ export interface StatusMeta {
    */
   active: boolean;
   /**
+   * ユーザーが中断（詳細ビューの `Ctrl+C`）できる「ターンが進行中」の状態か。
+   * SDK の query が走っていて interrupt 制御要求が意味を持つ区間 = `running` と
+   * 許可/質問待ち（`awaiting_*`。ターンは生きていて回答待ちで止まっているだけ）。
+   * `creating` は worktree の用意中でまだ query が無いので false、終端状態も false。
+   * `active`（動作時間の積算）とは意図的に別のフラグ: awaiting_* は「動いていない」が
+   * 「中断できる」ので、両者は一致しない。
+   */
+  interruptible: boolean;
+  /**
    * 「中断されて再開待ち」か。一覧/詳細に明示的な再開（continue）アクションを出す。
    * クリーンに完了したわけではないが resume で続行できる状態が該当する
    * (`interrupted` / `rate_limited` / `needs_login`)。`completed` は追加指示を
@@ -37,11 +46,18 @@ export interface StatusMeta {
 }
 
 export const STATUS_META: Record<SessionStatus, StatusMeta> = {
-  creating: { terminal: false, attention: false, active: true, resumable: false },
+  creating: {
+    terminal: false,
+    attention: false,
+    active: true,
+    interruptible: false,
+    resumable: false,
+  },
   running: {
     terminal: false,
     attention: false,
     active: true,
+    interruptible: true,
     resumable: false,
     restoreAs: 'interrupted',
   },
@@ -49,6 +65,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: false,
     attention: true,
     active: false,
+    interruptible: true,
     resumable: false,
     restoreAs: 'interrupted',
     notifyKey: 'needsPermission',
@@ -57,6 +74,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: false,
     attention: true,
     active: false,
+    interruptible: true,
     resumable: false,
     restoreAs: 'interrupted',
     notifyKey: 'needsInput',
@@ -65,6 +83,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: false,
     active: false,
+    interruptible: false,
     resumable: false,
     restoreAs: 'completed',
     notifyKey: 'completed',
@@ -73,6 +92,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: false,
     active: false,
+    interruptible: false,
     resumable: true,
     restoreAs: 'interrupted',
     notifyKey: 'interrupted',
@@ -83,6 +103,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: false,
     active: false,
+    interruptible: false,
     resumable: true,
     restoreAs: 'interrupted',
     notifyKey: 'rateLimited',
@@ -96,6 +117,7 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: true,
     active: false,
+    interruptible: false,
     resumable: true,
     restoreAs: 'interrupted',
     notifyKey: 'needsLogin',
@@ -104,12 +126,25 @@ export const STATUS_META: Record<SessionStatus, StatusMeta> = {
     terminal: true,
     attention: false,
     active: false,
+    interruptible: false,
     resumable: false,
     restoreAs: 'failed',
     notifyKey: 'failed',
   },
-  conflict: { terminal: true, attention: false, active: false, resumable: false },
-  archived: { terminal: true, attention: false, active: false, resumable: false },
+  conflict: {
+    terminal: true,
+    attention: false,
+    active: false,
+    interruptible: false,
+    resumable: false,
+  },
+  archived: {
+    terminal: true,
+    attention: false,
+    active: false,
+    interruptible: false,
+    resumable: false,
+  },
 };
 
 /** 終端状態（これ以上 SDK ストリームが状態を進めない）か。 */
@@ -128,6 +163,15 @@ export function needsAttention(status: SessionStatus): boolean {
  */
 export function isActiveStatus(status: SessionStatus): boolean {
   return STATUS_META[status].active;
+}
+
+/**
+ * ユーザーが中断（詳細ビューの `Ctrl+C`）できる状態か。`running` と許可/質問待ち
+ * （`awaiting_*` = ターンは生きていて回答待ちで止まっているだけ）が対象。
+ * `creating`（query 未起動）と終端状態には止めるターンが無いので false。
+ */
+export function isInterruptible(status: SessionStatus): boolean {
+  return STATUS_META[status].interruptible;
 }
 
 /**

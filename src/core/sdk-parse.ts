@@ -15,6 +15,7 @@ import {
   toInterrupted,
   toNeedsLogin,
   toRateLimited,
+  USER_INTERRUPT_DETAIL,
 } from './status-reducer';
 import type { SessionState, TaskStatus, TodoItem } from './types';
 
@@ -570,6 +571,19 @@ function reduceSdk(
     // failure (same treatment as the thrown-error path in Session.consume).
     if (isConnectionError(error) || isConnectionError(resultText)) {
       return { ...toInterrupted(state, at, resultText || error), totalCostUsd: cost };
+    }
+    // 中断（ユーザーの Ctrl+C → `Query.interrupt()`）: CLI は走っていたターンを畳んで
+    // `subtype: 'error_during_execution'` + `terminal_reason: 'aborted_streaming'` の
+    // result で閉じる（実測: `__fixtures__/session-interrupt.jsonl`）。**自分で止めたのだから
+    // 失敗ではない** — resumable な `interrupted` にして、追加指示 / Ctrl+R で同じ会話を
+    // 続けられるようにする（`failed` だと再開アクションが出ない）。
+    //
+    // 判定は文言ではなく構造（`terminal_reason`）で行う。`errors[]` には CLI の内部診断
+    // （`[ede_diagnostic] result_type=user …`）が入るだけで、ユーザーに見せる意味がないので
+    // ログには {@link USER_INTERRUPT_DETAIL} を書く。`Session.interrupt` が先に同じ文言で
+    // 診断を立てていれば `toInterrupted` の重複畳み込みでここは no-op になる。
+    if (message.terminal_reason === 'aborted_streaming') {
+      return { ...toInterrupted(state, at, USER_INTERRUPT_DETAIL), totalCostUsd: cost };
     }
     // Structured fallback for the same class of stop: the CLI ends an API-error
     // turn with `terminal_reason: 'api_error'` and reports the HTTP status in

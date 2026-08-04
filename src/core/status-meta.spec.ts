@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isActiveStatus,
+  isInterruptible,
   isResumable,
   isTerminalStatus,
   needsAttention,
@@ -110,6 +111,26 @@ describe('STATUS_META', () => {
     ['archived', undefined],
   ] as const)('notifyKey(%s) = %s', (status, expected) => {
     expect(STATUS_META[status].notifyKey).toBe(expected);
+  });
+
+  it.each([
+    // ターンが走っている（= Ctrl+C で止められる）状態。awaiting_* も対象:
+    // ターンは生きていて回答待ちで止まっているだけなので、`active`（動作時間の積算）
+    // とは一致しない。
+    ['running', true],
+    ['awaiting_permission', true],
+    ['awaiting_input', true],
+    // worktree の用意中でまだ query が無い。
+    ['creating', false],
+    ['completed', false],
+    ['interrupted', false],
+    ['rate_limited', false],
+    ['needs_login', false],
+    ['failed', false],
+    ['conflict', false],
+    ['archived', false],
+  ] as const)('isInterruptible(%s) = %s', (status, expected) => {
+    expect(isInterruptible(status)).toBe(expected);
   });
 
   it.each([
