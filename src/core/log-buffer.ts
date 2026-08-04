@@ -24,6 +24,20 @@ import type { LogEntry } from './types';
 export const MAX_LOG_ENTRIES = 2000;
 
 /**
+ * Total characters a session's log keeps, applied together with
+ * {@link MAX_LOG_ENTRIES} (whichever binds first).
+ *
+ * Why a *second* budget: a count alone doesn't bound anything useful, because a
+ * kept entry may be one character or {@link MAX_LOG_ENTRY_CHARS} of them —
+ * count × per-entry is 40M characters, and the rendered form of that text
+ * (`DisplayLine` + per-span styling, see `core/scroll.ts`) costs several times
+ * the text itself. Budgeting the text directly is what actually keeps the heap
+ * bounded. 400k characters is still ~5,000 terminal lines = a hundred-odd
+ * screens of scrollback.
+ */
+export const MAX_LOG_CHARS = 400_000;
+
+/**
  * Cap on a single entry's text. Sized so ordinary content is never touched
  * (~5k tokens of assistant prose) and only pathological entries are clipped:
  * a pasted file as a follow-up instruction, a `Bash` heredoc carrying a whole
@@ -72,29 +86,64 @@ export function clipStreamText(text: string): string {
   return text.slice(code >= 0xdc00 && code <= 0xdfff ? from + 1 : from);
 }
 
+/** Clip an entry's text if needed, keeping the same object when it isn't. */
+function clipEntry(entry: LogEntry): LogEntry {
+  return entry.text.length > MAX_LOG_ENTRY_CHARS
+    ? { ...entry, text: clipLogText(entry.text) }
+    : entry;
+}
+
+/**
+ * How many of `messages` (counting from the end) fit alongside `extraChars` new
+ * characters within both budgets. Walking from the newest backwards is what makes
+ * the two budgets composable — the first one to bind stops the walk.
+ */
+function keptFrom(messages: readonly LogEntry[], extraChars: number): number {
+  let chars = extraChars;
+  let start = messages.length;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const text = messages[i]?.text ?? '';
+    if (messages.length - i + 1 > MAX_LOG_ENTRIES || chars + text.length > MAX_LOG_CHARS) {
+      break;
+    }
+    chars += text.length;
+    start = i;
+  }
+  return start;
+}
+
 /**
  * Append `entry` to a session's log, clipping its text and dropping the oldest
- * entries once {@link MAX_LOG_ENTRIES} is reached. The result is always a new
- * array (the state is immutable), but a bounded one — so the copy per append is
- * bounded too. `seq` numbering is untouched: it keeps counting up and stays the
- * render key / scroll identity of a line.
+ * entries once a budget ({@link MAX_LOG_ENTRIES} / {@link MAX_LOG_CHARS}) is
+ * reached. The result is always a new array (the state is immutable), but a
+ * bounded one — so the copy per append is bounded too. `seq` numbering is
+ * untouched: it keeps counting up and stays the render key of a line.
  */
 export function pushLogEntry(messages: readonly LogEntry[], entry: LogEntry): LogEntry[] {
-  const clipped =
-    entry.text.length > MAX_LOG_ENTRY_CHARS ? { ...entry, text: clipLogText(entry.text) } : entry;
-  const start = Math.max(0, messages.length + 1 - MAX_LOG_ENTRIES);
+  const clipped = clipEntry(entry);
+  const start = keptFrom(messages, clipped.text.length);
   return start === 0 ? [...messages, clipped] : [...messages.slice(start), clipped];
 }
 
 /**
- * Trim a rebuilt history (transcript restore) to the newest {@link MAX_LOG_ENTRIES}
- * entries, clipping oversized texts. Restoring a months-old transcript must not
- * put tens of MB back into the heap at launch.
+ * Trim a rebuilt history (transcript restore) to what the budgets allow, keeping
+ * the newest entries and clipping oversized texts. Restoring a months-old
+ * transcript must not put tens of MB back into the heap at launch.
  */
 export function capLogEntries(entries: readonly LogEntry[]): LogEntry[] {
-  const kept =
-    entries.length > MAX_LOG_ENTRIES ? entries.slice(entries.length - MAX_LOG_ENTRIES) : entries;
-  return kept.map((e) =>
-    e.text.length > MAX_LOG_ENTRY_CHARS ? { ...e, text: clipLogText(e.text) } : e,
-  );
+  const kept: LogEntry[] = [];
+  let chars = 0;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry === undefined) {
+      continue;
+    }
+    const clipped = clipEntry(entry);
+    if (kept.length + 1 > MAX_LOG_ENTRIES || chars + clipped.text.length > MAX_LOG_CHARS) {
+      break;
+    }
+    kept.push(clipped);
+    chars += clipped.text.length;
+  }
+  return kept.reverse();
 }

@@ -3,6 +3,7 @@ import {
   capLogEntries,
   clipLogText,
   clipStreamText,
+  MAX_LOG_CHARS,
   MAX_LOG_ENTRIES,
   MAX_LOG_ENTRY_CHARS,
   MAX_STREAM_PREVIEW_CHARS,
@@ -84,6 +85,16 @@ describe('pushLogEntry', () => {
     expect(after.at(-1)?.seq).toBe(9999);
   });
 
+  it('切り詰めても kind と timestamp は保つ', () => {
+    const after = pushLogEntry([], {
+      seq: 1,
+      kind: 'user',
+      text: 'p'.repeat(MAX_LOG_ENTRY_CHARS + 1),
+      timestamp: 42,
+    });
+    expect(after[0]).toMatchObject({ seq: 1, kind: 'user', timestamp: 42 });
+  });
+
   it('巨大なテキストは追記時に切る', () => {
     const after = pushLogEntry([], entry(1, 'z'.repeat(MAX_LOG_ENTRY_CHARS + 10)));
     expect(after[0]?.text.length).toBe(MAX_LOG_ENTRY_CHARS + 2);
@@ -92,6 +103,34 @@ describe('pushLogEntry', () => {
   it('切る必要が無いエントリは同じ参照のまま入れる（logLines のキャッシュが効く）', () => {
     const e = entry(1);
     expect(pushLogEntry([], e)[0]).toBe(e);
+  });
+});
+
+describe('pushLogEntry (文字数の上限)', () => {
+  // 件数だけでは何も保証できない（1 件が 1 文字でも 20,000 文字でもよいので、
+  // 件数 × 1 件上限 = 4000 万文字になる）。描画コストは文字数に比例するので、
+  // 文字数側の予算が実際にヒープを縛っている。
+  const big = (seq: number): LogEntry => entry(seq, 'w'.repeat(MAX_LOG_ENTRY_CHARS));
+  const fill = (): LogEntry[] => {
+    let messages: LogEntry[] = [];
+    for (let i = 1; i <= Math.ceil(MAX_LOG_CHARS / MAX_LOG_ENTRY_CHARS) + 5; i += 1) {
+      messages = pushLogEntry(messages, big(i));
+    }
+    return messages;
+  };
+
+  it('合計文字数が上限を超えないよう古い方を落とす', () => {
+    const messages = fill();
+    const chars = messages.reduce((n, m) => n + m.text.length, 0);
+    expect(chars).toBeLessThanOrEqual(MAX_LOG_CHARS);
+    expect(messages.length).toBeLessThan(MAX_LOG_ENTRIES); // 件数より先に文字数が縛る
+  });
+
+  it('最新のエントリは必ず残る', () => {
+    const messages = fill();
+    expect(messages.at(-1)?.text.length).toBe(MAX_LOG_ENTRY_CHARS);
+    const last = pushLogEntry(messages, entry(9999, 'tail'));
+    expect(last.at(-1)?.text).toBe('tail');
   });
 });
 
@@ -111,5 +150,25 @@ describe('capLogEntries', () => {
   it('巨大なテキストは切る', () => {
     const capped = capLogEntries([entry(1, 'q'.repeat(MAX_LOG_ENTRY_CHARS + 1))]);
     expect(capped[0]?.text.endsWith('…')).toBe(true);
+  });
+
+  it('ちょうど上限のときは 1 件も落とさない', () => {
+    const capped = capLogEntries(many(MAX_LOG_ENTRIES));
+    expect(capped).toHaveLength(MAX_LOG_ENTRIES);
+    expect(capped[0]?.seq).toBe(1);
+  });
+
+  it('文字数の上限でも畳む', () => {
+    const heavy = Array.from({ length: 40 }, (_, i) =>
+      entry(i + 1, 'h'.repeat(MAX_LOG_ENTRY_CHARS)),
+    );
+    const capped = capLogEntries(heavy);
+    expect(capped.reduce((n, m) => n + m.text.length, 0)).toBeLessThanOrEqual(MAX_LOG_CHARS);
+    expect(capped.at(-1)?.seq).toBe(40); // 新しい方を残す
+  });
+
+  it('kind と timestamp は保つ', () => {
+    const capped = capLogEntries([{ seq: 7, kind: 'tool_result', text: 'ok', timestamp: 1234 }]);
+    expect(capped[0]).toEqual({ seq: 7, kind: 'tool_result', text: 'ok', timestamp: 1234 });
   });
 });

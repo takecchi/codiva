@@ -6,7 +6,7 @@ import {
   isTransientApiErrorKind,
   isTransientApiStatus,
 } from './errors';
-import { clipStreamText, pushLogEntry } from './log-buffer';
+import { clipLogText, clipStreamText, MAX_LOG_ENTRY_CHARS, pushLogEntry } from './log-buffer';
 import { isResumable } from './status-meta';
 import {
   appendLog,
@@ -92,16 +92,25 @@ function joinErrors(errors: unknown): string {
   return Array.isArray(errors) ? errors.map((e) => String(e)).join('\n') : '';
 }
 
+/**
+ * A tool input field as a string, cut to what the log can hold. `Bash` commands
+ * carry heredocs with whole file bodies, so building the full string first would
+ * allocate megabytes per tool call only for `pushLogEntry` to clip them.
+ */
+function inputText(value: unknown): string {
+  return value == null ? '' : String(value).slice(0, MAX_LOG_ENTRY_CHARS);
+}
+
 /** One-line log summary for a tool_use block. Shared with `transcript.ts` (history restore). */
 export function summarizeToolUse(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case 'Write':
     case 'Edit':
-      return `${name} ${String(input.file_path ?? input.path ?? '')}`.trim();
+      return `${name} ${inputText(input.file_path ?? input.path)}`.trim();
     case 'Bash':
-      return `Bash ${String(input.command ?? '')}`.trim();
+      return `Bash ${inputText(input.command)}`.trim();
     case 'TaskCreate':
-      return `TaskCreate "${String(input.subject ?? '')}"`;
+      return `TaskCreate "${inputText(input.subject)}"`;
     case 'TaskUpdate':
       return `TaskUpdate #${String(input.taskId ?? '')} → ${String(input.status ?? '')}`;
     case 'AskUserQuestion': {
@@ -184,10 +193,12 @@ function completeWith(
   // line doubles the last message on screen (white assistant_text + green
   // result). Log the result only when it carries something new, matching the
   // restore path (transcript.ts never emits a `result` entry). assistant_text is
-  // stored trimmed, so trim the result before comparing.
+  // stored trimmed, so trim the result before comparing — and stored *clipped*
+  // (log-buffer), so compare the clipped forms: otherwise an answer longer than
+  // MAX_LOG_ENTRY_CHARS stops matching its own echo and shows up twice.
   const resultText = result.resultText.trim();
   const lastAssistantText = state.messages.findLast((m) => m.kind === 'assistant_text')?.text;
-  const isEcho = resultText.length > 0 && resultText === lastAssistantText;
+  const isEcho = resultText.length > 0 && clipLogText(resultText) === lastAssistantText;
   const withLog =
     resultText.length > 0 && !isEcho
       ? appendLog(state, 'result', resultText)

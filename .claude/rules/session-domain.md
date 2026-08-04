@@ -42,16 +42,21 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
 ## ログ（`messages`）は上限付き
 
 - **追記の経路は `core/log-buffer.ts` の `pushLogEntry` だけ**（`appendLog` と `sdk-parse` の
-  直書きもここを通す）。`[...state.messages, entry]` を新しく書かない — 上限なしの追記 +
-  全体コピーが**実際にヒープ枯渇で TUI を落とした**（`FATAL ERROR: Ineffective mark-compacts`）。
-- 上限は件数 `MAX_LOG_ENTRIES`（古い方から落とす）と 1 件あたり `MAX_LOG_ENTRY_CHARS`
-  （`…` を付けて切る）。**ログは会話の「記録」ではなく「表示」**で、正本は CLI の
-  トランスクリプトなので古い行を落としてよい。
-- **`seq` は振り直さない**。描画キー・スクロールのアンカー・範囲選択が seq の同一性に依存する。
-- 復元（`transcriptLogEntries`）も `capLogEntries` で同じ上限に収める。
-- 詳細ビューの行展開（`core/scroll.ts` の `logLines`）は**エントリ単位でメモ化**されている。
-  エントリが immutable であること（変更時は必ず別オブジェクト）が前提なので、
-  `LogEntry` をその場で書き換えない。返る `DisplayLine` は read-only 扱い。
+  追記もここを通す。例外は `onApiRetry` の**書き換え** = 末尾 1 件の差し替えで、件数を増やさない）。
+  `[...state.messages, entry]` を新しく書かない — 上限なしの追記 + 全体コピーが
+  **実際にヒープ枯渇で TUI を落とした**（`FATAL ERROR: Ineffective mark-compacts`）。
+- 上限は 3 つ: 件数 `MAX_LOG_ENTRIES` / **合計文字数 `MAX_LOG_CHARS`** / 1 件あたり
+  `MAX_LOG_ENTRY_CHARS`（`…` を付けて切る）。**件数だけでは何も縛れない**（1 件が 1 文字でも
+  20,000 文字でもよい）ので、文字数の予算を外さない。**ログは会話の「記録」ではなく「表示」**で、
+  正本は CLI のトランスクリプトなので古い行を落としてよい。
+- **`seq` は振り直さない**。描画キー（`<seq>:<行>`）がこれで決まる。ただし**行 index は変わる**ので、
+  スクロール位置は落ちた行数ぶんズレ、選択はクリアする（`SessionDetail` が先頭 `seq` の変化で捨てる）。
+- 復元（`transcriptLogEntries`）は**読みながら**畳み（`History`）、最後に `capLogEntries` で同じ上限に収める。
+- 詳細ビューの行展開（`core/scroll.ts` の `logLines`）は**エントリ単位でメモ化**され、
+  保持行数にも上限がある（`MAX_CACHED_ROWS`・LRU。展開後の行は元テキストの数倍を占めるので、
+  上限が無いと一過性のゴミが永続的な保持に化ける）。エントリが immutable であること
+  （変更時は必ず別オブジェクト）が前提なので `LogEntry` をその場で書き換えない。
+  返る `DisplayLine` は read-only 扱い。
 
 ## 状態の「性質」は STATUS_META が唯一の表
 

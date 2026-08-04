@@ -193,6 +193,28 @@ function entryLines(entry: LogEntry, width: number, prefix: string): DisplayLine
   return out;
 }
 
+interface CachedRows {
+  width: number;
+  prefix: string;
+  rows: DisplayLine[];
+  /** Which {@link logLines} call last used these rows (LRU + no-thrash marker). */
+  pass: number;
+}
+
+/**
+ * Rows the memo cache may keep across calls. Rendered rows are **far** heavier
+ * than the text they came from (a row holds its plain text *and* its styled
+ * spans), so an unbounded cache would just move the leak: every entry ever
+ * rendered would keep its rows for the session's whole life, across every
+ * session whose detail view was opened.
+ *
+ * This is a soft budget — rows used by the call in progress are never evicted
+ * (see {@link logLines}), otherwise a log that is itself larger than the budget
+ * would evict rows it is about to need and re-expand everything on every frame.
+ * So the true bound is "one rendered log (bounded by `MAX_LOG_CHARS`) + this".
+ */
+export const MAX_CACHED_ROWS = 8_000;
+
 /**
  * Per-entry row cache. Log entries are immutable (the reducer replaces the object
  * on any change), so the rows an entry expanded to last time are still correct as
@@ -203,9 +225,51 @@ function entryLines(entry: LogEntry, width: number, prefix: string): DisplayLine
  * each append re-wrapped (and re-parsed the Markdown of) the whole log. That is
  * O(n²) work and, more importantly, O(n) fresh objects per line: a long session
  * allocated the entire rendered log dozens of times a second, which is how codiva
- * hit V8's heap limit. `WeakMap` keys let trimmed entries be collected.
+ * hit V8's heap limit.
+ *
+ * A `Map` (not a `WeakMap`) because eviction needs insertion order = recency.
+ * It therefore keeps its keys alive, which is exactly why the budget above
+ * exists: entries dropped by the log cap are released on eviction.
  */
-const ENTRY_ROWS = new WeakMap<LogEntry, { width: number; prefix: string; rows: DisplayLine[] }>();
+const ENTRY_ROWS = new Map<LogEntry, CachedRows>();
+let cachedRowCount = 0;
+let currentPass = 0;
+
+/** Rows for one entry, from the cache when they are still valid. */
+function cachedEntryLines(entry: LogEntry, width: number, prefix: string): DisplayLine[] {
+  const hit = ENTRY_ROWS.get(entry);
+  if (hit && hit.width === width && hit.prefix === prefix) {
+    hit.pass = currentPass;
+    // Re-insert so Map iteration order stays least-recently-used first.
+    ENTRY_ROWS.delete(entry);
+    ENTRY_ROWS.set(entry, hit);
+    return hit.rows;
+  }
+  const rows = entryLines(entry, width, prefix);
+  if (hit) {
+    cachedRowCount -= hit.rows.length;
+    ENTRY_ROWS.delete(entry);
+  }
+  ENTRY_ROWS.set(entry, { width, prefix, rows, pass: currentPass });
+  cachedRowCount += rows.length;
+  for (const [key, value] of ENTRY_ROWS) {
+    if (cachedRowCount <= MAX_CACHED_ROWS) {
+      break;
+    }
+    if (value.pass === currentPass) {
+      continue; // in use by the render in progress — evicting it would thrash
+    }
+    ENTRY_ROWS.delete(key);
+    cachedRowCount -= value.rows.length;
+  }
+  return rows;
+}
+
+/** Drop every memoized row. Exported for tests (the cache is process-global). */
+export function clearLogLinesCache(): void {
+  ENTRY_ROWS.clear();
+  cachedRowCount = 0;
+}
 
 /**
  * Expand log entries into the physical rows the detail view renders. The
@@ -227,21 +291,13 @@ export function logLines(
   width: number,
   prefixFor: (kind: LogKind) => string,
 ): DisplayLine[] {
+  currentPass += 1;
   const out: DisplayLine[] = [];
   for (const entry of messages) {
-    const prefix = prefixFor(entry.kind);
-    const cached = ENTRY_ROWS.get(entry);
-    const rows =
-      cached && cached.width === width && cached.prefix === prefix
-        ? cached.rows
-        : entryLines(entry, width, prefix);
-    if (rows !== cached?.rows) {
-      ENTRY_ROWS.set(entry, { width, prefix, rows });
-    }
     // Appended one at a time on purpose: `push(...rows)` passes every row as an
     // argument, which overflows the stack for an entry that wrapped into tens of
     // thousands of rows (a narrow terminal + a pasted file).
-    for (const row of rows) {
+    for (const row of cachedEntryLines(entry, width, prefixFor(entry.kind))) {
       out.push(row);
     }
   }

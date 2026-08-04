@@ -121,6 +121,18 @@ describe('transcriptLogEntries (edge cases)', () => {
     expect(entries[0]?.seq).toBe(6);
   });
 
+  it('trims while reading (巨大なトランスクリプトを丸ごと積まない)', () => {
+    // 上限の 3 倍のラインを流し込む。読み終えてから捨てるのではなく読みながら畳むので、
+    // 途中の保持量も上限（の 2 倍）で止まる。
+    const lines = MAX_LOG_ENTRIES * 3;
+    const jsonl = Array.from({ length: lines }, (_, i) =>
+      JSON.stringify({ type: 'user', message: { role: 'user', content: `line ${i}` } }),
+    ).join('\n');
+    const entries = transcriptLogEntries(jsonl);
+    expect(entries).toHaveLength(MAX_LOG_ENTRIES);
+    expect(entries.at(-1)).toMatchObject({ seq: lines, text: `line ${lines - 1}` });
+  });
+
   it('clips an oversized restored entry', () => {
     const jsonl = JSON.stringify({
       type: 'user',

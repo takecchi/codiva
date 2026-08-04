@@ -766,30 +766,40 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
 
 | 問題 | 対策 | 場所 |
 |---|---|---|
-| `SessionState.messages` が無制限に伸び、追記ごとに全体コピー（O(n²)） | 件数 `MAX_LOG_ENTRIES`（古い方から落とす）+ 1 件あたり `MAX_LOG_ENTRY_CHARS`（`…` を付けて切る） | `core/log-buffer.ts` の `pushLogEntry` |
-| 詳細ビューが**更新ごとにログ全体**を折り返し + Markdown 再パース | エントリ単位のメモ化（`WeakMap<LogEntry, rows>`。幅とプレフィックスが同じなら再利用） | `core/scroll.ts` の `logLines` |
-| ツール結果の巨大ペイロード（10MB の `Read` / `Bash`）を平坦化 → 全行 `split` | 読む 200 文字だけ材質化（`asStringHead`） | `core/sdk-parse.ts` |
+| `SessionState.messages` が無制限に伸び、追記ごとに全体コピー（O(n²)） | 件数 `MAX_LOG_ENTRIES` **と合計文字数 `MAX_LOG_CHARS`**（先に縛られた方で古い方から落とす）+ 1 件あたり `MAX_LOG_ENTRY_CHARS`（`…` を付けて切る） | `core/log-buffer.ts` の `pushLogEntry` |
+| 詳細ビューが**更新ごとにログ全体**を折り返し + Markdown 再パース | エントリ単位のメモ化（幅とプレフィックスが同じなら再利用）+ 保持行数の上限 `MAX_CACHED_ROWS`（LRU） | `core/scroll.ts` の `logLines` |
+| ツール結果の巨大ペイロード（10MB の `Read` / `Bash`）を平坦化 → 全行 `split` | 読む 200 文字だけ材質化（`asStringHead`）。`tool_use` の入力（`Bash` の heredoc 等）も先に切る | `core/sdk-parse.ts` |
 | `streamingText` に 1 メッセージ全体を溜め、毎フレーム全体を `split` | 末尾 `MAX_STREAM_PREVIEW_CHARS` だけ保持（描くのは最後の 1 行） | `core/log-buffer.ts` の `clipStreamText` |
-| 復元時に全セッションのトランスクリプト（各数 MB）を同時読み込み | 1 本ずつ読む（変換後すぐ回収される）+ `capLogEntries` | `bootstrap/restore-sessions.ts` / `core/transcript.ts` |
+| 復元時に全セッションのトランスクリプト（各数 MB）を同時読み込み | 1 本ずつ読む（変換後すぐ回収される）+ **読みながら**畳む（`History`）+ `capLogEntries` | `bootstrap/restore-sessions.ts` / `core/transcript.ts` |
 
 前提として **ログは会話の「記録」ではなく「表示」**である。正本は CLI のトランスクリプト
 （`~/.claude/projects/…`、復元は `core/transcript.ts`）なので、古い行を落としても読み返す手段は残る。
 
+**件数だけでは何も縛れない**（1 件は 1 文字でも `MAX_LOG_ENTRY_CHARS` でもよいので、件数 × 1 件上限
+= 4000 万文字）。描画コストは文字数に比例し、しかも展開後の行（`DisplayLine` + スパン）は元テキストの
+数倍を占めるので、**文字数の予算**と**キャッシュの行数の予算**の 2 つが実際の上限になっている。
+`MAX_CACHED_ROWS` は soft budget で、**描画中のログの行は追い出さない**（自分が次に使う行を捨てて
+毎フレーム再展開するのを避けるため）。したがって保持量の実効上限は
+「開いているログ 1 本（`MAX_LOG_CHARS` で縛られる）+ `MAX_CACHED_ROWS`」。
+
 不変条件:
 
 - **追記の経路は `pushLogEntry` だけ**。`[...state.messages, entry]` を新しく書かない
-  （`appendLog` と `sdk-parse` の直書きはすべてここを通す）。
-- **`seq` は振り直さない**。描画キー・スクロールのアンカー・範囲選択が seq の連続性ではなく
-  同一性に依存している（トリムしても既存行の意味は変わらない）。
+  （`appendLog` と `sdk-parse` の追記はすべてここを通す。例外は `onApiRetry` の**書き換え**
+  = 末尾 1 件の差し替えで、件数を増やさないので上限に関係しない）。
+- **`seq` は振り直さない**。描画キーが `<seq>:<行>` なので、トリムしても既存行のキーは変わらない
+  （= React の再マウントが起きない）。ただし後述のとおり**行 index は変わる**。
 - **`logLines` の返す行は read-only**。メモ化で複数フレームに共有されるため、
   呼び出し側で書き換えない（`selectionSlices` のように必ず新しい配列を作る）。
 
 既知のトレードオフ: スクロール位置（`ScrollAnchor` の数値）と選択位置（`LogPoint`）は
 **文書先頭からの表示行 index** なので、上限に達したログが古い行を落とすとその分だけ意味がズレる
 （上へスクロールして読んでいる最中に新しい行が来ると、ビューが落ちた行数ぶん新しい方へ動く）。
-起きるのは「2000 件を超えた」かつ「スクロール中」かつ「追記が続いている」の同時成立時だけで、
-落ちる（= 全部読めなくなる）よりは軽い副作用として受け入れている。直すなら行 index ではなく
-`DisplayLine.key`（`<seq>:<行>`。トリムでも追記でも不変）を基準にする必要がある。
+起きるのは「上限に達した」かつ「スクロール中」かつ「追記が続いている」の同時成立時だけで、
+落ちる（= 全部読めなくなる）よりは軽い副作用として受け入れている。ただし**選択は捨てる**
+（`SessionDetail` が先頭エントリの `seq` の変化を検知してクリアする）— 触っていない行がコピーされる
+のは副作用として重すぎるため。直すなら行 index ではなく `DisplayLine.key`（`<seq>:<行>`。
+トリムでも追記でも不変）を基準にする必要がある。
 
 ## 設計判断
 

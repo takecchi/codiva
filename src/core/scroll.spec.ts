@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clearLogLinesCache,
   logLines,
   logWindow,
+  MAX_CACHED_ROWS,
   pageStep,
   type ScrollAnchor,
   scrollDown,
@@ -216,6 +218,82 @@ describe('logLines (entries → physical rows)', () => {
       expect(
         logLines([{ seq: 1, kind: 'system', text: 'api retry 2/10' }], 40, prefixFor)[0]?.text,
       ).toBe('api retry 2/10');
+    });
+
+    // Markdown 経路（spans 付き）は行の作り方が別なので、幅の再計算も別に確かめる。
+    it('re-wraps the Markdown path on a width change (spans and indent stay correct)', () => {
+      const entry: LogEntry = { seq: 1, kind: 'assistant_text', text: '`aaaaaa`' };
+      const wide = logLines([entry], 40, prefixFor);
+      expect(wide).toHaveLength(1);
+      const narrow = logLines([entry], 5, prefixFor);
+      expect(narrow.map((l) => l.spans)).toEqual([
+        [{ text: 'aaaaa', tone: 'code' }],
+        [{ text: 'a', tone: 'code' }],
+      ]);
+      // メモ化前と同じ結果に戻る（キャッシュが幅を跨いで漏れない）
+      clearLogLinesCache();
+      expect(logLines([entry], 5, prefixFor)).toEqual(narrow);
+      expect(logLines([entry], 40, prefixFor)).toEqual(wide);
+    });
+
+    it('memoized output equals the unmemoized output (rich + plain, prefixed)', () => {
+      const messages: LogEntry[] = [
+        { seq: 1, kind: 'user', text: 'これは日本語の長い指示で折り返します' },
+        { seq: 2, kind: 'assistant_text', text: '# Title\n\n- **a** and `b`\n\nlong tail text' },
+        { seq: 3, kind: 'tool_result', text: 'ok' },
+      ];
+      const memoized = logLines(messages, 12, prefixFor);
+      clearLogLinesCache();
+      // 別オブジェクトの同内容エントリ = キャッシュに当たらない経路
+      const fresh = logLines(
+        messages.map((m) => ({ ...m })),
+        12,
+        prefixFor,
+      );
+      expect(memoized).toEqual(fresh);
+    });
+
+    // メモ化した行は「エントリが生きている限り」保持されるので、上限が無いと
+    // 一過性のゴミが**永続的な保持**に化ける（開いた全セッション × 全エントリ）。
+    it('bounds what it keeps: the least-recently-used rows are dropped', () => {
+      clearLogLinesCache();
+      const rowsPerEntry = 40;
+      const wide = 'z'.repeat(rowsPerEntry * 10); // width 10 → 40 行
+      // 予算を確実に超える件数（1 件ずつ描くので、前の描画は「使用中」ではない）
+      const count = Math.ceil(MAX_CACHED_ROWS / rowsPerEntry) + 10;
+      const entries: LogEntry[] = Array.from({ length: count }, (_, i) => ({
+        seq: i + 1,
+        kind: 'system',
+        text: wide,
+      }));
+      const oldest = entries[0] as LogEntry;
+      const first = logLines([oldest], 10, prefixFor);
+      expect(first).toHaveLength(rowsPerEntry);
+      for (const entry of entries.slice(1)) {
+        logLines([entry], 10, prefixFor);
+      }
+      // 最も古いものは追い出されているので、同じ内容でも新しい行オブジェクトになる
+      expect(logLines([oldest], 10, prefixFor)[0]).not.toBe(first[0]);
+      // 直前に描いたものはキャッシュに残っている（追い出しは古い順）
+      const newest = entries.at(-1) as LogEntry;
+      expect(logLines([newest], 10, prefixFor)[0]).toBe(logLines([newest], 10, prefixFor)[0]);
+    });
+
+    it('never evicts rows the current call is still using (a log larger than the budget)', () => {
+      clearLogLinesCache();
+      const rowsPerEntry = 40;
+      const text = 'y'.repeat(rowsPerEntry * 10);
+      const entries: LogEntry[] = Array.from({ length: 300 }, (_, i) => ({
+        seq: i + 1,
+        kind: 'system',
+        text,
+      }));
+      const before = logLines(entries, 10, prefixFor);
+      expect(before).toHaveLength(300 * rowsPerEntry); // 予算（8000 行）より多い
+      const after = logLines(entries, 10, prefixFor);
+      // 2 回目も全行キャッシュヒット = 予算超過でも自分の行を捨てて毎フレーム再展開しない
+      expect(after[0]).toBe(before[0]);
+      expect(after.at(-1)).toBe(before.at(-1));
     });
   });
 });
