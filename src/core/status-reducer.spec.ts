@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_LOG_ENTRIES, MAX_LOG_ENTRY_CHARS } from '@/core/log-buffer';
 import {
   accrueActive,
   activeElapsedMs,
@@ -540,5 +541,25 @@ describe('active-time accounting', () => {
     const completed = { ...creating, status: 'completed' as const, activeSince: undefined };
     const failed = { ...completed, status: 'failed' as const };
     expect(accrueActive(completed, failed, 5)).toBe(failed);
+  });
+});
+
+// ログの上限（`core/log-buffer.ts`）は reducer 経路でも効く。無制限に伸ばしていたのが
+// ヒープ枯渇の原因だった。
+describe('appendLog is bounded', () => {
+  it('drops the oldest entries once the cap is reached', () => {
+    let state: SessionState = initialState(BASE);
+    for (let i = 0; i < MAX_LOG_ENTRIES + 3; i += 1) {
+      const withLog = appendLog(state, 'system', `line ${i}`);
+      state = { ...state, messages: withLog.messages, logSeq: withLog.logSeq };
+    }
+    expect(state.messages).toHaveLength(MAX_LOG_ENTRIES);
+    expect(state.messages[0]?.text).toBe('line 3');
+    expect(state.logSeq).toBe(MAX_LOG_ENTRIES + 3);
+  });
+
+  it('clips a huge pasted instruction', () => {
+    const withLog = appendLog(initialState(BASE), 'user', 'v'.repeat(MAX_LOG_ENTRY_CHARS + 1));
+    expect(withLog.messages[0]?.text.endsWith('…')).toBe(true);
   });
 });

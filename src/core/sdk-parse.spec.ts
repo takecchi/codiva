@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applySdkMessage } from '@/core/sdk-parse';
+import { MAX_LOG_ENTRIES, MAX_LOG_ENTRY_CHARS, MAX_STREAM_PREVIEW_CHARS } from '@/core/log-buffer';
+import { applySdkMessage, summarizeToolUse, toolResultSummary } from '@/core/sdk-parse';
 import { initialState, reduce } from '@/core/status-reducer';
 import type { CreateSessionInput, PermissionRequest, SessionState } from '@/core/types';
 
@@ -833,6 +834,13 @@ describe('applySdkMessage over streaming partial messages', () => {
     expect(state.streamingText).toBe('Hello');
   });
 
+  it('keeps only the tail of a long stream (プレビューは最後の行しか出さない)', () => {
+    let state = sdk(initialState(BASE), streamText('x'.repeat(MAX_STREAM_PREVIEW_CHARS)));
+    state = sdk(state, streamText('TAIL'));
+    expect(state.streamingText).toHaveLength(MAX_STREAM_PREVIEW_CHARS);
+    expect(state.streamingText?.endsWith('TAIL')).toBe(true);
+  });
+
   it('message_start resets the streaming preview', () => {
     const running = sdk(initialState(BASE), streamText('stale'));
     const reset = sdk(running, { type: 'stream_event', event: { type: 'message_start' } });
@@ -909,10 +917,120 @@ describe('applySdkMessage does not double the final message on completion', () =
     expect(state.messages.some((m) => m.kind === 'result')).toBe(false);
   });
 
+  // 上限で切られた assistant_text と、切られていない result 文字列を素で比べると
+  // 一致しなくなり、長い回答が「白 + 緑」で二重に出ていた（レビューで発覚）。
+  it('drops the echo even when the answer was clipped by the log cap', () => {
+    const long = 'L'.repeat(MAX_LOG_ENTRY_CHARS + 5);
+    let state: SessionState = { ...initialState(BASE), status: 'running' };
+    state = sdk(state, assistant(long), 1);
+    state = sdk(state, { type: 'result', subtype: 'success', result: long }, 2);
+    expect(state.status).toBe('completed');
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages.some((m) => m.kind === 'result')).toBe(false);
+  });
+
   it('still logs a result that carries new content', () => {
     let state: SessionState = { ...initialState(BASE), status: 'running' };
     state = sdk(state, assistant('Working on it.'), 1);
     state = sdk(state, { type: 'result', subtype: 'success', result: 'Different summary.' }, 2);
     expect(state.messages.at(-1)).toMatchObject({ kind: 'result', text: 'Different summary.' });
+  });
+});
+
+// ログが無制限に伸びる（追記ごとに全体コピー）のがヒープ枯渇の原因だったので、
+// SDK 経路の追記も必ず上限を通ることを担保する（`core/log-buffer.ts`）。
+describe('applySdkMessage keeps the log bounded', () => {
+  it('caps the number of entries, keeping the newest', () => {
+    let state: SessionState = { ...initialState(BASE), status: 'running' };
+    for (let i = 0; i < MAX_LOG_ENTRIES + 20; i += 1) {
+      state = sdk(
+        state,
+        { type: 'assistant', message: { content: [{ type: 'text', text: `line ${i}` }] } },
+        i,
+      );
+    }
+    expect(state.messages).toHaveLength(MAX_LOG_ENTRIES);
+    expect(state.messages.at(-1)?.text).toBe(`line ${MAX_LOG_ENTRIES + 19}`);
+    // seq は振り直さない（描画キー・スクロール位置の同一性）
+    expect(state.messages.at(-1)?.seq).toBe(MAX_LOG_ENTRIES + 20);
+  });
+
+  it('clips a pathological entry (a Bash heredoc carrying a whole file)', () => {
+    const command = `cat <<'EOF' > big.txt\n${'x'.repeat(MAX_LOG_ENTRY_CHARS)}\nEOF`;
+    const state = sdk(
+      { ...initialState(BASE), status: 'running' },
+      {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command } }],
+        },
+      },
+    );
+    const entry = state.messages.at(-1);
+    expect(entry?.kind).toBe('tool_use');
+    expect(entry?.text.length).toBeLessThanOrEqual(MAX_LOG_ENTRY_CHARS + 2);
+    expect(entry?.text.endsWith('…')).toBe(true);
+  });
+});
+
+describe('summarizeToolUse', () => {
+  it('caps a Bash heredoc instead of building the whole command first', () => {
+    const command = `cat <<'EOF' > big\n${'x'.repeat(MAX_LOG_ENTRY_CHARS * 2)}\nEOF`;
+    expect(summarizeToolUse('Bash', { command }).length).toBeLessThanOrEqual(
+      MAX_LOG_ENTRY_CHARS + 'Bash '.length,
+    );
+  });
+
+  it.each([
+    ['Write', { file_path: '/tmp/a.ts' }, 'Write /tmp/a.ts'],
+    ['Edit', { path: '/tmp/b.ts' }, 'Edit /tmp/b.ts'],
+    ['Write', {}, 'Write'],
+    ['TaskCreate', { subject: 'do it' }, 'TaskCreate "do it"'],
+    ['TaskCreate', {}, 'TaskCreate ""'],
+    ['Grep', { pattern: 'x' }, 'Grep'],
+  ])('%s → %s', (name, input, expected) => {
+    expect(summarizeToolUse(name, input as Record<string, unknown>)).toBe(expected);
+  });
+});
+
+describe('toolResultSummary', () => {
+  it.each([
+    ['first line only', 'hello\nworld\n!', 'hello'],
+    ['CR も行区切り扱い', 'hello\r\nworld', 'hello'],
+    ['no newline', 'hello', 'hello'],
+    ['empty', '', ''],
+  ])('%s', (_name, content, expected) => {
+    expect(toolResultSummary(content)).toBe(expected);
+  });
+
+  it('caps a long first line at 200 chars', () => {
+    expect(toolResultSummary('a'.repeat(5000))).toHaveLength(200);
+  });
+
+  it('never materializes more than the summary out of a huge payload', () => {
+    // 10MB 相当のツール結果（Read / Bash の実測ケース）。従来は全体を 1 本の文字列に
+    // 平坦化して全行に split していた = 使わない数 MB を毎ツール呼び出しで確保していた。
+    const huge = { type: 'text', text: `${'z'.repeat(10_000_000)}\ntail` };
+    expect(toolResultSummary([huge])).toHaveLength(200);
+  });
+
+  it('stringifies non-string, non-array content (structured tool results)', () => {
+    expect(toolResultSummary({ ok: true })).toBe('{"ok":true}');
+    expect(toolResultSummary(42)).toBe('42');
+    expect(toolResultSummary(null)).toBe('');
+    expect(toolResultSummary(undefined)).toBe('');
+  });
+
+  it('ignores blocks without a text field', () => {
+    expect(toolResultSummary([{ type: 'image' }, { type: 'text', text: 'after' }])).toBe('after');
+  });
+
+  it('reads text blocks in order (同じ形式で復元ログと一致させる)', () => {
+    expect(
+      toolResultSummary([
+        { type: 'text', text: 'ab' },
+        { type: 'text', text: 'cd' },
+      ]),
+    ).toBe('abcd');
   });
 });

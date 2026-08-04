@@ -157,6 +157,120 @@ function safeRenderMarkdown(text: string): RichLine[] | undefined {
   }
 }
 
+/** Expand one entry into its physical rows (see {@link logLines}). */
+function entryLines(entry: LogEntry, width: number, prefix: string): DisplayLine[] {
+  const out: DisplayLine[] = [];
+  const indent = ' '.repeat(stringWidth(prefix));
+  const content = Math.max(1, width - stringWidth(prefix));
+
+  const rich = MARKDOWN_KINDS[entry.kind] ? safeRenderMarkdown(entry.text) : undefined;
+  if (rich) {
+    let i = 0;
+    for (const line of rich) {
+      for (const rowSpans of wrapRichLine(line, content)) {
+        const lead = i === 0 ? prefix : indent;
+        const spans = lead ? [{ text: lead } as RichSpan, ...rowSpans] : rowSpans;
+        out.push({
+          key: `${entry.seq}:${i}`,
+          kind: entry.kind,
+          text: spans.map((s) => s.text).join(''),
+          spans,
+        });
+        i += 1;
+      }
+    }
+    return out;
+  }
+
+  const rows = wrapDisplayLines(entry.text, content);
+  for (let i = 0; i < rows.length; i += 1) {
+    out.push({
+      key: `${entry.seq}:${i}`,
+      kind: entry.kind,
+      text: (i === 0 ? prefix : indent) + rows[i],
+    });
+  }
+  return out;
+}
+
+interface CachedRows {
+  width: number;
+  prefix: string;
+  rows: DisplayLine[];
+  /** Which {@link logLines} call last used these rows (LRU + no-thrash marker). */
+  pass: number;
+}
+
+/**
+ * Rows the memo cache may keep across calls. Rendered rows are **far** heavier
+ * than the text they came from (a row holds its plain text *and* its styled
+ * spans), so an unbounded cache would just move the leak: every entry ever
+ * rendered would keep its rows for the session's whole life, across every
+ * session whose detail view was opened.
+ *
+ * This is a soft budget — rows used by the call in progress are never evicted
+ * (see {@link logLines}), otherwise a log that is itself larger than the budget
+ * would evict rows it is about to need and re-expand everything on every frame.
+ * So the true bound is "one rendered log (bounded by `MAX_LOG_CHARS`) + this".
+ */
+export const MAX_CACHED_ROWS = 8_000;
+
+/**
+ * Per-entry row cache. Log entries are immutable (the reducer replaces the object
+ * on any change), so the rows an entry expanded to last time are still correct as
+ * long as the wrap width and its prefix are the same.
+ *
+ * Why this is worth a cache: the detail view re-derives its rows whenever
+ * `messages` changes — i.e. on *every* appended line — and without memoization
+ * each append re-wrapped (and re-parsed the Markdown of) the whole log. That is
+ * O(n²) work and, more importantly, O(n) fresh objects per line: a long session
+ * allocated the entire rendered log dozens of times a second, which is how codiva
+ * hit V8's heap limit.
+ *
+ * A `Map` (not a `WeakMap`) because eviction needs insertion order = recency.
+ * It therefore keeps its keys alive, which is exactly why the budget above
+ * exists: entries dropped by the log cap are released on eviction.
+ */
+const ENTRY_ROWS = new Map<LogEntry, CachedRows>();
+let cachedRowCount = 0;
+let currentPass = 0;
+
+/** Rows for one entry, from the cache when they are still valid. */
+function cachedEntryLines(entry: LogEntry, width: number, prefix: string): DisplayLine[] {
+  const hit = ENTRY_ROWS.get(entry);
+  if (hit && hit.width === width && hit.prefix === prefix) {
+    hit.pass = currentPass;
+    // Re-insert so Map iteration order stays least-recently-used first.
+    ENTRY_ROWS.delete(entry);
+    ENTRY_ROWS.set(entry, hit);
+    return hit.rows;
+  }
+  const rows = entryLines(entry, width, prefix);
+  if (hit) {
+    cachedRowCount -= hit.rows.length;
+    ENTRY_ROWS.delete(entry);
+  }
+  ENTRY_ROWS.set(entry, { width, prefix, rows, pass: currentPass });
+  cachedRowCount += rows.length;
+  for (const [key, value] of ENTRY_ROWS) {
+    if (cachedRowCount <= MAX_CACHED_ROWS) {
+      break;
+    }
+    if (value.pass === currentPass) {
+      continue; // in use by the render in progress — evicting it would thrash
+    }
+    ENTRY_ROWS.delete(key);
+    cachedRowCount -= value.rows.length;
+  }
+  return rows;
+}
+
+/** Drop every memoized row. Exported for tests (the cache is process-global). */
+export function clearLogLinesCache(): void {
+  ENTRY_ROWS.clear();
+  cachedRowCount = 0;
+}
+
 /**
  * Expand log entries into the physical rows the detail view renders. The
  * per-kind prefix comes from the UI (it owns glyphs/colors); continuation rows
@@ -167,44 +281,24 @@ function safeRenderMarkdown(text: string): RichLine[] | undefined {
  * `spans`; every other kind keeps the flat single-color path. `text` is always
  * set (the concatenated plain text) so scroll math and the plain renderer work
  * unchanged.
+ *
+ * Memoized per entry (see {@link ENTRY_ROWS}) — the output is the same value the
+ * unmemoized version produced, but appending a line only costs that one line.
+ * Rows must therefore be treated as read-only by callers.
  */
 export function logLines(
-  messages: LogEntry[],
+  messages: readonly LogEntry[],
   width: number,
   prefixFor: (kind: LogKind) => string,
 ): DisplayLine[] {
+  currentPass += 1;
   const out: DisplayLine[] = [];
   for (const entry of messages) {
-    const prefix = prefixFor(entry.kind);
-    const indent = ' '.repeat(stringWidth(prefix));
-    const content = Math.max(1, width - stringWidth(prefix));
-
-    const rich = MARKDOWN_KINDS[entry.kind] ? safeRenderMarkdown(entry.text) : undefined;
-    if (rich) {
-      let i = 0;
-      for (const line of rich) {
-        for (const rowSpans of wrapRichLine(line, content)) {
-          const lead = i === 0 ? prefix : indent;
-          const spans = lead ? [{ text: lead } as RichSpan, ...rowSpans] : rowSpans;
-          out.push({
-            key: `${entry.seq}:${i}`,
-            kind: entry.kind,
-            text: spans.map((s) => s.text).join(''),
-            spans,
-          });
-          i += 1;
-        }
-      }
-      continue;
-    }
-
-    const rows = wrapDisplayLines(entry.text, content);
-    for (let i = 0; i < rows.length; i += 1) {
-      out.push({
-        key: `${entry.seq}:${i}`,
-        kind: entry.kind,
-        text: (i === 0 ? prefix : indent) + rows[i],
-      });
+    // Appended one at a time on purpose: `push(...rows)` passes every row as an
+    // argument, which overflows the stack for an entry that wrapped into tens of
+    // thousands of rows (a narrow terminal + a pasted file).
+    for (const row of cachedEntryLines(entry, width, prefixFor(entry.kind))) {
+      out.push(row);
     }
   }
   return out;

@@ -752,6 +752,8 @@ UI なし。すべてユニットテストで駆動する。
 > ログ全体を markdown 再パースする（`logLines` にエントリ単位のキャッシュが無い）。
 > どちらもログが長い・セッションが多いほど効くので、クラッシュログの `memory` 行と
 > `report.*.json` が出てきたらそこから着手する。
+> → **実際にこの 2 つで落ちた**（`FATAL ERROR: Ineffective mark-compacts near heap limit`）。
+> 対応は Phase 23。
 
 ## Phase 22: ヘッダに現在ブランチを表示 ✅
 
@@ -782,6 +784,85 @@ UI なし。すべてユニットテストで駆動する。
 
 > 実績メモ: lint / typecheck / test / build 緑。ヘッダの行数は増えていない（プラン + モデルの行に
 > 並べただけなので `bannerCaretAt` の「行 index = 表示行」も不変）。実機での体感確認はユーザーに依頼。
+
+---
+
+## Phase 23: ヒープ枯渇（OOM）対策 ✅
+
+**課題**: 長く使っていると codiva が
+
+```
+FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
+zsh: abort      codiva
+```
+
+で落ちる（実報告。node 22 / 既定のヒープ上限 ~4GB）。Phase 21 の「残る OOM 候補」がそのまま
+原因だった: **`state.messages` に上限が無い**（追記ごとに全体コピー = O(n²)）／**詳細ビューが
+更新ごとにログ全体を再展開・Markdown 再パースする**（`logLines` にエントリ単位のキャッシュが無い）。
+`abort()` なので `process.on('exit')` も走らず、クラッシュログにも何も残らない（Node の
+診断レポートだけが記録）。
+
+- [x] **ログの上限**（新規 `core/log-buffer.ts`・純粋）: `MAX_LOG_ENTRIES`（2000）/
+      **`MAX_LOG_CHARS`（400,000 = 合計文字数）** / `MAX_LOG_ENTRY_CHARS`（20,000。超過分は `…` を
+      付けて切る）/ `MAX_STREAM_PREVIEW_CHARS`（4,000）。**件数だけでは何も縛れない**（1 件が
+      1 文字でも 20,000 文字でもよいので件数 × 1 件上限 = 4000 万文字）ため、文字数側の予算が
+      実際の上限になる。追記は `pushLogEntry` の 1 経路に集約し、`status-reducer.appendLog` と
+      `sdk-parse` の追記（`assistant_text` / `tool_use` / `tool_result`）を全部通す。
+      **`seq` は振り直さない**（描画キー `<seq>:<行>` がこれで決まる）。切り詰めはサロゲートペアを
+      分断しない
+- [x] **`logLines` のエントリ単位メモ化**（`core/scroll.ts`）: エントリは immutable（変更時は必ず
+      別オブジェクトになる）なので、幅とプレフィックスが同じなら前回の行をそのまま使える。
+      追記 1 件のコストが「その 1 件」になる。**保持行数にも上限**（`MAX_CACHED_ROWS` = 8,000・LRU）
+      — 展開後の行は元テキストの数倍を占めるので、上限が無いと「一過性のゴミ」が
+      「開いた全セッション × 全エントリの永続的な保持」に化ける。ただし**描画中のログの行は
+      追い出さない**（自分が次に使う行を捨てて毎フレーム再展開するのを避ける）。
+      `push(...rows)` は使わない（数万行に折り返したエントリで引数が溢れる）
+- [x] **ツール結果・ツール入力を全部平坦化しない**（`sdk-parse.ts` の `asStringHead` / `inputText`）:
+      `toolResultSummary` は先頭 200 文字しか使わないのに、10MB の `Read` / `Bash` 出力を 1 本の
+      文字列へ平坦化して**全行に `split('\n')`** していた。`Bash` の heredoc（ファイル本文込み）も
+      同様に全部組み立ててから切っていた。読む長さだけ材質化する
+- [x] **ストリーミングプレビューは末尾だけ持つ**: `streamingText` は 1 行（`streamTail`）しか描かないのに
+      1 メッセージ全体を溜め、毎フレーム全体を `split` していた
+- [x] **復元は 1 本ずつ・読みながら畳む**（`bootstrap/restore-sessions.ts` / `core/transcript.ts` の
+      `History`）: `Promise.all` で全セッションのトランスクリプト（1 本数 MB）を同時にヒープへ
+      載せ、さらに**全エントリを作ってから**捨てていた。逐次 + 読みながらのトリムで、途中の
+      保持量も上限で止まる（`seq` は「積んだ総数」で数えるのでトリムしても振り直さない）
+- [x] **上限に達したときは選択を捨てる**（`ui/session-detail.tsx`）: 選択位置は文書先頭からの
+      表示行 index なので、先頭が落ちると別の行を指す（= 触っていない行がコピーされる）。
+      端末幅の変化と同じ扱いでクリアする
+- [x] テスト: `core/log-buffer.spec.ts`（件数・文字数・1 件の上限 / 切り詰めとサロゲート保護 /
+      不要なら同一参照のまま = キャッシュが効く / kind・timestamp を保つ）/
+      `core/scroll.spec.ts`（同じエントリは 2 度展開しない・追記時に古い行は同一参照・幅/プレフィックス
+      変更で再計算・**Markdown 経路の再折り返し**・メモ化の結果が非メモ化と一致・LRU で古い行は
+      落ちる・**予算より大きいログでも自分の行は追い出さない**）/ `core/sdk-parse.spec.ts`
+      （SDK 経路の上限・巨大 heredoc の切り詰め・**切られた回答の result エコー除去**・
+      `toolResultSummary` の各分岐と 10MB ペイロード・`summarizeToolUse` の表）/
+      `core/status-reducer.spec.ts`（`appendLog` の上限）/ `core/transcript.spec.ts`（復元の上限・
+      読みながらのトリム・切り詰め）
+- [x] ドキュメント: `docs/ARCHITECTURE.md`（ログの上限とメモ化）/ `docs/TECH_NOTES.md`（実測）/
+      `.claude/rules/session-domain.md`（不変条件）/ `CLAUDE.md`（コードの地図）/
+      `README.md`（トラブルシューティング）
+
+> 実績メモ: lint / typecheck / test（2037 件）/ build 緑。**実測**:
+>
+> | 測ったもの | 結果 |
+> |---|---|
+> | 2000 文字級の Markdown 500 件 × 「1 件追記 → 再描画」500 回 | メモ化前 **23.3 秒**（75 万個の `DisplayLine`）→ 後 **0.10 秒** |
+> | 上限いっぱい（2000 件 / 12,000 行）で 300 回追記 → 再描画 | **0.40 ms/フレーム**（予算超過でも再展開しない） |
+> | 上限まで詰めたセッション 6 本を描画したあとの保持量 | **22 MB**（行数上限が無いと 1 本で 91 MB） |
+>
+> 確保レートが GC を追い越すのが `Ineffective mark-compacts`（= ヒープが埋まったまま回収しきれない）
+> の直接原因だった。上限側は「ログは会話の**記録ではなく表示**」という前提に立っている（正本は CLI の
+> トランスクリプト = `core/transcript.ts` の復元元なので、古い行を落としても読み返す手段は残る）。
+> `toolResultSummary` は CR も行区切りとして切るようになったので**厳密には従来と同値ではない**
+> （`Progress\r50%\r100%` のような結果が 1 行に収まる方向の変化。復元ログも同じ関数を通るので一致は保たれる）。
+> 実機での体感確認はユーザーに依頼。
+>
+> **残した課題**（別 Phase 候補）: スクロール位置は「文書先頭からの表示行 index」なので、
+> 上限に達したログが古い行を落とすとその分ズレる（上スクロール中に追記が続くとビューが少しずつ
+> 新しい方へ動く。選択の方はクリアして被害を止めてある）。直すなら基準を `DisplayLine.key`
+> （`<seq>:<行>`。トリム・追記の双方で不変）に変える必要があり、`core/scroll.ts` /
+> `core/log-selection.ts` / 当たり判定まで波及するので分離した。
 
 ---
 

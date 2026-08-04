@@ -315,10 +315,15 @@ export const SessionDetail: FC<{
 
   // 端末幅が変わるとログを再折り返すため、行 index の指す文字が変わる。ズレた位置を
   // 光らせ続けない（deps を付けられないのは logSel の参照が毎描画で変わるため）。
+  // ログが上限に達して**古いエントリが落ちた**ときも同じ理由で捨てる（選択は文書先頭
+  // からの表示行 index なので、先頭が消えると別の行を指す = 触っていない行がコピーされる）。
   const widthRef = useRef(columns);
+  const firstSeqRef = useRef(messages?.[0]?.seq);
   useEffect(() => {
-    if (widthRef.current !== columns) {
+    const firstSeq = messages?.[0]?.seq;
+    if (widthRef.current !== columns || firstSeqRef.current !== firstSeq) {
       widthRef.current = columns;
+      firstSeqRef.current = firstSeq;
       clearLogSelection();
     }
   });
