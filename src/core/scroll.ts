@@ -1,7 +1,9 @@
 import stringWidth from 'string-width';
+import { GRAPHEMES } from './graphemes';
 import { type RichLine, type RichSpan, renderMarkdown } from './markdown';
 import { clamp } from './math';
 import type { LogEntry, LogKind } from './types';
+import { detectUrls, type LinkRange, linksInSlice, mergeLinks, spanLinks } from './url';
 
 /**
  * Where the detail-view log viewport is anchored.
@@ -58,12 +60,19 @@ export interface DisplayLine {
    * code / heading color …) instead of the flat single-color `text`.
    */
   spans?: RichSpan[];
+  /**
+   * この行の中のクリックできる URL の範囲（`text` に対する文字オフセット。prefix /
+   * 字下げを含む位置）。undefined = リンク無し（大多数の行）。
+   *
+   * 出所は 2 つで、Markdown の `[label](url)` は `RichSpan.link`（表示テキストから
+   * 復元できないため）、それ以外の裸の URL は `detectUrls`。**折り返しで URL が
+   * 割れても各行が URL 全体を指す**ので、どちらの行をクリックしても同じ先へ飛べる。
+   */
+  links?: readonly LinkRange[];
 }
 
 /** LogKinds whose text is Markdown from the assistant and gets rich rendering. */
 const MARKDOWN_KINDS: Partial<Record<LogKind, boolean>> = { assistant_text: true };
-
-const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 /**
  * Wrap `text` to physical lines of at most `width` display cells, splitting on
@@ -74,26 +83,42 @@ const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
  */
 export function wrapDisplayLines(text: string, width: number): string[] {
   const out: string[] = [];
-  for (const logical of text.split(/\r\n|[\r\n\v\f]/)) {
-    if (width <= 0 || stringWidth(logical) <= width) {
-      out.push(logical);
-      continue;
+  for (const logical of text.split(LINE_BREAK)) {
+    for (const row of wrapLogical(logical, width)) {
+      out.push(row);
     }
-    let line = '';
-    let w = 0;
-    for (const { segment } of GRAPHEMES.segment(logical)) {
-      const cw = stringWidth(segment);
-      if (w + cw > width && line.length > 0) {
-        out.push(line);
-        line = segment;
-        w = cw;
-      } else {
-        line += segment;
-        w += cw;
-      }
-    }
-    out.push(line);
   }
+  return out;
+}
+
+/** 改行の並び。`wrapDisplayLines` と `entryLines` が同じ分割を使うため定数にしてある。 */
+const LINE_BREAK = /\r\n|[\r\n\v\f]/;
+
+/**
+ * 改行を含まない 1 論理行を物理行へ折り返す。{@link wrapDisplayLines} の中身で、
+ * 別関数にしてあるのは `entryLines` が**論理行単位で**回す必要があるため — URL の
+ * 検出は論理行に対して行い（折り返しで割れた半分は URL として解析できない）、
+ * その範囲を各物理行の座標へ移す。
+ */
+function wrapLogical(logical: string, width: number): string[] {
+  if (width <= 0 || stringWidth(logical) <= width) {
+    return [logical];
+  }
+  const out: string[] = [];
+  let line = '';
+  let w = 0;
+  for (const { segment } of GRAPHEMES.segment(logical)) {
+    const cw = stringWidth(segment);
+    if (w + cw > width && line.length > 0) {
+      out.push(line);
+      line = segment;
+      w = cw;
+    } else {
+      line += segment;
+      w += cw;
+    }
+  }
+  out.push(line);
   return out;
 }
 
@@ -104,7 +129,10 @@ function sameRichStyle(a: RichSpan, b: RichSpan): boolean {
     a.dim === b.dim &&
     a.underline === b.underline &&
     a.strikethrough === b.strikethrough &&
-    a.tone === b.tone
+    a.tone === b.tone &&
+    // link も比較する: 隣り合う別リンク（`[a](x)[b](y)`）を 1 スパンに畳むと
+    // どちらの URL で開くのか決まらなくなる。
+    a.link === b.link
   );
 }
 
@@ -157,6 +185,26 @@ function safeRenderMarkdown(text: string): RichLine[] | undefined {
   }
 }
 
+/**
+ * 折り返し後の 1 行のリンク範囲。`bare` は**論理行**に対して検出した範囲で、
+ * `[consumed, consumed + rowLen)` の部分を行内の座標（先頭に `leadLen` 文字の
+ * prefix / 字下げが付く）へ移す。`spans` 由来（Markdown の href）を優先し、
+ * 重なる裸 URL は捨てる。
+ */
+function rowLinks(
+  spans: readonly RichSpan[] | undefined,
+  bare: readonly LinkRange[],
+  consumed: number,
+  rowLen: number,
+  leadLen: number,
+): readonly LinkRange[] | undefined {
+  const fromBare = bare.length > 0 ? linksInSlice(bare, consumed, consumed + rowLen, leadLen) : [];
+  // spans のオフセットは lead を含んだ行テキスト基準なので、そのまま使える。
+  const fromSpans = spans ? spanLinks(spans) : [];
+  const links = fromSpans.length > 0 ? mergeLinks(fromSpans, fromBare) : fromBare;
+  return links.length > 0 ? links : undefined;
+}
+
 /** Expand one entry into its physical rows (see {@link logLines}). */
 function entryLines(entry: LogEntry, width: number, prefix: string): DisplayLine[] {
   const out: DisplayLine[] = [];
@@ -167,28 +215,44 @@ function entryLines(entry: LogEntry, width: number, prefix: string): DisplayLine
   if (rich) {
     let i = 0;
     for (const line of rich) {
+      // 裸 URL の検出は論理行に対して行う（折り返しで割れた半分は URL にならない）。
+      // Markdown の autolink はここでは href 付きスパンになっているので、これは
+      // コードブロック等で href が付かない URL の受け皿。
+      const bare = detectUrls(line.map((s) => s.text).join(''));
+      let consumed = 0;
       for (const rowSpans of wrapRichLine(line, content)) {
         const lead = i === 0 ? prefix : indent;
         const spans = lead ? [{ text: lead } as RichSpan, ...rowSpans] : rowSpans;
+        const rowLen = rowSpans.reduce((n, s) => n + s.text.length, 0);
         out.push({
           key: `${entry.seq}:${i}`,
           kind: entry.kind,
           text: spans.map((s) => s.text).join(''),
           spans,
+          links: rowLinks(spans, bare, consumed, rowLen, lead.length),
         });
+        consumed += rowLen;
         i += 1;
       }
     }
     return out;
   }
 
-  const rows = wrapDisplayLines(entry.text, content);
-  for (let i = 0; i < rows.length; i += 1) {
-    out.push({
-      key: `${entry.seq}:${i}`,
-      kind: entry.kind,
-      text: (i === 0 ? prefix : indent) + rows[i],
-    });
+  let i = 0;
+  for (const logical of entry.text.split(LINE_BREAK)) {
+    const bare = detectUrls(logical);
+    let consumed = 0;
+    for (const row of wrapLogical(logical, content)) {
+      const lead = i === 0 ? prefix : indent;
+      out.push({
+        key: `${entry.seq}:${i}`,
+        kind: entry.kind,
+        text: lead + row,
+        links: rowLinks(undefined, bare, consumed, row.length, lead.length),
+      });
+      consumed += row.length;
+      i += 1;
+    }
   }
   return out;
 }

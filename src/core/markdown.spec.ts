@@ -41,9 +41,30 @@ describe('renderMarkdown — inline styling', () => {
     expect(lines[0]).toEqual([{ text: 'a ' }, { text: 'b', strikethrough: true }]);
   });
 
-  it('renders a link as underlined link-toned text', () => {
+  it('renders a link as underlined link-toned text, carrying the href', () => {
     const lines = renderMarkdown('see [docs](https://x.dev)');
-    expect(lines[0]).toEqual([{ text: 'see ' }, { text: 'docs', underline: true, tone: 'link' }]);
+    // href はスパンに載せる: 見えているのは label なので表示テキストから復元できない。
+    expect(lines[0]).toEqual([
+      { text: 'see ' },
+      { text: 'docs', underline: true, tone: 'link', link: 'https://x.dev' },
+    ]);
+  });
+
+  it('開けないスキームの href は載せない（クリックで開く対象にしない）', () => {
+    expect(renderMarkdown('[mail](mailto:a@b.test)')[0]).toEqual([
+      { text: 'mail', underline: true, tone: 'link', link: undefined },
+    ]);
+    expect(renderMarkdown('[rel](./docs/a.md)')[0]).toEqual([
+      { text: 'rel', underline: true, tone: 'link', link: undefined },
+    ]);
+  });
+
+  it('裸の URL は autolink されて href が付く', () => {
+    expect(renderMarkdown('go https://x.dev/a now')[0]).toEqual([
+      { text: 'go ' },
+      { text: 'https://x.dev/a', underline: true, tone: 'link', link: 'https://x.dev/a' },
+      { text: ' now' },
+    ]);
   });
 
   it('nests inline styles (bold + code)', () => {

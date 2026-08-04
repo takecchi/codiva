@@ -1081,10 +1081,11 @@ describe('App detail view (in-app connection)', () => {
     columns = 80,
     textFor: (i: number) => string = (i) => `log-${String(i).padStart(2, '0')}`,
     onCopy?: (text: string) => void,
+    onOpenUrl?: (url: string) => void,
   ) {
     const { manager, out } = drivenManager();
     const { app, stdin, lastFrame } = renderFullscreen(
-      <App manager={manager} onCopy={onCopy} />,
+      <App manager={manager} onCopy={onCopy} onOpenUrl={onOpenUrl} />,
       rows,
       columns,
     );
@@ -1127,6 +1128,97 @@ describe('App detail view (in-app connection)', () => {
   const press = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}M`;
   const dragTo = (col: number, row: number) => `\x1b[<32;${col + 1};${row + 1}M`;
   const release = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}m`;
+
+  /**
+   * 詳細ログの URL クリック。端末任せ（Cmd+click）にできない理由は
+   * `SessionDetail.onOpenUrl` のコメント参照 — Ghostty はマウス捕捉中にリンク検出を
+   * 止め、SGR に Cmd のビットも無いので、codiva 自身がクリックを取るしかない。
+   */
+  async function detailWithUrl(url: string) {
+    const opened: string[] = [];
+    const ctx = await detailWithLog(
+      3,
+      24,
+      80,
+      (i) => (i === 1 ? `open ${url} now` : `log-${i}`),
+      undefined,
+      (u) => opened.push(u),
+    );
+    const frame = stripAnsi(ctx.lastFrame()).split('\n');
+    const row = frame.findIndex((l) => l.includes(url));
+    expect(row).toBeGreaterThanOrEqual(0);
+    const col = frame[row]?.indexOf(url) ?? -1;
+    expect(col).toBeGreaterThanOrEqual(0);
+    return { ...ctx, opened, row, col, urlLen: url.length };
+  }
+
+  it('詳細ログの URL をクリックするとブラウザで開く', async () => {
+    const url = 'https://example.com/pr/1';
+    const { app, stdin, opened, row, col } = await detailWithUrl(url);
+
+    // URL の上で press → 動かさずに release = 単なるクリック。
+    stdin.write(press(col + 2, row));
+    await flush();
+    stdin.write(release(col + 2, row));
+    await flush();
+    expect(opened).toEqual([url]);
+    app.unmount();
+  }, 30000);
+
+  it('URL の外・行末より右のクリックでは開かない', async () => {
+    const url = 'https://example.com/pr/1';
+    const { app, stdin, opened, row, col, urlLen } = await detailWithUrl(url);
+
+    // URL の手前（'open ' の上）
+    stdin.write(press(col - 2, row));
+    await flush();
+    stdin.write(release(col - 2, row));
+    await flush();
+    // 行末よりずっと右の余白
+    stdin.write(press(col + urlLen + 30, row));
+    await flush();
+    stdin.write(release(col + urlLen + 30, row));
+    await flush();
+    expect(opened).toEqual([]);
+    app.unmount();
+  }, 30000);
+
+  it('右クリック・中クリックでは開かない（副作用は左ボタンだけ）', async () => {
+    const url = 'https://example.com/pr/1';
+    const { app, stdin, opened, row, col } = await detailWithUrl(url);
+
+    for (const button of [1, 2]) {
+      // 中(1)/右(2) ボタンの press → release。座標は URL の上。
+      stdin.write(`\x1b[<${button};${col + 3};${row + 1}M`);
+      await flush();
+      stdin.write(`\x1b[<${button};${col + 3};${row + 1}m`);
+      await flush();
+    }
+    expect(opened).toEqual([]);
+
+    // 左ボタンなら開く（同じ座標なので、当たり判定ではなくボタンで弾いている証拠）。
+    stdin.write(press(col + 3, row));
+    await flush();
+    stdin.write(release(col + 3, row));
+    await flush();
+    expect(opened).toEqual([url]);
+    app.unmount();
+  }, 30000);
+
+  it('ドラッグして範囲選択したときは開かない（選択とクリックを混同しない）', async () => {
+    const url = 'https://example.com/pr/1';
+    const { app, stdin, opened, row, col } = await detailWithUrl(url);
+
+    // URL の上から押して、動かしてから離す = 範囲選択。開いてはいけない。
+    stdin.write(press(col + 2, row));
+    await flush();
+    stdin.write(dragTo(col + 8, row));
+    await flush();
+    stdin.write(release(col + 8, row));
+    await flush();
+    expect(opened).toEqual([]);
+    app.unmount();
+  }, 30000);
 
   // Regression (詳細画面のログが上部にスクロールできない): the window was sized from
   // the whole terminal rather than the log viewport, so every frame overflowed and

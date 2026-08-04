@@ -214,7 +214,7 @@ async function main(): Promise<void> {
       trainingOptIn={trainingOptIn}
       updater={updater}
       loadBranch={() => worktrees.currentBranch()}
-      onOpenPr={openUrl}
+      onOpenUrl={openUrl}
       onCopy={(text) => copyToClipboard(text)}
     />,
     { exitOnCtrlC: false },

@@ -13,10 +13,30 @@ import { stripLeadingEscape } from './ansi';
  * report is swallowed by the view rather than leaking in as literal text.)
  */
 export type MouseEvent =
-  | { kind: 'press'; x: number; y: number }
-  | { kind: 'release'; x: number; y: number }
-  | { kind: 'drag'; x: number; y: number }
+  | { kind: 'press'; x: number; y: number; button: MouseButton }
+  | { kind: 'release'; x: number; y: number; button: MouseButton }
+  | { kind: 'drag'; x: number; y: number; button: MouseButton }
   | { kind: 'wheel'; dir: 'up' | 'down'; x: number; y: number };
+
+/**
+ * どのボタンか（低位 2 ビット）。**副作用のある操作は左ボタンだけに限る**ために持つ
+ * — ログ内 URL のクリックはブラウザを開くので、右クリック（端末のコンテキストメニューを
+ * 期待した操作）や中クリック（貼り付け）で開いてはいけない。選択やフォーカス移動は
+ * どのボタンでも従来どおり受ける（無害なため）。
+ */
+export type MouseButton = 'left' | 'middle' | 'right';
+
+function buttonOf(code: number): MouseButton {
+  switch (code & 3) {
+    case 1:
+      return 'middle';
+    case 2:
+      return 'right';
+    default:
+      // 0 = 左。3（ボタン無しの移動報告）も左扱いで構わない（drag のみで現れる）。
+      return 'left';
+  }
+}
 
 const SGR_MOUSE = /^\[<(\d+);(\d+);(\d+)([Mm])$/;
 
@@ -41,9 +61,9 @@ export function parseSgrMouse(input: string): MouseEvent | undefined {
   }
   if (button & 32) {
     // Button-held motion (a drag) under ?1002 — used to extend a selection.
-    return { kind: 'drag', x, y };
+    return { kind: 'drag', x, y, button: buttonOf(button) };
   }
-  return { kind: m[4] === 'M' ? 'press' : 'release', x, y };
+  return { kind: m[4] === 'M' ? 'press' : 'release', x, y, button: buttonOf(button) };
 }
 
 /**

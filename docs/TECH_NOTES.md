@@ -315,6 +315,72 @@ function toUserMessage(text: string): SDKUserMessage {
   この場合 `index.tsx` の shutdown 列（ポーリング停止・`persist.flushAsync()`・teardown）は
   丸ごとスキップされるため、クラッシュハンドラ側にも同期 flush と端末復元を持たせている。
 
+## ログ内 URL のクリック: 端末のリンク機能はマウスレポート中に使えない（調査 2026-08-04）
+
+詳細ログの URL を「Cmd+クリックで開く」を端末任せにできるか調べた結論と、その根拠。
+
+### SGR マウスレポートに Cmd/Super のビットは無い
+
+xterm の仕様が定義する修飾ビットは **shift=4 / meta(alt)=8 / ctrl=16** だけ。Super/Cmd は無い。
+
+- **Ghostty** (`src/input/mouse_encode.zig`): `shift→4` / `alt→8` / `ctrl→16` のみ。Cmd は**一切
+  エンコードされない**ので、Cmd+クリックは素のクリックと**バイト列が同一**。
+- **iTerm2** (`sources/VT100/VT100Output.m`): **Cmd → bit 8（meta）** に割り当て、Option は
+  エンコードしない（Option がマウスレポートのバイパスキーだから）。
+  → **bit 8 の意味が端末ごとに違う**（Ghostty では Option、iTerm2 では Cmd）ので、
+  bit 8 で「Cmd」を判定することはできない。
+
+### マウスレポート有効時のリンククリックは端末で流派が 2 つに割れる
+
+| 流派 | 端末 | 素の Cmd/Ctrl+クリック | 必要な操作 | アプリにもクリックが届くか |
+|---|---|---|---|---|
+| マウスレポート優先 | **Ghostty** / kitty / WezTerm | **効かない**（ホバー下線も出ない） | **Shift+Cmd+クリック**（Shift がバイパス） | 届かない（端末が飲む） |
+| ハイパーリンク優先 | iTerm2 / VTE(gnome-terminal) / Windows Terminal / VS Code | 効く | Cmd / Ctrl+クリック | iTerm2・VS Code は**届くこともある** |
+
+Ghostty の該当箇所（`src/Surface.zig` の `cursorPosCallback`）は、リンクのホバー判定を
+「マウスレポートが off、**または** shift が押されていて shift をアプリへ送らない設定のとき」に
+限っている。`mouseRefreshLinks` が `mouse.over_link` を立てる唯一の経路で、
+`mouseButtonCallback` はそれを見てリンクを開くので、**捕捉中は素の Cmd+クリックでは
+ホバーもクリックも成立しない**。裸 URL の自動検出（`link-url`）も同じ経路なので同様。
+
+→ **主端末（Ghostty）が最悪ケース**で、設定でも直せない（`mouse-reporting = false` にするか
+Shift を足すしかない）。一方 **素の左クリックはどの端末でもアプリに SGR レポートとして届く**。
+そこで codiva は**自分でクリックを取って開く**方式にした（`logLinkAt` → `utils/open-url.ts`）。
+OSC 8 は「対応端末では端末側の Cmd+クリックも使える」上乗せとして併せて出す。
+
+### OSC 8 は Ink 7 の計測・再構築を安全に通る（実測）
+
+`\x1b]8;;URL\x1b\\text\x1b]8;;\x1b\\` を実際に測った結果（このリポジトリの依存で確認）:
+
+| パッケージ | 版 | 結果 |
+|---|---|---|
+| `string-width` | 8.2.2 | `stringWidth(OSC8('click'))` = **5**（= 表示テキストぶんだけ） |
+| `@alcalzone/ansi-tokenize` | 0.3.0 | セル数 **5**、再構築して OSC 8 が**保持される** |
+| `ansi-regex` / `wrap-ansi` / `slice-ansi` / `cli-truncate` | 6.2.2 / 10.0.0 / 9.0.0 / 6.1.1 | OSC 8 対応済み |
+
+必要な最低版は `ansi-regex ≥6.1.0` / `wrap-ansi ≥10` / `slice-ansi ≥8` / `ansi-tokenize ≥0.3.0`
+（2024-09 以前のエコシステムは ST 終端の OSC 8 を扱えず壊れていた）。
+
+**ただし codiva 自身の折り返しは通らない。** `core/scroll.ts` の `wrapDisplayLines` は
+`Intl.Segmenter` でグラフェム単位に分けて 1 つずつ measure するので、OSC 8 を混ぜた文字列を
+渡すと**エスケープのバイトを可視幅として数える**（幅 20 で測ったら可視 21 セルの文字列が 4 行に
+割れ、URI が行の途中で断ち切られた）。よって **OSC 8 は `LogEntry.text` / `RichSpan.text` に
+入れず、描画時（`ui/log-line.tsx`）にだけ包む**。パラメータ形（`id=`）は `wrap-ansi@10` が
+壊す（`ANSI_ESCAPE_LINK` が `]8;;` 決め打ち）ので使わない。
+
+### tmux / その他の注意
+
+- tmux は 3.4+ が OSC 8 を**自前で解釈して再送**する（パススルーではない）。ただし
+  `Hls` を送る相手を自動判定するのは tmux / iTerm2 / foot / WezTerm / ghostty だけで、
+  kitty・VTE・Windows Terminal は `set -ga terminal-features "*:hyperlinks"` が必要。
+  URI は **1024 バイト**で打ち切られる（`core/url.ts` の `MAX_URL_CHARS` がこれに合わせてある）。
+- tmux ≤3.3a は OSC 8 を**黙って捨てる**（可視ゴミにはならない）。`screen` は非対応。
+- 仕様準拠の端末は未知の OSC を無視するだけなので、**出しても表示は壊れない**
+  （可視ゴミが出るのは VTE ≤0.48 / Windows Terminal ≤0.9 など相当古い版）。
+- `supports-hyperlinks` パッケージは **tmux 内で false を返す**（`TERM_PROGRAM` を tmux が
+  上書きし `TERM` も `screen-*` になる）。通知の `detectNotifyProtocol` と同じ罠なので、
+  能力判定に使わない（codiva は判定せず常に出し、非対応端末の無視に任せている）。
+
 ## ヒープ枯渇の実測（2026-08-04）
 
 報告された落ち方（node 22 / 既定のヒープ上限）:

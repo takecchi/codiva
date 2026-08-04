@@ -1,4 +1,5 @@
 import { marked, type Token, type Tokens } from 'marked';
+import { openableUrl } from './url';
 
 /**
  * Markdown rendering for assistant log text. The AI replies in Markdown, so
@@ -29,6 +30,13 @@ export interface RichSpan {
   underline?: boolean;
   strikethrough?: boolean;
   tone?: MarkdownTone;
+  /**
+   * リンクの飛び先。`[label](url)` は見えているのが label なので、**表示テキストから
+   * URL を復元できない** — だからスパンに載せて運ぶ。`http(s)` 以外（`mailto:` /
+   * 相対リンク）は載せない（`openableUrl` で絞る）ので、値があれば必ず開ける。
+   * 実際の当たり判定用の範囲は `spanLinks` がここから組み立てる。
+   */
+  link?: string;
 }
 
 /** One logical (pre-wrap) line of rendered Markdown. Empty array = a blank line. */
@@ -77,12 +85,25 @@ function inlineSpans(tokens: readonly Token[] | undefined, base: RichSpan): Rich
         break;
       case 'link': {
         const lk = token as Tokens.Link;
-        out.push(...inlineSpans(lk.tokens, { ...base, underline: true, tone: 'link' }));
+        out.push(
+          ...inlineSpans(lk.tokens, {
+            ...base,
+            underline: true,
+            tone: 'link',
+            link: openableUrl(lk.href),
+          }),
+        );
         break;
       }
       case 'image': {
         const im = token as Tokens.Image;
-        out.push({ ...base, underline: true, tone: 'link', text: im.text || im.href });
+        out.push({
+          ...base,
+          underline: true,
+          tone: 'link',
+          link: openableUrl(im.href),
+          text: im.text || im.href,
+        });
         break;
       }
       case 'br':
