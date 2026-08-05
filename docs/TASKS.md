@@ -932,6 +932,73 @@ zsh: abort      codiva
 
 ---
 
+## Phase 25: ヒープ枯渇（OOM）対策 2 — 描画ごとの永久保持 ✅
+
+> Phase 23（ログの上限とメモ化）を入れた 0.3.8 で**また OOM で 3 回落ちた**
+> （`~/.codiva/logs/report.*.json`。cwd はセッション数の多いリポジトリ 2 つ）。前回は「確保レートが
+> GC を追い越す」（`Ineffective mark-compacts`）だったが、今回は `old_space` 4.2GB が**生存データで
+> 埋まっている**一方 `large_object_space` は 55MB だけ = **小さいオブジェクトの保持漏れ**。
+> ログの上限では止められない別経路だった。
+>
+> ヒープスナップショットの上位が `PerformanceMeasure` × 60,003（= 20,000 描画 × 3）と
+> `Components ⚛` / `Changed Props` / `Scheduler ⚛` で、正体は **React 19.2 の Performance Tracks**。
+> `react-reconciler` の dev ビルドが**モジュール評価時**に `supportsUserTiming`
+> （`console.timeStamp` && `performance.measure`。Node には両方ある）を確定し、以後レンダーごとに
+> `performance.measure()` を 3 本積む。**Node の user timing は自動で捨てられない**。
+> `bin` から `node` で直に起動され `NODE_ENV` が未設定なので、**利用者は必ず dev ビルド**だった。
+
+- [x] **`src/index.tsx` を起動シムにする**（本筋）: `process.env.NODE_ENV ??= 'production'` を
+      `await import('./main')` **より前**に置く。本体は `src/main.tsx` へ改名。ESM の static import は
+      巻き上げられて本文より先に評価されるため、シムに static import を 1 本足すと無効化される
+      （`tsup` の `banner` も、シバンの `env -S` も間に合わない。後者は **mise 経由の起動が
+      `node <path>` 直叩きでシバンを通らない**ので特に当てにならない = 実際のクラッシュレポートの
+      `commandLine` がそれ）。`tsup` は `splitting: true` が必須（畳むと巻き上げが復活する）
+- [x] **`bootstrap/perf-timeline.ts`**（保険）: 30 秒ごとに `performance.clearMeasures()` /
+      `clearMarks()`。`NODE_ENV=development` で起動したときや、将来 React / Node が別の形で
+      user timing を積み始めたときに効く。タイマーは unref、失敗は握り潰す
+- [x] **ストリーミングプレビューを表示幅で切る**（Ink 7.1.1 の上限なしキャッシュ対策）:
+      `streamTail(text, width)` + 純粋な `clipToWidth`（グラフェム単位・早期打ち切り・ANSI を含む行は
+      切らない）。`ink/build/measure-text.js` の `new Map()` と `wrap-text.js` の `{}` は
+      キー = テキスト全文で evict が無く、**4,000 文字の `<Text>` 1 描画で約 17.8KB が永久に残る**。
+      `wrap="truncate-end"` は描画時に切るだけなのでキーは切る前の文字列 = 効かない。
+      渡す幅はログ行の折返しと同じ `logWidth` を使う
+- [x] `bootstrap/runtime.ts` の `void manager.refreshPrs()` に `.catch()`（規約違反。20 秒ごとの
+      reject が unhandled rejection = プロセス死になり、**死因が OOM と見分けづらい**）
+- [x] テスト: `tests/entry-shim.test.ts`（**番人**: static import が無い・NODE_ENV の代入が動的 import
+      より前・`??=` である・3 文だけ）/ `bootstrap/perf-timeline.spec.ts`（間隔ごとに掃除・停止・
+      throw を伝播しない・unref）/ `core/scroll.spec.ts`（`clipToWidth` のテーブル + 幅を超えた行は
+      同じ文字列を返す = キャッシュに当たる）
+- [x] ドキュメント: `docs/ARCHITECTURE.md`（「React の dev ビルドとヒープ枯渇」+ 合成レイヤ）/
+      `docs/TECH_NOTES.md`（実測 2）/ `CLAUDE.md`（不変条件 10・コードの地図・ビルド構成）/
+      `.claude/rules/architecture.md` / `.claude/rules/ink-components.md` / `.claude/rules/workflow.md` /
+      `README.md`（トラブルシューティング + ビルド行）
+
+> 実績メモ: lint / typecheck / test（2175 件）/ build 緑。**実測**（`--expose-gc` + 強制 GC 後の
+> heapUsed 差分。空 Box を 8,000 回再描画）:
+>
+> | 条件 | 永久保持 | perf エントリ | 所要 |
+> |---|---|---|---|
+> | dev ビルド（従来） | **2,230 B/フレーム** | 24,003 件 | 414ms |
+> | `NODE_ENV=production` | 117 B/フレーム | 0 件 | **166ms** |
+> | dev + 定期 `clearMeasures()` | 174 B/フレーム | 1 件 | 406ms |
+>
+> 描画は約 10/秒なので従来は **約 86MB/時**。既定のヒープ上限 ~4GB に半日〜1 日で到達する。
+> production ビルドは**描画自体も 2.5 倍速い**（報告された 26〜33 分の CPU 時間の相当部分）。
+> Ink 側のプレビュー対策は 4,000 文字の最悪ケースで 6,786 → 3,129 B/フレーム。
+>
+> **残した課題**: Ink のキャッシュ自体に上限が無いこと（新しく現れたログ行 1 本ごとに約 1.7KB が
+> 永久に残る）は上流の修正が必要なので issue で報告した。codiva 側で上限を付けるには
+> `noExternal: ['ink']` でバンドルしてキャッシュを LRU 化する必要があり（`signal-exit` の CJS
+> `require` シム + チャンク分割 + `react-devtools-core` の external が付いてくる。実験済みで
+> dist は 322KB → 1.8MB）、「ビルド構成は変えない」方針との兼ね合いで見送っている。
+> 併せて監査で見つかった別バグ（`SessionStore.set` による削除済みセッションの復活 /
+> `canUseTool` の pending が 1 スロットで並行要求を取りこぼす / `AsyncQueue` の待機 resolver が
+> 死んだイテレータへ配送する / discard・merge が `SessionHandle` を解放しない）は本件と独立なので、
+> ここに次 Phase の候補として残す（いずれもメモリの主因ではないが、セッションが無言で
+> 止まる・サブプロセスが残るといった実害がある）。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearLogLinesCache,
+  clipToWidth,
   logLines,
   logWindow,
   MAX_CACHED_ROWS,
@@ -461,21 +462,54 @@ describe('scrollUp / scrollDown', () => {
   });
 });
 
+describe('clipToWidth', () => {
+  const cases: [label: string, text: string, width: number, want: string][] = [
+    ['幅に収まる行はそのまま', 'abc', 10, 'abc'],
+    ['ちょうど幅の行はそのまま', 'abcde', 5, 'abcde'],
+    ['溢れた分を落とす', 'abcdefg', 3, 'abc'],
+    ['全角は 2 セルで数える', 'あいう', 4, 'あい'],
+    // 幅 3 に 2 セルの全角は 1 つしか入らない（半端に 1 セルだけ描かない）
+    ['端で溢れる全角は落とす（半端に切らない）', 'あいう', 3, 'あ'],
+    ['異体字セレクタ付きの絵文字は 1 グラフェム 2 セル', '⚠️⚠️', 2, '⚠️'],
+    ['ZWJ で繋いだ絵文字を分断しない', '👨‍👩‍👦x', 2, '👨‍👩‍👦'],
+    ['幅 0 以下は切らない', 'abc', 0, 'abc'],
+    ['空文字', '', 5, ''],
+  ];
+
+  it.each(cases)('%s', (_label, text, width, want) => {
+    expect(clipToWidth(text, width)).toBe(want);
+  });
+
+  it('ANSI エスケープを含む行は切らない（シーケンスを断ち切らないため）', () => {
+    const text = `\x1b[31mred and quite long\x1b[39m`;
+    expect(clipToWidth(text, 3)).toBe(text);
+  });
+});
+
 describe('streamTail', () => {
   it('returns the last non-empty line', () => {
-    expect(streamTail('foo\nbar\nbaz')).toBe('baz');
+    expect(streamTail('foo\nbar\nbaz', 80)).toBe('baz');
   });
 
   it('skips trailing empty lines', () => {
-    expect(streamTail('foo\nbar\n\n')).toBe('bar');
+    expect(streamTail('foo\nbar\n\n', 80)).toBe('bar');
   });
 
   it('returns an empty string for all-empty input', () => {
-    expect(streamTail('')).toBe('');
-    expect(streamTail('\n\n')).toBe('');
+    expect(streamTail('', 80)).toBe('');
+    expect(streamTail('\n\n', 80)).toBe('');
   });
 
   it('returns a single line unchanged', () => {
-    expect(streamTail('just one')).toBe('just one');
+    expect(streamTail('just one', 80)).toBe('just one');
+  });
+
+  it('幅で切る（Ink の上限なしキャッシュへ長い文字列を渡さない）', () => {
+    expect(streamTail(`head\n${'x'.repeat(4_000)}`, 20)).toBe('x'.repeat(20));
+  });
+
+  it('幅を超えて伸びた行は同じ文字列を返す（= キャッシュに当たる）', () => {
+    const at = (n: number) => streamTail('x'.repeat(n), 20);
+    expect(at(100)).toBe(at(4_000));
   });
 });

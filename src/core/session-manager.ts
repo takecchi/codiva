@@ -65,7 +65,7 @@ export interface SessionManagerDeps {
   /**
    * When true, sessions are created from the latest `origin/<base>` (fetched
    * first) instead of the local HEAD. Falls back to local HEAD when there is no
-   * usable upstream. Default off unless wired (index.tsx defaults it on).
+   * usable upstream. Default off unless wired (main.tsx defaults it on).
    */
   followOrigin?: boolean;
   /**

@@ -47,7 +47,7 @@ function createModelPersister(config: CodivaConfig): (model: string | undefined)
  *
  * `ignoredFiles` は `WorktreeManager` に渡すものと同じ設定値で、`'symlink'` のときだけ
  * 「ignore 済みパスの実体は元リポジトリと共有」という注意書きが systemPrompt に載る
- * （`core/system-prompt.ts`）。解決は合成レイヤの2箇所（`index.tsx` の `WorktreeManager`
+ * （`core/system-prompt.ts`）。解決は合成レイヤの2箇所（`main.tsx` の `WorktreeManager`
  * 生成とここ）で行うが、どちらも同じ config から `resolveIgnoredFilesMode()` で導くので
  * 必ず一致する。
  */

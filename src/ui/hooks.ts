@@ -289,7 +289,7 @@ export function useClock(ms = 1000): number {
 /**
  * Resolve the startup update check into render state.
  *
- * The check is kicked off in the composition root (`index.tsx`) *before* render
+ * The check is kicked off in the composition root (`main.tsx`) *before* render
  * and never awaited, so a slow/offline registry can't delay startup. Until it
  * lands (and forever, if no check was injected) this returns `undefined` and the
  * banner simply shows no update line.
@@ -335,7 +335,7 @@ export function useUpdateCheck(initial?: Promise<UpdateCheck>): {
 /**
  * Resolve the model catalog fetched from Claude Code into render state.
  *
- * The fetch is kicked off once in the composition root (`index.tsx`) *before*
+ * The fetch is kicked off once in the composition root (`main.tsx`) *before*
  * render, so by the time the user opens `/model` it has almost always landed.
  * The promise identity is therefore stable and this never re-fetches.
  *
@@ -379,7 +379,7 @@ export function useModelCatalog(
 /**
  * 学習データ利用（claude.ai の「Help improve our AI models」）の判定結果を描画 state へ。
  *
- * 取得は合成ルート（`index.tsx`）が render 前に始める。キャッシュに当たれば即答だが、
+ * 取得は合成ルート（`main.tsx`）が render 前に始める。キャッシュに当たれば即答だが、
  * 非公開エンドポイントへ問い合わせるときは数百 ms かかるため、**起動はブロックしない**
  * （解決したらバナーに注意行が増える）。`fetchTrainingOptIn` は throw しないが、
  * 万一の rejection でも警告を出さない側（'unknown'）へ倒す。

@@ -9,7 +9,7 @@ npm run dev        # tsx で TUI 起動（cwd が codiva 自身になる。手�
 npm test           # vitest（coverage 付き、core/ と utils/ は 80% 必須）
 npm run lint       # biome check（--write は lint:fix）
 npm run typecheck  # tsc --noEmit（型チェックのみ）
-npm run build      # tsup で dist/index.js に単一ファイルバンドル
+npm run build      # tsup → dist/index.js（起動シム）+ dist/main-<hash>.js（本体）
 npm run spike -- <basic|followup|interrupt|subagent>   # 実 SDK のメッセージ採取
 ```
 
@@ -83,7 +83,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | モデル選択 | `core/models.ts` / `utils/model-catalog.ts` / `ui/model-select.tsx` |
 | 選択肢リストの表示（質問・モデル） | `core/choice-lines.ts`（折返し・純粋）/ `ui/choice-row.tsx`（1件の描画） |
 | アップデート通知・`/update` | `core/update.ts`（比較・判定・DI 境界）/ `utils/update.ts`（registry fetch・経路判定・`npm install`）/ `ui/update-dialog.tsx` |
-| 起動・副作用の配線 | `src/index.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / crash-handler / runtime） |
+| 起動・副作用の配線 | `src/index.tsx`（**起動シム**。NODE_ENV を立てて `./main` を動的 import するだけ。static import を足さない）/ `src/main.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / crash-handler / runtime / perf-timeline） |
 | クラッシュ時の後始末・原因調査 | `core/crash.ts`（レポート整形・純粋）/ `utils/crash-log.ts`（`~/.codiva/logs/`・同期書き込み・診断レポート）/ `bootstrap/crash-handler.ts`（配線）/ `core/cli.ts` + `utils/terminal-mode.ts` の `resetTerminalModes`（`--reset-terminal`） |
 | 共有 UI フック | `ui/hooks.ts`（`useSessions` / `useCommandRunner` / `useLifecycleAction` / `useTextBufferRef` / `useComposerSelection` …） |
 
@@ -102,11 +102,18 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 8. **worktree を勝手に消さない**。終了は `stop()`（quiet）で resumable なまま保存する。
 9. **ログは上限付き**。追記は `core/log-buffer.ts` の `pushLogEntry` だけを通す（`[...messages, entry]`
    を新しく書かない）。無制限に伸びる配列 + 更新ごとの全ログ再パースで**実際にヒープ枯渇で落ちた**。
+10. **描画ごとに永久保持されるものを増やさない**。`src/index.tsx`（起動シム）に static import を
+   足さない（react が dev ビルドになり `performance.measure()` が毎レンダー積まれる）。
+   毎フレーム変わる文字列は表示幅に切ってから `<Text>` へ渡す（Ink の上限なしキャッシュ）。
+   どちらも**実際にヒープ枯渇で落ちた**（詳細は docs/ARCHITECTURE.md「React の dev ビルドと
+   ヒープ枯渇」）。
 
 ## ビルド/モジュール構成（変えない）
 
 - `moduleResolution: "bundler"` / `module: "ESNext"`。**import は拡張子なし**（`.js` は付けない）。
-- ビルドは **tsup**（esbuild、単一ファイル）。型チェックは `tsc --noEmit`。
+- ビルドは **tsup**（esbuild）。出力は `dist/index.js`（起動シム）+ `dist/main-<hash>.js`（本体）の
+  2 ファイルで、`splitting: true` が必須（畳むと static import が巻き上げられ、`NODE_ENV` の代入より
+  先に react-reconciler が評価されて dev ビルドになる = ヒープ枯渇の再発）。型チェックは `tsc --noEmit`。
 - パッケージマネージャは **npm**。lint/format は **Biome**（ESLint/Prettier は使わない）。
 - **nodenext + `.js` 拡張子や pnpm には戻さない。**
 

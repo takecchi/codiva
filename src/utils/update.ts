@@ -172,10 +172,10 @@ export function installKindFor(input: {
 }
 
 /**
- * 実行中バンドルの位置からパッケージルートを求める。エントリは
- * dev が `src/index.tsx`、配信物が `dist/index.js` で、どちらも `package.json` の
- * 1 つ下なので親ディレクトリがパッケージルートになる（`index.tsx` の
- * `createRequire('../package.json')` と同じ前提）。
+ * 実行中バンドルの位置からパッケージルートを求める。呼ぶのは合成ルート
+ * （dev が `src/main.tsx`、配信物が `dist/main-<hash>.js`）で、どちらも
+ * `package.json` の 1 つ下なので親ディレクトリがパッケージルートになる
+ * （`main.tsx` の `createRequire('../package.json')` と同じ前提）。
  *
  * `fileURLToPath` を使うのは、Windows で `URL.pathname` が `/C:/…` になり
  * パス比較（`isInside`）が成立しなくなるため。

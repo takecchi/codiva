@@ -427,6 +427,62 @@ zsh: abort      codiva
   「codiva 本体のヒープ」と「サブプロセスの合計」を混同しないこと。前者はクラッシュログの
   `memory` 行（rss / heapUsed / heapTotal）、後者は `ps` で見る。
 
+## ヒープ枯渇の実測 2（2026-08-06）— React の Performance Tracks
+
+上の対策を入れた 0.3.8 で**また OOM で 3 回落ちた**（`~/.codiva/logs/report.*.json`）。前回と違い
+今回は**保持漏れ**で、しかも**描画内容と無関係**だった。
+
+- 診断レポートの読み方: `old_space` 4.15〜4.22GB / `large_object_space` は 54〜57MB だけ
+  ⇒ 「巨大な 1 個」ではなく**小さいオブジェクトが数百万個生存**。`resourceUsage.userCpuSeconds`
+  が 1571 / 1628 / 1986 秒（= GC スレッドがほぼ回りっぱなし）。`crash-*.log` は無い（OOM は
+  `abort()` 即死なので JS が走らない = 設計どおり）。
+- 犯人はヒープスナップショットで一発だった。上位が `PerformanceMeasure` × 60,003
+  （= 20,000 描画 × **3**）と `Components ⚛` / `Changed Props` / `Scheduler ⚛` /
+  `primary-light` といった文字列 = **React 19.2 の Performance Tracks**。
+- ゲートは `react-reconciler.development.js` の `supportsUserTiming`
+  （`console.timeStamp` && `performance.measure`）で、**モジュール評価時の `var` 初期化**。
+  Node には両方あるので必ず有効になり、後から `console.timeStamp` を消しても間に合わない。
+- **Node の user timing は自動で捨てられない**（ブラウザの devtools が消費する前提の API）。
+  長時間動く TUI では単純なリークになる。
+
+| 条件（空 Box を 8,000 回再描画・`--expose-gc` + 強制 GC 後の heapUsed 差分） | 永久保持 | perf エントリ | 所要 |
+|---|---|---|---|
+| dev ビルド（従来） | **2,230 B/フレーム** | 24,003 件 | 414ms |
+| `NODE_ENV=production` | 117 B/フレーム | 0 件 | **166ms** |
+| dev + 500 フレームごとに `clearMeasures()` | 174 B/フレーム | 1 件 | 406ms |
+
+- 描画は約 10/秒（ストア購読の ~100ms スロットル。実測でも 9〜10/秒）⇒ **約 86MB/時**。
+  既定のヒープ上限 ~4GB に半日〜1 日で到達する。**production ビルドは描画自体も 2.5 倍速い**
+  （報告された 26〜33 分の CPU 時間の相当部分がこれ）。
+- `NODE_ENV` を react より先に立てるには**エントリを分けるしかない**。ESM の static import は
+  巻き上げられて本文より先に評価されるので、`tsup` の `banner` では間に合わない。
+  シバンに `#!/usr/bin/env -S NODE_ENV=production node` を書く手は macOS では動くが、
+  **mise 経由の起動は `node <path>` 直叩きでシバンを通らない**（実際のクラッシュレポートの
+  `commandLine` がこれ）ので当てにならない。
+
+### Ink 7.1.1 の上限なしキャッシュ（上流の問題）
+
+同じ調査で見つかった、もう 1 つの解放されない保持:
+
+- `ink/build/measure-text.js` … `const cache = new Map()`（キー = テキスト全文）
+- `ink/build/wrap-text.js` … `const cache = {}`（キー = `text + maxWidth + wrapType`）
+
+どちらも evict が無く、供給経路は yoga の measure func（`dom.js` の `measureTextNode`）なので
+**レイアウト計算のたび**に最大 3 エントリ積まれる（`renderThrottleMs` は stdout 書き込みだけを
+間引くので効かない）。実測（`--expose-gc` + 強制 GC 後の差分、unmount 後も残る）:
+
+| 描いたもの（毎フレーム内容が変わる） | 永久保持 |
+|---|---|
+| 約 100 文字の行 1 本 | 約 1.7KB |
+| 4,000 文字の `<Text wrap="truncate-end">` 1 本 | **約 17.8KB** |
+| 内容が固定の行（キャッシュに当たる） | 約 0.5KB |
+
+codiva 側で効く対策は「**毎フレーム変わる長い文字列を渡さない**」だけなので、ストリーミング
+プレビューを `streamTail(text, width)` で表示幅に切ってから渡すようにした（実測: 4,000 文字の
+最悪ケースで 6,786 → 3,129 B/フレーム）。`<Text wrap="truncate-end">` が既に同じ幅で切って
+表示していたので**見た目は変わらない**。かつ行が幅を超えたあとは文字列が変化しなくなるため、
+キャッシュに当たるようになる。上限そのものは ink 側の修正が必要（issue を報告済み）。
+
 ## デスクトップ通知の実装メモ
 
 - **macOS の `osascript display notification` は「Script Editor」名義になる**（実測 / macOS 15）。通知センターは通知を**アプリバンドル単位**で管理し、`osascript` は自前のバンドルを持たないため AppleScript の代表バンドル `com.apple.ScriptEditor2` に紐づく。通知クリックは「送信元アプリのアクティベート」なので、codiva の完了通知を押すと**スクリプトエディタが開く**（同じ症状の報告: [opencode#23446](https://github.com/anomalyco/opencode/issues/23446)）。`-sender` 相当の指定は `osascript` には無く、`tell application id "…" to display notification` で端末アプリ名義にする手は TCC（自動化）許可プロンプトが必要になる。

@@ -56,10 +56,16 @@ export function setupTerminal(mouseEnabled: boolean): TerminalSetup {
  * timer is unref'd so it never keeps the process alive. Returns a stop fn.
  */
 export function startPrPolling(manager: SessionManager): () => void {
-  void manager.refreshPrs();
-  const timer = setInterval(() => {
-    void manager.refreshPrs();
-  }, 20_000);
+  // PR 情報は best-effort。**catch を外さない** — 定期タイマーの reject は
+  // unhandled rejection = プロセス死になり、しかも死因が OOM と見分けづらい
+  // （規約: git-and-io.md「void した Promise には必ず catch を付ける」）。
+  const refresh = () => {
+    manager.refreshPrs().catch(() => {
+      // 20 秒後に再試行するので握り潰す。
+    });
+  };
+  refresh();
+  const timer = setInterval(refresh, 20_000);
   timer.unref?.();
   return () => clearInterval(timer);
 }

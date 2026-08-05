@@ -82,10 +82,10 @@ export const SessionDetail: FC<{
    * アプリ終了ではなく「このセッションを閉じる」。終了は一覧の `/exit`）。
    */
   onBack: () => void;
-  /** マウス選択（コンポーザ・ログ）をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
+  /** マウス選択（コンポーザ・ログ）をクリップボードへコピーする（main.tsx が OSC 52 を注入）。 */
   onCopy?: (text: string) => void;
   /**
-   * ログ内の URL をブラウザで開く（index.tsx が `openUrl` を注入）。
+   * ログ内の URL をブラウザで開く（main.tsx が `openUrl` を注入）。
    *
    * 端末任せ（Cmd+click）にできないのは、主端末の Ghostty がマウス捕捉中はリンク検出
    * そのものを止めるため。SGR マウスレポートに Cmd/Super のビットも無いので、
@@ -272,10 +272,12 @@ export const SessionDetail: FC<{
   // scroll smoothly instead of jumping an entry at a time. Width accounts for
   // the view's horizontal padding (1 cell each side).
   const messages = session?.messages;
+  // ログ行の折返し幅。プレビュー行も**同じ幅**で切る（食い違うと 1 行に収まらず
+  // ビューポートの予約行数とズレる）。
+  const logWidth = Math.max(1, columns - 2);
   const lines = useMemo<DisplayLine[]>(
-    () =>
-      messages ? logLines(messages, Math.max(1, columns - 2), (kind) => LOG_PREFIX[kind]) : [],
-    [messages, columns],
+    () => (messages ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind]) : []),
+    [messages, logWidth],
   );
   const total = lines.length;
   // ログを描く行数 = スクロール1回の移動量の基準 = アンカーの下限。
@@ -289,7 +291,10 @@ export const SessionDetail: FC<{
   // ライブ入力中のプレビュー行はログと同じビューポートを共有するので、**実際に描く
   // ときだけ** 1 行を差し引く（末尾追従中のみ描画する）。スクロール中も差し引くと
   // 描かない行を予約してしまい、可視域の上端に 1 行の隙間が残る。
-  const preview = session?.streamingText ? streamTail(session.streamingText) : '';
+  // 幅で切ってから渡す。Ink は測った文字列をプロセスグローバルな上限なしキャッシュへ
+  // 永久に積むので、デルタごとに変わる長い行をそのまま渡すとヒープが単調増加する
+  // （`streamTail` の注記参照）。
+  const preview = session?.streamingText ? streamTail(session.streamingText, logWidth) : '';
   const showPreview = preview.length > 0 && anchor === 'bottom';
   // ログを描ける行数。logWindow とスクロール（移動量・アンカーの下限）で必ず同じ値を
   // 使う — 食い違うと最上部でアンカーが 1 行手前で止まり、先頭行に到達できなくなる。

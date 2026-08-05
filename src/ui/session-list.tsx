@@ -211,7 +211,7 @@ export const SessionList: FC<{
   initialViewState?: ListViewState;
   /** 選択行・フォーカスが変わるたびに親へ報告する（再マウント時の復元用）。 */
   onViewStateChange?: (state: ListViewState) => void;
-  /** コンポーザのマウス選択をクリップボードへコピーする（index.tsx が OSC 52 を注入）。 */
+  /** コンポーザのマウス選択をクリップボードへコピーする（main.tsx が OSC 52 を注入）。 */
   onCopy?: (text: string) => void;
   /**
    * 学習データ利用の状態。`'on'` のときだけバナーに注意行が出る（`ui/banner.tsx`）。

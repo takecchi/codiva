@@ -12,8 +12,11 @@ ui/  ──▶ core/ ◀── utils/
 - **`src/core/`**: 純粋なドメインロジック。**Ink / React / execa / node の I/O を import しない**。SDK 型 (`@anthropic-ai/claude-agent-sdk`) の型参照は可。ここが全ロジックの中心で、ユニットテストで完全に駆動できること。
 - **`src/utils/`**: I/O の薄いラッパ（`git.ts` = execFile ラッパ）。`core` のみに依存。
 - **`src/ui/`**: Ink コンポーネントのみ。`core`（状態・型）を `@/core` から使う。ロジックを持たない — 状態計算は `core` の純関数に委譲する。
-- **`src/index.tsx` / `src/app.tsx` / `src/bootstrap/`**: 合成レイヤ（どのレイヤにも属さず core と utils を束ねる）。
-  `index.tsx` は「解決 → preflight → build → restore → render → shutdown」の直列だけに保ち、副作用の配線は
+- **`src/index.tsx` / `src/main.tsx` / `src/app.tsx` / `src/bootstrap/`**: 合成レイヤ（どのレイヤにも属さず core と utils を束ねる）。
+  **`index.tsx` は起動シム**（`NODE_ENV` を立てて `./main` を動的 import する 3 文）で、**static import を足さない**
+  — 巻き上げられて react-reconciler が dev ビルドで評価され、描画ごとに `performance.measure()` が
+  積まれてヒープが単調増加する（実測 2,230 B/フレーム ⇒ OOM。番人は `tests/entry-shim.test.ts`）。
+  `main.tsx` は「解決 → preflight → build → restore → render → shutdown」の直列だけに保ち、副作用の配線は
   `bootstrap/`（`build-manager` = manager 組み立て / `restore-sessions` = 復元 / `persist-controller` =
   debounce・同期 flush / `runtime` = PR ポーリング・alt screen・signal）に切り出す。`app.tsx` はビュー切替のみ。
 - **設定ファイルを読むのは合成レイヤだけ**。`core` は設定値を引数/DI で受け取る（純粋のまま保つ）。

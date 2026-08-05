@@ -9,7 +9,7 @@ npm run dev        # tsx で TUI 起動（cwd = codiva 自身になるので動�
 npm test           # vitest run --coverage
 npm run lint       # biome check .（--write は lint:fix）
 npm run typecheck  # tsc --noEmit
-npm run build      # tsup → dist/index.js（shebang 付き単一ファイル）
+npm run build      # tsup → dist/index.js（shebang 付き起動シム）+ dist/main-<hash>.js（本体）
 npm run spike -- <basic|followup|interrupt|subagent> [--keep]   # 実 SDK のメッセージ採取
 ```
 
