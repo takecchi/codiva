@@ -369,6 +369,18 @@ codiva は全画面（代替スクリーン）で描画しているため、異�
 - 不具合として報告いただけると助かります → [Issues](https://github.com/takecchi/codiva/issues)。`crash-*.log` に含まれるのは上記の技術情報だけで、指示内容やコードは含みません。
   - `report.*.json`（Node が書くもの）は環境変数も含み得ます。codiva は除外できる Node（23.3 以降）では自動で除外しますが、**それより古い Node では環境変数（`ANTHROPIC_API_KEY` など）が入る**ので、共有する前に中身を確認してください。
 
+### 長時間動かすとメモリ使用量が増え続ける（0.3.9 で修正）
+
+0.3.8 以前は、**描画するたびに解放されないメモリが残る**不具合がありました（1 日弱で Node 既定の
+ヒープ上限 ~4GB に達し、`Allocation failed - JavaScript heap out of memory` で突然終了します。
+この落ち方では `crash-*.log` は残らず `report.*.json` だけが出ます）。原因は React が
+開発ビルドで動いており、描画ごとに計測エントリ（`performance.measure`）を積んでいたことでした。
+0.3.9 で製品ビルドに切り替え（描画も約 2.5 倍高速になりました）、加えて計測エントリを定期的に
+捨てるようにしています。
+
+もし 0.3.9 以降でも増え続ける場合は、`~/.codiva/logs/report.*.json` を添えて
+[Issues](https://github.com/takecchi/codiva/issues) へご報告ください。
+
 ### 詳細ログの古い行が消える
 
 セッション詳細のログは**直近 2000 件 / 合計 40 万文字**までを保持し、それより古い行は落とします
@@ -386,7 +398,7 @@ npm run dev        # tsx で TUI 起動（開発）
 npm test           # vitest（coverage 付き）
 npm run lint       # biome check
 npm run typecheck  # tsc --noEmit
-npm run build      # tsup で dist/index.js に単一ファイルバンドル
+npm run build      # tsup → dist/index.js（起動シム）+ dist/main-<hash>.js（本体）
 ```
 
 設計ドキュメントは [`docs/`](./docs) を参照してください（[PRD](./docs/PRD.md) / [ARCHITECTURE](./docs/ARCHITECTURE.md) / [TECH_NOTES](./docs/TECH_NOTES.md)）。

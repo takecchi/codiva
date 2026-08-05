@@ -312,6 +312,20 @@
 
 - ストア購読（`useSessions`）は ~100ms スロットル。`useSyncExternalStore` の getSnapshot が同一参照を返せば再描画されない性質を使う。
 - 経過時間など時間依存表示は `useClock()` で定期再描画する。
+- **毎フレーム変わる文字列は「実際に描く幅」に切ってから `<Text>` に渡す**。Ink は測った
+  文字列を**プロセスグローバルな上限なしキャッシュ**へ永久に積む（`ink/build/measure-text.js`
+  の `new Map()` と `wrap-text.js` の `{}`。キーはテキスト全文で evict が無い）。実測で
+  約 100 文字の行 1 本 = 約 1.7KB、**4,000 文字の `<Text>` 1 描画 = 約 17.8KB** が解放されずに残り、
+  ストリーミングプレビューをそのまま渡していたことで約 640MB/時 まで伸びていた。
+  `wrap="truncate-end"` は**描画時に切るだけ**でキャッシュのキーは切る前の文字列なので、
+  それだけでは効かない（`streamTail(text, width)` のように渡す文字列自体を短くする）。
+  幅は**ログ行の折返しと同じ値**を使う（食い違うと 1 行に収まらずビューポートの予約行数とズレる）。
+- **`src/index.tsx`（起動シム）に static import を書かない**。ESM の static import は巻き上げられて
+  本文より先に評価されるため、1 本足すだけで `NODE_ENV=production` の代入が間に合わなくなり、
+  react-reconciler が dev ビルドになる。dev ビルドは**レンダーごとに `performance.measure()` を
+  3 本積み**、Node の user timing は自動で捨てられないので、描画内容に関係なく
+  約 2,230 B/フレーム（≒86MB/時）でヒープが増え続ける（実測。これで 3 回 OOM した）。
+  番人は `tests/entry-shim.test.ts`。保険の定期掃除は `bootstrap/perf-timeline.ts`。
 
 ## 対象外
 

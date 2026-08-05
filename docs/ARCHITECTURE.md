@@ -31,9 +31,14 @@ utils レイヤに置く（`core` は node の I/O を import しない）。`co
 （`Worktree` / `DiffStat`）・`MergeConflictError`・`ignoredCopyEntries()` だけを残し、
 `SessionManager` は `WorktreeService` インターフェース越しに具象を DI で受ける。
 
-`src/index.tsx` / `src/app.tsx` / `src/bootstrap/` は**合成レイヤ**（どのレイヤにも属さず core と utils を
-束ねる）。副作用の配線（manager 組み立て・復元・永続・端末モード・PR ポーリング）は `bootstrap/` に切り出し、
-`index.tsx` は「解決 → preflight → build → restore → render → shutdown」の直列だけに保つ。
+`src/index.tsx` / `src/main.tsx` / `src/app.tsx` / `src/bootstrap/` は**合成レイヤ**（どのレイヤにも属さず
+core と utils を束ねる）。副作用の配線（manager 組み立て・復元・永続・端末モード・PR ポーリング）は
+`bootstrap/` に切り出し、`main.tsx` は「解決 → preflight → build → restore → render → shutdown」の
+直列だけに保つ。
+
+`src/index.tsx` は**起動シムだけ**（`NODE_ENV` を立ててから `./main` を動的 import する 3 文）。
+static import を 1 本でも足すと巻き上げられて意味が消えるので、`tests/entry-shim.test.ts` が固定している。
+理由は下記「React の dev ビルドとヒープ枯渇」。
 
 ## ディレクトリ構造
 
@@ -830,6 +835,65 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
 （`SessionDetail` が先頭エントリの `seq` の変化を検知してクリアする）— 触っていない行がコピーされる
 のは副作用として重すぎるため。直すなら行 index ではなく `DisplayLine.key`（`<seq>:<行>`。
 トリムでも追記でも不変）を基準にする必要がある。
+
+## React の dev ビルドとヒープ枯渇（描画ごとに永久保持される）
+
+上の「ログのメモリ上限」を入れた後も、ユーザー環境で**再び OOM で 3 回落ちた**
+（`~/.codiva/logs/report.*.json` = Node の診断レポート。`old_space` が 4.2GB で
+`large_object_space` は 55MB だけ = **小さいオブジェクトが大量に生存**）。前回とは別の原因で、
+今回は「確保しすぎ」ではなく**純粋な保持漏れ**だった。
+
+ヒープスナップショットの上位は `PerformanceMeasure` × 60,003（= 20,000 描画 × 3）と
+`Components ⚛` / `Changed Props` / `Scheduler ⚛` といった文字列だった。正体は
+**React 19.2 の Performance Tracks**（既報:
+[ink#869](https://github.com/vadimdemedes/ink/issues/869) /
+[facebook/react#35761](https://github.com/facebook/react/issues/35761)。
+どちらも「Node の performance バッファが回収されない」ことが結論で、対策も `NODE_ENV=production`。
+codiva では診断レポートから独立に同じ結論に至った）:
+
+- `react-reconciler` は dev ビルドの**モジュール評価時**に
+  `supportsUserTiming`（`console.timeStamp` と `performance.measure` があるか）を確定する。
+  Node には両方あるので**必ず有効**になる。
+- 以後レンダーごとに `performance.measure()` を 3 本積む。**Node の user timing は
+  呼んだ側が捨てるまで保持され続ける**（ブラウザの devtools が消費する前提の API なので、
+  長時間動く Node プロセスでは単純なリークになる）。
+- `dist/index.js` は `bin` から `node` で直に起動され `NODE_ENV` は未設定 = **利用者は必ず
+  dev ビルド**だった。
+
+| 条件（空 Box を 8,000 回再描画） | 永久保持 | perf エントリ | 所要 |
+|---|---|---|---|
+| dev ビルド（従来） | **2,230 B/フレーム** | 24,003 件 | 414ms |
+| `NODE_ENV=production` | 117 B/フレーム | 0 件 | **166ms** |
+| dev + 定期 `clearMeasures()` | 174 B/フレーム | 1 件 | 406ms |
+
+ストア購読は ~100ms スロットルなので描画は約 10/秒 ⇒ **約 86MB/時**。既定のヒープ上限 ~4GB に
+半日〜1 日で到達する。**描画内容とは無関係**なので、ログの上限では止められなかった。
+
+対策は 2 段:
+
+1. **`src/index.tsx` を起動シムにする**（本筋）。`process.env.NODE_ENV ??= 'production'` を
+   **`./main` の動的 import より前**に置く。ESM の static import は巻き上げられて本文より先に
+   評価されるため、シムに static import を 1 本足すだけで無効化される（`tsup` の `banner` も、
+   シバンの `env -S` も間に合わない。後者は `node <path>` 直叩き = mise 経由の起動で
+   シバンを通らないので特に当てにならない）。`tests/entry-shim.test.ts` が番人。
+2. **`bootstrap/perf-timeline.ts` が 30 秒ごとにタイムラインを掃除する**（保険）。
+   `NODE_ENV=development` で起動したときや、将来 React / Node が別の形で user timing を
+   積み始めたときに効く。保持量の上限が「30 秒ぶん」になる。
+
+副作用として `dist` が 2 ファイル（シム + チャンク）になった。`bin` が指すのは `dist/index.js` の
+ままで、パッケージルートの解決（`packageRootFrom`）も「`package.json` の 1 つ下」という前提を
+保っている。
+
+### 残っている上流の問題（Ink のキャッシュ）
+
+Ink 7.1.1 は `measure-text.js` と `wrap-text.js` で**上限のないモジュールレベルキャッシュ**
+（キー = テキスト全文）を持ち、解放経路が無い。約 100 文字の行 1 本で約 1.7KB、
+4,000 文字の `<Text>` 1 描画で約 17.8KB が永久に残る。codiva 側でできるのは
+**毎フレーム変わる長い文字列を渡さないこと**なので、ストリーミングプレビューは
+`streamTail(text, width)` で**表示幅に切ってから**渡す（`wrap="truncate-end"` と見た目は同じ。
+行が幅を超えると文字列が変わらなくなるのでキャッシュに当たるようになる）。
+上限そのものは ink 側の修正が必要なので issue で報告している
+（[ink#986](https://github.com/vadimdemedes/ink/issues/986)）。
 
 ## 設計判断
 

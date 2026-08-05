@@ -28,15 +28,50 @@ export interface LogWindow<T = LogEntry> {
 }
 
 /**
- * The live-typing preview line: the last non-empty line of the streamed text so
- * far. The detail view shows just this one line while a turn streams in.
+ * 表示幅 `width` セルぶんに切る（グラフェム単位 = `stringWidth` と同じ単位）。
+ * 端で溢れる全角文字は落とす（1 セルだけはみ出させない）。**先頭から数えて
+ * 溢れた時点で打ち切る**ので、長い行でも全体を走査しない。
+ *
+ * ANSI エスケープを含む行は切らずに返す。`stringWidth` はエスケープを幅 0 と
+ * 数えるので `slice` がシーケンスの途中を断ち切り得るため（そのまま渡せば
+ * Ink 側の ANSI 対応の truncate が効く）。
  */
-export function streamTail(text: string): string {
+export function clipToWidth(text: string, width: number): string {
+  if (width <= 0 || text.includes('\x1b')) {
+    return text;
+  }
+  let cells = 0;
+  let index = 0;
+  for (const { segment } of GRAPHEMES.segment(text)) {
+    const w = stringWidth(segment);
+    if (cells + w > width) {
+      return text.slice(0, index);
+    }
+    cells += w;
+    index += segment.length;
+  }
+  return text;
+}
+
+/**
+ * The live-typing preview line: the last non-empty line of the streamed text so
+ * far, clipped to `width` cells. The detail view shows just this one line while
+ * a turn streams in.
+ *
+ * **`width` は「実際に描く幅」を渡す**（呼び出し側はログ行の折返しと同じ幅を使う）。
+ * 見た目は `<Text wrap="truncate-end">` と同じだが、渡す文字列そのものを短くする
+ * ことが重要: Ink は測った文字列を**プロセスグローバルな上限なしキャッシュ**に
+ * 永久に積む（`ink/build/measure-text.js` と `wrap-text.js`。実測で 1 描画あたり
+ * 約 17.8KB / 4,000 文字、解放経路なし ⇒ ヒープ枯渇）。デルタごとに変わる長い行を
+ * そのまま渡すと毎フレーム別のキーが 1 本増えるが、幅で切れば行が幅を超えた時点で
+ * 文字列が変わらなくなり、キャッシュに当たるようになる。
+ */
+export function streamTail(text: string, width: number): string {
   const lines = text.split('\n');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
     if (line && line.length > 0) {
-      return line;
+      return clipToWidth(line, width);
     }
   }
   return '';

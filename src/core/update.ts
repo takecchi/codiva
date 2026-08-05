@@ -64,7 +64,7 @@ export type UpdateRun = { ok: true } | { ok: false; detail: string };
 /**
  * アップデート機能の DI 境界。ネットワークとサブプロセスは `utils/update.ts` にあり、
  * UI はこの interface だけを知る（規約: architecture.md の一方向依存）。
- * 合成ルート（`index.tsx`）が実装を注入し、テストはフェイクを渡す。
+ * 合成ルート（`main.tsx`）が実装を注入し、テストはフェイクを渡す。
  */
 export interface UpdateService {
   /**

@@ -57,7 +57,7 @@ export const App: FC<{
    */
   loadBranch?: () => Promise<string | undefined>;
   /**
-   * URL をブラウザで開く（index.tsx が `openUrl` を注入。fire-and-forget）。
+   * URL をブラウザで開く（main.tsx が `openUrl` を注入。fire-and-forget）。
    * 一覧の PR セルのクリックと、詳細ログ内の URL のクリックが共有する。
    */
   onOpenUrl?: (url: string) => void;
@@ -68,7 +68,7 @@ export const App: FC<{
   cwd,
   model,
   version,
-  // 既定は ja。index.tsx が解決済みカタログを注入する。
+  // 既定は ja。main.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   modelCatalog,
   trainingOptIn,
