@@ -8,8 +8,36 @@ import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
  * goes stale when a new version ships (same reasoning as core/models.ts).
  */
 const TITLE_MODEL = 'haiku';
-/** Hard ceiling so a wedged subprocess never leaks; title gen is a quick call. */
-const TITLE_TIMEOUT_MS = 20_000;
+/**
+ * Hard ceiling so a wedged subprocess never leaks. Titles are generated while the
+ * session's own `claude` subprocess (and every other session's) is competing for
+ * the machine, so the budget is deliberately several times the measured latency —
+ * a timeout silently costs the user the summary and leaves the raw instruction as
+ * the row title.
+ */
+const TITLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Title generation is a one-shot text call: it must not read the repository, load
+ * project settings, or think. Left at the SDK defaults the request carries the full
+ * Claude Code preset — measured at **56,144 input tokens of tool definitions** plus
+ * a few hundred thinking tokens — which made a 3-word summary take 8.4–11.1s and
+ * cost ~$0.086 *per session*. Under load that overshot the timeout, so titles
+ * intermittently stayed as the raw instruction (the bug this pares back fixes).
+ *
+ * Measured after: 3.2–4.3s and ~$0.0011 — same quality, ~80x cheaper.
+ */
+const TITLE_OPTIONS = {
+  /** No built-in tools: nothing here should touch the filesystem, and the tool
+   *  definitions were the bulk of the prompt. */
+  tools: [],
+  /** No CLAUDE.md / settings.json: irrelevant to summarizing, and unbounded in size. */
+  settingSources: [],
+  /** Replace the claude_code preset with one line — this is not an agent. */
+  systemPrompt: 'You write short, precise titles. Reply with the title only.',
+  /** A 3-to-6-word summary needs no reasoning budget; it only adds latency. */
+  thinking: { type: 'disabled' },
+} as const satisfies Partial<Options>;
 
 /**
  * Instruction prepended to the prompt. We embed it in the prompt (rather than a
@@ -50,6 +78,7 @@ export function createTitleGenerator(
       const stream = queryFn({
         prompt: `${TITLE_INSTRUCTION}${prompt}`,
         options: {
+          ...TITLE_OPTIONS,
           model: TITLE_MODEL,
           cwd: opts.cwd,
           maxTurns: 1,
