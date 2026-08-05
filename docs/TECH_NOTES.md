@@ -436,6 +436,9 @@ zsh: abort      codiva
   ⇒ 「巨大な 1 個」ではなく**小さいオブジェクトが数百万個生存**。`resourceUsage.userCpuSeconds`
   が 1571 / 1628 / 1986 秒（= GC スレッドがほぼ回りっぱなし）。`crash-*.log` は無い（OOM は
   `abort()` 即死なので JS が走らない = 設計どおり）。
+- 既報だった（[ink#869](https://github.com/vadimdemedes/ink/issues/869) /
+  [facebook/react#35761](https://github.com/facebook/react/issues/35761)。どちらもクローズ済みで、
+  結論・対策も同じ `NODE_ENV=production`）。以下は診断レポートから独立に辿り直した記録。
 - 犯人はヒープスナップショットで一発だった。上位が `PerformanceMeasure` × 60,003
   （= 20,000 描画 × **3**）と `Components ⚛` / `Changed Props` / `Scheduler ⚛` /
   `primary-light` といった文字列 = **React 19.2 の Performance Tracks**。
@@ -481,7 +484,8 @@ codiva 側で効く対策は「**毎フレーム変わる長い文字列を渡�
 プレビューを `streamTail(text, width)` で表示幅に切ってから渡すようにした（実測: 4,000 文字の
 最悪ケースで 6,786 → 3,129 B/フレーム）。`<Text wrap="truncate-end">` が既に同じ幅で切って
 表示していたので**見た目は変わらない**。かつ行が幅を超えたあとは文字列が変化しなくなるため、
-キャッシュに当たるようになる。上限そのものは ink 側の修正が必要（issue を報告済み）。
+キャッシュに当たるようになる。上限そのものは ink 側の修正が必要（[ink#986](https://github.com/vadimdemedes/ink/issues/986) で報告済み。
+こちらは未報告のバグだった）。
 
 ## デスクトップ通知の実装メモ
 

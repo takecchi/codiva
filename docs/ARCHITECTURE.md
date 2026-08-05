@@ -845,7 +845,11 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
 
 ヒープスナップショットの上位は `PerformanceMeasure` × 60,003（= 20,000 描画 × 3）と
 `Components ⚛` / `Changed Props` / `Scheduler ⚛` といった文字列だった。正体は
-**React 19.2 の Performance Tracks**:
+**React 19.2 の Performance Tracks**（既報:
+[ink#869](https://github.com/vadimdemedes/ink/issues/869) /
+[facebook/react#35761](https://github.com/facebook/react/issues/35761)。
+どちらも「Node の performance バッファが回収されない」ことが結論で、対策も `NODE_ENV=production`。
+codiva では診断レポートから独立に同じ結論に至った）:
 
 - `react-reconciler` は dev ビルドの**モジュール評価時**に
   `supportsUserTiming`（`console.timeStamp` と `performance.measure` があるか）を確定する。
@@ -888,7 +892,8 @@ Ink 7.1.1 は `measure-text.js` と `wrap-text.js` で**上限のないモジュ
 **毎フレーム変わる長い文字列を渡さないこと**なので、ストリーミングプレビューは
 `streamTail(text, width)` で**表示幅に切ってから**渡す（`wrap="truncate-end"` と見た目は同じ。
 行が幅を超えると文字列が変わらなくなるのでキャッシュに当たるようになる）。
-上限そのものは ink 側の修正が必要なので issue で報告している。
+上限そのものは ink 側の修正が必要なので issue で報告している
+（[ink#986](https://github.com/vadimdemedes/ink/issues/986)）。
 
 ## 設計判断
 

@@ -987,7 +987,10 @@ zsh: abort      codiva
 > Ink 側のプレビュー対策は 4,000 文字の最悪ケースで 6,786 → 3,129 B/フレーム。
 >
 > **残した課題**: Ink のキャッシュ自体に上限が無いこと（新しく現れたログ行 1 本ごとに約 1.7KB が
-> 永久に残る）は上流の修正が必要なので issue で報告した。codiva 側で上限を付けるには
+> 永久に残る）は上流の修正が必要なので issue で報告した
+> （[ink#986](https://github.com/vadimdemedes/ink/issues/986)）。React 側の件は既報だった
+> （[ink#869](https://github.com/vadimdemedes/ink/issues/869) /
+> [facebook/react#35761](https://github.com/facebook/react/issues/35761)。結論・対策も同じ）。codiva 側で上限を付けるには
 > `noExternal: ['ink']` でバンドルしてキャッシュを LRU 化する必要があり（`signal-exit` の CJS
 > `require` シム + チャンク分割 + `react-devtools-core` の external が付いてくる。実験済みで
 > dist は 322KB → 1.8MB）、「ビルド構成は変えない」方針との兼ね合いで見送っている。
