@@ -17,6 +17,21 @@ describe('ignoredCopyEntries', () => {
     expect(ignoredCopyEntries('')).toEqual([]);
   });
 
+  // `.codiva/.gitignore`（中身 `*`）を置くと ls-files が `.codiva/` を 1 件に畳まず
+  // 中身まで列挙する。`.codiva/worktrees/` を引き継ぐと新 worktree の中へ worktree 群
+  // 自身へのリンクが張られ、以後の `git worktree remove` が ELOOP で失敗する。
+  it('drops everything under .codiva/ and .git/, not just the exact dir', () => {
+    const raw = [
+      '.codiva/',
+      '.codiva/.gitignore',
+      '.codiva/state.json',
+      '.codiva/worktrees/',
+      '.git/hooks/',
+      '.env',
+    ].join('\n');
+    expect(ignoredCopyEntries(raw)).toEqual(['.env']);
+  });
+
   // issue #81: 生成物を共有すると開発サーバ同士が同じ実体へ書き込み、
   // ルートで再帰監視する開発サーバからは worktree の数だけ同じ木が見えてフリーズする。
   it('drops build output and caches by default', () => {

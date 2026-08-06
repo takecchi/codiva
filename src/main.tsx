@@ -90,6 +90,10 @@ async function main(): Promise<void> {
     process.stderr.write(`codiva: ${errorMessage(err)}\n`);
     process.exit(1);
   }
+  // `.codiva/` を git から隠す（中身が `*` だけの `.codiva/.gitignore`）。セッションを 1 つも
+  // 作らなくても `.codiva/state.json` / `prompt.md` は書かれるので、worktree 作成時ではなく
+  // 起動時に置く。best-effort で起動は止めない。
+  await worktrees.ensureIgnored().catch(() => undefined);
   // 以前のバージョン（あるいは前回の設定）が張った「もう引き継がないパス」のリンクを外す。
   // 残っていると生成物の共有＝開発サーバのフリーズ要因も残るため（issue #81）。リンクだけを
   // 外すので指し先は無傷。best-effort で起動は止めない。

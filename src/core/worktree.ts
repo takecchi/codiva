@@ -168,6 +168,22 @@ export function ignoredExcludePatterns(extra?: readonly string[]): readonly stri
 }
 
 /**
+ * codiva 自身の作業ディレクトリ（`.codiva/`）と git の内部（`.git`）配下か。
+ *
+ * **先頭セグメントで判定する**（`entry === '.codiva'` の完全一致では足りない）。
+ * `.codiva/.gitignore` を置いてからは `git ls-files --others --ignored --directory` が
+ * ディレクトリを 1 件に畳まず、`.codiva/` に加えて `.codiva/.gitignore` /
+ * `.codiva/worktrees/` まで個別に列挙する（除外の出所がそのディレクトリの中にあるため
+ * git が中へ降りる）。完全一致だけだと `.codiva/worktrees/` が引き継ぎ対象に化け、
+ * 新しい worktree の中へ worktree 群自身へのリンクが張られる（実測: 以後の
+ * `git worktree remove` が ELOOP「Too many levels of symbolic links」で失敗した）。
+ */
+function isInternalEntry(entry: string): boolean {
+  const head = entry.replace(/\/+$/, '').split('/')[0];
+  return head === CODIVA_DIR || head === '.git';
+}
+
+/**
  * `ignoredCopyEntries()` の裏返し: 生出力のうち**除外されたエントリ**を返す純関数
  * （`.codiva/` と `.git` はそもそも引き継がないのでここにも含めない）。
  *
@@ -183,13 +199,7 @@ export function excludedIgnoredEntries(
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((entry) => {
-      const normalized = entry.replace(/\/$/, '');
-      if (normalized === CODIVA_DIR || normalized === '.git') {
-        return false;
-      }
-      return isExcludedIgnoredEntry(entry, excludes);
-    });
+    .filter((entry) => !isInternalEntry(entry) && isExcludedIgnoredEntry(entry, excludes));
 }
 
 /**
@@ -210,11 +220,5 @@ export function ignoredCopyEntries(
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((entry) => {
-      const normalized = entry.replace(/\/$/, '');
-      if (normalized === CODIVA_DIR || normalized === '.git') {
-        return false;
-      }
-      return !isExcludedIgnoredEntry(entry, excludes);
-    });
+    .filter((entry) => !isInternalEntry(entry) && !isExcludedIgnoredEntry(entry, excludes));
 }

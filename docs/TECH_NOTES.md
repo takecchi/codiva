@@ -544,7 +544,9 @@ git merge --no-ff codiva/<slug>
 
 - コミットが1つもないリポジトリでは worktree を作れない → 起動時チェックで弾く（F-1）。
 - 同名ブランチ/worktree の衝突: slug に連番を付与。
-- `.git/info/exclude` への追記は `# codiva` マーカー行で冪等にする。
+- **`.codiva/` を git から隠すのは `.codiva/.gitignore`（中身は `*` の 1 行）**。`*` は同じディレクトリの `.gitignore` 自身にも一致するので、この 1 ファイルだけでディレクトリ全体が ignore される（cargo の `target/.gitignore` と同じ手）。無いときだけ書くので冪等。
+  - **`.git/info/exclude` への追記に戻さない**。`.git` はディレクトリとは限らない — linked worktree（`git worktree add` で作った作業ツリー）と submodule では `gitdir: <path>` を書いた**ただのファイル**なので、`<repo>/.git/info/exclude` への `appendFile` が **ENOTDIR** で失敗する（実測）。codiva 自身のリポジトリを codiva の worktree の中から開いた場合がまさにこれで、握り潰していなかったため worktree 作成ごと失敗していた。
+  - **副作用**: `.gitignore` の出所がそのディレクトリの中にあると、`git ls-files --others --ignored --exclude-standard --directory` は `.codiva/` を 1 件に畳まず中身まで列挙する（実測: `.codiva/` / `.codiva/.gitignore` / `.codiva/state.json` / `.codiva/worktrees/` の 4 件）。ignore 済みファイルの引き継ぎフィルタが完全一致（`entry === '.codiva'`）だと `.codiva/worktrees/` が引き継ぎ対象に化け、新しい worktree の中に worktree 群自身へのリンクが張られる → 以後の `git worktree remove` が `Too many levels of symbolic links` で失敗した。**先頭セグメントで判定する**（`isInternalEntry()`）。
 - git 実行は必ず `execFile`（シェル経由禁止。slug はサニタイズ済みだが多層防御）。
 - **worktree がリポジトリ配下にあることの副作用（issue #81 の実測）**: `.codiva/worktrees/<slug>` は
   プロジェクトルートの下なので、**ルートから再帰的にファイル監視する開発サーバ**（Next.js /
@@ -554,9 +556,9 @@ git merge --no-ff codiva/<slug>
   CPU / メモリ / FD を食い潰し **OS ごとフリーズ**（`node_modules` も同様に多重経路になる）。
   → 対策として、ビルド生成物・キャッシュは引き継ぎ対象から外した（`DEFAULT_IGNORED_EXCLUDES`。
   `node_modules` は依存なので引き継ぎを維持 —— Next.js / Vite 等の監視は `node_modules` を
-  既定で除外する）。監視そのものを軽くしたい場合は、利用者側で `.codiva` を `.gitignore` と
+  既定で除外する）。監視そのものを軽くしたい場合は、利用者側で `.codiva` を
   開発サーバの監視除外に足すのが確実（**codiva は対象リポジトリの `.gitignore` を書き換えない**ので、
-  git 用の除外は `.git/info/exclude` までに留める）。worktree の置き場所をリポジトリ外へ移す案は
+  git 用の除外は `.codiva/.gitignore` = 自分の持ち物の中までに留める）。worktree の置き場所をリポジトリ外へ移す案は
   取らない（`.codiva/worktrees/<slug>` 前提のパス・復元・`takenSlugs()` を崩さないため）。
 
 ## テスト戦略

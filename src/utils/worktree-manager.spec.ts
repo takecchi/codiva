@@ -78,13 +78,42 @@ describe('WorktreeManager', () => {
       repo = await makeRepo(true);
     });
 
-    it('creates a worktree on a codiva/ branch and excludes .codiva', async () => {
+    it('creates a worktree on a codiva/ branch and ignores .codiva', async () => {
       const wm = new WorktreeManager(repo);
       const wt = await wm.add('feature');
       expect(wt.branch).toBe('codiva/feature');
       expect(wt.path).toContain(join('.codiva', 'worktrees', 'feature'));
-      const exclude = await readFile(join(repo, '.git', 'info', 'exclude'), 'utf8');
-      expect(exclude).toContain('.codiva/');
+      // `.codiva/.gitignore` の `*` は自分自身にも一致するので、`.codiva/` は
+      // 中身ごと git から消える（対象リポジトリの .gitignore も .git も触らない）。
+      expect(await readFile(join(repo, '.codiva', '.gitignore'), 'utf8')).toBe('*\n');
+      expect((await g(repo, 'status', '--porcelain')).stdout).toBe('');
+      expect((await g(repo, 'check-ignore', '.codiva/.gitignore')).stdout).toContain(
+        '.codiva/.gitignore',
+      );
+    });
+
+    it('leaves an existing .codiva/.gitignore alone', async () => {
+      await mkdir(join(repo, '.codiva'), { recursive: true });
+      await writeFile(join(repo, '.codiva', '.gitignore'), '*\n!keep-me\n');
+      await new WorktreeManager(repo).add('feature');
+      expect(await readFile(join(repo, '.codiva', '.gitignore'), 'utf8')).toBe('*\n!keep-me\n');
+    });
+
+    // `.git` は linked worktree / submodule では `gitdir:` を書いたただのファイル。
+    // `.git/info/exclude` へ追記していた頃はここで ENOTDIR になり worktree 作成ごと失敗した。
+    it('works when the repo root is itself a linked worktree (.git is a file)', async () => {
+      const parent = await mkdtemp(join(tmpdir(), 'codiva-linked-'));
+      const linked = join(parent, 'checkout');
+      try {
+        await g(repo, 'worktree', 'add', linked, '-b', 'linked');
+        expect((await lstat(join(linked, '.git'))).isFile()).toBe(true);
+        const wt = await new WorktreeManager(linked).add('nested');
+        expect(wt.branch).toBe('codiva/nested');
+        expect(await readFile(join(linked, '.codiva', '.gitignore'), 'utf8')).toBe('*\n');
+        expect((await g(linked, 'status', '--porcelain')).stdout).toBe('');
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
     });
 
     it('reports committed and uncommitted changes via diffStat', async () => {
