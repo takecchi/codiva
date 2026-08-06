@@ -101,16 +101,21 @@ export const PrSummary: FC<{
     return null;
   }
   const badge = state.pr && state.prStatus ? prStatusBadge(state.prStatus) : undefined;
+  // 1 つの <Text> の中に入れ子で色を付ける（row の Box に <Text> を並べない）。Yoga は
+  // 横並びの子を**両方とも縮める**ので、狭い端末で見出しも番号も途中で切れてしまう。
+  // 入れ子なら折返し/切り詰めの単位が行全体になる（ink-components.md）。
   return (
     <Box flexShrink={0}>
-      <Text dimColor>{m.detail.prsLabel(prs.length)} </Text>
-      {prs.map((pr, i) => (
-        <Text key={pr.url}>
-          {i > 0 ? <Text dimColor>{PR_SEPARATOR}</Text> : null}
-          {i === 0 && badge ? <Text color={badge.color}>{badge.char} </Text> : null}
-          <Text color={theme.accent}>#{pr.number}</Text>
-        </Text>
-      ))}
+      <Text wrap="truncate-end">
+        <Text dimColor>{m.detail.prsLabel(prs.length)} </Text>
+        {prs.map((pr, i) => (
+          <Text key={pr.url}>
+            {i > 0 ? <Text dimColor>{PR_SEPARATOR}</Text> : null}
+            {i === 0 && badge ? <Text color={badge.color}>{badge.char} </Text> : null}
+            <Text color={theme.accent}>#{pr.number}</Text>
+          </Text>
+        ))}
+      </Text>
     </Box>
   );
 };
