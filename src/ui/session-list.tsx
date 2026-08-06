@@ -28,6 +28,7 @@ import {
   matchCommands,
   needsAttention,
   otherPrs,
+  PR_CELL_WIDTH,
   parseSgrMouse,
   prCellWidth,
   primaryPr,
@@ -375,8 +376,17 @@ export const SessionList: FC<{
   // 実測高さぶんだけ項目を描画し、選択が常に見えるようウィンドウを動かす。全画面
   // でないインライン描画時はクリップされないため全件描画（端末側スクロールに任せる）。
   const fullscreen = isFullscreenViewport(termRows);
-  // 端末が狭いときは worktree（ブランチ）名の列を省き、title に幅を譲る。
-  const showBranch = showsBranchColumn(columns);
+  /**
+   * PR 列の幅。複数 PR の行（`#12 +1`）があるときだけ広げる。**描画とクリックの
+   * 当たり判定で必ず同じ値を使う**（食い違うとセルの端を押したときに別の列を触る）。
+   */
+  const prCell = prCellWidth(sessions.some(hasMultiplePrs));
+  // 端末が狭いときは worktree（ブランチ）名の列を省き、title に幅を譲る。閾値
+  // （MIN_BRANCH_COLUMN_COLUMNS）は既定の PR 列幅で見積もってあるので、広い PR 列を
+  // 使っている間はそのぶん厳しく判定する — 1 行が桁数を超えると Yoga が固定幅の列を
+  // 縮め、行が 2 行に折り返して**以降の行のクリック位置が全部ズレる**（rowLineAtPoint は
+  // 「1 セッション = 1 行」前提）。落とす候補はブランチ列（内容が worktree 名で復元可能）。
+  const showBranch = showsBranchColumn(columns - (prCell - PR_CELL_WIDTH));
   const listHeight = useBoxHeight(rowsRef);
   const listCap = fullscreen
     ? Math.max(1, listHeight ?? listViewportRows(termRows))
@@ -433,12 +443,6 @@ export const SessionList: FC<{
       onOpenPr(pr.url);
     }
   };
-
-  /**
-   * PR 列の幅。複数 PR の行（`#12 +1`）があるときだけ広げる。**描画とクリックの
-   * 当たり判定で必ず同じ値を使う**（食い違うとセルの端を押したときに別の列を触る）。
-   */
-  const prCell = prCellWidth(sessions.some(hasMultiplePrs));
 
   // ヘッダの表示行。描画（Banner）と当たり判定（bannerCaretAt）で同じ配列を使う —
   // 行 index = 表示行という前提を共有しているので、片方だけ差し替えると選択がズレる。
@@ -904,10 +908,16 @@ export const SessionList: FC<{
                       </Text>
                     </Box>
                   ) : null}
-                  <Text dimColor>{formatDuration(activeElapsedMs(s, now))}</Text>
+                  {/* 経過時間も `truncate-end`。長い表記（`2h05m30s`）で行が溢れると
+                      Yoga はここを折り返し、行が 2 行になってクリック位置がズレる。 */}
+                  <Text dimColor wrap="truncate-end">
+                    {formatDuration(activeElapsedMs(s, now))}
+                  </Text>
                   {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
-                      左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
-                  <Box width={prCell} justifyContent="flex-end">
+                      左右されず、端末幅からクリック位置を逆算できる（handlePress）。
+                      `flexShrink={0}`: 縮められると**描いた幅と当たり判定の幅が食い違い**、
+                      セルの左端を押したときにブランチ名の上をクリックしたことになる。 */}
+                  <Box width={prCell} flexShrink={0} justifyContent="flex-end">
                     {/* 代表が「セッションが自分で作った PR」のときはグリフを出さない —
                         prStatus はセッションブランチの PR のものなので、別 PR の番号に
                         付けると嘘になる。 */}

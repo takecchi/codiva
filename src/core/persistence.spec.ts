@@ -158,9 +158,19 @@ describe('toPersistedSession', () => {
       NOW,
     );
     const parsed = fromPersistedJson({
-      sessions: [{ ...base, extraPrs: [{ number: 1 }, { number: 2, url: 'u2' }] }],
+      sessions: [{ ...base, extraPrs: [{ number: 1 }, { number: 2, url: 'https://x/pull/2' }] }],
     });
-    expect(parsed.sessions[0]?.extraPrs).toEqual([{ number: 2, url: 'u2' }]);
+    expect(parsed.sessions[0]?.extraPrs).toEqual([{ number: 2, url: 'https://x/pull/2' }]);
+  });
+
+  // 結果待ちの tool_use id は transient。保存すると復元後に「いつまでも結果を待つ id」が
+  // 残り、無関係な tool_result を PR 作成の結果として読んでしまう。
+  it('never persists the pending `gh pr create` tool ids', () => {
+    const s = state({ status: 'completed', sdkSessionId: 'sdk-1', prCreateToolIds: ['toolu_1'] });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' }, NOW);
+    expect(JSON.stringify(persisted)).not.toContain('toolu_1');
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
+    expect(restoredSessionState(persisted!).prCreateToolIds).toBeUndefined();
   });
 
   it('omits the PR when the session has none', () => {

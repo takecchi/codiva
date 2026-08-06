@@ -218,7 +218,15 @@ function toTodo(v: unknown): TodoItem | undefined {
   };
 }
 
-/** Cached PR identity from an untrusted snapshot; both fields or nothing. */
+/**
+ * Cached PR identity from an untrusted snapshot; both fields or nothing.
+ *
+ * The URL must be http(s): it is handed to `openUrl` (which launches `open` /
+ * `xdg-open`), and `extraPrs` now originates from a *model-influenced* tool result,
+ * so a `file://` or app-scheme URL that made it into the snapshot must not be
+ * launchable on the next restart. Arguments are passed as argv (no shell), so this
+ * is defense in depth, not the only barrier.
+ */
 function toPrRef(v: unknown): PrRef | undefined {
   if (typeof v !== 'object' || v === null) {
     return undefined;
@@ -226,7 +234,10 @@ function toPrRef(v: unknown): PrRef | undefined {
   const o = v as Record<string, unknown>;
   const number = num(o.number);
   const url = str(o.url);
-  return number !== undefined && url !== undefined ? { number, url } : undefined;
+  if (number === undefined || url === undefined || !/^https?:\/\//.test(url)) {
+    return undefined;
+  }
+  return { number, url };
 }
 
 /**

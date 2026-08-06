@@ -21,10 +21,19 @@ import type { PrRef } from './types';
  * 独自ホストも同じ形なのでホストは固定しない（結果の出所が `gh pr create` に限られている
  * ぶん、ホストで絞る必要がない）。番号の後ろ（`/files` 等）は正規化で捨てる。
  */
-const PR_URL_RE = /https?:\/\/[\w.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/(\d+)/g;
+const PR_URL_SOURCE = String.raw`https?:\/\/[\w.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/(\d+)`;
 
 /** `gh pr create ...`（`&&` やパイプで繋がれていてもよい）。 */
 const GH_PR_CREATE_RE = /\bgh\s+pr\s+create\b/;
+
+/**
+ * 同じコマンド行に混ざっていると、出力が「作った PR」だけとは限らなくなるもの。
+ * `gh pr create --fill || gh pr list --head "$B" --json url`（作成に失敗したら既存を探す）は
+ * エージェントがよく書く形で、これを作成コマンドとして扱うと**一覧に出た PR を全部**
+ * このセッションの PR として数えてしまう。取りこぼす（`+n` が出ない）ほうが、無関係な
+ * PR を並べるより害が小さいので、混在しているときは検知しない。
+ */
+const GH_PR_READ_RE = /\bgh\s+(?:pr\s+(?:list|view|status|checks|diff)|search)\b/;
 
 /** MCP の GitHub サーバ等、ツール名だけで「PR を作る」と分かるもの。 */
 const CREATE_PR_TOOL_RE = /create_pull_request/i;
@@ -42,9 +51,9 @@ export const MAX_SESSION_PRS = 12;
  */
 export const PR_DETECT_SCAN_CHARS = 4000;
 
-/** Bash コマンドが PR を作るものか（`gh pr create`）。 */
+/** Bash コマンドが PR を作る**だけ**のものか（`gh pr create`。読み取り系との混在は除く）。 */
 export function isPrCreateCommand(command: string): boolean {
-  return GH_PR_CREATE_RE.test(command);
+  return GH_PR_CREATE_RE.test(command) && !GH_PR_READ_RE.test(command);
 }
 
 /**
@@ -70,10 +79,9 @@ export function isPrCreateTool(name: string, input: Record<string, unknown>): bo
 export function extractPrRefs(text: string): PrRef[] {
   const out: PrRef[] = [];
   const seen = new Set<string>();
-  // 正規表現は g フラグ付きの共有インスタンスなので lastIndex を必ず戻す。
-  PR_URL_RE.lastIndex = 0;
-  let match = PR_URL_RE.exec(text);
-  while (match !== null) {
+  // 正規表現は**呼び出しごとに作る**。`/g` を共有インスタンスにすると `lastIndex` が
+  // 呼び出しを跨いで残り、途中で return を足した瞬間に次回の走査が途中から始まる。
+  for (const match of text.matchAll(new RegExp(PR_URL_SOURCE, 'g'))) {
     const number = Number(match[1]);
     // `/pull/<n>` までを URL とする（後ろのサブパス・クエリは落とす）。
     const url = match[0];
@@ -81,7 +89,6 @@ export function extractPrRefs(text: string): PrRef[] {
       seen.add(url);
       out.push({ number, url });
     }
-    match = PR_URL_RE.exec(text);
   }
   return out;
 }
@@ -99,6 +106,11 @@ export function addPrRefs(
     return existing;
   }
   const current = existing ?? [];
+  // 上限に達したら**同じ参照を返して打ち止める**。切り詰めた新配列を返すと、内容が
+  // 同じでも参照が変わるので state.json の再保存と再描画が検知のたびに走る。
+  if (current.length >= MAX_SESSION_PRS) {
+    return existing;
+  }
   const fresh = found.filter((ref) => !current.some((e) => e.url === ref.url));
   if (fresh.length === 0) {
     return existing;
@@ -152,11 +164,6 @@ export function otherPrs(state: PrRefsHolder): readonly PrRef[] {
   }
   const primary = primaryPr(state);
   return primary ? extras.filter((p) => p.url !== primary.url) : extras;
-}
-
-/** このセッションに紐づく PR の総数（代表を含む）。 */
-export function prCount(state: PrRefsHolder): number {
-  return primaryPr(state) ? otherPrs(state).length + 1 : 0;
 }
 
 /** 複数の PR を出したセッションか（一覧の `+n` と列幅の切替に使う）。 */

@@ -63,7 +63,10 @@ export const PrCell: FC<{
   if (pr) {
     const badge = status ? prStatusBadge(status) : undefined;
     return (
-      <Text>
+      // `truncate-end` は必須。折り返すと**行が 2 行になり**、`rowLineAtPoint`（1 セッション
+      // = 1 行が前提）以降の行のクリックが全部ズレる。狭い端末で列が縮んだときは
+      // 番号が切れるほうがまし（他の列も同じ方針）。
+      <Text wrap="truncate-end">
         {badge ? <Text color={badge.color}>{badge.char} </Text> : null}
         <Text color={status?.isDraft ? theme.dim : theme.accent} underline>
           #{pr.number}

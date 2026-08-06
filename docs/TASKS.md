@@ -1064,6 +1064,19 @@ zsh: abort      codiva
       縦幅を 1 行も譲らない）。`PrCell` / `prStatusBadge` は `ui/pr-cell.tsx` に共通化
 - [x] i18n（`detail.prsLabel`、ja/en）/ docs（ARCHITECTURE・README・CLAUDE.md）
 
+- [x] レビュー指摘の反映:
+      (1) **行が 2 行に折り返すとクリック位置が全部ズレる**（`rowLineAtPoint` は 1 セッション =
+      1 行が前提）。広い PR 列を使う間はブランチ列の閾値を 4 桁ぶん厳しくし、PR セルと
+      経過時間は `truncate-end`、PR セルの Box は `flexShrink={0}`（描いた幅 = 当たり判定の幅）。
+      80 桁での 1 行維持は回帰テストで固定。
+      (2) `gh pr create … || gh pr list …` のような読み取り系との混在コマンドを検知対象から外す
+      （一覧に出た PR を全部数えてしまう）。
+      (3) `gh pr create` が「既に PR がある」と既存 URL を返すケースで、ブランチの PR が
+      `extraPrs` に二重に積まれる（reducer の畳み込みは `pr` が変わったときしか走らない）ため
+      検知側で弾く。
+      (4) 上限到達後も新配列を返していて state.json の再保存が走る／並列 `gh pr create` の
+      保留 id 上限 4 → 8／`toPrRef` で `http(s)` 以外の URL を弾く（`openUrl` に渡るため）。
+
 > 設計判断: 代表は**セッションブランチの PR**（`prStatus` を持つ唯一の PR で、クリックで開く先と
 > グリフの意味を一致させる）。自分で作った PR は codiva が追跡・操作しないので番号のみで
 > グリフは付けない（状態を知らないのに緑や赤で嘘をつかない）。**`gh` の追加呼び出しはゼロ**。

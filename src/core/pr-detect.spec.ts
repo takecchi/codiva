@@ -7,7 +7,6 @@ import {
   isPrCreateTool,
   MAX_SESSION_PRS,
   otherPrs,
-  prCount,
   primaryPr,
   withoutPrRef,
 } from './pr-detect';
@@ -29,6 +28,15 @@ describe('isPrCreateTool', () => {
     ],
     ['extra spacing', 'Bash', { command: 'gh   pr\tcreate' }, true],
     ['gh pr view is not create', 'Bash', { command: 'gh pr view 12 --json url' }, false],
+    // 作成に失敗したら既存を探す、というよくある形。出力に一覧の PR が混ざるので
+    // 「作成コマンド」として扱わない（取りこぼすほうが誤検出よりまし）。
+    [
+      'create mixed with list',
+      'Bash',
+      { command: 'gh pr create --fill || gh pr list --head x --json url' },
+      false,
+    ],
+    ['list before create', 'Bash', { command: 'gh pr list && gh pr create --fill' }, false],
     ['gh pr list is not create', 'Bash', { command: 'gh pr list --state all' }, false],
     ['unrelated command', 'Bash', { command: 'npm test' }, false],
     ['missing command', 'Bash', {}, false],
@@ -103,14 +111,20 @@ describe('addPrRefs', () => {
     const many = Array.from({ length: MAX_SESSION_PRS + 5 }, (_, i) => ref(i + 1));
     expect(addPrRefs(undefined, many)).toHaveLength(MAX_SESSION_PRS);
   });
+
+  // 上限に達した後も新しい配列を返すと、内容が同じでも state.json の再保存と
+  // 再描画が検知のたびに走る。
+  it('keeps the same reference once the cap is reached', () => {
+    const full = Array.from({ length: MAX_SESSION_PRS }, (_, i) => ref(i + 1));
+    expect(addPrRefs(full, [ref(999)])).toBe(full);
+  });
 });
 
-describe('primaryPr / otherPrs / prCount', () => {
+describe('primaryPr / otherPrs / allPrs', () => {
   it('prefers the branch PR (the one codiva has a status glyph for)', () => {
     const state = { pr: ref(10), extraPrs: [ref(11), ref(12)] };
     expect(primaryPr(state)).toEqual(ref(10));
     expect(otherPrs(state)).toEqual([ref(11), ref(12)]);
-    expect(prCount(state)).toBe(3);
     expect(allPrs(state)).toEqual([ref(10), ref(11), ref(12)]);
   });
 
@@ -118,19 +132,17 @@ describe('primaryPr / otherPrs / prCount', () => {
     const state = { extraPrs: [ref(11), ref(12)] };
     expect(primaryPr(state)).toEqual(ref(12));
     expect(otherPrs(state)).toEqual([ref(11)]);
-    expect(prCount(state)).toBe(2);
     expect(allPrs(state)).toEqual([ref(12), ref(11)]);
   });
 
   it('does not double-count the branch PR listed in extras', () => {
     const state = { pr: ref(10), extraPrs: [ref(10)] };
-    expect(prCount(state)).toBe(1);
+    expect(hasMultiplePrs(state)).toBe(false);
     expect(otherPrs(state)).toEqual([]);
   });
 
   it('is empty without any PR', () => {
     expect(primaryPr({})).toBeUndefined();
-    expect(prCount({})).toBe(0);
     expect(allPrs({})).toEqual([]);
   });
 });

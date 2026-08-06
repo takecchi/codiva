@@ -2085,6 +2085,33 @@ describe('PR セル（GitHub ステータスの表示）', () => {
     app.unmount();
   });
 
+  // 行が 2 行に折り返すと `rowLineAtPoint`（1 セッション = 1 行が前提）が壊れ、
+  // 以降の行のクリックが全部ズレる。広い PR 列（`+n`）を出す条件でも 1 行に収まること。
+  it('80 桁でも複数 PR の行は 1 行に収まる（折り返してクリックがズレない）', async () => {
+    const manager = prManager(async () => ({ kind: 'found', pr: PR }), {
+      pr: { number: 12345, url: 'https://x/pull/12345' },
+      prStatus: { mergeStatus: 'mergeable' as const },
+      activeSince: undefined,
+      extraPrs: [
+        { number: 12346, url: 'https://x/pull/12346' },
+        { number: 12347, url: 'https://x/pull/12347' },
+      ],
+    });
+    manager.create('a long enough session title to fill the whole row');
+    await flush();
+    const { app, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 80);
+    await flush(200);
+    const lines = stripAnsi(lastFrame()).split('\n');
+    const rows = lines.filter((l) => l.includes('#12345'));
+    expect(rows).toHaveLength(1);
+    // 同じ行にタイトルと `+2` が揃っている = 折り返していない。
+    expect(rows[0]).toContain('+2');
+    expect(rows[0]).toContain('a long enough session');
+    // 溢れさせないためにブランチ列を落とす（内容は worktree 名なので復元可能）。
+    expect(rows[0]).not.toContain('codiva/');
+    app.unmount();
+  });
+
   // 単一 PR の詳細ビューはログの縦幅を 1 行も譲らない（一覧の行末セルで足りる）。
   it('PR が 1 本だけなら詳細ビューに PR 行を出さない', async () => {
     const manager = prManager(async () => ({ kind: 'found', pr: PR }), {

@@ -145,7 +145,7 @@ export function toolResultSummary(content: unknown): string {
  * parallel calls — keeping the set bounded means a session that never gets its
  * results back can't grow state without limit.
  */
-const MAX_PENDING_PR_CREATES = 4;
+const MAX_PENDING_PR_CREATES = 8;
 
 /** Remember a `gh pr create` tool_use id until its result arrives (oldest drops out). */
 function trackPrCreate(ids: readonly string[] | undefined, id: string): readonly string[] {
@@ -439,7 +439,12 @@ function reduceUser(state: SessionState, message: Record<string, unknown>): Sess
         const rest = prCreateToolIds.filter((id) => id !== tr.tool_use_id);
         prCreateToolIds = rest.length > 0 ? rest : undefined;
         const head = asStringHead(tr.content, PR_DETECT_SCAN_CHARS);
-        extraPrs = addPrRefs(extraPrs, extractPrRefs(head));
+        // ブランチの PR は `pr` が持つので extras には入れない。`gh pr create` は
+        // 「既に PR がある」場合もその PR の URL を出す（`a pull request for branch …
+        // already exists: …`）ので、ここで弾かないと同じ PR が `+1` として二重に数えられる
+        // （reducer 側の畳み込みは `pr` が変わったときしか走らない）。
+        const found = extractPrRefs(head).filter((ref) => ref.url !== state.pr?.url);
+        extraPrs = addPrRefs(extraPrs, found);
       }
       const text = toolResultSummary(tr.content);
       if (text.length > 0) {

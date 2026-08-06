@@ -361,7 +361,7 @@ interface SessionState {
   model?: string;             // セッション個別のモデル上書き（/model）
   pr?: PrRef;                 // 検知した PR の番号・URL（ブランチに対して不変。**永続する**）
   extraPrs?: readonly PrRef[];// セッション自身が別ブランチで作った PR（`gh pr create` の結果から検知。**永続する**）
-  prCreateToolIds?: string[]; // 結果待ちの `gh pr create` の tool_use id（対応付け用。transient）
+  prCreateToolIds?: readonly string[]; // 結果待ちの `gh pr create` の tool_use id（対応付け用。transient）
   prStatus?: PrStatus;        // merge 可否 / checks / draft（揺れる。transient・期限付きキャッシュ）
   prLookup?: PrLookupState;   // 'loading'（確認中）/ 'error'（gh が答えられなかった）。transient
   conflictFiles?: string[];   // conflict 時の競合ファイル（自動解消はしない）
