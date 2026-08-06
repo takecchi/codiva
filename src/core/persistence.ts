@@ -1,3 +1,4 @@
+import { MAX_SESSION_PRS } from './pr-detect';
 import type { WorktreeMeta } from './session-ports';
 import { STATUS_META } from './status-meta';
 import { activeElapsedMs, progressOf } from './status-reducer';
@@ -42,6 +43,13 @@ export interface PersistedSession {
    * the app is closed, and a wrong glyph is worse than briefly showing none.
    */
   pr?: PrRef;
+  /**
+   * PRs the session opened itself, from branches other than its own (see
+   * `SessionState.extraPrs`). Cached for the same reason as `pr`: they're read out of
+   * a `gh pr create` result that only passes by once, so without persisting them a
+   * restart would silently drop the second PR from the row.
+   */
+  extraPrs?: readonly PrRef[];
   todos: TodoItem[];
 }
 
@@ -106,6 +114,7 @@ export function toPersistedSession(
     totalCostUsd: state.totalCostUsd,
     model: state.model,
     pr: state.pr,
+    extraPrs: state.extraPrs,
     todos: state.todos,
   };
 }
@@ -142,6 +151,10 @@ export function restoredSessionState(p: PersistedSession, history: LogEntry[] = 
     // Cached PR identity: rendered right away, with the status glyph filling in once
     // the first poll answers (prPollIntervalMs returns 0 for exactly this case).
     pr: p.pr,
+    // Same rationale, for the PRs the session opened on its own branches: nothing
+    // will re-discover them (their `gh pr create` result is long gone), so the
+    // snapshot is the only way the row keeps showing `+n` after a restart.
+    extraPrs: p.extraPrs,
     // Continue numbering after the restored history so new turns append cleanly.
     logSeq: history.at(-1)?.seq ?? 0,
   };
@@ -205,7 +218,15 @@ function toTodo(v: unknown): TodoItem | undefined {
   };
 }
 
-/** Cached PR identity from an untrusted snapshot; both fields or nothing. */
+/**
+ * Cached PR identity from an untrusted snapshot; both fields or nothing.
+ *
+ * The URL must be http(s): it is handed to `openUrl` (which launches `open` /
+ * `xdg-open`), and `extraPrs` now originates from a *model-influenced* tool result,
+ * so a `file://` or app-scheme URL that made it into the snapshot must not be
+ * launchable on the next restart. Arguments are passed as argv (no shell), so this
+ * is defense in depth, not the only barrier.
+ */
 function toPrRef(v: unknown): PrRef | undefined {
   if (typeof v !== 'object' || v === null) {
     return undefined;
@@ -213,7 +234,26 @@ function toPrRef(v: unknown): PrRef | undefined {
   const o = v as Record<string, unknown>;
   const number = num(o.number);
   const url = str(o.url);
-  return number !== undefined && url !== undefined ? { number, url } : undefined;
+  if (number === undefined || url === undefined || !/^https?:\/\//.test(url)) {
+    return undefined;
+  }
+  return { number, url };
+}
+
+/**
+ * Cached list of self-created PRs from an untrusted snapshot. Malformed entries are
+ * dropped one by one (a corrupt element must not cost the whole list), and the result
+ * is `undefined` when nothing survives so restored state matches the live shape.
+ */
+function toPrRefs(v: unknown): readonly PrRef[] | undefined {
+  if (!Array.isArray(v)) {
+    return undefined;
+  }
+  const refs = v
+    .map(toPrRef)
+    .filter((r): r is PrRef => r !== undefined)
+    .slice(0, MAX_SESSION_PRS);
+  return refs.length > 0 ? refs : undefined;
 }
 
 function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
@@ -259,6 +299,7 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
     totalCostUsd: num(o.totalCostUsd),
     model: str(o.model),
     pr: toPrRef(o.pr),
+    extraPrs: toPrRefs(o.extraPrs),
     todos,
   };
 }

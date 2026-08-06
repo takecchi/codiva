@@ -1041,3 +1041,122 @@ describe('toolResultSummary', () => {
     ).toBe('abcd');
   });
 });
+
+/**
+ * 1 セッションが複数 PR を出すケース。メッセージの形（tool_use → tool_result の対）は
+ * `__fixtures__/session-basic.jsonl` の Bash 呼び出しと同じで、コマンドと出力だけを
+ * `gh pr create` のものに差し替えている。
+ */
+describe('self-created PRs (extraPrs)', () => {
+  const CREATED = 'https://github.com/acme/app/pull/42';
+
+  /** A Bash tool_use, shaped like the real fixtures. */
+  const bash = (id: string, command: string) => ({
+    type: 'assistant',
+    message: {
+      model: 'claude-opus-4-8',
+      content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }],
+    },
+  });
+  const result = (id: string, content: string) => ({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content }] },
+  });
+
+  it('records the PR a `gh pr create` result reports', () => {
+    const created = sdk(initialState(BASE), bash('t1', 'gh pr create --draft --fill'));
+    expect(created.prCreateToolIds).toEqual(['t1']);
+    const state = sdk(
+      created,
+      result('t1', `Creating pull request for codiva/x into main in acme/app\n\n${CREATED}\n`),
+    );
+    expect(state.extraPrs).toEqual([{ number: 42, url: CREATED }]);
+    // 対応が済んだら保留 id は残さない。
+    expect(state.prCreateToolIds).toBeUndefined();
+  });
+
+  it('ignores PR URLs printed by commands that only read PRs', () => {
+    const listed = sdk(initialState(BASE), bash('t1', 'gh pr list --state all'));
+    const state = sdk(listed, result('t1', `#7 something ${CREATED}`));
+    expect(state.extraPrs).toBeUndefined();
+  });
+
+  it('keeps the array identity when the same PR is reported again', () => {
+    const first = sdk(sdk(initialState(BASE), bash('t1', 'gh pr create')), result('t1', CREATED));
+    const second = sdk(sdk(first, bash('t2', 'gh pr create')), result('t2', CREATED));
+    expect(second.extraPrs).toBe(first.extraPrs);
+  });
+
+  it('drops the PR from extras once it turns out to be the branch PR', () => {
+    const created = sdk(sdk(initialState(BASE), bash('t1', 'gh pr create')), result('t1', CREATED));
+    const state = reduce(created, {
+      kind: 'pr',
+      pr: { number: 42, url: CREATED, mergeStatus: 'mergeable' },
+      at: 5,
+    });
+    expect(state.extraPrs).toBeUndefined();
+    expect(state.pr).toEqual({ number: 42, url: CREATED });
+  });
+
+  // 並列の tool_use は 1 メッセージに複数ブロックで届き、結果は別々の user メッセージで
+  // 順不同に返る。id で対応付けているので順序に依らないこと。
+  it('pairs parallel creates by id, whatever order the results arrive in', () => {
+    const started = sdk(initialState(BASE), {
+      type: 'assistant',
+      message: {
+        model: 'claude-opus-4-8',
+        content: [
+          { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'gh pr create --fill' } },
+          { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'gh pr create --fill' } },
+        ],
+      },
+    });
+    expect(started.prCreateToolIds).toEqual(['t1', 't2']);
+    const second = sdk(started, result('t2', 'https://github.com/acme/app/pull/2'));
+    const both = sdk(second, result('t1', 'https://github.com/acme/app/pull/1'));
+    expect(both.extraPrs).toEqual([
+      { number: 2, url: 'https://github.com/acme/app/pull/2' },
+      { number: 1, url: 'https://github.com/acme/app/pull/1' },
+    ]);
+    expect(both.prCreateToolIds).toBeUndefined();
+  });
+
+  // サブエージェント（Task）の中で作られた PR もセッションの PR。tool_use / tool_result は
+  // `parent_tool_use_id` 付きで届くが、id の対応付けは同じ。
+  it('records a PR created inside a sub-agent', () => {
+    const started = sdk(initialState(BASE), {
+      ...bash('t9', 'gh pr create --fill'),
+      parent_tool_use_id: 'toolu_parent',
+    });
+    const state = sdk(started, {
+      ...result('t9', CREATED),
+      parent_tool_use_id: 'toolu_parent',
+    });
+    expect(state.extraPrs).toEqual([{ number: 42, url: CREATED }]);
+  });
+
+  // `gh pr create` は既に PR があるとその PR の URL を出す。ブランチの PR として
+  // 既に持っているものを extras に積むと `+1` が嘘になる。
+  it('does not re-add the branch PR when create reports it already exists', () => {
+    const withPr = reduce(initialState(BASE), {
+      kind: 'pr',
+      pr: { number: 42, url: CREATED, mergeStatus: 'mergeable' },
+      at: 1,
+    });
+    const state = sdk(
+      sdk(withPr, bash('t1', 'gh pr create --fill')),
+      result('t1', `a pull request for branch "codiva/x" into "main" already exists: ${CREATED}`),
+    );
+    expect(state.extraPrs).toBeUndefined();
+  });
+
+  it('does not touch extras when an unrelated PR is discovered for the branch', () => {
+    const created = sdk(sdk(initialState(BASE), bash('t1', 'gh pr create')), result('t1', CREATED));
+    const state = reduce(created, {
+      kind: 'pr',
+      pr: { number: 41, url: 'https://github.com/acme/app/pull/41', mergeStatus: 'unknown' },
+      at: 5,
+    });
+    expect(state.extraPrs).toBe(created.extraPrs);
+  });
+});

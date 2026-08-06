@@ -117,6 +117,62 @@ describe('toPersistedSession', () => {
     });
   });
 
+  // セッションが自分で作った PR は `gh pr create` の結果にしか出てこない（後から
+  // ブランチ名で引き直せない）ので、保存しないと再起動で `+n` が消える。
+  it('round-trips the PRs the session created itself', () => {
+    const extraPrs = [
+      { number: 43, url: 'https://x/pull/43' },
+      { number: 44, url: 'https://x/pull/44' },
+    ];
+    const s = state({
+      status: 'completed',
+      sdkSessionId: 'sdk-1',
+      pr: { number: 42, url: 'https://x/pull/42' },
+      extraPrs,
+    });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' }, NOW);
+    expect(persisted?.extraPrs).toEqual(extraPrs);
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
+    expect(restoredSessionState(persisted!).extraPrs).toEqual(extraPrs);
+    expect(fromPersistedJson({ sessions: [persisted] }).sessions[0]?.extraPrs).toEqual(extraPrs);
+  });
+
+  it.each([
+    { label: 'not an array', extraPrs: { number: 1, url: 'u' } },
+    { label: 'all entries malformed', extraPrs: [{ number: 1 }, 'nope'] },
+    { label: 'empty', extraPrs: [] },
+  ] as const)('drops malformed self-created PRs ($label)', (c) => {
+    const base = toPersistedSession(
+      state({ status: 'completed', sdkSessionId: 'sdk-1' }),
+      { slug: 'x', base: 'main' },
+      NOW,
+    );
+    const parsed = fromPersistedJson({ sessions: [{ ...base, extraPrs: c.extraPrs }] });
+    expect(parsed.sessions[0]?.extraPrs).toBeUndefined();
+  });
+
+  it('keeps the well-formed entries of a partly corrupt list', () => {
+    const base = toPersistedSession(
+      state({ status: 'completed', sdkSessionId: 'sdk-1' }),
+      { slug: 'x', base: 'main' },
+      NOW,
+    );
+    const parsed = fromPersistedJson({
+      sessions: [{ ...base, extraPrs: [{ number: 1 }, { number: 2, url: 'https://x/pull/2' }] }],
+    });
+    expect(parsed.sessions[0]?.extraPrs).toEqual([{ number: 2, url: 'https://x/pull/2' }]);
+  });
+
+  // 結果待ちの tool_use id は transient。保存すると復元後に「いつまでも結果を待つ id」が
+  // 残り、無関係な tool_result を PR 作成の結果として読んでしまう。
+  it('never persists the pending `gh pr create` tool ids', () => {
+    const s = state({ status: 'completed', sdkSessionId: 'sdk-1', prCreateToolIds: ['toolu_1'] });
+    const persisted = toPersistedSession(s, { slug: 'x', base: 'main' }, NOW);
+    expect(JSON.stringify(persisted)).not.toContain('toolu_1');
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the assertion above
+    expect(restoredSessionState(persisted!).prCreateToolIds).toBeUndefined();
+  });
+
   it('omits the PR when the session has none', () => {
     const s = state({ status: 'completed', sdkSessionId: 'sdk-1' });
     expect(toPersistedSession(s, { slug: 'x', base: 'main' }, NOW)?.pr).toBeUndefined();

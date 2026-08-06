@@ -65,6 +65,7 @@ codiva/
 │   │   ├── session-actions.ts # merge/discard/diffStat（git 操作の純粋オーケストレーション）
 │   │   ├── pr-coordinator.ts  # PrCoordinator（autoPr/refreshPrs/自動立て直し）
 │   │   ├── pr-recovery.ts    # 詰まった PR の立て直し判定・指示文（純粋）
+│   │   ├── pr-detect.ts       # セッション自身が作った PR の検知・表示ヘルパ（純粋）
 │   │   ├── run-mode.ts        # RunMode + createModePolicy
 │   │   ├── session-ports.ts   # DI seam の interface 集約（WorktreeService/SessionHandle/…）
 │   │   ├── worktree.ts        # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
@@ -359,6 +360,8 @@ interface SessionState {
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
   model?: string;             // セッション個別のモデル上書き（/model）
   pr?: PrRef;                 // 検知した PR の番号・URL（ブランチに対して不変。**永続する**）
+  extraPrs?: readonly PrRef[];// セッション自身が別ブランチで作った PR（`gh pr create` の結果から検知。**永続する**）
+  prCreateToolIds?: readonly string[]; // 結果待ちの `gh pr create` の tool_use id（対応付け用。transient）
   prStatus?: PrStatus;        // merge 可否 / checks / draft（揺れる。transient・期限付きキャッシュ）
   prLookup?: PrLookupState;   // 'loading'（確認中）/ 'error'（gh が答えられなかった）。transient
   conflictFiles?: string[];   // conflict 時の競合ファイル（自動解消はしない）
@@ -601,6 +604,15 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   `rate_limit` / `auth` / `cli` は 5 分（`PR_LOOKUP_BACKOFF_MS`）ポーリングを止める。
   チェック状態は PR 情報と同じ `gh pr view` 1 回で取得する（`--json mergeable` は GraphQL
   クォータ消費なので、毎ポーリング 2 回投げていたのを 1 回に）。
+- **1 セッション 1 PR とは限らない（`core/pr-detect.ts`）**: セッションが自分で別ブランチを切って
+  `gh pr create` することがある。ブランチ名（`codiva/<slug>`）からは辿れないので、**`gh pr create` を
+  実行した tool_use の結果**に出る URL から拾って `extraPrs` に積む（`sdk-parse` が tool_use id を
+  控えて tool_result と突き合わせる）。ログ全体から URL を拾わないのは誤検出を避けるため —
+  `gh pr list` の出力や `gh pr view` で覗いた他人の PR まで数えてしまう。
+  表示は一覧が `#12 +2`（代表 + 件数。列幅は複数 PR の行があるときだけ広げる）、全件は詳細ビューの
+  1 行に出す。**代表はセッションブランチの PR**（`prStatus` = グリフを持つ唯一の PR で、クリックで
+  開く先でもある）。自分で作った PR は codiva が追跡・操作しないので番号のみ（状態を知らないのに
+  グリフを付けて嘘をつかない）。`gh` の追加呼び出しはゼロ。
 - **PR は「識別（`pr: PrRef`）」と「状態（`prStatus: PrStatus`）」に分ける**。番号・URL は
   ブランチに対して不変なので `state.json` に載せ、**復元直後からグリフ無しの `#<n>` を表示**する。
   状態（マージ可否・チェック・draft）は永続せず、復元後の最初のポーリング（`prPollIntervalMs`

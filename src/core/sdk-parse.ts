@@ -7,6 +7,7 @@ import {
   isTransientApiStatus,
 } from './errors';
 import { clipLogText, clipStreamText, MAX_LOG_ENTRY_CHARS, pushLogEntry } from './log-buffer';
+import { addPrRefs, extractPrRefs, isPrCreateTool, PR_DETECT_SCAN_CHARS } from './pr-detect';
 import { isResumable } from './status-meta';
 import {
   appendLog,
@@ -136,6 +137,20 @@ export function toolResultSummary(content: unknown): string {
   const head = asStringHead(content, TOOL_RESULT_SUMMARY_CHARS);
   const br = head.search(/[\r\n]/);
   return br === -1 ? head : head.slice(0, br);
+}
+
+/**
+ * How many un-answered `gh pr create` calls we remember at once. A tool_use is
+ * normally answered by the very next user message, so this only has to survive
+ * parallel calls — keeping the set bounded means a session that never gets its
+ * results back can't grow state without limit.
+ */
+const MAX_PENDING_PR_CREATES = 8;
+
+/** Remember a `gh pr create` tool_use id until its result arrives (oldest drops out). */
+function trackPrCreate(ids: readonly string[] | undefined, id: string): readonly string[] {
+  const current = ids ?? [];
+  return current.includes(id) ? current : [...current, id].slice(-MAX_PENDING_PR_CREATES);
 }
 
 /** Apply a TaskCreate/TaskUpdate/TodoWrite tool_use block to the todo list. */
@@ -308,6 +323,7 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
   let todos = state.todos;
   let messages = state.messages;
   let logSeq = state.logSeq;
+  let prCreateToolIds = state.prCreateToolIds;
 
   for (const raw of content) {
     if (!raw || typeof raw !== 'object') {
@@ -324,6 +340,11 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
     } else if (block.type === 'tool_use') {
       const tu = raw as ToolUseBlock;
       todos = applyTaskTool(todos, tu);
+      // 「このセッションが出した PR」は結果にしか URL が無いので、作成コマンドの
+      // tool_use id を控えて次の tool_result と突き合わせる（core/pr-detect.ts）。
+      if (typeof tu.id === 'string' && isPrCreateTool(tu.name, tu.input ?? {})) {
+        prCreateToolIds = trackPrCreate(prCreateToolIds, tu.id);
+      }
       const seq = logSeq + 1;
       messages = pushLogEntry(messages, {
         seq,
@@ -344,10 +365,15 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
 
   // The full assistant message is authoritative — drop the streamed preview.
   if (messages === state.messages && todos === state.todos) {
-    if (state.status === nextStatus && state.streamingText === undefined && model === state.model) {
+    if (
+      state.status === nextStatus &&
+      state.streamingText === undefined &&
+      model === state.model &&
+      prCreateToolIds === state.prCreateToolIds
+    ) {
       return state;
     }
-    return { ...state, status: nextStatus, streamingText: undefined, model };
+    return { ...state, status: nextStatus, streamingText: undefined, model, prCreateToolIds };
   }
   return {
     ...state,
@@ -358,6 +384,7 @@ function reduceAssistant(state: SessionState, message: Record<string, unknown>):
     logSeq,
     streamingText: undefined,
     model,
+    prCreateToolIds,
   };
 }
 
@@ -400,9 +427,25 @@ function reduceUser(state: SessionState, message: Record<string, unknown>): Sess
   const content = Array.isArray(inner?.content) ? inner.content : [];
   let messages = state.messages;
   let logSeq = state.logSeq;
+  let extraPrs = state.extraPrs;
+  let prCreateToolIds = state.prCreateToolIds;
   for (const raw of content) {
     if (raw && typeof raw === 'object' && (raw as { type?: string }).type === 'tool_result') {
       const tr = raw as ToolResultBlock;
+      // `gh pr create` の結果だけを走査する（ログ全体から URL を拾うと `gh pr list` の
+      // 出力や他人の PR まで「このセッションの PR」になる）。ログ用の要約は先頭 1 行しか
+      // 読まないが、URL は数行下の最終行に出るので少し深く読む（上限付き）。
+      if (prCreateToolIds?.includes(tr.tool_use_id)) {
+        const rest = prCreateToolIds.filter((id) => id !== tr.tool_use_id);
+        prCreateToolIds = rest.length > 0 ? rest : undefined;
+        const head = asStringHead(tr.content, PR_DETECT_SCAN_CHARS);
+        // ブランチの PR は `pr` が持つので extras には入れない。`gh pr create` は
+        // 「既に PR がある」場合もその PR の URL を出す（`a pull request for branch …
+        // already exists: …`）ので、ここで弾かないと同じ PR が `+1` として二重に数えられる
+        // （reducer 側の畳み込みは `pr` が変わったときしか走らない）。
+        const found = extractPrRefs(head).filter((ref) => ref.url !== state.pr?.url);
+        extraPrs = addPrRefs(extraPrs, found);
+      }
       const text = toolResultSummary(tr.content);
       if (text.length > 0) {
         const seq = logSeq + 1;
@@ -411,10 +454,14 @@ function reduceUser(state: SessionState, message: Record<string, unknown>): Sess
       }
     }
   }
-  if (messages === state.messages) {
+  if (
+    messages === state.messages &&
+    extraPrs === state.extraPrs &&
+    prCreateToolIds === state.prCreateToolIds
+  ) {
     return state;
   }
-  return { ...state, messages, logSeq };
+  return { ...state, messages, logSeq, extraPrs, prCreateToolIds };
 }
 
 function reduceSdk(

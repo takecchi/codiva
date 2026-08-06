@@ -1045,6 +1045,44 @@ zsh: abort      codiva
 
 ---
 
+## Phase 27: 1 セッションから複数 PR が出たときの表記 ✅
+
+> セッションが自分で別ブランチを切って `gh pr create` すると 1 セッションに複数の PR が
+> 紐づくが、一覧はセッションブランチの PR しか出せず、2 本目以降は**どこにも出なかった**。
+
+- [x] `core/pr-detect.ts`（純粋）: `gh pr create` の tool_use 判定 / 結果からの PR URL 抽出 /
+      参照の追加・除去（**変化が無ければ同じ配列参照**を返す = state.json を無駄に書き直さない）/
+      表示ヘルパ（`primaryPr` / `otherPrs` / `prCount` / `hasMultiplePrs` / `allPrs`）
+- [x] `core/sdk-parse.ts`: tool_use id を控えて tool_result と突き合わせる（`prCreateToolIds`）。
+      ログ全体から URL を拾うと `gh pr list` の出力や他人の PR まで数えるため、**作成コマンドの
+      結果だけ**を走査する（先頭 4,000 文字）
+- [x] `SessionState.extraPrs` + 永続化（`state.json`。壊れた要素は 1 件ずつ落とす）+
+      reducer でブランチ PR と重複したら畳む
+- [x] 一覧: `#12 +2`（代表 + 件数）。PR 列は複数 PR の行があるときだけ 10 → 14 桁に広げ、
+      **描画とクリック当たり判定で同じ幅**を使う（`core/list-hit.ts` の `prCellWidth`）
+- [x] 詳細ビュー: 複数 PR のときだけ `PR 3 件: ✓ #12 · #13 · #14` の 1 行（1 本ならログの
+      縦幅を 1 行も譲らない）。`PrCell` / `prStatusBadge` は `ui/pr-cell.tsx` に共通化
+- [x] i18n（`detail.prsLabel`、ja/en）/ docs（ARCHITECTURE・README・CLAUDE.md）
+
+- [x] レビュー指摘の反映:
+      (1) **行が 2 行に折り返すとクリック位置が全部ズレる**（`rowLineAtPoint` は 1 セッション =
+      1 行が前提）。広い PR 列を使う間はブランチ列の閾値を 4 桁ぶん厳しくし、PR セルと
+      経過時間は `truncate-end`、PR セルの Box は `flexShrink={0}`（描いた幅 = 当たり判定の幅）。
+      80 桁での 1 行維持は回帰テストで固定。
+      (2) `gh pr create … || gh pr list …` のような読み取り系との混在コマンドを検知対象から外す
+      （一覧に出た PR を全部数えてしまう）。
+      (3) `gh pr create` が「既に PR がある」と既存 URL を返すケースで、ブランチの PR が
+      `extraPrs` に二重に積まれる（reducer の畳み込みは `pr` が変わったときしか走らない）ため
+      検知側で弾く。
+      (4) 上限到達後も新配列を返していて state.json の再保存が走る／並列 `gh pr create` の
+      保留 id 上限 4 → 8／`toPrRef` で `http(s)` 以外の URL を弾く（`openUrl` に渡るため）。
+
+> 設計判断: 代表は**セッションブランチの PR**（`prStatus` を持つ唯一の PR で、クリックで開く先と
+> グリフの意味を一致させる）。自分で作った PR は codiva が追跡・操作しないので番号のみで
+> グリフは付けない（状態を知らないのに緑や赤で嘘をつかない）。**`gh` の追加呼び出しはゼロ**。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

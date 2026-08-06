@@ -64,6 +64,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | セッションのライフサイクル | `core/session.ts`（1 query）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
 | worktree・マージ・破棄 | `utils/worktree-manager.ts`（I/O）/ `core/worktree.ts`（型・純関数）/ `core/session-actions.ts` |
 | PR 自動化 | `core/pr-coordinator.ts` / `utils/pr.ts`（`gh` はここだけ） |
+| 1 セッション複数 PR（`#12 +2`） | `core/pr-detect.ts`（検知・表示ヘルパ・純粋）/ `core/sdk-parse.ts`（`gh pr create` の tool_use ↔ tool_result 対応）/ `ui/pr-cell.tsx`（`PrCell` / `PrSummary`） |
 | 詰まった PR の立て直し | `core/pr-recovery.ts`（判定・指示文・純粋）/ `SessionManager.recover()` / `utils/worktree-manager.ts` の `syncBase`（ベース取り込み）/ `ui/hooks.ts` の `useRecovery` |
 | 一覧画面 | `ui/session-list.tsx`（composer / list の2フォーカス） |
 | 詳細画面 | `ui/session-detail.tsx`（ログ + 追加指示 + 操作パネル） |

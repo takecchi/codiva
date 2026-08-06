@@ -2051,6 +2051,85 @@ describe('PR セル（GitHub ステータスの表示）', () => {
     expect(await settledFrame(lastFrame, (f) => f.includes(passing))).toContain(passing);
     app.unmount();
   });
+
+  // 1 セッション = 1 PR とは限らない（セッション自身が別ブランチで `gh pr create` する）。
+  // 行末セルには番号を全部は並べられないので、代表 + `+n` にして全件は詳細ビューへ回す。
+  it('複数 PR の行は `#42 +2` と出し、詳細ビューに全件を並べる', async () => {
+    const manager = prManager(async () => ({ kind: 'found', pr: PR }), {
+      pr: { number: 42, url: 'https://x/pull/42' },
+      extraPrs: [
+        { number: 43, url: 'https://x/pull/43' },
+        { number: 44, url: 'https://x/pull/44' },
+      ],
+    });
+    manager.create('task');
+    await flush();
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 100);
+    await manager.refreshPrs();
+
+    const cell = `${glyph.mergeable} #42 +2`;
+    const row = await settledFrame(lastFrame, (f) => f.includes(cell));
+    expect(row).toContain(cell);
+    // 番号を全部並べると幅可変の title/branch を圧迫するので一覧には出さない。
+    expect(row).not.toContain('#43');
+
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // Enter → detail
+    await flush();
+    const detail = stripAnsi(lastFrame());
+    expect(detail).toContain('PR 3 件:');
+    expect(detail).toContain('#42');
+    expect(detail).toContain('#43');
+    expect(detail).toContain('#44');
+    app.unmount();
+  });
+
+  // 行が 2 行に折り返すと `rowLineAtPoint`（1 セッション = 1 行が前提）が壊れ、
+  // 以降の行のクリックが全部ズレる。広い PR 列（`+n`）を出す条件でも 1 行に収まること。
+  it('80 桁でも複数 PR の行は 1 行に収まる（折り返してクリックがズレない）', async () => {
+    const manager = prManager(async () => ({ kind: 'found', pr: PR }), {
+      pr: { number: 12345, url: 'https://x/pull/12345' },
+      prStatus: { mergeStatus: 'mergeable' as const },
+      activeSince: undefined,
+      extraPrs: [
+        { number: 12346, url: 'https://x/pull/12346' },
+        { number: 12347, url: 'https://x/pull/12347' },
+      ],
+    });
+    manager.create('a long enough session title to fill the whole row');
+    await flush();
+    const { app, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 80);
+    await flush(200);
+    const lines = stripAnsi(lastFrame()).split('\n');
+    const rows = lines.filter((l) => l.includes('#12345'));
+    expect(rows).toHaveLength(1);
+    // 同じ行にタイトルと `+2` が揃っている = 折り返していない。
+    expect(rows[0]).toContain('+2');
+    expect(rows[0]).toContain('a long enough session');
+    // 溢れさせないためにブランチ列を落とす（内容は worktree 名なので復元可能）。
+    expect(rows[0]).not.toContain('codiva/');
+    app.unmount();
+  });
+
+  // 単一 PR の詳細ビューはログの縦幅を 1 行も譲らない（一覧の行末セルで足りる）。
+  it('PR が 1 本だけなら詳細ビューに PR 行を出さない', async () => {
+    const manager = prManager(async () => ({ kind: 'found', pr: PR }), {
+      pr: { number: 42, url: 'https://x/pull/42' },
+    });
+    manager.create('task');
+    await flush();
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 100);
+    await manager.refreshPrs();
+    await settledFrame(lastFrame, (f) => f.includes('#42'));
+
+    stdin.write('\t');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(stripAnsi(lastFrame())).not.toContain('PR 1 件:');
+    app.unmount();
+  });
 });
 
 /**

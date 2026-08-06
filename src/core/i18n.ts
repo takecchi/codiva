@@ -39,6 +39,8 @@ export interface Messages {
     progress: (done: number, total: number, active: string | undefined) => string;
     cost: (usd: string) => string;
     errorLabel: string;
+    /** 複数 PR を出したセッションの PR 行の見出し（`PR 2 件:` → `#12 · #13`） */
+    prsLabel: (n: number) => string;
     changesTitle: (branch: string) => string;
     noCommittedChanges: string;
     uncommitted: (n: number) => string;
@@ -386,6 +388,7 @@ const ja: Messages = {
     progress: (done, total, active) => `進捗 ${done}/${total}${active ? ` — ${active}` : ''}`,
     cost: (usd) => `コスト ${usd}`,
     errorLabel: 'エラー',
+    prsLabel: (n) => `PR ${n} 件:`,
     changesTitle: (branch) => `変更（${branch} vs ベース）:`,
     noCommittedChanges: '（コミット済みの変更なし）',
     uncommitted: (n) => `未コミット ${n} 件`,
@@ -617,6 +620,7 @@ const en: Messages = {
     progress: (done, total, active) => `Progress ${done}/${total}${active ? ` — ${active}` : ''}`,
     cost: (usd) => `Cost ${usd}`,
     errorLabel: 'error',
+    prsLabel: (n) => `${n} pull requests:`,
     changesTitle: (branch) => `Changes (${branch} vs base):`,
     noCommittedChanges: '(no committed changes)',
     uncommitted: (n) => `${n} uncommitted change${n === 1 ? '' : 's'}`,

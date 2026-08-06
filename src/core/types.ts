@@ -194,6 +194,26 @@ export interface SessionState {
    */
   pr?: PrRef;
   /**
+   * PRs the session opened *itself* (`gh pr create` from another branch), on top of
+   * the branch PR above. A session is not limited to one PR: it can split its work,
+   * or land a prerequisite first. codiva can't find these by branch name — they're
+   * read out of the `gh pr create` tool result (`core/pr-detect.ts`).
+   *
+   * Identity only (number + URL), like `pr`: these PRs are not on the session branch,
+   * so codiva neither polls their status nor readies/merges them — showing them is
+   * what keeps a second PR from silently disappearing from the list.
+   * **Persisted** (see `pr`); capped by `MAX_SESSION_PRS`.
+   */
+  extraPrs?: readonly PrRef[];
+  /**
+   * tool_use ids of `gh pr create` calls whose result hasn't come back yet. The URL
+   * of a newly created PR only exists in the *result*, so the id has to be carried
+   * from the assistant message to the matching tool_result — pairing them is what
+   * keeps `gh pr list` / `gh pr view` output (other people's PRs) out of `extraPrs`.
+   * Transient — never persisted.
+   */
+  prCreateToolIds?: readonly string[];
+  /**
    * The volatile half of `pr` (merge state / checks / draft), refreshed on a
    * staleness schedule (see `core/pr-refresh.ts`) and cached in between. Undefined
    * means "not known yet" — the number renders without a status glyph rather than
