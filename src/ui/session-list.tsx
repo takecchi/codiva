@@ -10,14 +10,10 @@ import {
   bannerText,
   bufferOf,
   COMMANDS,
-  COMPOSER_PREFIX_CELLS,
   canSelfUpdate,
-  caretIndexAtClick,
-  emptyBuffer,
   errorMessage,
   formatDuration,
   formatModel,
-  INPUT_MAX_ROWS,
   type InputHistory,
   isActiveStatus,
   isFullscreenViewport,
@@ -27,6 +23,7 @@ import {
   listView,
   listViewportRows,
   type ModelOption,
+  type MouseEvent,
   matchCommands,
   needsAttention,
   type PrLookupState,
@@ -49,6 +46,7 @@ import {
 } from '@/core';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
+import { Composer, useComposer } from './composer';
 import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
@@ -57,7 +55,6 @@ import {
   useBoxHeight,
   useClock,
   useCommandRunner,
-  useComposerWidth,
   useDragSelection,
   useInputHistory,
   useLifecycleAction,
@@ -65,14 +62,12 @@ import {
   useRecovery,
   useRunMode,
   useSessions,
-  useTextBufferRef,
 } from './hooks';
 import { useMessages } from './i18n-context';
-import { editText, normalizeChord, resolveEnter } from './input';
+import { editText, normalizeChord } from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { badgeFor, ProgressBadge } from './progress-badge';
-import { PromptInput } from './prompt-input';
 import { RepoPromptEditor } from './repo-prompt-editor';
 import { StatusFooter } from './status-footer';
 import { glyph, statusColor, theme } from './theme';
@@ -245,11 +240,14 @@ export const SessionList: FC<{
   // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
   const { columns, rows: termRows } = useWindowSize();
-  const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
+  // 入力欄（バッファ・折り返し幅・マウス範囲選択・キー操作）は共通の `useComposer`。
+  // 詳細ビュー・`/prompt` エディタ・質問の自由記述と同じ実装を通すことで、どの入力欄でも
+  // Shift+Enter の改行やドラッグコピーが同じに効く。
+  const composer = useComposer({ onCopy });
+  const { buffer, bufferRef } = composer;
+  const composerWidth = composer.wrapWidth;
   // 送信済み指示の履歴（↑↓ で呼び出す）。再マウントしても引き継ぐ。
   const history = useInputHistory(initialViewState?.history);
-  // コンポーザのマウス範囲選択（ドラッグで選択→離すとクリップボードへコピー）。
-  const composerSel = useDragSelection(onCopy);
   // ヘッダ（バナー）のマウス範囲選択。cwd の絶対パスをコピーしたいケースが主目的。
   // コンポーザとは別インスタンスにする（caret index の基準テキストが違う）。
   const headerSel = useDragSelection(onCopy);
@@ -278,11 +276,6 @@ export const SessionList: FC<{
   const updateGen = useRef(0);
   const rowsRef = useRef<DOMElement>(null);
   const rowsBox = useAbsolutePosition(rowsRef);
-  const composerRef = useRef<DOMElement>(null);
-  const composerBox = useAbsolutePosition(composerRef);
-  // 入力欄の折り返し幅（実測）。PromptInput が描いた折り返しと同じ値でクリック位置の
-  // 逆算・↑↓ のキャレット移動を行う（食い違うと別の文字を選ぶ）。
-  const composerWidth = useComposerWidth(composerRef);
   // ヘッダのテキスト欄（マスコットの右）。左上を実測してマウス座標から文字位置を逆算する。
   // 高さも測るのは、低い端末で欄が潰れたときに当たり判定をやめるため（下記 headerCaretAt）。
   const headerRef = useRef<DOMElement>(null);
@@ -561,40 +554,19 @@ export const SessionList: FC<{
   };
 
   /**
-   * Caret index for a mouse point inside the composer, or undefined if the point
-   * is outside it. `contentTop` skips the top border; the prefix width drops the
-   * `❯ ` / continuation glyph so `x` becomes the display column within the text.
-   * The wrap width must be the one the composer rendered with — clicks on a
-   * soft-wrapped row resolve through the same layout.
-   */
-  const composerCaretAt = (x: number, y: number): number | undefined => {
-    if (!composerBox) {
-      return undefined;
-    }
-    return caretIndexAtClick(
-      bufferRef.current,
-      y - (composerBox.top + 1),
-      x - composerBox.left - COMPOSER_PREFIX_CELLS,
-      INPUT_MAX_ROWS,
-      composerWidth,
-    );
-  };
-
-  /**
    * Route a mouse press to the composer caret (starting a selection), the header
-   * text (starting a header selection), or a session row.
+   * text (starting a header selection), or a session row. The composer's own
+   * hit-testing lives in `useComposer` (shared with every other input box), so a
+   * press it claims (`true`) ends the routing here.
    */
-  const handlePress = (x: number, y: number) => {
-    const index = composerCaretAt(x, y);
-    if (index !== undefined) {
-      updateBuffer(bufferOf(bufferRef.current.value, index));
+  const handlePress = (mouse: MouseEvent & { kind: 'press' }) => {
+    if (composer.handleMouse(mouse)) {
       setFocus('composer');
-      composerSel.begin(index); // anchor a possible drag-selection at the click
       headerSnapRef.current = undefined;
       headerSel.clear();
       return;
     }
-    composerSel.clear(); // a press outside the composer drops any highlight
+    const { x, y } = mouse;
     // ヘッダは装飾なので一覧より弱い: 低い端末でヘッダが潰れてテキストが一覧の行に
     // 重なった場合、その行のクリックは行選択（と PR セル）に渡す。ヘッダの選択が
     // 行クリックを黙って食う方が体感の害が大きい。
@@ -629,20 +601,15 @@ export const SessionList: FC<{
    * Drag extends whichever selection the press anchored (live highlight). Only one
    * can be active at a time, so the press decides which region owns the drag.
    */
-  const handleDrag = (x: number, y: number) => {
-    if (composerSel.dragging()) {
-      const index = composerCaretAt(x, y);
-      if (index !== undefined) {
-        updateBuffer(bufferOf(bufferRef.current.value, index));
-        composerSel.extend(index);
-      }
+  const handleDrag = (mouse: MouseEvent & { kind: 'drag' }) => {
+    if (composer.handleMouse(mouse)) {
       return;
     }
     if (headerSel.dragging()) {
       // 当たり判定はドラッグ開始時に固定した行で行う（途中で文言が変わっても、
       // アンカーと終点が同じテキストの index として揃う）。
       const snap = headerSnapRef.current;
-      const index = snap ? headerCaretAt(snap.lines, x, y, 'clamp') : undefined;
+      const index = snap ? headerCaretAt(snap.lines, mouse.x, mouse.y, 'clamp') : undefined;
       if (index !== undefined) {
         headerSel.extend(index);
       }
@@ -656,9 +623,10 @@ export const SessionList: FC<{
       // モーダル表示中はマウスも飲む。クリックを通すと `setFocus('list')` で背後の
       // 許可ダイアログが立ち上がり（`pending` の条件が focus 依存）、モーダルの
       // 相互排他が崩れる。ホイールでの選択移動も同じ経路なので一律で無視する。
-      // `/prompt` のエディタは自前でドラッグ範囲選択を持つので、ここで飲まないと
-      // 同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで動いてしまう。
-      if (update || modelSelect || promptEdit) {
+      // `/prompt` のエディタと質問ダイアログの自由記述欄は自前でドラッグ範囲選択を持つので、
+      // ここで飲まないと同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで
+      // 動いてしまう。
+      if (update || modelSelect || promptEdit || pending) {
         return;
       }
       if (mouse.kind === 'wheel') {
@@ -667,13 +635,13 @@ export const SessionList: FC<{
         // 端末は 1 ノッチで複数レポートを出すため、1 件/回でも十分な速度になる。
         moveSel(mouse.dir === 'up' ? -1 : 1);
       } else if (mouse.kind === 'press') {
-        handlePress(mouse.x, mouse.y);
+        handlePress(mouse);
       } else if (mouse.kind === 'drag') {
-        handleDrag(mouse.x, mouse.y);
+        handleDrag(mouse);
       } else if (mouse.kind === 'release') {
         // 離した時点で 1 回だけコピー（ドラッグごとに送らない）。ハイライトは残す。
         // アンカーの無い側は no-op なので、両方に release を渡して構わない。
-        composerSel.end(bufferRef.current.value);
+        composer.handleMouse(mouse);
         // ヘッダはドラッグ開始時に固定したテキストからコピーする。表示が変わっていた
         // ならハイライトは残さない（ズレた位置を光らせたままにしない）。
         const snap = headerSnapRef.current;
@@ -692,7 +660,7 @@ export const SessionList: FC<{
     // 実キーへ復号して以降の処理（resolveEnter / editText）に正しい chord を渡す。
     const { input, key } = normalizeChord(rawInput, rawKey);
     // 何かキーが来たらマウス選択のハイライトは消す（タイピング/カーソル移動で解除）。
-    composerSel.clear();
+    composer.clearSelection();
     headerSel.clear();
     // 立て直しの結果表示も次の操作で引っ込める（エラーと違い一過性の通知）。
     recovery.setNotice(undefined);
@@ -854,47 +822,23 @@ export const SessionList: FC<{
         return;
       }
       // 印字キーはそのまま入力欄へ — フォーカスを戻して打ち始められるように。
+      // ここだけは共有の `handleKey` を通さない: 一覧フォーカスでは矢印が行選択なので、
+      // キャレット移動（arrows / vertical）を有効にしてはいけない。
       if (input.length > 0 && !key.ctrl && !key.meta) {
         const edit = editText(bufferRef.current, input, key);
         if (edit.changed) {
-          updateBuffer(edit.buffer);
+          composer.setBuffer(edit.buffer);
           setFocus('composer');
         }
       }
       return;
     }
 
-    // composer focus: full caret movement, Enter submits / breaks lines.
-    if (key.return) {
-      const enter = resolveEnter(bufferRef.current, key);
-      if (enter.kind === 'newline') {
-        updateBuffer(enter.buffer);
-        return;
-      }
-      if (enter.text === '') {
-        // 空 Enter は一覧へフォーカス（誤爆で詳細ビューを開かない）。
-        setFocus('list');
-        return;
-      }
-      // 送信したものは（コマンドも含めて）履歴へ積む。コマンドも積むのは shell と
-      // 同じ発想で、`/model` の打ち直しにも ↑ が効く方が自然だから。
-      history.record(enter.text);
-      // 先頭が `/`、またはコマンド名そのもの（`exit` 等）はコマンド。通常の指示
-      // （manager.create）と分岐する。`/model` はコマンドレジストリ経由でモデル
-      // 選択ダイアログを開く。判定と実行は useCommandRunner に集約。
-      if (commands.run(enter.text)) {
-        updateBuffer(emptyBuffer());
-        return;
-      }
-      manager.create(enter.text);
-      updateBuffer(emptyBuffer());
-      return;
-    }
     // ↑↓ は「表示行の端でさらに押したら入力履歴」— shell / readline と同じ一般的な
     // 仕組み。空の入力欄や1行の書きかけでは即座に履歴を呼び出し、複数行を編集している
     // 途中ではキャレット移動を優先する（行の途中で書きかけが history に化けない）。
     // 履歴が無い / 最古に到達 / 辿っていないのに ↓ のときは undefined が返るので、
-    // そのまま下の editText（= 従来のキャレット移動）に落ちる。
+    // そのまま下の handleKey（= 従来のキャレット移動）に落ちる。
     if (key.upArrow || key.downArrow) {
       const atEdge = key.upArrow
         ? atFirstComposerRow(bufferRef.current, composerWidth)
@@ -904,20 +848,31 @@ export const SessionList: FC<{
         : undefined;
       if (recalled !== undefined) {
         // キャレットは末尾へ（呼び出した指示をそのまま送る/続けて直せる位置）。
-        updateBuffer(bufferOf(recalled));
+        composer.setBuffer(bufferOf(recalled));
         return;
       }
     }
-    // ↑↓ は折り返し後の**表示行**で動かす（wrapWidth）。論理行だと長い1行の途中から
-    // 一気に先頭へ飛び、見えている行と操作が食い違う。
-    const edit = editText(bufferRef.current, input, key, {
-      arrows: true,
-      vertical: true,
-      wrapWidth: composerWidth,
-    });
-    if (edit.changed) {
-      updateBuffer(edit.buffer);
+    // composer focus: full caret movement, Enter submits / breaks lines（Shift+Enter・
+    // 末尾バックスラッシュの改行、↑↓ の表示行移動は共有の handleKey が持つ）。
+    const result = composer.handleKey(input, key);
+    if (result.kind !== 'submit') {
+      return;
     }
+    if (result.text === '') {
+      // 空 Enter は一覧へフォーカス（誤爆で詳細ビューを開かない）。
+      setFocus('list');
+      return;
+    }
+    // 送信したものは（コマンドも含めて）履歴へ積む。コマンドも積むのは shell と
+    // 同じ発想で、`/model` の打ち直しにも ↑ が効く方が自然だから。
+    history.record(result.text);
+    // 先頭が `/`、またはコマンド名そのもの（`exit` 等）はコマンド。通常の指示
+    // （manager.create）と分岐する。`/model` はコマンドレジストリ経由でモデル
+    // 選択ダイアログを開く。判定と実行は useCommandRunner に集約。
+    if (!commands.run(result.text)) {
+      manager.create(result.text);
+    }
+    composer.reset();
   });
 
   // 入力がコマンドとして解決されるか（`/` 付き、または `exit` のような完全一致）。
@@ -1108,22 +1063,24 @@ export const SessionList: FC<{
           onAnswer={(answers) => manager.answer(target.id, answers)}
           onAllow={() => manager.allow(target.id)}
           onDeny={(message) => manager.deny(target.id, message)}
+          onCopy={onCopy}
         />
       ) : (
-        <Box ref={composerRef} flexDirection="column">
+        <Box flexDirection="column">
           {/* パレットの出す条件は Enter の判定と同じ（`toCommandInput`）にする。
-              スラッシュ無しの `exit` が無言で終了しないよう、確定前に何が起きるかを見せる。 */}
+              スラッシュ無しの `exit` が無言で終了しないよう、確定前に何が起きるかを見せる。
+              **入力欄の計測 Box の外**に置く: 中に入れると実測した上端がパレットの分だけ
+              ずれ、クリックが別の文字に当たる。 */}
           {focus === 'composer' && commandPreview !== null ? (
             <CommandPalette
               title={m.command.paletteTitle}
               commands={matchCommands(commandPreview)}
             />
           ) : null}
-          <PromptInput
-            buffer={buffer}
+          <Composer
+            composer={composer}
             focused={focus === 'composer'}
             placeholder={m.list.promptPlaceholder}
-            selection={composerSel.selection}
           />
         </Box>
       )}

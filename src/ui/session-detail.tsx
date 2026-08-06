@@ -2,15 +2,10 @@ import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ARROW_SCROLL_LINES,
-  bufferOf,
   COMMANDS,
-  COMPOSER_PREFIX_CELLS,
-  caretIndexAtClick,
   composerRowCount,
   type DiffStat,
   type DisplayLine,
-  emptyBuffer,
-  INPUT_MAX_ROWS,
   isFullscreenViewport,
   isInterruptible,
   isResumable,
@@ -39,27 +34,24 @@ import {
   WHEEL_SCROLL_LINES,
 } from '@/core';
 import { CommandPalette } from './command-palette';
+import { Composer, useComposer } from './composer';
 import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
   useAbsolutePosition,
   useBoxHeight,
   useCommandRunner,
-  useComposerWidth,
-  useDragSelection,
   useLifecycleAction,
   useLogDragSelection,
   useRecovery,
   useRunMode,
   useSessions,
-  useTextBufferRef,
 } from './hooks';
 import { useMessages } from './i18n-context';
-import { editText, normalizeChord, resolveEnter } from './input';
+import { normalizeChord } from './input';
 import { LOG_PREFIX, LogLine } from './log-line';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
-import { PromptInput } from './prompt-input';
 import { StatusFooter } from './status-footer';
 import { statusColor, theme } from './theme';
 
@@ -99,9 +91,11 @@ export const SessionDetail: FC<{
   const mode = useRunMode(manager);
   const { rows, columns } = useWindowSize();
   const session = sessions.find((s) => s.id === id);
-  const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
-  // フォローアップ入力欄のマウス範囲選択（ドラッグで選択→離すとコピー）。
-  const sel = useDragSelection(onCopy);
+  // フォローアップ入力欄。一覧・`/prompt`・質問の自由記述と同じ共通コンポーザを使う
+  // （バッファ・折り返し幅・ドラッグ範囲選択・キー操作が 1 実装に揃う）。
+  const composer = useComposer({ onCopy });
+  const { buffer, bufferRef } = composer;
+  const composerWidth = composer.wrapWidth;
   // ログの範囲選択。コンポーザとは別インスタンス（位置の基準が「文書の行 + 桁」で違う）。
   const logSel = useLogDragSelection(onCopy);
   // ドラッグが可視域の外へ出ている向き。ここにあるあいだ自動スクロールし続ける。
@@ -113,11 +107,6 @@ export const SessionDetail: FC<{
    * するため（`bufferRef` / `anchorRef` と同じ理由）。
    */
   const pendingLinkRef = useRef<string | undefined>(undefined);
-  const composerRef = useRef<DOMElement>(null);
-  const composerBox = useAbsolutePosition(composerRef);
-  // 入力欄の折り返し幅（実測）。PromptInput が描いた折り返しと同じ値でクリック位置の
-  // 逆算・↑↓ のキャレット移動を行う（食い違うと別の文字を選ぶ）。
-  const composerWidth = useComposerWidth(composerRef);
   // ログ表示域の実測高さ。ここに描く行数の上限であり、スクロール1回の移動量の基準
   // でもある。見積り（logViewportRows）より実測を優先するのは、可視域より多く描くと
   // Yoga が溢れた行を「上でクリップ」せず「縮小」してしまい、ログの途中の行が
@@ -383,24 +372,6 @@ export const SessionDetail: FC<{
   });
 
   /**
-   * Caret index for a mouse point inside the composer, or undefined if outside.
-   * Resolved through the same wrap width the composer rendered with, so a click on
-   * a soft-wrapped row lands on the character under the pointer.
-   */
-  const composerCaretAt = (x: number, y: number): number | undefined => {
-    if (!composerBox) {
-      return undefined;
-    }
-    return caretIndexAtClick(
-      bufferRef.current,
-      y - (composerBox.top + 1),
-      x - composerBox.left - COMPOSER_PREFIX_CELLS,
-      INPUT_MAX_ROWS,
-      composerWidth,
-    );
-  };
-
-  /**
    * ログ選択のアンカー（press）。行の上ならその文字、**行より上の余白**（ログが可視域に
    * 満たないときの末尾寄せの隙間・上パディング）なら先頭行の行頭にする — 「画面のいちばん
    * 上から下へ」というドラッグを受けたいので、ここでクリックを捨てない。行より下
@@ -457,16 +428,13 @@ export const SessionDetail: FC<{
             : scrollDown(anchorRef.current, total, logCap, WHEEL_SCROLL_LINES),
         );
       } else if (mouse.kind === 'press') {
-        // コンポーザ内のクリックはキャレット移動 + 選択アンカー。ログ行の上ならログの
-        // 範囲選択を始める（どちらでもなければ両方のハイライトを解除）。
-        const index = composerCaretAt(mouse.x, mouse.y);
-        if (index !== undefined) {
+        // コンポーザ内のクリックはキャレット移動 + 選択アンカー（当たり判定と選択の機械は
+        // 共通の `useComposer`）。ログ行の上ならログの範囲選択を始める（どちらでもなければ
+        // 両方のハイライトを解除）。
+        if (composer.handleMouse(mouse)) {
           pendingLinkRef.current = undefined;
-          updateBuffer(bufferOf(bufferRef.current.value, index));
-          sel.begin(index);
           clearLogSelection();
         } else {
-          sel.clear();
           setEdge(undefined);
           // URL の上で押したら「離すまでドラッグしなければ開く」候補として覚える。
           // 押した時点では開かない — ドラッグで範囲選択を始めた場合に開いてしまう。
@@ -486,19 +454,13 @@ export const SessionDetail: FC<{
       } else if (mouse.kind === 'drag') {
         // ドラッグになった = 範囲選択なので、リンクを開く候補は取り消す。
         pendingLinkRef.current = undefined;
-        if (sel.dragging()) {
-          const index = composerCaretAt(mouse.x, mouse.y);
-          if (index !== undefined) {
-            updateBuffer(bufferOf(bufferRef.current.value, index));
-            sel.extend(index);
-          }
-        } else if (logSel.dragging()) {
+        if (!composer.handleMouse(mouse) && logSel.dragging()) {
           handleLogDrag(mouse.x, mouse.y);
         }
       } else if (mouse.kind === 'release') {
         // 離した時点で 1 回だけコピー（ドラッグごとに送らない）。ハイライトは残す。
         // アンカーの無い側は no-op なので、両方に release を渡して構わない。
-        sel.end(bufferRef.current.value);
+        composer.handleMouse(mouse);
         logSel.end(lines);
         setEdge(undefined);
         // ドラッグにならずに URL の上で離した = 単なるクリック → ブラウザで開く。
@@ -515,7 +477,7 @@ export const SessionDetail: FC<{
     // Tab/Esc の挙動を両画面で揃える（詳細で Shift+Enter が改行にならない不具合対策）。
     const { input, key } = normalizeChord(rawInput, rawKey);
     // 何かキーが来たらマウス選択のハイライトは消す（自動スクロールも止める）。
-    sel.clear();
+    composer.clearSelection();
     clearLogSelection();
     // press の release が届かないまま（端末外で離した等）保留が残るのを防ぐ。
     pendingLinkRef.current = undefined;
@@ -622,35 +584,22 @@ export const SessionDetail: FC<{
       }
       return;
     }
-    // input panel (multi-line composer; arrows move the caret, Esc goes back)
-    if (key.return) {
-      const enter = resolveEnter(bufferRef.current, key);
-      if (enter.kind === 'newline') {
-        updateBuffer(enter.buffer);
-        return;
-      }
-      // A leading `/` is a command (e.g. /model), not a follow-up instruction — and
-      // so is a bare word that exactly matches a command this view implements.
-      if (commands.run(enter.text)) {
-        updateBuffer(emptyBuffer());
-        return;
-      }
-      if (enter.text && session) {
-        manager.send(session.id, enter.text);
-        updateBuffer(emptyBuffer());
-        applyAnchor('bottom'); // jump back to the tail to watch the new turn
-      }
+    // input panel（複数行コンポーザ。Enter で送信 / Shift+Enter で改行、矢印はキャレット
+    // 移動、Esc で戻る）。判定は一覧と共通の `handleKey`。
+    const result = composer.handleKey(input, key);
+    if (result.kind !== 'submit') {
       return;
     }
-    // ↑↓ は折り返し後の**表示行**で動かす（wrapWidth）。論理行だと長い1行の途中から
-    // 一気に先頭へ飛び、見えている行と操作が食い違う。
-    const edit = editText(bufferRef.current, input, key, {
-      arrows: true,
-      vertical: true,
-      wrapWidth: composerWidth,
-    });
-    if (edit.changed) {
-      updateBuffer(edit.buffer);
+    // A leading `/` is a command (e.g. /model), not a follow-up instruction — and
+    // so is a bare word that exactly matches a command this view implements.
+    if (commands.run(result.text)) {
+      composer.reset();
+      return;
+    }
+    if (result.text && session) {
+      manager.send(session.id, result.text);
+      composer.reset();
+      applyAnchor('bottom'); // jump back to the tail to watch the new turn
     }
   });
 
@@ -796,6 +745,7 @@ export const SessionDetail: FC<{
             onAnswer={(answers) => manager.answer(session.id, answers)}
             onAllow={() => manager.allow(session.id)}
             onDeny={(message) => manager.deny(session.id, message)}
+            onCopy={onCopy}
           />
         ) : panel === 'actions' ? (
           <DialogBox flexDirection="column">
@@ -824,9 +774,10 @@ export const SessionDetail: FC<{
             )}
           </DialogBox>
         ) : (
-          <Box ref={composerRef} flexDirection="column">
+          <Box flexDirection="column">
             {/* Enter の判定（`commands.preview`）と同じ条件で出す。スラッシュ無しの
-                `exit` でも確定前に何が起きるか見えるようにするため。 */}
+                `exit` でも確定前に何が起きるか見えるようにするため。**入力欄の計測 Box の
+                外**に置く（中に入れると実測した上端がずれてクリックが別の文字に当たる）。 */}
             {commandPreview !== null ? (
               <CommandPalette
                 title={m.command.paletteTitle}
@@ -834,12 +785,7 @@ export const SessionDetail: FC<{
                 describeOverrides={commandDescribes}
               />
             ) : null}
-            <PromptInput
-              buffer={buffer}
-              focused
-              placeholder={m.detail.followupPlaceholder}
-              selection={sel.selection}
-            />
+            <Composer composer={composer} focused placeholder={m.detail.followupPlaceholder} />
           </Box>
         )}
 

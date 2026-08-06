@@ -162,6 +162,107 @@ describe('PermissionDialog — question', () => {
   });
 
   /**
+   * 自由記述欄は共通コンポーザ（`useComposer`）なので、一覧・詳細の入力欄と**同じ仕様**に
+   * なる。以前はここだけ「Enter は必ず送信」で改行が打てなかった。
+   */
+  describe('自由記述欄は通常の入力欄と同じ仕様', () => {
+    /** 「自分で入力する」を選んで typing モードに入る。 */
+    const enterTyping = async (stdin: { write: (s: string) => void }) => {
+      stdin.write('\x1B[B'); // Japanese
+      await flush();
+      stdin.write('\x1B[B'); // 自分で入力する
+      await flush();
+      stdin.write('\r'); // enter typing mode
+      await flush();
+    };
+
+    // modifyOtherKeys（`[27;2;13~`）と CSI-u（`[13;2u`）の両方の端末を想定する。
+    it.each([
+      ['modifyOtherKeys', '\x1b[27;2;13~'],
+      ['CSI-u', '\x1b[13;2u'],
+    ])('Shift+Enter (%s) で改行し、Enter で複数行のまま送信する', async (_name, chord) => {
+      const onAnswer = vi.fn();
+      const { stdin } = render(
+        <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+      );
+      await enterTyping(stdin);
+      stdin.write('one');
+      await flush();
+      stdin.write(chord);
+      await flush();
+      stdin.write('two');
+      await flush();
+      stdin.write('\r'); // submit
+      await flush();
+      expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'one\ntwo' });
+    });
+
+    // 端末が Shift+Enter を素の `\r` で送ってくる場合の保険（他の入力欄と同じ）。
+    it('末尾バックスラッシュ + Enter でも改行になる', async () => {
+      const onAnswer = vi.fn();
+      const { stdin } = render(
+        <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+      );
+      await enterTyping(stdin);
+      stdin.write('one\\');
+      await flush();
+      stdin.write('\r'); // → 改行（送信しない）
+      await flush();
+      stdin.write('two');
+      await flush();
+      stdin.write('\r');
+      await flush();
+      expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'one\ntwo' });
+    });
+
+    it('↑↓ が表示行のキャレット移動になる（以前は無反応だった）', async () => {
+      const onAnswer = vi.fn();
+      const { stdin } = render(
+        <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+      );
+      await enterTyping(stdin);
+      stdin.write('ab');
+      await flush();
+      stdin.write('\x1B[A'); // ↑ = 最上段なのでバッファ先頭へ
+      await flush();
+      stdin.write('X');
+      await flush();
+      stdin.write('\r');
+      await flush();
+      expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'Xab' });
+    });
+
+    it('ドラッグで範囲選択し、離した時点でクリップボードへコピーする', async () => {
+      const copied: string[] = [];
+      const { stdin, lastFrame } = render(
+        <PermissionDialog
+          request={question()}
+          onAnswer={noop}
+          onAllow={noop}
+          onDeny={noop}
+          onCopy={(t) => copied.push(t)}
+        />,
+      );
+      await enterTyping(stdin);
+      stdin.write('hello world');
+      await flush();
+      // 描かれた行から実際の位置を割り出す（枠 + padding があるので端末幅からは求まらない）。
+      const rows = (lastFrame() ?? '').split('\n').map((l) => l.replace(SGR, ''));
+      const row = rows.findIndex((l) => l.includes('hello world'));
+      expect(row).toBeGreaterThan(0);
+      const from = (rows[row] ?? '').indexOf('world');
+      const to = from + 'world'.length;
+      stdin.write(`\x1b[<0;${from + 1};${row + 1}M`); // press
+      await flush();
+      stdin.write(`\x1b[<32;${to + 1};${row + 1}M`); // drag（motion bit 32）
+      await flush();
+      stdin.write(`\x1b[<0;${to + 1};${row + 1}m`); // release → 1 回だけコピー
+      await flush();
+      expect(copied).toEqual(['world']);
+    });
+  });
+
+  /**
    * 詳細ビューはログの範囲選択のためマウス捕捉を保つようになった。モーダルは自分の
    * `useInput` を持ち背後の view のガードでは守られないので、レポート列（`[<0;10;5M`）を
    * 弾かないと自由記述の回答に混入する（クリックしただけで回答が汚れる）。

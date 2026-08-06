@@ -82,6 +82,7 @@ codiva/
 │   │   ├── banner.tsx         # 起動時ヘッダ（マスコット + プラン/モデル + cwd + 使用状況ゲージ, 枠なし）
 │   │   ├── session-list.tsx   # 一覧画面（composer/list の2フォーカスゾーン）
 │   │   ├── session-detail.tsx # 詳細画面（ログ + 追加指示 + マージ/破棄。SDK セッションに直結）
+│   │   ├── composer.tsx       # 入力欄の共通実装（useComposer = キー/マウス/バッファ, <Composer> = 描画）
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
 │   │   ├── repo-prompt-editor.tsx # /prompt のリポジトリ追加指示エディタ（モーダル・composer を置換）
 │   │   ├── dialog-box.tsx / confirm-prompt.tsx / choice-row.tsx  # 共有 presentational（角丸枠・y/n 確認行・選択肢1件）
@@ -500,6 +501,18 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   `pendingPermission` があれば `PermissionDialog` に委譲。単一 `useInput` の
   state machine（panel = input | actions）でタイピングとキー操作の衝突を防ぐ。
 - `PromptInput` / `StatusFooter`: presentational。キー処理は view の単一 `useInput` に集約（ロジックは持たない）。`PromptInput` は複数行対応（純粋モデルは `core/text-buffer.ts`、キー対応は `ui/input.ts` の `editText`/`resolveEnter`）。幅を超えたテキストは**折り返す**（truncate しない）: 折り返し後の表示行・キャレット位置・クリック逆算・選択範囲はすべて純粋な `core/composer-layout.ts`（`composerLayout`）が算出し、折り返し幅は Box の実測値（`useComposerWidth`）を描画・当たり判定・↑↓ 移動で共有する。IME 対応で実端末カーソルをキャレットに重ねる（`useCursor`）。
+- **`useComposer` / `Composer`（`ui/composer.tsx`）— 入力欄は 1 実装**: 入力欄は 4 か所（一覧の新規指示・
+  詳細の追加指示・`/prompt` のエディタ・質問ダイアログの「自分で入力する」）にあるが、バッファ
+  （`useTextBufferRef`）・折り返し幅と位置の実測・ドラッグ範囲選択（`useDragSelection`）・クリックの
+  当たり判定（`caretIndexAtClick`）・キー対応（`editText` / `resolveEnter`）の**組み立てはここ 1 か所**に
+  畳んである。以前は各 view が同じ部品を個別に組んでいたため仕様が食い違い、質問ダイアログの自由記述
+  だけ `resolveEnter` を通しておらず「そこだけ Shift+Enter で改行できない・↑↓ が効かない・ドラッグで
+  コピーできない」状態になっていた。`useComposer` は `useInput` を持たず（**1画面 1 `useInput`** は維持）、
+  view の単一ハンドラから `handleMouse(mouse) → boolean`（扱ったか）と
+  `handleKey(input, key) → submit | handled | ignored` を呼ぶ形にしてある。view 固有の分岐（一覧の入力
+  履歴、詳細のログスクロール、一覧フォーカス時の印字キー）は `handleKey` の**手前**で view が処理する。
+  `<Composer>` の計測 Box は `PromptInput` **だけ**を包む（コマンドパレットを同じ Box に入れると実測した
+  上端がずれてクリックが別の文字に当たる）。
 - 再描画スロットリング: SessionManager の通知を UI 側で ~100ms にスロットルする。
 
 **ランモード（shift+tab トグル）**: `SessionManager.mode`（`auto` | `confirm`）を全セッション共通で保持し、`shift+tab` で `cycleMode()`。`modePolicy` は tool 実行時に `mode` を読むので、切替は稼働中セッションにも即反映される。`auto` = AskUserQuestion 以外を自動承認、`confirm` = 毎回 allow/deny を求める（→ `awaiting_permission`／一覧に「許可待ち」）。UI は `useRunMode()` で購読し、`StatusFooter` が `⏵⏵ auto mode on` / `⏸ confirm mode on` を表示。

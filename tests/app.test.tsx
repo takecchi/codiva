@@ -236,7 +236,12 @@ describe('App fullscreen layout', () => {
     const lineIndex = frame.split('\n').findIndex((l) => l.includes('hello world'));
     const line = frame.split('\n')[lineIndex] ?? '';
     const col = line.indexOf('world'); // ASCII のみなのでセル位置 = 文字位置
-    stdin.write(`\x1b[<0;${col + 1};${lineIndex + 1}M`); // click before 'world'
+    // click before 'world'。キャレットが動くのは**離した**時点（ドラッグにならなかった
+    // クリックだけ）— press で動かすと表示ウィンドウがその場でスクロールし、描かれている
+    // 行と当たり判定が食い違う（ink-components.md「選択中はキャレットを動かさない」）。
+    stdin.write(`\x1b[<0;${col + 1};${lineIndex + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<0;${col + 1};${lineIndex + 1}m`);
     await flush();
     stdin.write('X');
     await flush();

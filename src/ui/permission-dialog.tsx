@@ -1,17 +1,10 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useState } from 'react';
-import {
-  choiceLines,
-  dialogContentWidth,
-  emptyBuffer,
-  type PermissionRequest,
-  parseSgrMouse,
-} from '@/core';
+import { choiceLines, dialogContentWidth, type PermissionRequest, parseSgrMouse } from '@/core';
 import { ChoiceRow } from './choice-row';
-import { useTextBufferRef } from './hooks';
+import { Composer, useComposer } from './composer';
 import { useMessages } from './i18n-context';
-import { editText, normalizeChord } from './input';
-import { PromptInput } from './prompt-input';
+import { normalizeChord } from './input';
 import { statusColor, theme } from './theme';
 
 /**
@@ -26,9 +19,11 @@ export const PermissionDialog: FC<{
   onAnswer: (answers: Record<string, string>) => void;
   onAllow: () => void;
   onDeny: (message: string) => void;
-}> = ({ request, onAnswer, onAllow, onDeny }) => {
+  /** 自由記述欄のマウス範囲選択をクリップボードへ（OSC 52）。合成ルートから注入。 */
+  onCopy?: (text: string) => void;
+}> = ({ request, onAnswer, onAllow, onDeny, onCopy }) => {
   if (request.kind === 'question') {
-    return <QuestionDialog request={request} onAnswer={onAnswer} onDeny={onDeny} />;
+    return <QuestionDialog request={request} onAnswer={onAnswer} onDeny={onDeny} onCopy={onCopy} />;
   }
   return <ToolDialog request={request} onAllow={onAllow} onDeny={onDeny} />;
 };
@@ -93,12 +88,18 @@ const ToolDialog: FC<{
  *    typing モードへ入り、入力テキストがその質問の回答になる。
  *  - 「これについて相談する」(Chat about this) — 区切り線の下に置き、質問をスキップ
  *    してツールを拒否し、通常の会話へ戻す（`onDeny`）。
+ *
+ * 自由記述欄は共通の {@link useComposer} を通すので、一覧・詳細のコンポーザと**完全に
+ * 同じ仕様**になる（Shift+Enter で改行、↑↓ で表示行のキャレット移動、ドラッグで範囲選択
+ * → コピー、クリックでキャレット移動）。ここだけ「Enter が必ず送信」だったのが以前の
+ * 食い違いで、複数行の回答が書けなかった。
  */
 const QuestionDialog: FC<{
   request: PermissionRequest;
   onAnswer: (answers: Record<string, string>) => void;
   onDeny: (message: string) => void;
-}> = ({ request, onAnswer, onDeny }) => {
+  onCopy?: (text: string) => void;
+}> = ({ request, onAnswer, onDeny, onCopy }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
   const questions = request.questions ?? [];
@@ -108,7 +109,8 @@ const QuestionDialog: FC<{
   const [multi, setMulti] = useState<Set<string>>(new Set());
   // 'select' = カーソルで選択肢を選ぶ / 'typing' = 「自分で入力する」で自由記述中。
   const [mode, setMode] = useState<'select' | 'typing'>('select');
-  const { buffer, bufferRef, updateBuffer } = useTextBufferRef();
+  const composer = useComposer({ onCopy });
+  const bufferRef = composer.bufferRef;
 
   const current = questions[qIndex];
   // 実選択肢の後ろに「自分で入力する」(typeIndex) と「これについて相談する」(chatIndex)
@@ -129,7 +131,7 @@ const QuestionDialog: FC<{
       setCursor(0);
       setMulti(new Set());
       setMode('select');
-      updateBuffer(emptyBuffer());
+      composer.reset();
     } else {
       onAnswer(nextAnswers);
     }
@@ -139,11 +141,17 @@ const QuestionDialog: FC<{
     if (!current) {
       return;
     }
-    // マウスレポートは文字入力として扱わない。自由記述モード（`typing`）は editText に
+    // マウスレポートは文字入力として扱わない。自由記述モード（`typing`）はテキスト編集に
     // 流すので、これが無いとログをクリック/ドラッグした瞬間に `[<0;10;5M` のような
     // レポート列が回答へ挿入される（詳細ビューがマウス捕捉を保つようになったため実際に
     // 起きる。モーダルは背後の view のガードでは守られない）。
-    if (parseSgrMouse(rawInput)) {
+    // 自由記述中は他のコンポーザと同じく press/drag/release を範囲選択・キャレット移動に
+    // 使う（扱えなかったレポートもここで捨てる = 生テキストとして漏らさない）。
+    const mouse = parseSgrMouse(rawInput);
+    if (mouse) {
+      if (mode === 'typing') {
+        composer.handleMouse(mouse);
+      }
       return;
     }
     // modifyOtherKeys / CSI-u を送る端末（Ghostty/xterm 等）では Space や Enter が
@@ -151,24 +159,19 @@ const QuestionDialog: FC<{
     // 解釈しないため、一覧/詳細ビューと同じく chord を復号してから扱う。復号しないと
     // `input === ' '` が外れて複数選択のトグルができない。
     const { input, key } = normalizeChord(rawInput, rawKey);
-    // 自由記述モード: テキスト編集に専念（Enter で送信）。
+    // 自由記述モード: テキスト編集に専念（Enter で送信、Shift+Enter で改行）。判定は
+    // 共通の `useComposer` に委譲するので、一覧・詳細のコンポーザと挙動が揃う。
     // 「選択へ戻る」は空バッファでの Backspace で行う。Esc は背後の view
     // （一覧/詳細）が先取りして戻る/フォーカス移動に使うため、ここでは使わない。
     if (mode === 'typing') {
+      composer.clearSelection();
       if ((key.backspace || key.delete) && bufferRef.current.value.length === 0) {
         setMode('select');
         return;
       }
-      if (key.return) {
-        const text = bufferRef.current.value.trim();
-        if (text.length > 0) {
-          submit(text);
-        }
-        return;
-      }
-      const edit = editText(bufferRef.current, input, key, { arrows: true });
-      if (edit.changed) {
-        updateBuffer(edit.buffer);
+      const result = composer.handleKey(input, key);
+      if (result.kind === 'submit' && result.text.length > 0) {
+        submit(result.text);
       }
       return;
     }
@@ -206,7 +209,7 @@ const QuestionDialog: FC<{
       }
       // 「自分で入力する」: 自由記述モードへ切り替える。
       if (cursor === typeIndex) {
-        updateBuffer(emptyBuffer());
+        composer.reset();
         setMode('typing');
         return;
       }
@@ -272,8 +275,8 @@ const QuestionDialog: FC<{
       </Box>
 
       {mode === 'typing' ? (
-        <Box marginTop={1}>
-          <PromptInput buffer={buffer} focused placeholder={m.permission.typePlaceholder} />
+        <Box marginTop={1} flexDirection="column">
+          <Composer composer={composer} focused placeholder={m.permission.typePlaceholder} />
         </Box>
       ) : null}
 
