@@ -1,14 +1,4 @@
-import {
-  appendFile,
-  cp,
-  lstat,
-  mkdir,
-  readdir,
-  readFile,
-  rm,
-  symlink,
-  unlink,
-} from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   CODIVA_DIR,
@@ -25,7 +15,12 @@ import {
 import { GitError, git } from './git';
 
 const WORKTREES_SUBDIR = join(CODIVA_DIR, 'worktrees');
-const EXCLUDE_MARKER = '# codiva';
+/**
+ * `.codiva/.gitignore` の中身。`*` は同じディレクトリにある `.gitignore` 自身にも
+ * 一致するので、この 1 行だけで `.codiva/` が丸ごと（この除外ファイルごと）git から
+ * 見えなくなる（cargo が `target/.gitignore` でやっているのと同じ手）。
+ */
+const SELF_IGNORE = '*\n';
 
 /**
  * Paths out of `git status --porcelain` output.
@@ -46,8 +41,9 @@ function porcelainPaths(raw: string): string[] {
 /**
  * Creates and tears down git worktrees for sessions. Every worktree lives under
  * `.codiva/worktrees/<slug>` on branch `codiva/<slug>`, branched from the repo's
- * current HEAD. The repo's own files are never modified except a one-time
- * `.git/info/exclude` entry for `.codiva/`.
+ * current HEAD. The repo's own files are never modified — the only thing codiva
+ * writes outside its worktrees is `.codiva/.gitignore` (a single `*`), which hides
+ * `.codiva/` from git without touching the repo's `.gitignore` or git internals.
  *
  * I/O ラッパ（fs + git 実行の具象）なので utils レイヤに置く。純粋な型・判定
  * （Worktree / DiffStat / MergeConflictError / ignoredCopyEntries）は core/worktree.ts。
@@ -122,14 +118,30 @@ export class WorktreeManager {
     return taken;
   }
 
-  private async ensureExcluded(): Promise<void> {
-    const excludePath = join(this.repoRoot, '.git', 'info', 'exclude');
-    const current = await readFile(excludePath, 'utf8').catch(() => '');
-    if (current.includes(EXCLUDE_MARKER)) {
+  /**
+   * `.codiva/` を git から隠す。作業ツリー側に `.codiva/.gitignore`（中身は `*`）を置くだけで、
+   * 除外ファイル自身を含むディレクトリ全体が ignore される（`SELF_IGNORE` 参照）。
+   *
+   * かつては `.git/info/exclude` へ `.codiva/` を追記していたが、**`.git` はディレクトリとは
+   * 限らない**（linked worktree や submodule では `gitdir:` を書いたただのファイル）。そこで
+   * codiva を起動すると追記が ENOTDIR で失敗し、握り潰していなかったため worktree 作成ごと
+   * 失敗していた。作業ツリー側のファイルなら git の内部配置に依存せず、対象リポジトリの
+   * `.gitignore` も汚さない（`.codiva/` の中は codiva の持ち物）。
+   *
+   * 既にファイルがあれば触らない（利用者が例外パターンを足しているかもしれない）。
+   * 呼び出し側は失敗を握り潰す — 除外はあくまで気遣いで、セッションの動作には要らない。
+   */
+  async ensureIgnored(): Promise<void> {
+    const path = join(this.repoRoot, CODIVA_DIR, '.gitignore');
+    const exists = await stat(path).then(
+      () => true,
+      () => false,
+    );
+    if (exists) {
       return;
     }
-    const prefix = current.length > 0 && !current.endsWith('\n') ? '\n' : '';
-    await appendFile(excludePath, `${prefix}${EXCLUDE_MARKER}\n${CODIVA_DIR}/\n`);
+    await mkdir(join(this.repoRoot, CODIVA_DIR), { recursive: true });
+    await writeFile(path, SELF_IGNORE);
   }
 
   /**
@@ -139,7 +151,7 @@ export class WorktreeManager {
    * origin-follow starts work from the latest upstream commit.
    */
   async add(slug: string, startPoint?: string): Promise<Worktree> {
-    await this.ensureExcluded();
+    await this.ensureIgnored().catch(() => undefined);
     await mkdir(join(this.repoRoot, WORKTREES_SUBDIR), { recursive: true });
     const relPath = join(WORKTREES_SUBDIR, slug);
     const branch = `codiva/${slug}`;

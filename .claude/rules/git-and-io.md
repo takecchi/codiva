@@ -19,8 +19,13 @@
 - 起動時 `preflight()`: git リポジトリか / HEAD があるか（コミット 0 では worktree を作れない）。
 - 作成は現在の HEAD、`followOrigin` が有効なら `syncedStartPoint(base)` = `origin/<base>` から切る。
   **稼働中の worktree へ pull しない**（未コミット変更と競合する）。
-- `.git/info/exclude` へ `# codiva` マーカー付きで `.codiva/` を追記（冪等）。
-  **対象リポジトリの `.gitignore` を書き換えない。**
+- **`.codiva/` を隠すのは `.codiva/.gitignore`（中身は `*` の 1 行）だけ**（`ensureIgnored()`。無いときだけ書く＝冪等、
+  失敗は握り潰す）。`*` は除外ファイル自身にも一致するのでディレクトリごと消える。
+  **対象リポジトリの `.gitignore` を書き換えない。`.git/info/exclude` にも戻さない** —
+  `.git` は linked worktree / submodule では**ファイル**なので追記が ENOTDIR で失敗する。
+  副作用として ls-files が `.codiva/` を 1 件に畳まなくなるため、引き継ぎフィルタは
+  **先頭セグメント**で `.codiva` / `.git` 配下を落とす（`isInternalEntry()`。完全一致に戻すと
+  worktree の中へ worktree 群自身のリンクが張られ `worktree remove` が ELOOP で失敗する）。
 - ignore 済みファイルの引き継ぎ `ignoredFiles`: `'symlink'`（既定・複製コストゼロ）/
   `'copy'`（完全独立）/ `'none'`。列挙結果のフィルタは純関数 `ignoredCopyEntries()` で、
   **`.codiva/` と `.git` は必ず除外**（再帰・内部状態破壊の防止）。実体化は entry 単位の
@@ -83,7 +88,7 @@
 | `<repo>/.codiva/worktrees/<slug>` | セッションの worktree | `WorktreeManager` |
 | `<repo>/.codiva/state.json` | 復元用メタ（会話ログは入れない） | `utils/state-store.ts` |
 | `<repo>/.codiva/prompt.md` | リポジトリ追加指示（空保存で削除） | `utils/repo-prompt.ts` |
-| `<repo>/.git/info/exclude` | `# codiva` + `.codiva/` を追記 | `WorktreeManager` |
+| `<repo>/.codiva/.gitignore` | `*` の 1 行（`.codiva/` を丸ごと ignore） | `WorktreeManager.ensureIgnored` |
 | `~/.codiva/config.json` | ユーザー設定 | `utils/config.ts` |
 | `~/.codiva/logs/crash-<時刻>-<pid>.log` | クラッシュレポート（20 件でローテーション。**同期書き込み**） | `utils/crash-log.ts` |
 | `~/.codiva/logs/report.*.json` | Node の診断レポート（OOM 等 JS が動けない死に方の唯一の記録） | Node（`process.report`） |

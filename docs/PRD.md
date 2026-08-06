@@ -62,7 +62,7 @@ codiva は、対象のGitリポジトリで起動する TUI アプリケーシ�
 
 - 実行環境: Node.js >= 20、macOS / Linux。ユーザーは `claude` CLI にログイン済み（または `ANTHROPIC_API_KEY` 設定済み）であること。
 - 技術スタック: TypeScript (strict, ESM) + Ink 7 + @anthropic-ai/claude-agent-sdk。詳細は TECH_NOTES.md。
-- worktree ディレクトリ `.codiva/` は対象リポジトリの `.git/info/exclude` に自動追記する（対象リポジトリの `.gitignore` を汚さない）。
+- worktree ディレクトリ `.codiva/` は `.codiva/.gitignore`（中身は `*` の 1 行）で自己完結的に ignore する（対象リポジトリの `.gitignore` も `.git/` の中も書き換えない）。
 
 ## 成功基準（MVP受け入れシナリオ）
 
