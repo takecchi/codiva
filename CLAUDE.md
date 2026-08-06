@@ -68,7 +68,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 一覧画面 | `ui/session-list.tsx`（composer / list の2フォーカス） |
 | 詳細画面 | `ui/session-detail.tsx`（ログ + 追加指示 + 操作パネル） |
 | 表示幅・グラフェム | `core/graphemes.ts`（共有の分割器。折り返し・幅・クリック逆算で**同じ単位**を使う） |
-| 入力欄・キー処理 | `core/text-buffer.ts`（純粋モデル）/ `core/composer-layout.ts`（折り返し・表示行の幾何）/ `core/input-history.ts`（↑↓ の入力履歴）/ `ui/input.ts`（キー→操作）/ `ui/prompt-input.tsx` |
+| 入力欄・キー処理 | `ui/composer.tsx`（**全入力欄の共通実装**。`useComposer` + `<Composer>`）/ `core/text-buffer.ts`（純粋モデル）/ `core/composer-layout.ts`（折り返し・表示行の幾何）/ `core/input-history.ts`（↑↓ の入力履歴）/ `ui/input.ts`（キー→操作）/ `ui/prompt-input.tsx`（描画のみ） |
 | ログ描画・スクロール | `core/scroll.ts`（`logLines` は**エントリ単位でメモ化**）/ `core/markdown.ts` / `core/ansi.ts` / `ui/log-line.tsx`（1 行の描画） |
 | ログの上限・メモリ | `core/log-buffer.ts`（件数/文字数の上限・`pushLogEntry` が唯一の追記経路） |
 | マウス・範囲選択 | `core/mouse.ts` / `core/list-hit.ts` / `core/text-selection.ts` / `core/log-selection.ts`（詳細ログの選択・端の自動スクロール） / `utils/mouse.ts` / `utils/clipboard.ts` |

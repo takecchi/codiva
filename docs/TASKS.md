@@ -1002,6 +1002,49 @@ zsh: abort      codiva
 
 ---
 
+## Phase 26: 入力欄（コンポーザ）の共通化 ✅
+
+**背景**: 入力欄は 4 か所（一覧の新規指示 / 詳細の追加指示 / `/prompt` エディタ /
+質問ダイアログの「自分で入力する」）にあり、描画はどこも `PromptInput` で共通だったが、
+**キーとマウスの配線は view ごとに手組み**だった。結果として質問ダイアログの自由記述欄だけ
+`resolveEnter` を通しておらず、Shift+Enter で改行できない・↑↓ が無反応・ドラッグでコピー
+できない・クリックでキャレットを置けない、という食い違いが残っていた。
+
+- [x] `src/ui/composer.tsx` を新設（`useComposer` = バッファ + 実測 + マウス + キー、
+      `<Composer>` = 描画）。`useInput` は持たず、view の単一ハンドラから
+      `handleMouse(mouse) → boolean` / `handleKey(input, key) → submit | handled | ignored`
+      を呼ぶ形にして「1画面 1 `useInput`」を維持
+- [x] 4 か所すべてを移行（`session-list.tsx` / `session-detail.tsx` /
+      `repo-prompt-editor.tsx` / `permission-dialog.tsx`）
+- [x] 計測 Box を `PromptInput` **だけ**を包む形に統一（コマンドパレットを同じ Box に
+      入れていたため、パレット表示中はクリックが 2〜3 行ぶんずれていた）
+- [x] 「選択中はキャレットを動かさない」（`/prompt` エディタだけが持っていた正しい挙動）を
+      全入力欄へ展開。あわせて「縦に潰れているあいだは当たり判定をやめる」ガードも共通化
+- [x] `session-list.tsx` のマウスガードに `pending` を追加（モーダル表示中は背後の view が
+      マウスレポートも飲む。`session-detail.tsx` は既にそうだった）
+- [x] i18n: `permission.typingHelp` に Shift+Enter の案内を追加（ja / en）
+- [x] テスト: `permission-dialog.spec.tsx` に「自由記述欄は通常の入力欄と同じ仕様」の
+      describe（Shift+Enter = modifyOtherKeys / CSI-u の両方・末尾バックスラッシュ・
+      ↑↓ のキャレット移動・ドラッグ選択とコピー）
+- [x] ドキュメント: `.claude/rules/ink-components.md`（入力欄は 1 実装）/
+      `docs/ARCHITECTURE.md`（`useComposer` の責務）/ `CLAUDE.md`（コードの地図）/
+      `README.md`（キー操作・コピーの対象を正しい 4 か所に）
+
+- [x] レビュー指摘の反映:
+      (1) press と release のあいだにキーが挟まると保留した press 位置が生き残り、release で
+      キャレットを引き戻していた（`clearSelection` / `reset` で保留を捨てる。回帰テスト付き）。
+      (2) `<Composer>` の Box に `flexShrink={0}` が無く、低い端末で入力欄が潰れると
+      「実測高さ < 描いた行数」ガードが常時成立してクリックが効かない死角になっていた。
+      (3) 一覧のマウスガードに `pending` を足したことでホイールでの一覧スクロールまで
+      止まっていた（press/drag/release だけ飲み、ホイールは通す）。
+
+> 実績メモ: lint / typecheck / test（2,185 件）/ build 緑。view 側は差し引き **−350 行 / +298 行**
+> で、共通化した約 240 行が `ui/composer.tsx` に集約された。`tests/app.test.tsx` の
+> 「クリックでキャレットが動く」テストは press だけを送っていたので release を足した
+> （キャレットが動くのは**離した**時点 = ドラッグにならなかったクリックだけ、に統一したため）。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

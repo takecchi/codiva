@@ -75,10 +75,11 @@
   と共用する。コピー関数は合成ルート
   （`index.tsx`→`App`→両 view の `onCopy`）で注入する（ui は utils を直接 import しない）。
   ドラッグごとに送らない（再描画毎コピーは他 TUI で既知のバグ）。
-  - **`PromptInput` を持つモーダルにも同じ選択を載せる**（`/prompt` の `RepoPromptEditor`）。
-    エディタは `.codiva/prompt.md` のビューアも兼ねるので、読んだ内容を持ち出せないと入力欄と
-    体験が食い違う。当たり判定は自分で実測した Box（`useAbsolutePosition` + `useComposerWidth`）
-    から `caretIndexAtClick` で逆算する（端末幅からは求まらない）。
+  実装は `useComposer` の `handleMouse` にあり、**モーダル内の入力欄も含めて全部同じ**
+  （`/prompt` のエディタは `.codiva/prompt.md` のビューアも兼ね、質問ダイアログの自由記述も
+  ログから貼り直せる必要がある — どれか 1 つだけ選べないと入力欄ごとに体験が食い違う）。
+  当たり判定は自分で実測した Box（`useAbsolutePosition` + `useComposerWidth`）から
+  `caretIndexAtClick` で逆算する（端末幅からは求まらない）。
   - **選択中はキャレットを動かさない**。`PromptInput` の表示ウィンドウ（`visibleLineRange`）は
     **キャレット行から決まる**ので、press / drag でキャレットを動かすと `INPUT_MAX_ROWS` を
     超える内容では画面がその場でスクロールし、描かれている行と当たり判定が食い違って
@@ -90,7 +91,10 @@
   - **モーダルを開いている間は背後の view がマウスレポートも飲む**。`parseSgrMouse` で弾くのは
     自分のハンドラを守るだけで、同じ生入力は兄弟の `useInput` にも届く。飲まないと、モーダル上の
     1 回のドラッグでヘッダや一覧の選択まで動く（`session-list.tsx` の `update || modelSelect ||
-    promptEdit` ガード）。
+    promptEdit` ガード、`session-detail.tsx` の `modelSelect || pending`）。
+    一覧の許可/質問ダイアログだけは **press/drag/release を飲み、ホイールは通す** —
+    一覧は選択行がスクロール位置そのものなので、飲むと「ダイアログが出ているあいだ一覧を
+    眺められない」ことになる（キーの側で PgUp/PgDn を通しているのと同じ理由）。
 - **ヘッダの範囲選択コピー**: 一覧のヘッダ（`Banner`）も同じ `useDragSelection` で選択・コピーできる
   （主用途は cwd の絶対パスの取り出し）。**選択領域ごとに 1 インスタンス**にする — caret index は
   その領域のテキスト（コンポーザは buffer、ヘッダは `bannerText(lines)`）が基準なので、共有すると
@@ -141,10 +145,22 @@
   配線は `src/index.tsx`（合成ルート）で行い、終了メッセージは leave 後に書く。
 - **`<Static>` は使わない**。Static はスクロールバック側に書き出すため、全画面レイアウトでは
   ビューポート外に消えて見えなくなる。
+- **入力欄は 1 実装に統一する（`ui/composer.tsx` の `useComposer` + `<Composer>`）**。入力欄は 4 か所
+  ある（一覧の新規指示・詳細の追加指示・`/prompt` エディタ・質問ダイアログの「自分で入力する」）が、
+  **仕様は 1 つ**: Shift/Meta+Enter と末尾バックスラッシュ+Enter で改行・他は送信、←→↑↓ でキャレット
+  移動（↑↓ は**表示行**）、Ctrl+U で全消し、折り返し、ドラッグで範囲選択→離してコピー、クリックで
+  キャレット移動。**各画面で組み直さない** — かつては質問ダイアログだけ `resolveEnter` を通しておらず
+  「そこだけ Shift+Enter で改行できない」状態になっていた。新しい入力欄を足すときも `useComposer` を使う。
+  - `useComposer` は `useInput` を持たない（1画面 1 `useInput` は view のまま）。view の単一ハンドラから
+    `handleMouse(mouse)`（扱ったら `true`。false なら自分の当たり判定へ落とす）と
+    `handleKey(input, key)`（`submit` / `handled` / `ignored`）を呼ぶ。
+  - **計測用の Box は `PromptInput` だけを包む**（`<Composer>` が持つ）。コマンドパレットのような付随
+    表示を同じ Box に入れると実測した上端がずれ、クリックが別の文字に当たる。
+  - view 固有の分岐（一覧の入力履歴、詳細のログスクロール、一覧フォーカス時の印字キー）は
+    `handleKey` を**呼ぶ前**に view 側で処理する。
 - **複数行入力は純粋モデルへ委譲**。テキストバッファは `core/text-buffer.ts`（value+cursor）、キー→操作の
-  対応だけ `ui/input.ts`（`editText`/`resolveEnter`）に置く。Shift/Meta+Enter か末尾バックスラッシュ+Enter で
-  改行、他は送信。`PromptInput` は `INPUT_MAX_ROWS` まで縦に伸び、超過は `visibleLineRange` で
-  カーソル付近を内部スクロール。
+  対応だけ `ui/input.ts`（`editText`/`resolveEnter`）に置く。`PromptInput` は `INPUT_MAX_ROWS` まで縦に伸び、
+  超過は `visibleLineRange` でカーソル付近を内部スクロール。
 - **入力履歴は表示行の端でだけ ↑↓ を奪う**。一覧のコンポーザは `↑`（最上段の表示行）/ `↓`（最下段）で
   送信済みの指示を呼び戻す（shell と同じ慣習）。判定・保持は純粋な `core/input-history.ts`
   （`recallPrev` / `recallNext` / `recordInput`）+ 共有フック `useInputHistory`、端かどうかは
