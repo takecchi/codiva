@@ -52,6 +52,7 @@ import { normalizeChord } from './input';
 import { LOG_PREFIX, LogLine } from './log-line';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
+import { PrSummary } from './pr-cell';
 import { StatusFooter } from './status-footer';
 import { statusColor, theme } from './theme';
 
@@ -677,6 +678,11 @@ export const SessionDetail: FC<{
       ) : null}
 
       <Box flexDirection="column" marginTop={1} flexShrink={0}>
+        {/* 複数 PR を出したセッションだけ、全件の番号をここに出す（一覧の行末セルは
+            `#12 +1` としか書けないので、`+1` の中身を確かめられる唯一の場所）。
+            1 本しか無いセッションでは何も描かない = ログの縦幅を削らない。 */}
+        <PrSummary state={session} />
+
         {isTerminal && diff && showChanges ? (
           <Box flexDirection="column" marginBottom={1}>
             <Text dimColor>{m.detail.changesTitle(session.branch)}</Text>

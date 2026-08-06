@@ -125,6 +125,9 @@ function persistRelevantChanged(prev: SessionState, next: SessionState): boolean
     // status half changes, so a poll that just moves the checks glyph doesn't
     // re-write state.json — only actually discovering/losing a PR does.
     prev.pr !== next.pr ||
+    // Same reference-compare contract (addPrRefs keeps the array identical unless a
+    // genuinely new PR shows up).
+    prev.extraPrs !== next.extraPrs ||
     prev.todos !== next.todos
   );
 }

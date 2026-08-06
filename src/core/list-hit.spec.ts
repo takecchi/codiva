@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isPrCellHit, rowLineAtPoint } from './list-hit';
+import {
+  isPrCellHit,
+  PR_CELL_WIDTH,
+  PR_CELL_WIDTH_MULTI,
+  prCellWidth,
+  rowLineAtPoint,
+} from './list-hit';
 
 describe('rowLineAtPoint', () => {
   it('maps a click to its window-relative row offset (no indicator)', () => {
@@ -34,5 +40,18 @@ describe('isPrCellHit', () => {
 
   it('is false at or past the cell right edge', () => {
     expect(isPrCellHit(79, 80, 1, 10)).toBe(false);
+  });
+});
+
+describe('prCellWidth', () => {
+  it('stays narrow while every row shows at most one PR', () => {
+    expect(prCellWidth(false)).toBe(PR_CELL_WIDTH);
+  });
+
+  // `#1234 +2` に足りる幅。狭いままだと `+n`（他にも PR があるという唯一の手がかり）が
+  // 切れる。逆に常に広げると PR の無い一覧でも title/branch が削られる。
+  it('widens once some row has more than one PR', () => {
+    expect(prCellWidth(true)).toBe(PR_CELL_WIDTH_MULTI);
+    expect(PR_CELL_WIDTH_MULTI).toBeGreaterThan(PR_CELL_WIDTH);
   });
 });

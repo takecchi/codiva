@@ -1,6 +1,7 @@
 import { USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
 import { isAuthError } from './errors';
 import { pushLogEntry } from './log-buffer';
+import { withoutPrRef } from './pr-detect';
 import { makeTitle } from './slug';
 import { isActiveStatus } from './status-meta';
 import type {
@@ -336,6 +337,10 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         // Keep each half's object identity when that half didn't change.
         pr: sameRef ? state.pr : ref,
         prStatus: sameStatus ? state.prStatus : status,
+        // `extraPrs` は「ブランチの PR *以外*」。セッション自身が `gh pr create` で
+        // 作った PR がそのままブランチの PR だった場合（autoPr より先に作られた）は
+        // ここで畳む — 一覧の `+n` が同じ PR を二重に数えないようにする。
+        extraPrs: withoutPrRef(state.extraPrs, ref),
         prLookup: undefined,
       };
     }

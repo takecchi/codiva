@@ -14,6 +14,7 @@ import {
   errorMessage,
   formatDuration,
   formatModel,
+  hasMultiplePrs,
   type InputHistory,
   isActiveStatus,
   isFullscreenViewport,
@@ -26,10 +27,10 @@ import {
   type MouseEvent,
   matchCommands,
   needsAttention,
-  type PrLookupState,
-  type PrRef,
-  type PrStatus,
+  otherPrs,
   parseSgrMouse,
+  prCellWidth,
+  primaryPr,
   recoverableSessions,
   resumableSessions,
   resumeInstruction,
@@ -67,6 +68,7 @@ import { useMessages } from './i18n-context';
 import { editText, normalizeChord } from './input';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
+import { PrCell } from './pr-cell';
 import { badgeFor, ProgressBadge } from './progress-badge';
 import { RepoPromptEditor } from './repo-prompt-editor';
 import { StatusFooter } from './status-footer';
@@ -75,78 +77,6 @@ import { UpdateDialog } from './update-dialog';
 
 /** Open a PR web URL in the browser (fire-and-forget). */
 export type OpenPr = (url: string) => void;
-
-/**
- * Display width of the trailing `#<n>` PR cell. It's the row's last column, so it
- * sits flush at the right edge regardless of the responsive title/branch widths —
- * which lets mouse hit-testing locate it from the terminal width alone.
- */
-const PR_CELL_WIDTH = 10;
-
-/**
- * Glyph + color shown before `#<number>`. The cell is one column wide, so a single
- * glyph has to carry both the merge state and the CI state; the priority is "what
- * would make me look": merged → failing checks → running checks → conflict → clean.
- * GitHub-conventional colors (merged violet, clean green, broken red, running amber).
- * `unknown` (GitHub still computing, no checks configured) shows no glyph so the row
- * stays quiet until the state is real.
- */
-function prStatusBadge(status: PrStatus): { char: string; color: string } | undefined {
-  if (status.mergeStatus === 'merged') {
-    return { char: glyph.merged, color: statusColor.external };
-  }
-  if (status.checks === 'failing') {
-    return { char: glyph.conflicting, color: statusColor.failed };
-  }
-  if (status.checks === 'pending') {
-    return { char: glyph.checksPending, color: statusColor.awaitingPermission };
-  }
-  if (status.mergeStatus === 'conflicting') {
-    return { char: glyph.conflicting, color: statusColor.failed };
-  }
-  if (status.mergeStatus === 'mergeable') {
-    return { char: glyph.mergeable, color: statusColor.completed };
-  }
-  return undefined;
-}
-
-/**
- * The row's trailing PR cell, drawn from whatever is known so far — the two halves
- * arrive (and expire) independently:
- *
- *  - `pr` (number/url) is stable and cached across restarts, so `#<n>` renders as
- *    soon as it's known and never waits on the status.
- *  - `status` is polled; until it lands the number stands alone without a glyph.
- *
- * An *empty* cell therefore means exactly one thing — "this branch has no PR" — and
- * the two "don't know yet" cases get their own marks: `⋯` while the first lookup is
- * in flight, `?` when the last one failed (rate limit / offline / not logged in).
- * A draft PR's number is dimmed (still underlined — it's clickable either way).
- */
-const PrCell: FC<{ pr?: PrRef; status?: PrStatus; lookup?: PrLookupState }> = ({
-  pr,
-  status,
-  lookup,
-}) => {
-  if (pr) {
-    const badge = status ? prStatusBadge(status) : undefined;
-    return (
-      <Text>
-        {badge ? <Text color={badge.color}>{badge.char} </Text> : null}
-        <Text color={status?.isDraft ? theme.dim : theme.accent} underline>
-          #{pr.number}
-        </Text>
-      </Text>
-    );
-  }
-  if (lookup === 'loading') {
-    return <Text dimColor>{glyph.prLoading}</Text>;
-  }
-  if (lookup === 'error') {
-    return <Text color={theme.warn}>{glyph.prUnknown}</Text>;
-  }
-  return null;
-};
 
 /**
  * 復元・報告する一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン + 入力履歴）。
@@ -492,12 +422,23 @@ export const SessionList: FC<{
     }
   };
 
-  /** Open the selected session's PR in the browser, if it has one. */
+  /**
+   * Open the selected session's PR in the browser, if it has one. Complex sessions
+   * can have several — open the one the row actually shows (`primaryPr`), so what
+   * you see is what you get; the rest are listed in the detail view.
+   */
   const openPr = () => {
-    if (target?.pr && onOpenPr) {
-      onOpenPr(target.pr.url);
+    const pr = target ? primaryPr(target) : undefined;
+    if (pr && onOpenPr) {
+      onOpenPr(pr.url);
     }
   };
+
+  /**
+   * PR 列の幅。複数 PR の行（`#12 +1`）があるときだけ広げる。**描画とクリックの
+   * 当たり判定で必ず同じ値を使う**（食い違うとセルの端を押したときに別の列を触る）。
+   */
+  const prCell = prCellWidth(sessions.some(hasMultiplePrs));
 
   // ヘッダの表示行。描画（Banner）と当たり判定（bannerCaretAt）で同じ配列を使う —
   // 行 index = 表示行という前提を共有しているので、片方だけ差し替えると選択がズレる。
@@ -590,8 +531,9 @@ export const SessionList: FC<{
         // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
         // browser (the cell is right-anchored — see isPrCellHit).
         const s = sessions[idx];
-        if (s?.pr && onOpenPr && isPrCellHit(x, columns, rowsBox.left, PR_CELL_WIDTH)) {
-          onOpenPr(s.pr.url);
+        const pr = s ? primaryPr(s) : undefined;
+        if (pr && onOpenPr && isPrCellHit(x, columns, rowsBox.left, prCell)) {
+          onOpenPr(pr.url);
         }
       }
     }
@@ -965,8 +907,16 @@ export const SessionList: FC<{
                   <Text dimColor>{formatDuration(activeElapsedMs(s, now))}</Text>
                   {/* PR バッジは行末の固定幅列。右端に揃うので幅可変の title/branch に
                       左右されず、端末幅からクリック位置を逆算できる（handlePress）。 */}
-                  <Box width={PR_CELL_WIDTH} justifyContent="flex-end">
-                    <PrCell pr={s.pr} status={s.prStatus} lookup={s.prLookup} />
+                  <Box width={prCell} justifyContent="flex-end">
+                    {/* 代表が「セッションが自分で作った PR」のときはグリフを出さない —
+                        prStatus はセッションブランチの PR のものなので、別 PR の番号に
+                        付けると嘘になる。 */}
+                    <PrCell
+                      pr={primaryPr(s)}
+                      status={s.pr ? s.prStatus : undefined}
+                      lookup={s.prLookup}
+                      others={otherPrs(s).length}
+                    />
                   </Box>
                 </Box>
               );

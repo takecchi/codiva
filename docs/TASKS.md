@@ -1045,6 +1045,31 @@ zsh: abort      codiva
 
 ---
 
+## Phase 27: 1 セッションから複数 PR が出たときの表記 ✅
+
+> セッションが自分で別ブランチを切って `gh pr create` すると 1 セッションに複数の PR が
+> 紐づくが、一覧はセッションブランチの PR しか出せず、2 本目以降は**どこにも出なかった**。
+
+- [x] `core/pr-detect.ts`（純粋）: `gh pr create` の tool_use 判定 / 結果からの PR URL 抽出 /
+      参照の追加・除去（**変化が無ければ同じ配列参照**を返す = state.json を無駄に書き直さない）/
+      表示ヘルパ（`primaryPr` / `otherPrs` / `prCount` / `hasMultiplePrs` / `allPrs`）
+- [x] `core/sdk-parse.ts`: tool_use id を控えて tool_result と突き合わせる（`prCreateToolIds`）。
+      ログ全体から URL を拾うと `gh pr list` の出力や他人の PR まで数えるため、**作成コマンドの
+      結果だけ**を走査する（先頭 4,000 文字）
+- [x] `SessionState.extraPrs` + 永続化（`state.json`。壊れた要素は 1 件ずつ落とす）+
+      reducer でブランチ PR と重複したら畳む
+- [x] 一覧: `#12 +2`（代表 + 件数）。PR 列は複数 PR の行があるときだけ 10 → 14 桁に広げ、
+      **描画とクリック当たり判定で同じ幅**を使う（`core/list-hit.ts` の `prCellWidth`）
+- [x] 詳細ビュー: 複数 PR のときだけ `PR 3 件: ✓ #12 · #13 · #14` の 1 行（1 本ならログの
+      縦幅を 1 行も譲らない）。`PrCell` / `prStatusBadge` は `ui/pr-cell.tsx` に共通化
+- [x] i18n（`detail.prsLabel`、ja/en）/ docs（ARCHITECTURE・README・CLAUDE.md）
+
+> 設計判断: 代表は**セッションブランチの PR**（`prStatus` を持つ唯一の PR で、クリックで開く先と
+> グリフの意味を一致させる）。自分で作った PR は codiva が追跡・操作しないので番号のみで
+> グリフは付けない（状態を知らないのに緑や赤で嘘をつかない）。**`gh` の追加呼び出しはゼロ**。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る
