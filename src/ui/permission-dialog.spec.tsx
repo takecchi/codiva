@@ -260,6 +260,35 @@ describe('PermissionDialog — question', () => {
       await flush();
       expect(copied).toEqual(['world']);
     });
+
+    /**
+     * press と release のあいだにキーが挟まると、保留していた press 位置が生き残って
+     * release でキャレットを引き戻していた（打った文字の後ろにいたキャレットが飛ぶ）。
+     * キー入力時に保留を捨てることで防ぐ。
+     */
+    it('押したまま打って離しても、キャレットが押した位置へ戻らない', async () => {
+      const onAnswer = vi.fn();
+      const { stdin, lastFrame } = render(
+        <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+      );
+      await enterTyping(stdin);
+      stdin.write('abcd');
+      await flush();
+      const rows = (lastFrame() ?? '').split('\n').map((l) => l.replace(SGR, ''));
+      const row = rows.findIndex((l) => l.includes('abcd'));
+      const col = (rows[row] ?? '').indexOf('abcd');
+      stdin.write(`\x1b[<0;${col + 1};${row + 1}M`); // 'a' の上で press（まだ動かさない）
+      await flush();
+      stdin.write('Z'); // 押したまま打つ → キャレットは末尾のまま
+      await flush();
+      stdin.write(`\x1b[<0;${col + 1};${row + 1}m`); // release（保留は捨てられている）
+      await flush();
+      stdin.write('!');
+      await flush();
+      stdin.write('\r');
+      await flush();
+      expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'abcdZ!' });
+    });
   });
 
   /**

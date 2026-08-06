@@ -626,7 +626,15 @@ export const SessionList: FC<{
       // `/prompt` のエディタと質問ダイアログの自由記述欄は自前でドラッグ範囲選択を持つので、
       // ここで飲まないと同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで
       // 動いてしまう。
-      if (update || modelSelect || promptEdit || pending) {
+      if (update || modelSelect || promptEdit) {
+        return;
+      }
+      // 許可/質問ダイアログ中は press/drag/release だけを飲む。ダイアログ側の自由記述欄が
+      // 自前でドラッグ範囲選択を持つので、通すと 1 回のドラッグでヘッダや一覧の選択まで
+      // 動く。**ホイールは通す** — 一覧は選択行がスクロール位置なので、ここで飲むと
+      // 「ダイアログが出ているあいだ一覧を眺められない」ことになる（キーの側は同じ理由で
+      // PgUp/PgDn を通してある。下の `pending` ガードを参照）。
+      if (pending && mouse.kind !== 'wheel') {
         return;
       }
       if (mouse.kind === 'wheel') {

@@ -117,6 +117,18 @@ export function useComposer(opts: ComposerOptions = {}): ComposerController {
   // 最後にドラッグで拾った位置。press と違えばドラッグ、同じなら単なるクリック。
   const focusedRef = useRef<number | undefined>(undefined);
 
+  /**
+   * 保留中の press を捨てる。**キー入力が挟まったら必ず呼ぶ**（`clearSelection` 経由）:
+   * 押したまま何か打って離すと、release が「単なるクリック」と判定してキャレットを
+   * press した位置へ引き戻し、打った文字の後ろにいたキャレットが飛ぶ。質問ダイアログの
+   * ように press と release のあいだでモード（＝この欄の表示有無）が変わる画面では、
+   * 消し忘れた index が次の release まで生き残って古い位置を指す。
+   */
+  const clearPress = () => {
+    pressedRef.current = undefined;
+    focusedRef.current = undefined;
+  };
+
   // 実際に描かれる行数（内部スクロールの窓 + 上下の罫線）。実測高さがこれより小さい =
   // 縦に潰れて行が抜けている状態なので、当たり判定そのものをやめる（黙って別の行の
   // 文字を選ぶより選べないほうがよい。ヘッダと同じ方針）。
@@ -172,8 +184,7 @@ export function useComposer(opts: ComposerOptions = {}): ComposerController {
       if (pressed !== undefined && focusedRef.current === pressed) {
         updateBuffer(bufferOf(bufferRef.current.value, pressed));
       }
-      pressedRef.current = undefined;
-      focusedRef.current = undefined;
+      clearPress();
       return anchored;
     }
     return false;
@@ -203,13 +214,19 @@ export function useComposer(opts: ComposerOptions = {}): ComposerController {
     buffer,
     bufferRef,
     setBuffer: updateBuffer,
-    reset: () => updateBuffer(emptyBuffer()),
+    reset: () => {
+      clearPress();
+      updateBuffer(emptyBuffer());
+    },
     boxRef,
     maxRows,
     wrapWidth,
     selection: sel.selection,
     dragging: sel.dragging,
-    clearSelection: sel.clear,
+    clearSelection: () => {
+      clearPress();
+      sel.clear();
+    },
     caretAt,
     handleMouse,
     handleKey,
@@ -220,13 +237,18 @@ export function useComposer(opts: ComposerOptions = {}): ComposerController {
  * 入力欄の描画。計測用の Box は**`PromptInput` だけ**を包む — コマンドパレットのような
  * 付随表示まで同じ Box に入れると、実測した `top` が入力欄の上端とズレてクリックが
  * 別の文字に当たる。付随表示は呼び出し側でこの外に置く。
+ *
+ * `flexShrink={0}` は必須。Yoga は溢れた子を「クリップ」せず「縮小」するので、付けないと
+ * 低い端末で複数行を書いているあいだ入力欄が潰れ、`caretAt` の「実測高さ < 描いた行数なら
+ * 当たり判定をやめる」ガードが常時成立してクリックが効かない死角になる。縮む役は
+ * flexGrow + 内部スクロールを持つ領域（一覧・ログ）に寄せる。
  */
 export const Composer: FC<{
   composer: ComposerController;
   focused: boolean;
   placeholder?: string;
 }> = ({ composer, focused, placeholder }) => (
-  <Box ref={composer.boxRef} flexDirection="column">
+  <Box ref={composer.boxRef} flexDirection="column" flexShrink={0}>
     <PromptInput
       buffer={composer.buffer}
       focused={focused}

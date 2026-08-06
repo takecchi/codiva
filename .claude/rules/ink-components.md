@@ -91,7 +91,10 @@
   - **モーダルを開いている間は背後の view がマウスレポートも飲む**。`parseSgrMouse` で弾くのは
     自分のハンドラを守るだけで、同じ生入力は兄弟の `useInput` にも届く。飲まないと、モーダル上の
     1 回のドラッグでヘッダや一覧の選択まで動く（`session-list.tsx` の `update || modelSelect ||
-    promptEdit || pending` ガード、`session-detail.tsx` の `modelSelect || pending`）。
+    promptEdit` ガード、`session-detail.tsx` の `modelSelect || pending`）。
+    一覧の許可/質問ダイアログだけは **press/drag/release を飲み、ホイールは通す** —
+    一覧は選択行がスクロール位置そのものなので、飲むと「ダイアログが出ているあいだ一覧を
+    眺められない」ことになる（キーの側で PgUp/PgDn を通しているのと同じ理由）。
 - **ヘッダの範囲選択コピー**: 一覧のヘッダ（`Banner`）も同じ `useDragSelection` で選択・コピーできる
   （主用途は cwd の絶対パスの取り出し）。**選択領域ごとに 1 インスタンス**にする — caret index は
   その領域のテキスト（コンポーザは buffer、ヘッダは `bannerText(lines)`）が基準なので、共有すると

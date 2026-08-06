@@ -1030,7 +1030,15 @@ zsh: abort      codiva
       `docs/ARCHITECTURE.md`（`useComposer` の責務）/ `CLAUDE.md`（コードの地図）/
       `README.md`（キー操作・コピーの対象を正しい 4 か所に）
 
-> 実績メモ: lint / typecheck / test（2,184 件）/ build 緑。view 側は差し引き **−350 行 / +298 行**
+- [x] レビュー指摘の反映:
+      (1) press と release のあいだにキーが挟まると保留した press 位置が生き残り、release で
+      キャレットを引き戻していた（`clearSelection` / `reset` で保留を捨てる。回帰テスト付き）。
+      (2) `<Composer>` の Box に `flexShrink={0}` が無く、低い端末で入力欄が潰れると
+      「実測高さ < 描いた行数」ガードが常時成立してクリックが効かない死角になっていた。
+      (3) 一覧のマウスガードに `pending` を足したことでホイールでの一覧スクロールまで
+      止まっていた（press/drag/release だけ飲み、ホイールは通す）。
+
+> 実績メモ: lint / typecheck / test（2,185 件）/ build 緑。view 側は差し引き **−350 行 / +298 行**
 > で、共通化した約 240 行が `ui/composer.tsx` に集約された。`tests/app.test.tsx` の
 > 「クリックでキャレットが動く」テストは press だけを送っていたので release を足した
 > （キャレットが動くのは**離した**時点 = ドラッグにならなかったクリックだけ、に統一したため）。
