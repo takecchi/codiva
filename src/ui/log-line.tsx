@@ -91,8 +91,11 @@ const RichLogLine: FC<{ line: DisplayLine; sel?: RowSelection }> = ({ line, sel 
  *    **可視域の上端に隙間が生まれる**（表示できる行があるのに空白のままになる）
  *
  * という不具合になる。半角スペース 1 つを描いて必ず 1 行ぶんの高さを確保する。
+ *
+ * ログの外でも、**常に 1 行を占めたい行**（`SessionDetail` の状態行・操作ヒント行。
+ * 出し入れするとログの高さが変わってスクロールが跳ねる）はこれを描く。
  */
-const BLANK_ROW = ' ';
+export const BLANK_ROW = ' ';
 
 /**
  * One physical row of the detail-view log. `line.text` already carries the kind's

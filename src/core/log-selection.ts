@@ -61,10 +61,11 @@ export interface LogViewport {
   readonly height: number;
   /** 描いているウィンドウの先頭行の文書 index（`LogWindow.hiddenAbove`）。 */
   readonly firstRow: number;
-  /** 描いているログ行数（プレビュー行は含めない）。 */
+  /**
+   * 描いているログ行数。ストリーミングのプレビュー行・スクロール案内は**この可視域の
+   * 外**（`core/scroll.ts` の `LogStatusRow`。ログ枠の下に常に 1 行）なので含まれない。
+   */
   readonly rows: number;
-  /** ログの下にストリーミングのプレビュー行を描いているか（末尾寄せの計算に入る）。 */
-  readonly preview: boolean;
 }
 
 /**
@@ -72,8 +73,7 @@ export interface LogViewport {
  * なので、行数が高さに足りないぶんの隙間は**上**に空く（下端ではなく上端がズレる）。
  */
 function contentTop(view: LogViewport): number {
-  const drawn = view.rows + (view.preview ? 1 : 0);
-  return view.top + Math.max(0, view.height - drawn);
+  return view.top + Math.max(0, view.height - view.rows);
 }
 
 /** 画面上の `y` に描かれているログ行の文書 index（ログ行の外なら undefined）。 */
@@ -142,7 +142,7 @@ export type LogEdge = 'up' | 'down';
 
 /**
  * ドラッグ位置が可視域のどちら側へ出たか。ログ行の上なら undefined（通常の選択延長）。
- * プレビュー行・コンポーザ側（下端より下）はまとめて `'down'` に倒す。
+ * 状態行（プレビュー / スクロール案内）・コンポーザ側（下端より下）はまとめて `'down'` に倒す。
  */
 export function logEdgeAt(view: LogViewport, y: number): LogEdge | undefined {
   const top = contentTop(view);

@@ -20,6 +20,7 @@ import {
   logLines,
   logLinkAt,
   logRowSelection,
+  logStatusRow,
   logViewportRows,
   logWindow,
   type ModelOption,
@@ -49,7 +50,7 @@ import {
 } from './hooks';
 import { useMessages } from './i18n-context';
 import { normalizeChord } from './input';
-import { LOG_PREFIX, LogLine } from './log-line';
+import { BLANK_ROW, LOG_PREFIX, LogLine } from './log-line';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PrSummary } from './pr-cell';
@@ -262,39 +263,35 @@ export const SessionDetail: FC<{
   // scroll smoothly instead of jumping an entry at a time. Width accounts for
   // the view's horizontal padding (1 cell each side).
   const messages = session?.messages;
-  // ログ行の折返し幅。プレビュー行も**同じ幅**で切る（食い違うと 1 行に収まらず
-  // ビューポートの予約行数とズレる）。
+  // ログ行の折返し幅。状態行のプレビューも**同じ幅**で切る（食い違うと 1 行に
+  // 収まらず、状態行が 2 行になってログの高さを削ってしまう）。
   const logWidth = Math.max(1, columns - 2);
   const lines = useMemo<DisplayLine[]>(
     () => (messages ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind]) : []),
     [messages, logWidth],
   );
   const total = lines.length;
-  // ログを描く行数 = スクロール1回の移動量の基準 = アンカーの下限。
+  // ログを描く行数 = スクロール1回の移動量の基準 = アンカーの下限。`logWindow` と
+  // スクロール（移動量・アンカーの下限）で必ずこの同じ値を使う — 食い違うと最上部で
+  // アンカーが 1 行手前で止まり、先頭行に到達できなくなる。
   // 全画面時は実測した可視高さに収める（実測が入るまでの1フレームだけ見積りで代用）。
   // インライン描画時（端末が低くて全画面化しない）はクリップされず端末スクロールに
   // 任せるため実測は使わず（高さ=内容なので測っても自分自身になる）、再描画コストの
   // 上限として端末 rows を使う。
-  const viewport = isFullscreenViewport(rows)
+  // **スクロール位置にもストリーミングにも依存しない**のが要点: プレビュー行も
+  // スクロール案内もログ枠の外の状態行（常に 1 行）へ出す（`logStatusRow`）。
+  // ここを可変にすると見えているログ全体が 1 行跳ねる（= ガクガクする）。
+  const logCap = isFullscreenViewport(rows)
     ? Math.max(1, Math.floor(measuredLogRows ?? logViewportRows(rows)))
     : Math.max(1, rows);
-  // ライブ入力中のプレビュー行はログと同じビューポートを共有するので、**実際に描く
-  // ときだけ** 1 行を差し引く（末尾追従中のみ描画する）。スクロール中も差し引くと
-  // 描かない行を予約してしまい、可視域の上端に 1 行の隙間が残る。
-  // 幅で切ってから渡す。Ink は測った文字列をプロセスグローバルな上限なしキャッシュへ
-  // 永久に積むので、デルタごとに変わる長い行をそのまま渡すとヒープが単調増加する
-  // （`streamTail` の注記参照）。
+  // ライブ入力中のプレビュー。幅で切ってから渡す — Ink は測った文字列をプロセス
+  // グローバルな上限なしキャッシュへ永久に積むので、デルタごとに変わる長い行を
+  // そのまま渡すとヒープが単調増加する（`streamTail` の注記参照）。
   const preview = session?.streamingText ? streamTail(session.streamingText, logWidth) : '';
-  const showPreview = preview.length > 0 && anchor === 'bottom';
-  // ログを描ける行数。logWindow とスクロール（移動量・アンカーの下限）で必ず同じ値を
-  // 使う — 食い違うと最上部でアンカーが 1 行手前で止まり、先頭行に到達できなくなる。
-  // プレビュー行は末尾追従中しか描かないので、行数はアンカーの関数になる（自動スクロールは
-  // スクロール後のアンカーで数え直す必要がある → capFor）。
-  const capFor = (at: ScrollAnchor): number =>
-    Math.max(1, viewport - (preview.length > 0 && at === 'bottom' ? 1 : 0));
-  const logCap = capFor(anchor);
   // 実際に描くウィンドウ。当たり判定（どの行をクリックしたか）と描画で**同じ結果**を使う。
   const win = logWindow(lines, logCap, anchor);
+  // ログ直下に必ず 1 行描く状態行（プレビュー / スクロール案内 / 空行）。
+  const logStatus = logStatusRow(win, preview);
   /**
    * ログ可視域の幾何。すべて描画に使った実測値・同じウィンドウから組むので、クリック位置の
    * 逆算が別の行に当たらない。実測前とインライン描画時（低い端末＝マウス捕捉もしない）は
@@ -308,7 +305,6 @@ export const SessionDetail: FC<{
           height: Math.max(1, Math.floor(measuredLogRows)),
           firstRow: win.hiddenAbove,
           rows: win.entries.length,
-          preview: showPreview,
         }
       : undefined;
 
@@ -330,10 +326,9 @@ export const SessionDetail: FC<{
         ? scrollUp(current, total, logCap, ARROW_SCROLL_LINES)
         : scrollDown(current, total, logCap, ARROW_SCROLL_LINES);
     applyAnchor(next);
-    // 終点は**次に描かれる**ウィンドウの端の行。行数は `capFor(next)` で数え直す —
-    // 末尾追従を外れるとプレビュー行が消えて 1 行増えるため、`logCap` のままだと
-    // 上端の 1 行が選択から漏れる。
-    logSel.extend(logEdgePoint(logWindow(lines, capFor(next), next), dir));
+    // 終点は**次に描かれる**ウィンドウの端の行。行数（`logCap`）はスクロール位置に
+    // 依存しないので、そのまま次のアンカーで数え直せばよい。
+    logSel.extend(logEdgePoint(logWindow(lines, logCap, next), dir));
     if (next === current) {
       // 文書の端まで来た（もう動かない）: タイマーを止める。release のレポートを取り逃した
       // ときに永久にスクロールし続けないための保険にもなっている。
@@ -659,25 +654,31 @@ export const SessionDetail: FC<{
               }
             />
           ))}
-          {/* Live streaming preview, only while following the tail. */}
-          {showPreview ? (
-            <Text color={theme.accent} dimColor wrap="truncate-end">
-              {preview}
-            </Text>
-          ) : null}
         </Box>
       </Box>
 
-      {/* Scrollback indicator: shown only when the view is lifted off the tail. */}
-      {!win.atBottom ? (
-        <Box flexShrink={0}>
-          <Text color={theme.warn} dimColor>
-            {m.detail.scrollHint(win.hiddenBelow)}
+      {/*
+       * ログ直下の状態行。**常に 1 行**を占める（中身が無いときは空行）。ここを
+       * 条件付きで出し入れすると、その上のログビューポートの高さが 1 行変わって
+       * 見えているログ全体が跳ねる（= スクロールがガクガクする）。詳細は
+       * `core/scroll.ts` の `LogStatusRow`。この行がフッタとの間の余白も兼ねるので、
+       * 下のブロックに `marginTop` は付けない（付けると空行が 2 行並ぶ）。
+       */}
+      <Box flexShrink={0}>
+        {logStatus.kind === 'preview' ? (
+          <Text color={theme.accent} dimColor wrap="truncate-end">
+            {logStatus.text}
           </Text>
-        </Box>
-      ) : null}
+        ) : logStatus.kind === 'scrollback' ? (
+          <Text color={theme.warn} dimColor wrap="truncate-end">
+            {m.detail.scrollHint(logStatus.hiddenBelow)}
+          </Text>
+        ) : (
+          <Text>{BLANK_ROW}</Text>
+        )}
+      </Box>
 
-      <Box flexDirection="column" marginTop={1} flexShrink={0}>
+      <Box flexDirection="column" flexShrink={0}>
         {/* 複数 PR を出したセッションだけ、全件の番号をここに出す（一覧の行末セルは
             `#12 +1` としか書けないので、`+1` の中身を確かめられる唯一の場所）。
             1 本しか無いセッションでは何も描かない = ログの縦幅を削らない。 */}
@@ -703,7 +704,9 @@ export const SessionDetail: FC<{
             開かずに効くので、パネル内の `r` だけでは気づけない。まだ走っている（中断できる）
             セッションでは同じ位置に Ctrl+C の案内を出す（1行を状態で使い分ける）。 */}
         {/* `flexShrink={0}`: Yoga は溢れた子を縮小するので、付けないと低い端末で案内が
-            高さ0に潰れて消える。縮む役は flexGrow のログ領域（内部スクロールで収まる）。 */}
+            高さ0に潰れて消える。縮む役は flexGrow のログ領域（内部スクロールで収まる）。
+            ログ直下の状態行と同じ理由で**常に 1 行**にする（該当なしのときも空行）。
+            ここはターンが終わるたびに出入りするので、条件付きにするとログが 1 行跳ねる。 */}
         <Box flexShrink={0}>
           {status === 'needs_login' ? (
             <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
@@ -713,7 +716,9 @@ export const SessionDetail: FC<{
             // 中断も Ctrl+R と同じフォーカス横断の chord なので、フッタではなく独立した
             // 行で案内する（フッタヒントは入力欄/操作パネルで切り替わってしまう）。
             <Text dimColor>{m.detail.cancelHint}</Text>
-          ) : null}
+          ) : (
+            <Text>{BLANK_ROW}</Text>
+          )}
         </Box>
         {recovering ? (
           <Text color={statusColor.running}>{m.recover.running}</Text>

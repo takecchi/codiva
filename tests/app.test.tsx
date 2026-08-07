@@ -1205,7 +1205,7 @@ describe('App detail view (in-app connection)', () => {
     await flush();
     /** Log line numbers currently visible, in render order. */
     const visible = () => [...lastFrame().matchAll(/log-(\d+)/g)].map((match) => Number(match[1]));
-    return { app, stdin, lastFrame, visible };
+    return { app, stdin, lastFrame, visible, out };
   }
 
   /**
@@ -1395,6 +1395,52 @@ describe('App detail view (in-app connection)', () => {
     stdin.write('\x1b[B'); // ↓ → back to the tail
     await flush();
     expect(visible().at(-1)).toBe(39);
+    app.unmount();
+  }, 30000);
+
+  /**
+   * Regression（上へスクロールするとガクガクする）: ログの可視域の高さが
+   * スクロール位置やストリーミングで変わってはいけない。
+   *
+   * かつてはスクロール案内がログ枠の外に**条件付きで**現れ、ストリーミングの
+   * プレビュー行はログの可視域を**共有**していた。そのため
+   *
+   * - 末尾から `↑` を 1 回押すと案内行のぶんビューポートが 1 行縮み、上端の行は
+   *   動かないまま末尾の 1 行が消えるだけ（= 1 回目のキーが効いていないように見える）
+   * - ターンが流れ始める / 終わるたびにプレビュー行が出入りし、ログ全体が上下に揺れる
+   *
+   * という挙動になっていた。今は `LogStatusRow` として**常に 1 行**を占める。
+   */
+  it('ログの表示行数はスクロール位置・ストリーミングで変わらない（1 行目から実際に動く）', async () => {
+    const { app, stdin, lastFrame, visible, out } = await detailWithLog(40);
+    const tail = visible();
+    expect(tail.at(-1)).toBe(39);
+
+    // 1 回目の ↑ で**上端も**1 行ぶん古い行へ動く（行数は変わらない）。
+    stdin.write('\x1b[A');
+    await flush();
+    const up = visible();
+    expect(up.length).toBe(tail.length);
+    expect(up[0]).toBe((tail[0] ?? 0) - 1);
+    expectUnbrokenRun(up);
+    expect(lastFrame()).toContain('過去ログを表示中');
+
+    // 末尾へ戻しても行数は同じ（案内行が消えた勢いで 1 行増えない）。
+    stdin.write('\x1b[B');
+    await flush();
+    expect(visible()).toEqual(tail);
+    expect(lastFrame()).not.toContain('過去ログを表示中');
+
+    // ストリーミングのプレビューが出てもログは 1 行も削られない（= 跳ねない）。
+    out.push(
+      asMsg({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'typing-now' } },
+      }),
+    );
+    await flush();
+    expect(lastFrame()).toContain('typing-now'); // プレビューは出ている
+    expect(visible()).toEqual(tail); // が、ログの行は 1 つも入れ替わっていない
     app.unmount();
   }, 30000);
 

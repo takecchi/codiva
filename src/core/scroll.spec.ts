@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   clearLogLinesCache,
   clipToWidth,
+  type LogStatusRow,
   logLines,
+  logStatusRow,
   logWindow,
   MAX_CACHED_ROWS,
   pageStep,
@@ -81,6 +83,33 @@ describe('logWindow (scrolled up, numeric anchor)', () => {
     for (const anchor of [1, 5, 20, 33, 40] as const) {
       expect(logWindow(entries(40), 20, anchor).entries.length).toBeLessThanOrEqual(20);
     }
+  });
+});
+
+describe('logStatusRow', () => {
+  // ログ直下は**常に 1 行**。3 状態のどれかが必ず返る（undefined を返さない）ことが
+  // 「ログの高さがスクロール位置・ストリーミングで変わらない」の担保になっている。
+  const cases: [string, boolean, number, string, LogStatusRow][] = [
+    [
+      '末尾追従 + ストリーミング中 → プレビュー',
+      true,
+      0,
+      'typing…',
+      { kind: 'preview', text: 'typing…' },
+    ],
+    ['末尾追従 + 何も流れていない → 空行', true, 0, '', { kind: 'idle' }],
+    ['スクロール中 → 残り行数の案内', false, 7, '', { kind: 'scrollback', hiddenBelow: 7 }],
+    // 過去ログを読んでいる間は末尾のタイピングより「最新まであと何行か」を優先する。
+    [
+      'スクロール中はプレビューより案内を優先',
+      false,
+      3,
+      'typing…',
+      { kind: 'scrollback', hiddenBelow: 3 },
+    ],
+  ];
+  it.each(cases)('%s', (_name, atBottom, hiddenBelow, preview, expected) => {
+    expect(logStatusRow({ atBottom, hiddenBelow }, preview)).toEqual(expected);
   });
 });
 
