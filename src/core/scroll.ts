@@ -453,6 +453,51 @@ export function logWindow<T>(
 }
 
 /**
+ * ログのすぐ下に詳細ビューが描く**1 行だけの状態行**の中身。
+ *
+ * - `'preview'`: 末尾追従中で、ターンがストリーミング中（タイピング風プレビュー）
+ * - `'scrollback'`: 末尾から離れている（あと何行下にあるかの案内）
+ * - `'idle'`: どちらでもない（**空行を 1 行描く**）
+ *
+ * なぜ 3 値を 1 つの行に畳むか: この行が出たり消えたりすると、その上のログ
+ * ビューポートの高さが 1 行変わり、**見えているログ全体が 1 行ぶん跳ねる**。
+ * かつてはプレビューがログの可視域を共有し（描くときだけ 1 行引く）、スクロール
+ * 案内はログ枠の外に条件付きで現れていたため、
+ *
+ * 1. 末尾から `↑` を 1 回押しても、案内行が増えたぶんビューポートが 1 行縮み、
+ *    上端の行は動かず末尾の 1 行が消えるだけ（= 1 回目のキーが効いていないように見える）
+ * 2. ターンが流れ始める / 終わるたびにプレビュー行が出入りし、ログ全体が上下に揺れる
+ *
+ * という「スクロールがガクガクする」挙動になっていた。**常に 1 行**にしておけば
+ * ログの高さはスクロール位置にもストリーミングにも依存しない。
+ *
+ * 一覧の `listView`（`core/layout.ts`）が「さらに N 件」インジケータに 1 行を
+ * 予約して描画行数を常に `cap` に保つのと同じ考え方。
+ */
+export type LogStatusRow =
+  | { readonly kind: 'preview'; readonly text: string }
+  | { readonly kind: 'scrollback'; readonly hiddenBelow: number }
+  | { readonly kind: 'idle' };
+
+/**
+ * ログ直下の状態行に何を描くかを決める（純粋）。`preview` は `streamTail` で
+ * 表示幅に切った 1 行（空文字 = ストリーミングしていない）。
+ *
+ * 末尾から離れているときはプレビューより**スクロール案内を優先**する。過去ログを
+ * 読んでいる最中に末尾のタイピングを出しても行き先が分からないうえ、案内が無いと
+ * 「最新まであと何行か」を知る手段が無くなるため。
+ */
+export function logStatusRow(
+  win: Pick<LogWindow<unknown>, 'atBottom' | 'hiddenBelow'>,
+  preview: string,
+): LogStatusRow {
+  if (!win.atBottom) {
+    return { kind: 'scrollback', hiddenBelow: win.hiddenBelow };
+  }
+  return preview.length > 0 ? { kind: 'preview', text: preview } : { kind: 'idle' };
+}
+
+/**
  * New anchor after scrolling toward older lines. `rows` is the viewport height —
  * it bounds how far up the anchor may go (a full page always stays on screen,
  * matching {@link logWindow}) and supplies the default half-page `step`. Pass an

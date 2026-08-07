@@ -22,7 +22,7 @@ function line(text: string, i = 0): DisplayLine {
 const LINES: DisplayLine[] = ['alpha', 'bravo', '', 'delta', '日本語の行'].map(line);
 
 /** 可視域: 上端 y=5, 左端 x=2, 高さ 3, 文書の 1 行目から 3 行ぶんを描いている。 */
-const VIEW: LogViewport = { top: 5, left: 2, height: 3, firstRow: 1, rows: 3, preview: false };
+const VIEW: LogViewport = { top: 5, left: 2, height: 3, firstRow: 1, rows: 3 };
 
 describe('compareLogPoints / normalizeLogSelection', () => {
   const cases: [LogPoint, LogPoint, number][] = [
@@ -67,11 +67,13 @@ describe('logRowAt / logCaretAt', () => {
     expect(logRowAt(view, 10)).toBeUndefined();
   });
 
-  it('プレビュー行はログ行として当たらない（1 行ぶん上へ詰まる）', () => {
-    const view: LogViewport = { ...VIEW, height: 3, rows: 2, preview: true };
+  // 状態行（プレビュー / スクロール案内）は**ログ枠の外**にあるので、ログの可視域は
+  // それに左右されない（`rows` はいつでも描いたログ行数そのもの）。
+  it('可視域の下（状態行の側）はログ行として当たらない', () => {
+    const view: LogViewport = { ...VIEW, height: 2, rows: 2 };
     expect(logRowAt(view, 5)).toBe(1);
     expect(logRowAt(view, 6)).toBe(2);
-    expect(logRowAt(view, 7)).toBeUndefined(); // プレビュー行
+    expect(logRowAt(view, 7)).toBeUndefined(); // 可視域の外 = 状態行
   });
 
   it('桁は表示幅で逆算し、行末より右は行末に丸める', () => {
