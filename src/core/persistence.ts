@@ -2,7 +2,15 @@ import { MAX_SESSION_PRS } from './pr-detect';
 import type { WorktreeMeta } from './session-ports';
 import { STATUS_META } from './status-meta';
 import { activeElapsedMs, progressOf } from './status-reducer';
-import type { LogEntry, PrRef, SessionState, SessionStatus, TaskStatus, TodoItem } from './types';
+import type {
+  AgentId,
+  LogEntry,
+  PrRef,
+  SessionState,
+  SessionStatus,
+  TaskStatus,
+  TodoItem,
+} from './types';
 
 /**
  * On-disk snapshot of a session, enough to rebuild it and resume its SDK
@@ -22,6 +30,17 @@ export interface PersistedSession {
   base: string;
   /** SDK session id for `resume`. Always present — only sessions that reached init (and are thus truly resumable) are persisted. */
   sdkSessionId: string;
+  /**
+   * このセッションを最後に駆動していたエージェント。この項目が無い（＝切替対応より
+   * 前に書かれた）スナップショットは `'claude'` として復元する。
+   */
+  agent?: AgentId;
+  /**
+   * エージェントごとの resume 用セッション id。**永続化する**のは、再起動をまたいで
+   * 「Codex に切り替えて、また Claude に戻す」ができるようにするため — 落とすと
+   * 戻ったときに過去の会話が消えて新規セッションから始まってしまう。
+   */
+  agentSessions?: Partial<Record<AgentId, string>>;
   /** Only idle/terminal states are restorable (see restorableStatus). */
   status: 'completed' | 'interrupted' | 'failed';
   startedAt: number;
@@ -104,6 +123,12 @@ export function toPersistedSession(
     worktreePath: state.worktreePath,
     base: meta.base,
     sdkSessionId: state.sdkSessionId,
+    agent: state.agent,
+    // 現在のエージェントの id も控えに畳んでおく（`agent_switched` は切替の瞬間に
+    // しか畳まないので、切替せずに終了したセッションの id がここから漏れる）。
+    agentSessions: state.agent
+      ? { ...state.agentSessions, [state.agent]: state.sdkSessionId }
+      : state.agentSessions,
     status,
     startedAt: state.startedAt,
     finishedAt: state.finishedAt,
@@ -138,6 +163,9 @@ export function restoredSessionState(p: PersistedSession, history: LogEntry[] = 
     progress: progressOf(p.todos),
     messages: history,
     sdkSessionId: p.sdkSessionId,
+    // 切替対応より前のスナップショットには無いので Claude 扱い（唯一の選択肢だった）。
+    agent: p.agent ?? 'claude',
+    agentSessions: p.agentSessions,
     startedAt: p.startedAt,
     // In-flight sessions persisted as `interrupted` have no finishedAt; freeze the
     // elapsed clock at startedAt so a restored (idle) row doesn't show an
@@ -256,6 +284,32 @@ function toPrRefs(v: unknown): readonly PrRef[] | undefined {
   return refs.length > 0 ? refs : undefined;
 }
 
+/** 既知のエージェント id だけを通す（未知の provider 名は捨てる）。 */
+function toAgentId(v: unknown): AgentId | undefined {
+  return v === 'claude' || v === 'codex' || v === 'grok' ? v : undefined;
+}
+
+/**
+ * エージェントごとの resume id を untrusted JSON から拾う。未知のキー・非文字列の
+ * 値は 1 件ずつ捨てる（1 つ壊れていても他の provider の続きは守る）。
+ */
+function toAgentSessions(v: unknown): Partial<Record<AgentId, string>> | undefined {
+  if (typeof v !== 'object' || v === null) {
+    return undefined;
+  }
+  const out: Partial<Record<AgentId, string>> = {};
+  let found = false;
+  for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
+    const agent = toAgentId(key);
+    const id = str(value);
+    if (agent && id) {
+      out[agent] = id;
+      found = true;
+    }
+  }
+  return found ? out : undefined;
+}
+
 function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
   if (typeof v !== 'object' || v === null) {
     return undefined;
@@ -292,6 +346,8 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
     worktreePath,
     base: base ?? 'HEAD',
     sdkSessionId,
+    agent: toAgentId(o.agent),
+    agentSessions: toAgentSessions(o.agentSessions),
     status,
     startedAt: startedAt ?? 0,
     finishedAt: num(o.finishedAt),

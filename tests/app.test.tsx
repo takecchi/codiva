@@ -3,9 +3,9 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
 import { AsyncQueue } from '@/core/async-queue';
-import { messages } from '@/core/i18n';
+import type { QueryFn } from '@/core/claude-adapter';
+import { DEFAULT_AGENT_LABEL, messages } from '@/core/i18n';
 import { PR_POLL_STABLE_MS } from '@/core/pr-refresh';
-import type { QueryFn } from '@/core/session';
 import { SessionManager } from '@/core/session-manager';
 import type { PrLookup, WorktreeService } from '@/core/session-ports';
 import { reduce } from '@/core/status-reducer';
@@ -1826,7 +1826,7 @@ describe('App one-key resume', () => {
     stdin.write('\x01'); // Ctrl+A
     await flush();
     // 一括は課金に直結するので件数を見せて確認する（単体の Ctrl+R は確認なし）。
-    expect(lastFrame()).toContain(messages.ja.action.resumeAllPrompt(3, 0));
+    expect(lastFrame()).toContain(messages.ja.action.resumeAllPrompt(DEFAULT_AGENT_LABEL, 3, 0));
     expect(sends).toEqual([]);
     stdin.write('y');
     await flush();
@@ -1842,7 +1842,9 @@ describe('App one-key resume', () => {
     await flush();
     stdin.write('n');
     await flush();
-    expect(lastFrame()).not.toContain(messages.ja.action.resumeAllPrompt(2, 0));
+    expect(lastFrame()).not.toContain(
+      messages.ja.action.resumeAllPrompt(DEFAULT_AGENT_LABEL, 2, 0),
+    );
     expect(sends).toEqual([]);
   });
   it('ignores a held-down resume key: the instruction is sent once', async () => {

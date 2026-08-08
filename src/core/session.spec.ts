@@ -1,7 +1,8 @@
 import type { Options, PermissionResult, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
-import { type PermissionPolicy, type QueryFn, Session } from '@/core/session';
+import type { QueryFn } from '@/core/claude-adapter';
+import { type PermissionPolicy, Session } from '@/core/session';
 import { initialState } from '@/core/status-reducer';
 import { SHARED_IGNORED_FILES_NOTICE } from '@/core/system-prompt';
 import type { CreateSessionInput } from '@/core/types';

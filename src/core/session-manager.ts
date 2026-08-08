@@ -1,4 +1,6 @@
 import { type AccountSummary, sameAccountSummary } from './account';
+import type { AgentAdapter } from './agent-ports';
+import type { QueryFn } from './claude-adapter';
 import { errorMessage } from './errors';
 import type { Messages } from './i18n';
 import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
@@ -20,7 +22,7 @@ import {
   toRateLimitWindow,
 } from './rate-limit';
 import { createModePolicy, type RunMode } from './run-mode';
-import { type PermissionPolicy, type QueryFn, Session, type SessionOptions } from './session';
+import { type PermissionPolicy, Session, type SessionOptions } from './session';
 import { discardSession, mergeSession, sessionDiffStat } from './session-actions';
 import type {
   ActionResult,
@@ -41,7 +43,13 @@ import type { DiffStat, SyncBaseResult, Worktree } from './worktree';
 
 export interface SessionManagerDeps {
   worktrees: WorktreeService;
-  queryFn: QueryFn;
+  /**
+   * 新規セッションを駆動するエージェント。省略時は `queryFn` から Claude アダプタを
+   * 組み立てる。ここを差し替えるだけで provider が変わる（`core/agent-ports.ts`）。
+   */
+  agent?: AgentAdapter;
+  /** Claude Agent SDK の `query`。`agent` を渡す場合は不要。 */
+  queryFn?: QueryFn;
   /** Optional Claude-backed title generator; forwarded to each fresh session. */
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
   now?: () => number;
@@ -117,6 +125,10 @@ function persistRelevantChanged(prev: SessionState, next: SessionState): boolean
   return (
     prev.status !== next.status ||
     prev.sdkSessionId !== next.sdkSessionId ||
+    // エージェントの切替は state.json に残す必要がある（戻ったときに前の会話を
+    // resume できるのは、この対応表が生き残っていればこそ）。
+    prev.agent !== next.agent ||
+    prev.agentSessions !== next.agentSessions ||
     prev.title !== next.title ||
     prev.finishedAt !== next.finishedAt ||
     prev.totalCostUsd !== next.totalCostUsd ||
@@ -354,6 +366,7 @@ export class SessionManager {
       return this.deps.createSession({ input, onChange, onRateLimit, ...extra });
     }
     return new Session({
+      agent: this.deps.agent,
       queryFn: this.deps.queryFn,
       input,
       options: this.options,

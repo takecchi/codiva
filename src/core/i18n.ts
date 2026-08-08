@@ -12,6 +12,22 @@ export type Lang = 'ja' | 'en';
 export const LANGS: readonly Lang[] = ['ja', 'en'];
 
 /**
+ * 文言に差し込むエージェントの識別情報。将来 Claude 以外（Codex / Grok）の
+ * セッションを扱えるようにするため、表示名とログインコマンドをカタログから
+ * 追い出して引数にする。値の出所はアダプタ（`core/agent-ports.ts` の
+ * `AgentAdapter`）で、カタログ側は「どう並べるか」だけを持つ。
+ */
+export interface AgentLabel {
+  /** 表示名（例: 'Claude'）。SDK/CLI 由来の固有名詞なので翻訳しない。 */
+  name: string;
+  /** 再ログインに使う CLI コマンド名（例: 'claude'）。 */
+  loginCommand: string;
+}
+
+/** 既定のエージェント表示情報（現状は Claude のみ）。 */
+export const DEFAULT_AGENT_LABEL: AgentLabel = { name: 'Claude', loginCommand: 'claude' };
+
+/**
  * 全 UI 文字列の型。ja/en 両カタログはこの型を満たすため、キー欠落は型エラーで検知できる
  * （加えて i18n.spec.ts が両カタログのキー集合の一致も検証する）。
  */
@@ -75,9 +91,9 @@ export interface Messages {
     /**
      * 一括再開の確認文。`n` = 対象件数、`auth` = そのうち認証切れの件数。
      * 認証切れには「ログインし直した」という指示文を送るので、まだログインして
-     * いないなら先にログインするよう促す（0 件なら触れない）。
+     * いないなら先にログインするよう促す（0 件なら触れない = `agent` も出ない）。
      */
-    resumeAllPrompt: (n: number, auth: number) => string;
+    resumeAllPrompt: (agent: AgentLabel, n: number, auth: number) => string;
     confirmRun: string;
     busySuffix: string;
   };
@@ -151,7 +167,7 @@ export interface Messages {
     /** 通信断でセッションが中断された（再開可能）ときの通知。 */
     interrupted: string;
     /** 認証切れで停止した（ログインが必要な）ときの通知。 */
-    needsLogin: string;
+    needsLogin: (agent: AgentLabel) => string;
   };
   /**
    * 中断されたセッションの再開（continue）。通信断で `interrupted` になった、または
@@ -213,15 +229,16 @@ export interface Messages {
     allDone: (n: number) => string;
   };
   /**
-   * 認証切れ（`needs_login`）の案内。Claude の OAuth セッションが失効すると
-   * セッションは何もできないので、「別ターミナルで `claude` にログインし直して
-   * r で再開する」という手順そのものを提示する。
+   * 認証切れ（`needs_login`）の案内。エージェントの OAuth セッションが失効すると
+   * セッションは何もできないので、「別ターミナルでそのエージェントの CLI に
+   * ログインし直して r で再開する」という手順そのものを提示する。
+   * エージェント名・コマンド名は `AgentLabel` で差し込む。
    */
   auth: {
     /** 一覧で needs_login 行を選択中のフッタヒント（再開キー r を含む）。 */
-    listHint: string;
+    listHint: (agent: AgentLabel) => string;
     /** ログイン手順の案内文（一覧・詳細で共有）。 */
-    hint: string;
+    hint: (agent: AgentLabel) => string;
   };
   /** 起動バナー（banner.tsx） */
   banner: {
@@ -411,9 +428,9 @@ const ja: Messages = {
     removePrompt: 'このセッションを一覧から削除します（worktree とブランチも消えます）。',
     clearPrompt: (n) =>
       `完了したセッション ${n} 件を一覧から削除します（worktree とブランチも消えます）。`,
-    resumeAllPrompt: (n, auth) =>
+    resumeAllPrompt: (agent, n, auth) =>
       auth > 0
-        ? `中断中の ${n} 件を続きから再開します（認証切れ ${auth} 件を含む — 先に別ターミナルで claude にログインしてください）。`
+        ? `中断中の ${n} 件を続きから再開します（認証切れ ${auth} 件を含む — 先に別ターミナルで ${agent.loginCommand} にログインしてください）。`
         : `中断中の ${n} 件を続きから再開します。`,
     confirmRun: '実行しますか？',
     busySuffix: '…実行中',
@@ -468,7 +485,7 @@ const ja: Messages = {
     rateLimited: 'レート制限に達しました',
     failed: '失敗しました',
     interrupted: '接続が中断されました（再開できます）',
-    needsLogin: 'Claude のログインが必要です',
+    needsLogin: (agent) => `${agent.name} のログインが必要です`,
   },
   resume: {
     instruction: '接続が切れて中断しました。中断したところから作業を続けてください。',
@@ -519,8 +536,10 @@ const ja: Messages = {
     allDone: (n) => `${n} 件の立て直しを実行しました`,
   },
   auth: {
-    listHint: '認証切れ ・ 別ターミナルで claude にログイン後 Ctrl+R: 再開 ・ Tab/Esc: 入力へ',
-    hint: 'Claude の認証が切れています。別のターミナルで claude を起動して /login し、Ctrl+R で再開してください。',
+    listHint: (agent) =>
+      `認証切れ ・ 別ターミナルで ${agent.loginCommand} にログイン後 Ctrl+R: 再開 ・ Tab/Esc: 入力へ`,
+    hint: (agent) =>
+      `${agent.name} の認証が切れています。別のターミナルで ${agent.loginCommand} を起動して /login し、Ctrl+R で再開してください。`,
   },
   banner: {
     model: (name) => `モデル: ${name}`,
@@ -643,9 +662,9 @@ const en: Messages = {
     removePrompt: 'Remove this session from the list (its worktree and branch are deleted too).',
     clearPrompt: (n) =>
       `Remove ${n} finished session${n === 1 ? '' : 's'} from the list (worktrees and branches are deleted too).`,
-    resumeAllPrompt: (n, auth) =>
+    resumeAllPrompt: (agent, n, auth) =>
       auth > 0
-        ? `Resume all ${n} interrupted sessions from where they stopped (${auth} need a login first — log in to claude in another terminal).`
+        ? `Resume all ${n} interrupted sessions from where they stopped (${auth} need a login first — log in to ${agent.loginCommand} in another terminal).`
         : `Resume all ${n} interrupted sessions from where they stopped.`,
     confirmRun: 'Proceed?',
     busySuffix: '…running',
@@ -697,7 +716,7 @@ const en: Messages = {
     rateLimited: 'Rate limit reached',
     failed: 'Failed',
     interrupted: 'Connection interrupted (resumable)',
-    needsLogin: 'Claude login required',
+    needsLogin: (agent) => `${agent.name} login required`,
   },
   resume: {
     instruction:
@@ -749,9 +768,10 @@ const en: Messages = {
     allDone: (n) => `Started recovery for ${n} session(s)`,
   },
   auth: {
-    listHint:
-      'Login expired · log in to claude in another terminal, then Ctrl+R: resume · Tab/Esc: input',
-    hint: 'Claude authentication expired. Run `claude` in another terminal, use /login, then press Ctrl+R to resume.',
+    listHint: (agent) =>
+      `Login expired · log in to ${agent.loginCommand} in another terminal, then Ctrl+R: resume · Tab/Esc: input`,
+    hint: (agent) =>
+      `${agent.name} authentication expired. Run \`${agent.loginCommand}\` in another terminal, use /login, then press Ctrl+R to resume.`,
   },
   banner: {
     model: (name) => `Model: ${name}`,

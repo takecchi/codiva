@@ -1,7 +1,7 @@
 /**
  * claude.ai subscription usage limits, as reported by the SDK's `rate_limit_event`
  * (see `SDKRateLimitInfo`). Pure domain: parsing, normalization, and display
- * selectors live here so `sdk-parse` / `session-manager` stay free of shape logic
+ * selectors live here so `claude-parse` / `session-manager` stay free of shape logic
  * and the UI stays free of arithmetic. This is account-wide data (not per-session):
  * every live session's SDK stream reports the same limits, so the manager keeps the
  * latest window per type and the banner renders them.

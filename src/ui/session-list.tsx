@@ -11,6 +11,7 @@ import {
   bufferOf,
   COMMANDS,
   canSelfUpdate,
+  DEFAULT_AGENT_LABEL,
   errorMessage,
   formatDuration,
   formatModel,
@@ -844,7 +845,7 @@ export const SessionList: FC<{
             // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
             // 含むヒントに切り替える。
             target?.status === 'needs_login'
-            ? m.auth.listHint
+            ? m.auth.listHint(DEFAULT_AGENT_LABEL)
             : target && isResumable(target.status)
               ? m.resume.listHint
               : m.list.helpList
@@ -945,7 +946,7 @@ export const SessionList: FC<{
           flexGrow のセッション一覧（内部スクロールで収まる）に任せる。 */}
       <Box flexDirection="column" flexShrink={0}>
         {target?.status === 'needs_login' ? (
-          <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
+          <Text color={statusColor.needsLogin}>{m.auth.hint(DEFAULT_AGENT_LABEL)}</Text>
         ) : targetResumable ? (
           <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
         ) : null}

@@ -12,7 +12,7 @@ import type { PrRef } from './types';
  * `gh pr list` の出力や、他人の PR を `gh pr view` / WebFetch で覗いただけのものまで
  * 「このセッションが出した PR」に化ける（一覧の `+n` が意味を失う）。
  *
- * すべて純粋関数。SDK メッセージの形を知っているのは `core/sdk-parse.ts` だけなので、
+ * すべて純粋関数。SDK メッセージの形を知っているのは `core/claude-parse.ts` だけなので、
  * ここは「文字列 → PrRef[]」の変換に徹する。
  */
 

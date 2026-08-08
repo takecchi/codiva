@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { applyClaudeMessage, summarizeToolUse, toolResultSummary } from '@/core/claude-parse';
 import { MAX_LOG_ENTRIES, MAX_LOG_ENTRY_CHARS, MAX_STREAM_PREVIEW_CHARS } from '@/core/log-buffer';
-import { applySdkMessage, summarizeToolUse, toolResultSummary } from '@/core/sdk-parse';
 import { initialState, reduce } from '@/core/status-reducer';
 import type { CreateSessionInput, PermissionRequest, SessionState } from '@/core/types';
 
@@ -24,23 +24,23 @@ const BASE: CreateSessionInput = {
   startedAt: 1000,
 };
 
-/** Replay an SDK message stream through applySdkMessage with synthetic timestamps. */
+/** Replay an SDK message stream through applyClaudeMessage with synthetic timestamps. */
 function replay(messages: SDKMessage[], from = initialState(BASE)): SessionState {
   let state = from;
   let at = BASE.startedAt;
   for (const message of messages) {
     at += 1;
-    state = applySdkMessage(state, message, at);
+    state = applyClaudeMessage(state, message, at);
   }
   return state;
 }
 
 /** Apply a single (possibly synthetic) SDK message. */
 function sdk(state: SessionState, message: unknown, at = 1): SessionState {
-  return applySdkMessage(state, message as SDKMessage, at);
+  return applyClaudeMessage(state, message as SDKMessage, at);
 }
 
-describe('applySdkMessage over real fixtures', () => {
+describe('applyClaudeMessage over real fixtures', () => {
   let basic: SDKMessage[];
   let followup: SDKMessage[];
   let interrupted: SDKMessage[];
@@ -121,7 +121,7 @@ describe('applySdkMessage over real fixtures', () => {
   });
 });
 
-describe('applySdkMessage interaction with pending control state', () => {
+describe('applyClaudeMessage interaction with pending control state', () => {
   it('captures the resolved model from system/init even when config left it unset', () => {
     const init = {
       type: 'system',
@@ -129,7 +129,7 @@ describe('applySdkMessage interaction with pending control state', () => {
       session_id: 'abc',
       model: 'claude-haiku-4-5',
     } as unknown as SDKMessage;
-    const state = applySdkMessage(initialState(BASE), init, 1);
+    const state = applyClaudeMessage(initialState(BASE), init, 1);
     expect(state.model).toBe('claude-haiku-4-5');
   });
 
@@ -139,7 +139,7 @@ describe('applySdkMessage interaction with pending control state', () => {
       type: 'assistant',
       message: { model: 'claude-sonnet-4-5', content: [{ type: 'text', text: 'hi' }] },
     } as unknown as SDKMessage;
-    const state = applySdkMessage(s0, assistant, 2);
+    const state = applyClaudeMessage(s0, assistant, 2);
     expect(state.model).toBe('claude-sonnet-4-5');
   });
 
@@ -204,7 +204,7 @@ describe('applySdkMessage interaction with pending control state', () => {
   });
 });
 
-describe('applySdkMessage over synthetic SDK messages', () => {
+describe('applyClaudeMessage over synthetic SDK messages', () => {
   it('supports the legacy TodoWrite tool (whole-list replace)', () => {
     const msg = {
       type: 'assistant',
@@ -316,7 +316,7 @@ describe('applySdkMessage over synthetic SDK messages', () => {
   });
 });
 
-describe('applySdkMessage over rate-limit signals', () => {
+describe('applyClaudeMessage over rate-limit signals', () => {
   const running: SessionState = { ...initialState(BASE), status: 'running' };
 
   it('a rejected rate_limit_event stops the session as rate_limited with its reset time', () => {
@@ -383,7 +383,7 @@ describe('applySdkMessage over rate-limit signals', () => {
   });
 });
 
-describe('applySdkMessage over authentication failures', () => {
+describe('applyClaudeMessage over authentication failures', () => {
   const running: SessionState = { ...initialState(BASE), status: 'running' };
   const AUTH = 'Failed to authenticate: OAuth session expired and could not be refreshed';
 
@@ -497,7 +497,7 @@ describe('applySdkMessage over authentication failures', () => {
   });
 });
 
-describe('applySdkMessage over mid-response API errors', () => {
+describe('applyClaudeMessage over mid-response API errors', () => {
   const running: SessionState = { ...initialState(BASE), status: 'running', sdkSessionId: 'sdk-1' };
   const CUT = 'API Error: Connection closed mid-response. The response above may be incomplete.';
 
@@ -737,7 +737,7 @@ describe('applySdkMessage over mid-response API errors', () => {
   });
 });
 
-describe('applySdkMessage gates completion on in-flight sub-agent tasks', () => {
+describe('applyClaudeMessage gates completion on in-flight sub-agent tasks', () => {
   const running: SessionState = { ...initialState(BASE), status: 'running' };
   const taskStarted = (task_id: string, extra: Record<string, unknown> = {}) => ({
     type: 'system',
@@ -832,7 +832,7 @@ function streamText(text: string) {
   };
 }
 
-describe('applySdkMessage over streaming partial messages', () => {
+describe('applyClaudeMessage over streaming partial messages', () => {
   it('accumulates text_delta into streamingText and flips to running', () => {
     let state = sdk(initialState(BASE), streamText('Hel'));
     expect(state.status).toBe('running');
@@ -900,7 +900,7 @@ describe('applySdkMessage over streaming partial messages', () => {
   });
 });
 
-describe('applySdkMessage does not double the final message on completion', () => {
+describe('applyClaudeMessage does not double the final message on completion', () => {
   const assistant = (text: string) => ({
     type: 'assistant',
     message: { content: [{ type: 'text', text }] },
@@ -946,7 +946,7 @@ describe('applySdkMessage does not double the final message on completion', () =
 
 // ログが無制限に伸びる（追記ごとに全体コピー）のがヒープ枯渇の原因だったので、
 // SDK 経路の追記も必ず上限を通ることを担保する（`core/log-buffer.ts`）。
-describe('applySdkMessage keeps the log bounded', () => {
+describe('applyClaudeMessage keeps the log bounded', () => {
   it('caps the number of entries, keeping the newest', () => {
     let state: SessionState = { ...initialState(BASE), status: 'running' };
     for (let i = 0; i < MAX_LOG_ENTRIES + 20; i += 1) {

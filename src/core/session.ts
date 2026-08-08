@@ -1,34 +1,23 @@
-import type {
-  EffortLevel,
-  Options,
-  PermissionMode,
-  PermissionResult,
-  Query,
-  SDKMessage,
-  SDKUserMessage,
-} from '@anthropic-ai/claude-agent-sdk';
+import { applyAgentEvent } from './agent-events';
+import type { AgentAdapter, AgentRun, PermissionDecision } from './agent-ports';
 import { AsyncQueue } from './async-queue';
-import { errorMessage, isAuthError, isConnectionError } from './errors';
+import { createClaudeAdapter, type QueryFn } from './claude-adapter';
+import type { EffortLevel, PermissionMode } from './config';
+import { errorMessage } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
-import { applySdkMessage } from './sdk-parse';
 import { isInterruptible } from './status-meta';
 import { accrueActive, initialState, reduce, USER_INTERRUPT_DETAIL } from './status-reducer';
 import { composeSystemPrompt } from './system-prompt';
 import type {
+  AgentId,
   CodivaEvent,
   CreateSessionInput,
   PermissionRequest,
   PrInfo,
   PrLookupState,
-  QuestionSpec,
   SessionState,
 } from './types';
 import type { IgnoredFilesMode } from './worktree';
-
-export type QueryFn = (params: {
-  prompt: AsyncIterable<SDKUserMessage>;
-  options: Options;
-}) => Query;
 
 /** Decide whether a tool runs automatically or is escalated to the user. */
 export type PermissionPolicy = (
@@ -66,7 +55,13 @@ export interface SessionOptions {
 }
 
 export interface SessionDeps {
-  queryFn: QueryFn;
+  /**
+   * このセッションを駆動するエージェント。省略時は `queryFn` から Claude アダプタを
+   * 組み立てる（合成ルートと既存テストのための短縮形）。
+   */
+  agent?: AgentAdapter;
+  /** Claude Agent SDK の `query`。`agent` を渡す場合は不要。 */
+  queryFn?: QueryFn;
   input: CreateSessionInput;
   options?: SessionOptions;
   now?: () => number;
@@ -92,36 +87,33 @@ export interface SessionDeps {
   restored?: SessionState;
 }
 
-function toUserMessage(text: string): SDKUserMessage {
-  return { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null };
-}
-
-function parseQuestions(input: Record<string, unknown>): QuestionSpec[] {
-  const raw = (input.questions as Record<string, unknown>[] | undefined) ?? [];
-  return raw.map((q) => ({
-    question: String(q.question ?? ''),
-    header: String(q.header ?? ''),
-    multiSelect: Boolean(q.multiSelect),
-    options: ((q.options as { label?: string; description?: string }[] | undefined) ?? []).map(
-      (o) => ({ label: String(o.label ?? ''), description: String(o.description ?? '') }),
-    ),
-  }));
-}
-
 /**
- * One live Claude session bound to a worktree. Owns the streaming-input queue,
- * consumes the SDK message stream into the pure reducer, and bridges canUseTool
- * to the UI (auto-allowing routine tools, blocking on user-facing questions).
+ * One live agent session bound to a worktree. Owns the streaming-input queue,
+ * consumes the agent's normalized event stream into the pure fold, and bridges
+ * permission requests to the UI (auto-allowing routine tools, blocking on
+ * user-facing questions).
+ *
+ * どのエージェントで走るかは {@link AgentAdapter} が決める。worktree（＝成果物）は
+ * provider に依存しないので、`setAgent()` で**途中から別のエージェントへ引き継ぐ**
+ * ことができる。
  */
 export class Session {
   private state: SessionState;
-  private readonly inputQueue = new AsyncQueue<SDKUserMessage>();
+  private readonly inputQueue = new AsyncQueue<string>();
   private readonly abortController = new AbortController();
   private readonly now: () => number;
   private readonly policy: PermissionPolicy;
   private readonly onChange?: (state: SessionState) => void;
-  private handle?: Query;
-  private pending?: { request: PermissionRequest; resolve: (r: PermissionResult) => void };
+  /** 現在のエージェント。`setAgent()` で差し替わる。 */
+  private adapter: AgentAdapter;
+  /**
+   * ログ行に刻む発言者。**切替が起きるまでは undefined** にしておく — 単一
+   * エージェントで完結するセッションのログ行の形を変えないため（切替を使って
+   * いないユーザーには何も増えない）。
+   */
+  private attribution?: AgentId;
+  private run?: AgentRun;
+  private pending?: { request: PermissionRequest; resolve: (r: PermissionDecision) => void };
   private reqSeq = 0;
   /** True once the initial prompt has been enqueued (start / first send); keeps start() idempotent. */
   private startedOnce = false;
@@ -149,6 +141,53 @@ export class Session {
     this.now = deps.now ?? Date.now;
     this.policy = deps.policy ?? defaultPolicy;
     this.onChange = deps.onChange;
+    if (deps.agent) {
+      this.adapter = deps.agent;
+    } else if (deps.queryFn) {
+      this.adapter = createClaudeAdapter({
+        queryFn: deps.queryFn,
+        generateTitle: deps.generateTitle,
+      });
+    } else {
+      throw new Error('Session requires either `agent` or `queryFn`');
+    }
+    // 「誰が駆動しているか」は状態に載せる（一覧のバッジ・復元・切替の起点）。
+    // 復元されたセッションは既に持っているのでそのまま。
+    if (this.state.agent === undefined) {
+      this.state = { ...this.state, agent: this.adapter.id };
+    }
+  }
+
+  /** 現在のエージェント（UI が capability を引くための読み取り口）。 */
+  getAgent(): AgentAdapter {
+    return this.adapter;
+  }
+
+  /**
+   * 駆動するエージェントを差し替える（Claude で進めた作業を Codex に引き継ぐ等）。
+   *
+   * 走っているストリームは閉じ、次の `send()` で新しいエージェントが起動する。
+   * **モデル側の文脈は provider をまたげない** — 各 CLI が自分のトランスクリプトを
+   * 持っているため。切替先で過去にセッションを持っていればその id で resume し、
+   * 初めてなら新しい会話として始まる（`agent_switched` の reducer 参照）。
+   * 共通しているのは worktree と codiva 側のログで、そこが引き継ぎの土台になる。
+   */
+  setAgent(adapter: AgentAdapter): void {
+    if (adapter.id === this.adapter.id) {
+      return;
+    }
+    // 走っているターンを畳んでからでないと、2 本のストリームが同じ worktree を
+    // 触ることになる。保留中の許可も解決しておく（未応答の tool_use で終わる
+    // トランスクリプトは後の resume を壊す）。
+    if (this.pending) {
+      this.pending.resolve({ behavior: 'deny', message: 'agent switched' });
+      this.pending = undefined;
+    }
+    this.run = undefined;
+    this.adapter = adapter;
+    // ここから先のログ行には発言者を刻む（どこからが別エージェントか分かるように）。
+    this.attribution = adapter.id;
+    this.dispatch({ kind: 'agent_switched', agent: adapter.id, at: this.now() });
   }
 
   getState(): SessionState {
@@ -170,7 +209,7 @@ export class Session {
     // AI の応答が先頭になり「自分が何を指示したか」が見えない。復元経路は transcript から
     // 既に user ログを持ち start() を通らないため、二重記録にはならない。
     this.dispatch({ kind: 'user_input', text: this.state.prompt, at: this.state.startedAt });
-    this.inputQueue.push(toUserMessage(this.state.prompt));
+    this.inputQueue.push(this.state.prompt);
     this.ensureConsuming();
     void this.runTitleGen();
   }
@@ -203,7 +242,7 @@ export class Session {
    */
   send(text: string): void {
     this.startedOnce = true;
-    this.inputQueue.push(toUserMessage(text));
+    this.inputQueue.push(text);
     this.ensureConsuming();
     this.dispatch({ kind: 'user_input', text, at: this.now() });
   }
@@ -226,13 +265,13 @@ export class Session {
   answerPending(answers: Record<string, string>): void {
     this.resolvePending({
       behavior: 'allow',
-      updatedInput: { ...(this.pending?.request.input ?? {}), answers },
+      input: { ...(this.pending?.request.input ?? {}), answers },
     });
   }
 
   /** Allow a pending tool permission request. */
   allowPending(): void {
-    this.resolvePending({ behavior: 'allow', updatedInput: this.pending?.request.input ?? {} });
+    this.resolvePending({ behavior: 'allow', input: this.pending?.request.input ?? {} });
   }
 
   /** Deny a pending tool permission request with a reason shown to Claude. */
@@ -264,7 +303,7 @@ export class Session {
     }
     this.dispatch({ kind: 'interrupted', error: USER_INTERRUPT_DETAIL, at: this.now() });
     try {
-      await this.handle?.interrupt?.();
+      await this.run?.interrupt?.();
     } catch {
       // best-effort: サブプロセスがもう居ない transport への write は reject する
       // （setModel と同じ）。中断できなかった場合もストリームは生きているので、
@@ -286,7 +325,7 @@ export class Session {
     // 残るので、終了済みセッションの詳細で /model を押すと裸の void が unhandled
     // rejection になりアプリごと落ちていた。切替えは best-effort（下の dispatch で
     // 次回起動時のモデルは確定する）なので握り潰す。
-    void Promise.resolve(this.handle?.setModel?.(model)).catch(() => undefined);
+    void Promise.resolve(this.run?.setModel?.(model)).catch(() => undefined);
     this.dispatch({ kind: 'model', model, at: this.now() });
   }
 
@@ -349,7 +388,7 @@ export class Session {
     this.dispatch({ kind: 'conflict', files, at: this.now() });
   }
 
-  private resolvePending(result: PermissionResult): void {
+  private resolvePending(result: PermissionDecision): void {
     const pending = this.pending;
     if (!pending) {
       return;
@@ -359,24 +398,19 @@ export class Session {
     this.dispatch({ kind: 'permission_resolved', at: this.now() });
   }
 
-  private canUseTool = (
-    toolName: string,
-    input: Record<string, unknown>,
-  ): Promise<PermissionResult> => {
-    const decision = this.policy(toolName, input);
-    if (decision === 'allow') {
-      return Promise.resolve({ behavior: 'allow', updatedInput: input });
+  /**
+   * アダプタから上がってきた許可要求。ルーチンツールはポリシーで即 allow し、
+   * ユーザーに聞くべきものだけ UI へ上げる（解決するまでエージェントはブロック
+   * してよい）。「何が質問か」といったツール名の意味づけはアダプタ側で済んでいる
+   * ので、ここは codiva 自身のポリシー（`core/run-mode.ts`）だけを見る。
+   */
+  private requestPermission = (req: Omit<PermissionRequest, 'id'>): Promise<PermissionDecision> => {
+    if (this.policy(req.toolName, req.input) === 'allow') {
+      return Promise.resolve({ behavior: 'allow', input: req.input });
     }
     this.reqSeq += 1;
-    const isQuestion = toolName === 'AskUserQuestion';
-    const request: PermissionRequest = {
-      id: `${this.state.id}:${this.reqSeq}`,
-      toolName,
-      input,
-      kind: isQuestion ? 'question' : 'tool',
-      questions: isQuestion ? parseQuestions(input) : undefined,
-    };
-    return new Promise<PermissionResult>((resolve) => {
+    const request: PermissionRequest = { ...req, id: `${this.state.id}:${this.reqSeq}` };
+    return new Promise<PermissionDecision>((resolve) => {
       this.pending = { request, resolve };
       this.dispatch({ kind: 'permission_request', request, at: this.now() });
     });
@@ -390,62 +424,55 @@ export class Session {
       // Resume the prior SDK conversation when we have one: `deps.resume` for a
       // restored session, or the live `sdkSessionId` when restarting after a
       // connection interruption. Absent on a fresh session's first start.
-      const resume = this.deps.resume ?? this.state.sdkSessionId;
+      // 切替後は「その provider が過去に発行した id」（`agent_switched` が据えた
+      // `sdkSessionId`）だけを使う。`deps.resume` は復元時の初期エージェント用なので、
+      // 別の provider へ持ち込むと存在しない会話を resume しようとして壊れる。
+      const resume = this.attribution
+        ? this.state.sdkSessionId
+        : (this.deps.resume ?? this.state.sdkSessionId);
       // worktree の環境説明（symlink 共有の注意書き）とリポジトリ追加指示をまとめた
       // systemPrompt。どちらも無ければ undefined で、その場合は渡さない。
       const systemPrompt = composeSystemPrompt({
         ignoredFiles: opts?.ignoredFiles,
         repoPrompt: opts?.appendSystemPrompt,
       });
-      this.handle = this.deps.queryFn({
+      this.run = this.adapter.open({
+        cwd: this.state.worktreePath,
         prompt: this.inputQueue,
+        resume,
         options: {
-          cwd: this.state.worktreePath,
-          permissionMode: opts?.permissionMode ?? 'acceptEdits',
-          canUseTool: this.canUseTool,
-          abortController: this.abortController,
-          settingSources: ['project'],
-          // Stream partial assistant text so the detail view shows a live preview
-          // (reduced into state.streamingText). See sdk-parse reduceStreamEvent.
-          includePartialMessages: true,
-          // worktree の環境説明 + リポジトリ追加指示を systemPrompt として注入する。SDK は
-          // systemPrompt 省略時に空文字("")へ写像する（claude_code プリセットは使わない）ため、
-          // ここに文字列を渡すのは「空への追記」と等価。将来ベースの systemPrompt を
-          // 足すなら、この行は array / preset-append 形へ切り替える必要がある。
-          ...(systemPrompt ? { systemPrompt } : {}),
-          ...(model ? { model } : {}),
-          ...(opts?.effort ? { effort: opts.effort } : {}),
-          ...(opts?.maxBudgetUsd != null ? { maxBudgetUsd: opts.maxBudgetUsd } : {}),
-          ...(resume ? { resume } : {}),
+          model,
+          effort: opts?.effort,
+          permissionMode: opts?.permissionMode,
+          maxBudgetUsd: opts?.maxBudgetUsd,
+          systemPrompt,
         },
+        requestPermission: this.requestPermission,
+        abortController: this.abortController,
       });
-      for await (const message of this.handle) {
-        const msg = message as SDKMessage;
+      for await (const event of this.run) {
         // Account-wide subscription usage is surfaced out-of-band (it isn't
         // per-session state) so the manager can aggregate it for the banner.
-        if (msg.type === 'rate_limit_event') {
-          this.deps.onRateLimit?.(msg.rate_limit_info);
+        if (event.kind === 'usage') {
+          this.deps.onRateLimit?.(event.info);
         }
-        // Raw SDK output is folded straight into state by sdk-parse (not routed
-        // through the reducer's event union) — see core/sdk-parse.ts.
-        this.commit(applySdkMessage(this.state, msg, this.now()));
+        // 正規化済みイベントの畳み込みは全 provider 共通（core/agent-events.ts）。
+        this.commit(applyAgentEvent(this.state, event, this.now(), this.attribution));
       }
     } catch (err) {
       if (!this.abortController.signal.aborted) {
         const error = errorMessage(err);
-        // An expired login is checked first: the CLI's auth errors can *mention* a
-        // timeout ("Failed to authenticate through the broker: request timed out"),
-        // and treating that as a dropped connection would silently offer a plain
-        // resume when what's needed is a login. It goes through `aborted`, which
-        // the reducer classifies as `needs_login`.
-        const auth = isAuthError(error);
-        // A connection drop mid-flight is not a failure either: mark the session
-        // `interrupted` (idle & resumable) so a follow-up / the resume action
-        // continues the same SDK conversation. Require an sdkSessionId — without
-        // one there's nothing to resume, so it's a genuine early failure.
-        // Rate-limit throws fall through to `aborted` too, which the reducer
-        // classifies as `rate_limited`.
-        const dropped = !auth && isConnectionError(error) && this.state.sdkSessionId !== undefined;
+        // 文言から分類するのはアダプタの仕事（provider ごとに言い回しが違う）。
+        // 認証切れが最優先なのは、CLI の認証エラーがタイムアウトに*言及する*ことが
+        // あり（"Failed to authenticate through the broker: request timed out"）、
+        // 通信断と読み違えると「ログインし直せ」と言うべき場面で素の再開を勧めて
+        // しまうため。
+        const cause = this.adapter.classifyError?.(error) ?? 'failed';
+        const auth = cause === 'auth';
+        // 通信断も失敗ではない: `interrupted`（idle & resumable）にして、追加指示 /
+        // 再開アクションで同じ会話を続けられるようにする。ただし resume 先の id が
+        // 無ければ続けようがないので、そのときは本物の初期失敗として扱う。
+        const dropped = cause === 'connection' && this.state.sdkSessionId !== undefined;
         // Both leave a *resumable* session, so a pending permission from the dead
         // turn (which can never resolve now) must be denied rather than left
         // dangling: a transcript ending on an unanswered tool_use can make the
@@ -458,7 +485,14 @@ export class Session {
         this.dispatch(
           dropped
             ? { kind: 'interrupted', error, at: this.now() }
-            : { kind: 'aborted', error, at: this.now() },
+            : {
+                kind: 'aborted',
+                error,
+                // resume 先が無い通信断は「続きから」ができないので、resumable な
+                // 分類を渡さず素直に失敗にする（旧実装と同じ着地）。
+                cause: cause === 'connection' ? 'failed' : cause,
+                at: this.now(),
+              },
         );
       }
     } finally {

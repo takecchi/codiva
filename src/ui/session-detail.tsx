@@ -4,6 +4,7 @@ import {
   ARROW_SCROLL_LINES,
   COMMANDS,
   composerRowCount,
+  DEFAULT_AGENT_LABEL,
   type DiffStat,
   type DisplayLine,
   isFullscreenViewport,
@@ -709,7 +710,7 @@ export const SessionDetail: FC<{
             ここはターンが終わるたびに出入りするので、条件付きにするとログが 1 行跳ねる。 */}
         <Box flexShrink={0}>
           {status === 'needs_login' ? (
-            <Text color={statusColor.needsLogin}>{m.auth.hint}</Text>
+            <Text color={statusColor.needsLogin}>{m.auth.hint(DEFAULT_AGENT_LABEL)}</Text>
           ) : resumable ? (
             <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
           ) : interruptible ? (

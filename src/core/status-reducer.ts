@@ -1,5 +1,3 @@
-import { USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
-import { isAuthError } from './errors';
 import { pushLogEntry } from './log-buffer';
 import { withoutPrRef } from './pr-detect';
 import { makeTitle } from './slug';
@@ -32,19 +30,6 @@ function sameChecks(
     return false;
   }
   return a.every((check, i) => check.name === b[i]?.name && check.url === b[i]?.url);
-}
-
-/**
- * True when an error/result string signals a genuine usage- or rate-limit stop
- * (rather than an ordinary failure). We match the SDK's own `getLimitReachedText`
- * prefixes so we stay in sync with the CLI wording, plus a loose "rate limit" /
- * "usage limit" fallback for messages that arrive wrapped (e.g. `Error: …`).
- */
-export function isRateLimitError(text: string): boolean {
-  return (
-    USAGE_LIMIT_ERROR_PREFIXES.some((p) => text.includes(p)) ||
-    /rate.?limit|usage limit/i.test(text)
-  );
 }
 
 export function initialState(input: CreateSessionInput): SessionState {
@@ -107,7 +92,7 @@ export function progressOf(todos: TodoItem[]): { done: number; total: number } |
 }
 
 /**
- * Append a log entry and bump the monotonic seq. Shared with `sdk-parse.ts` so the
+ * Append a log entry and bump the monotonic seq. Shared with `claude-parse.ts` so the
  * live SDK stream and the reducer's own events produce identically-sequenced logs.
  * The log is bounded (`pushLogEntry`): oversized texts are clipped and the oldest
  * entries fall off, so a long-lived session can't grow the heap without limit
@@ -129,7 +114,7 @@ export function appendLog(
  * rate limit was hit. Idle & resumable once the limit resets (like a completed
  * turn, it can receive more input) — but flagged distinctly so the user sees it
  * wasn't a clean finish and can wait for the reset. Records the reason in the log.
- * Shared with `sdk-parse.ts` (a limit can surface both as an SDK message and as a
+ * Shared with `claude-parse.ts` (a limit can surface both as an SDK message and as a
  * thrown error caught by the reducer's `aborted` event).
  */
 export function toRateLimited(
@@ -155,7 +140,7 @@ export function toRateLimited(
  *
  * 同じ中断が **2 経路**で届く: (1) `Session.interrupt()` が SDK へ interrupt 制御要求を
  * 出す前に立てる診断（UI を即座に「中断」にするため）、(2) CLI がターンを閉じる
- * `result`（`terminal_reason: 'aborted_streaming'`。`sdk-parse.ts`）。両方で**同じ文言**を
+ * `result`（`terminal_reason: 'aborted_streaming'`。`claude-parse.ts`）。両方で**同じ文言**を
  * 使うことで `toInterrupted` の重複畳み込みが効き、ログが二重にならない。
  */
 export const USER_INTERRUPT_DETAIL = 'interrupted by user';
@@ -165,7 +150,7 @@ export const USER_INTERRUPT_DETAIL = 'interrupted by user';
  * because the connection was interrupted (not a clean finish, not a real
  * failure). Idle & resumable — sending a follow-up (or the explicit "resume"
  * action) restarts the query with `resume` so Claude continues where it left
- * off. Records the reason in the log. Shared with `sdk-parse.ts` (a connection
+ * off. Records the reason in the log. Shared with `claude-parse.ts` (a connection
  * drop can surface both as a thrown error caught by `Session.consume` and as an
  * error `result` on the stream). Transient bookkeeping (`pendingPermission` from
  * a turn that can never resolve now, deferred sub-agent results) is dropped so a
@@ -211,7 +196,7 @@ export function toInterrupted(state: SessionState, at: number, detail: string): 
  * This is neither a completion nor a failure of the work: the user logs in again
  * (`claude` → `/login`) and resumes, so the state is idle & resumable and the UI
  * points at the login step. Records the reason in the log. Shared with
- * `sdk-parse.ts` (an auth failure can surface as an SDK `result` / `auth_status`
+ * `claude-parse.ts` (an auth failure can surface as an SDK `result` / `auth_status`
  * message as well as a thrown error caught by `Session.consume`).
  *
  * Transient bookkeeping (a `pendingPermission` from a turn that can never resolve
@@ -249,7 +234,7 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       const status = event.request.kind === 'question' ? 'awaiting_input' : 'awaiting_permission';
       // The question text is already parsed onto the request (QuestionSpec[]),
       // so we read it directly rather than re-parsing the raw tool input here —
-      // that keeps SDK-shape parsing out of the reducer (see sdk-parse.ts).
+      // that keeps SDK-shape parsing out of the reducer (see claude-parse.ts).
       const summary =
         event.request.kind === 'question'
           ? `AskUserQuestion: ${event.request.questions?.[0]?.question ?? ''}`
@@ -368,18 +353,21 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
 
     case 'aborted': {
       const error = event.error ?? 'aborted';
-      // An expired login can surface as a thrown error (caught in consume) —
-      // classify it as needs_login so the user is told to log in rather than
-      // being shown a dead-end "failed" (or, worse, a green "completed").
-      // Checked before the limit/connection classifiers: an auth failure is
-      // never fixed by waiting or retrying.
-      if (isAuthError(error)) {
+      // 分類は**アダプタが済ませて** `cause` で運んでくる（`AgentAdapter.classifyError`）。
+      // かつてはここで文言の正規表現を回していたが、それは Claude CLI の言い回しの
+      // 知識であって状態機械の仕事ではない — provider が増えると判定が混ざる。
+      //
+      // 認証切れは「待っても再試行しても直らない」ので、行き止まりの `failed` では
+      // なく再ログインを促す `needs_login` へ。レート制限は待てば直るので同様に
+      // 区別する。`cause` 省略時（UI 起点の abort など）は素直に失敗扱い。
+      if (event.cause === 'auth') {
         return toNeedsLogin(state, event.at, error);
       }
-      // A rate/usage limit can surface as a thrown error (caught in consume) —
-      // classify it as rate_limited rather than a generic failure.
-      if (isRateLimitError(error)) {
+      if (event.cause === 'rate_limit') {
         return toRateLimited(state, event.at, error);
+      }
+      if (event.cause === 'connection') {
+        return toInterrupted(state, event.at, error);
       }
       const withLog = appendLog(state, 'error', error);
       return {
@@ -395,6 +383,32 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
 
     case 'interrupted':
       return toInterrupted(state, event.at, event.error ?? 'connection interrupted');
+
+    case 'agent_switched': {
+      const current = state.agent ?? 'claude';
+      if (current === event.agent) {
+        return state;
+      }
+      // 今の provider の resume id を退避し、切替先の id（過去に使っていれば）を
+      // 現在値に据える。worktree（＝成果物）はそのままなので、切替は「別の
+      // エージェントに同じ作業場を引き継ぐ」だけ。モデル側の文脈は provider を
+      // またげないため、`agentSessions` に無い provider へ切り替えたときは
+      // `sdkSessionId` が undefined になり、次のターンは新しい会話として始まる。
+      const carried = state.sdkSessionId
+        ? { ...state.agentSessions, [current]: state.sdkSessionId }
+        : state.agentSessions;
+      const next = carried?.[event.agent];
+      return {
+        ...state,
+        agent: event.agent,
+        agentSessions: carried,
+        sdkSessionId: next,
+        // 直前のエージェントのストリーミング途中表示は引き継がない。
+        streamingText: undefined,
+        // 解決済みモデルは provider ごとに別物なので捨てる（次のターンが埋める）。
+        model: undefined,
+      };
+    }
 
     case 'archived':
       return state.status === 'archived'

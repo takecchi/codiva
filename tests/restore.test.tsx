@@ -1,7 +1,7 @@
 import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import { AsyncQueue } from '@/core/async-queue';
-import type { QueryFn } from '@/core/session';
+import type { QueryFn } from '@/core/claude-adapter';
 import { SessionManager } from '@/core/session-manager';
 import { flush, fakeWorktrees as worktrees } from './helpers';
 
