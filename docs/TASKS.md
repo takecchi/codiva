@@ -1083,6 +1083,98 @@ zsh: abort      codiva
 
 ---
 
+## Phase A: 他エージェント対応の抽象化（Codex / Grok の差し込み口）✅
+
+> codiva は Claude Code 専用で、`SDKMessage` を直接 `SessionState` へ畳み込んでいた
+> （旧 `core/sdk-parse.ts` の `applySdkMessage`）。「SDK メッセージの形の知識」と「状態をどう
+> 変えるか」が 1 か所に混ざっていたため、別のエージェントを足すには畳み込みごと書き直すしか
+> なかった。**挙動は変えず、差し込み口だけを作る**のがこの Phase。
+
+- [x] `core/agent-ports.ts`（leaf）: `AgentAdapter` / `AgentRun` / `AgentRunRequest` /
+      `AgentRunOptions` / `AgentCapabilities` / `PermissionDecision` / `NO_CAPABILITIES`。
+      境界は **`SessionHandle` / `AgentAdapter`**（`QueryFn` ではない — Claude の control-request
+      モデルを共通 IF にすると全 provider にその模倣を強いる）
+- [x] `core/agent-events.ts`: provider 非依存の `AgentEvent` 語彙 + **全 provider 共通の畳み込み**
+      `applyAgentEvent`。ログの上限・進捗・サブエージェントの完了ゲート・PR 検出・コスト集計は
+      すべてここ（新しいエージェントは再実装しなくてよい）。`AgentToolKind` / `TodoOp` で
+      ツール名・TODO 操作を正規化
+- [x] `core/claude-parse.ts`（旧 `sdk-parse.ts`）: `parseClaudeMessage`（`SDKMessage` →
+      `AgentEvent[]`。**状態を変えない**）+ `summarizeToolUse` / `toolResultSummary`。
+      `applyClaudeMessage` は parse → fold の合成で、1,100 行超の実データテストが**同じ入口**を
+      叩き続けられるように残す（分割のリグレッション網。spec も `claude-parse.spec.ts` にリネーム）
+- [x] `core/claude-errors.ts`: Claude CLI の文言・typed error kind・HTTP ステータスの知識を集約
+      （`isAuthError` / `isAuthErrorKind` / `isConnectionError` / `isTransientApiErrorKind` /
+      `isTransientApiStatus` / `isRateLimitError` / `classifyClaudeError`）。`core/errors.ts` は
+      `errorMessage` / `errorStack` だけに戻す
+- [x] `core/claude-adapter.ts`: `createClaudeAdapter`（`query()` の組み立て・`canUseTool` ↔
+      `requestPermission` の写像・`QueryFn` の DI）+ `CLAUDE_CAPABILITIES`
+- [x] **中立モジュールから SDK の import を消す**: `status-reducer.ts` の
+      `USAGE_LIMIT_ERROR_PREFIXES` / `config.ts` の `EffortLevel` / `PermissionMode`
+      （自前の配列 + 導出型へ。値の集合は同じだが、SDK に値が増えたら目視で追従する必要がある）
+- [x] `aborted` イベントが `cause`（`AgentStopCause`）を運ぶ: 失敗の分類は reducer の正規表現から
+      `AgentAdapter.classifyError` へ移動（文言の見分け方は provider ごとの知識）
+- [x] セッション途中の切替に備えた状態: `SessionState.agent` / `agentSessions`（provider ごとの
+      resume id。**永続化**）/ `LogEntry.agent`（切替後だけ刻む）/ `CodivaEvent` の `agent_switched` /
+      `Session.setAgent()` / `getAgent()`。旧スナップショットは `'claude'` にフォールバック
+- [x] `SessionHandle.getAgent()` / `setAgent()`（optional。状態だけを動かすテスト用フェイクに
+      エージェントの概念を強制しない）/ `SessionManager` も `agent` を DI で受ける
+- [x] i18n: `AgentLabel` / `DEFAULT_AGENT_LABEL` を追加し、エージェント名・ログインコマンドを
+      差し込む文言を関数化（`auth.hint` / `auth.listHint` / `notify.needsLogin` /
+      `action.resumeAllPrompt`。ja/en 対）
+- [x] テスト: `agent-events.spec.ts` / `claude-errors.spec.ts` を新設、`claude-parse.spec.ts` は
+      実フィクスチャのまま入口だけ差し替え。`status-reducer.spec.ts` に `agent_switched`
+      （退避・往復・同一 id で no-op）と `aborted.cause` の分岐を追加
+- [x] ドキュメント: `docs/ARCHITECTURE.md`「エージェント抽象」節（設計判断 5 点）/ `docs/PRD.md` /
+      `CLAUDE.md`（地図・不変条件 3）/ `.claude/rules/sdk-integration.md`（2 段構成 + SDK import の境界）/
+      `.claude/rules/session-domain.md`（`applyAgentEvent` / `agent_switched` / 永続）/
+      `.claude/rules/architecture.md`（DI seam を 2 つの leaf に）
+
+> 実績メモ: lint / typecheck / test（2,277 件）/ build 緑。**ユーザー可視の挙動は変えていない**
+> （README は更新不要）。副次的に、`Session.consume` が `rate_limit_event` を直接読んでいた
+> 規約違反（「形の知識は 1 か所」）と、SDK の `PermissionResult` が core に漏れていたのが解消された。
+
+---
+
+## Phase B: ACP アダプタ + Codex 対応（未着手）
+
+> Codex は Agent Client Protocol（ACP）を話す。`AgentAdapter` を 1 本実装し、
+> **Phase A で共通化した畳み込みに載せるだけ**にする。
+
+- [ ] ACP のメッセージを実データで採取する（`npm run spike` 相当のシナリオを ACP 向けに用意し、
+      `src/core/__fixtures__/` へサニタイズして昇格。**形を想定で書かない**）
+- [ ] `core/acp-parse.ts`: ACP メッセージ → `AgentEvent[]`（`claude-parse.ts` と対になる純関数）
+- [ ] `core/codex-adapter.ts`: `AgentAdapter` 実装 + `CODEX_CAPABILITIES`（`NO_CAPABILITIES` から
+      始めて実装できたものだけ true）+ `classifyError`（Codex CLI の文言 → `AgentStopCause`）
+- [ ] 許可要求の写像（ACP の permission request ↔ `PermissionDecision`）と、質問（`QuestionSpec`）を
+      表現できるかの確認。できない場合は capability を false にして UI を縮退させる
+- [ ] 合成レイヤ（`bootstrap/build-manager.ts`）で設定からアダプタを選べるようにする
+- [ ] テスト: フィクスチャ駆動の `acp-parse.spec.ts` + フェイクアダプタでの `session.spec.ts`
+
+## Phase C: Grok 対応（未着手）
+
+- [ ] Grok CLI のストリームを実データで採取 → `AgentEvent` への写像を設計
+- [ ] `core/grok-adapter.ts` + capability の表明（resume を持たない場合の扱いを決める —
+      `resume: false` なら切替・再起動で文脈が切れることを UI が明示する必要がある）
+- [ ] `classifyError`（Grok 側の認証切れ / レート制限の文言）
+
+## Phase D: capability による UI 縮退 / `/agent` / 引き継ぎ（未着手）
+
+- [ ] UI が `SessionHandle.getAgent().capabilities` を見て段階的に縮退する:
+      `/model`（`modelCatalog` / `setModel`）・使用状況ゲージ（`usage`）・コスト表示（`cost`）・
+      `Ctrl+C` の中断（`interrupt`）・許可ダイアログ（`permissions`）・トランスクリプト復元
+      （`transcript`）。**持たない機能のキー操作・ヒントを出さない**
+- [ ] `/agent` コマンド（`add-slash-command` skill の手順で追加）: 一覧・詳細から駆動エージェントを
+      切り替える。確認を挟む（モデル側の文脈が切れることを伝える）
+- [ ] **引き継ぎプロンプトの生成**: 切替先は前の会話を持たないので、worktree の状況（ブランチ・
+      差分・直前の指示）を要約した最初の指示文を組み立てる純関数を core に置く
+- [ ] i18n: `AgentLabel` を `DEFAULT_AGENT_LABEL` 固定ではなく**セッションのエージェント**から
+      引くよう配線（現状は UI が既定値を渡している）
+- [ ] 一覧・詳細にエージェントの表示（どのセッションが何で走っているか）と、`LogEntry.agent` を
+      使ったログ上の区切り表示
+- [ ] 設定 `~/.codiva/config.json` に既定エージェント（`add-config-option` skill の手順）
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

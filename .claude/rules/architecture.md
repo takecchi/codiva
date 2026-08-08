@@ -9,7 +9,10 @@ ui/  ──▶ core/ ◀── utils/
          (依存先なし)
 ```
 
-- **`src/core/`**: 純粋なドメインロジック。**Ink / React / execa / node の I/O を import しない**。SDK 型 (`@anthropic-ai/claude-agent-sdk`) の型参照は可。ここが全ロジックの中心で、ユニットテストで完全に駆動できること。
+- **`src/core/`**: 純粋なドメインロジック。**Ink / React / execa / node の I/O を import しない**。ここが全ロジックの中心で、ユニットテストで完全に駆動できること。
+  特定エージェントの SDK (`@anthropic-ai/claude-agent-sdk`) を import してよいのは**アダプタ 3 点**
+  （`claude-adapter.ts` / `claude-parse.ts` / `claude-errors.ts`）だけで、他の中立モジュールは
+  型も定数も引かない（[sdk-integration.md](./sdk-integration.md)）。
 - **`src/utils/`**: I/O の薄いラッパ（`git.ts` = execFile ラッパ）。`core` のみに依存。
 - **`src/ui/`**: Ink コンポーネントのみ。`core`（状態・型）を `@/core` から使う。ロジックを持たない — 状態計算は `core` の純関数に委譲する。
 - **`src/index.tsx` / `src/main.tsx` / `src/app.tsx` / `src/bootstrap/`**: 合成レイヤ（どのレイヤにも属さず core と utils を束ねる）。
@@ -27,9 +30,21 @@ ui/  ──▶ core/ ◀── utils/
 
 副作用は境界で注入する。テスト容易性の要。
 
-- `Session` は `queryFn`（SDK の `query`）を DI で受ける → テストはフェイクを注入。
+- `Session` / `SessionManager` は `agent`（`AgentAdapter`）を DI で受ける。省略時は `queryFn`
+  （SDK の `query`）から Claude アダプタを組み立てる短縮形 → テストはフェイクを注入。
 - `SessionManager` は `worktrees`（`WorktreeService`）と `createSession` factory を DI で受ける。
 - `now: () => number` も注入可能にして時間を決定的にする（reducer は純粋、時刻はイベントの `at` で渡す）。
+
+**DI 用の interface は 2 つの leaf に置く**（どちらも他の core モジュールを import しない末端。
+そこに集約することで core 内の循環 import を防いでいる）:
+
+| ファイル | 何の seam か | 主な型 |
+|---|---|---|
+| `core/session-ports.ts` | codiva 側（manager が駆動するもの） | `WorktreeService` / `SessionHandle` / `PrAutomation` / `PrLookup` |
+| `core/agent-ports.ts` | エージェント側（provider の差し替え） | `AgentAdapter` / `AgentRun` / `AgentRunRequest` / `AgentCapabilities` / `PermissionDecision` |
+
+`session-ports.ts` が `agent-ports.ts` を型で参照する（`SessionHandle.getAgent()`）ので、
+依存の向きは **session-ports → agent-ports** の一方向。ここにある型を他ファイルで再定義しない。
 
 ## ファイル/モジュール規約
 

@@ -40,10 +40,14 @@ codiva は、対象のGitリポジトリで起動する TUI アプリケーシ�
 
 > 注: この節は MVP 策定時点の切り分け。以下のうち復元・コスト表示・設定ファイル・デスクトップ通知は
 > Phase 6 で実装済み（`docs/ARCHITECTURE.md` の Phase 6 節を参照）。マウス操作も Phase 10 で追加され、
-> F-9「マウス不要」は「マウス任意（無くても完結）」に緩和されている。未実装として残るのは他エージェント対応と複数リポジトリ管理。
+> F-9「マウス不要」は「マウス任意（無くても完結）」に緩和されている。他エージェント対応は抽象化まで
+> 完了（Phase A）。未実装として残るのは各アダプタの実装と複数リポジトリ管理。
 
 - アプリ再起動後のセッション復元（SDK の `resume` を利用） … **実装済み（Phase 6）**
-- Claude Code 以外のエージェント（Codex 等）対応 … 未実装
+- Claude Code 以外のエージェント（Codex 等）対応 … **Phase A（抽象化）完了 / アダプタ実装は未着手**。
+  `AgentAdapter` / `AgentEvent` の境界と、provider ごとの resume id の永続（`agentSessions`）・
+  セッション途中の切替（`Session.setAgent`）まで入っている。Codex（ACP）/ Grok のアダプタ本体と、
+  capability による UI 縮退・`/agent` コマンドは Phase B〜D（`docs/ARCHITECTURE.md`「エージェント抽象」）
 - 複数リポジトリの同時管理 … 未実装
 - コスト（トークン/USD）表示 … **実装済み（Phase 6）**
 - 設定ファイル（モデル選択、permissionMode カスタマイズ等） … **実装済み（Phase 6）**

@@ -12,8 +12,10 @@ UI とコアロジックを完全に分離する。コアは Ink/React に一切
 └────────┼────────────────────────────────────────────┘
 ┌────────┴─ core/ (純TypeScript, UIなし) ─────────────┐
 │  SessionManager … セッションの生成・保持・イベント発火   │
-│  Session        … 1セッション = SDK query + 状態     │
+│  Session        … 1セッション = 1 エージェント + 状態  │
 │  reduce()       … CodivaEvent → SessionState 畳み込み│
+│  applyAgentEvent() … AgentEvent → SessionState       │
+│  AgentAdapter   … provider の DI 境界（claude/…）     │
 │  Worktree 型 / MergeConflictError / 純関数            │
 └────────┬────────────────────────────────────────────┘
 ┌────────┴─ utils/ (I/O ラッパ, core にのみ依存) ──────┐
@@ -53,13 +55,17 @@ codiva/
 │   │   ├── persist-controller.ts # debounce保存 / SIGTERM同期flush / 最終flush を集約
 │   │   ├── crash-handler.ts   # uncaughtException/unhandledRejection → 端末復元 + クラッシュログ
 │   │   └── runtime.ts         # PRポーリング・alt-screen/mouse・SIGTERM/SIGHUP フラッシュ
-│   ├── core/                  # 純粋ドメイン（Ink/React/node/utils 非依存。SDK は型 + 定数のみ）
+│   ├── core/                  # 純粋ドメイン（Ink/React/node/utils 非依存。SDK に触るのは claude-*.ts だけ）
 │   │   ├── index.ts           # バレル（export *）
-│   │   ├── types.ts           # SessionState, SessionStatus, CodivaEvent 等の型定義
-│   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（型付きイベントのみ・純関数）
-│   │   ├── sdk-parse.ts       # applySdkMessage()（SDK メッセージ形状の解釈を集約・純粋）
+│   │   ├── types.ts           # SessionState, SessionStatus, CodivaEvent, AgentId, AgentStopCause 等の型定義
+│   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（codiva 起点のイベント・純関数）
+│   │   ├── agent-ports.ts     # エージェントの DI 境界（AgentAdapter/AgentRun/AgentCapabilities/PermissionDecision・leaf）
+│   │   ├── agent-events.ts    # AgentEvent の語彙 + applyAgentEvent()（全 provider 共通の畳み込み・純粋）
+│   │   ├── claude-adapter.ts  # Claude 用 AgentAdapter（query() の組み立て・canUseTool の写像）
+│   │   ├── claude-parse.ts    # parseClaudeMessage()（SDK メッセージ形状の解釈を集約・純粋）
+│   │   ├── claude-errors.ts   # Claude CLI の失敗分類（文言/typed kind/HTTP status → AgentStopCause）
 │   │   ├── status-meta.ts     # STATUS_META（terminal/attention/active/resumable/復元先/通知キーの一元表）
-│   │   ├── session.ts         # 1 SDK query のライフサイクル
+│   │   ├── session.ts         # 1 エージェントストリームのライフサイクル（setAgent で途中切替）
 │   │   ├── session-store.ts   # 購読可能スナップショット（順序・状態・参照同一性保持）
 │   │   ├── session-manager.ts # create/restore/dispose + passthrough のファサード
 │   │   ├── session-actions.ts # merge/discard/diffStat（git 操作の純粋オーケストレーション）
@@ -67,7 +73,7 @@ codiva/
 │   │   ├── pr-recovery.ts    # 詰まった PR の立て直し判定・指示文（純粋）
 │   │   ├── pr-detect.ts       # セッション自身が作った PR の検知・表示ヘルパ（純粋）
 │   │   ├── run-mode.ts        # RunMode + createModePolicy
-│   │   ├── session-ports.ts   # DI seam の interface 集約（WorktreeService/SessionHandle/…）
+│   │   ├── session-ports.ts   # codiva 側の DI seam（WorktreeService/SessionHandle/…・leaf）
 │   │   ├── worktree.ts        # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
 │   │   ├── list-hit.ts        # 一覧のマウス当たり判定（純粋）
 │   │   ├── format.ts / math.ts / ansi.ts / errors.ts   # 小さな純粋ヘルパ（formatDuration/clamp/…）
@@ -76,7 +82,7 @@ codiva/
 │   │   ├── choice-lines.ts    # 選択肢（ラベル + 説明）の折返し（純粋・表示幅ベース）
 │   │   ├── scroll.ts / text-buffer.ts / composer-layout.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
 │   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
-│   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（sdk-parse テスト用）
+│   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（claude-parse テスト用）
 │   ├── ui/                    # Ink コンポーネント（kebab-case, 識別子は PascalCase）
 │   │   ├── index.ts           # バレル
 │   │   ├── theme.ts           # アクセント色・状態色・logColor・グリフ（色は必ずここ経由）
@@ -111,9 +117,130 @@ codiva/
 # import は `@/*` → `./src/*` エイリアス（ディレクトリ跨ぎ）。ビルドは tsup、型チェックは tsc --noEmit。
 ```
 
+## エージェント抽象
+
+codiva は当初 Claude Code（`@anthropic-ai/claude-agent-sdk`）専用で、`SDKMessage` を直接
+`SessionState` へ畳み込んでいた（旧 `core/sdk-parse.ts` の `applySdkMessage`）。そのため
+「SDK メッセージの形の知識」と「状態をどう変えるか」が 1 か所に混ざり、別のエージェント
+（Codex / Grok）を足すには畳み込みごと書き直すしかなかった。Phase A ではこれを 2 段に割り、
+provider を差し替えられる境界を入れた（アダプタ実装そのものは Phase B 以降）。
+
+```
+provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] ──[applyAgentEvent]──▶ SessionState
+   SDKMessage                claude-parse.ts       agent-events.ts       core/types.ts
+   （Codex/Grok の形）        （各アダプタ）         （全 provider 共通）
+```
+
+### 1. 境界は `SessionHandle` / `AgentAdapter`（`QueryFn` ではない）
+
+抽象化の線は **1 ターンぶんのストリーム**に引く（`core/agent-ports.ts`）。理由は 2 つ:
+
+- `SessionManager` から上（UI・永続化・PR 自動化・worktree・通知）は既に `SessionHandle`
+  越しにしかセッションを触っておらず、**もともとエージェント非依存**だった。境界を新設する
+  必要はなく、その下に `AgentAdapter` を足すだけで済む。
+- 逆に SDK の `query()` の署名（`AsyncIterable<SDKUserMessage>` + `Options` + `canUseTool` +
+  control request）を共通 IF にすると、**全 provider に Claude の制御モデルの模倣を強いる**。
+  Codex / Grok が control request を持つ保証はない。
+
+アダプタの責務は 3 つだけ: (1) ストリームを開く（`open`）、(2) provider のメッセージを
+`AgentEvent[]` へ写す、(3) 失敗文言を `AgentStopCause` へ分類する（`classifyError`）。
+許可要求の型も SDK の `PermissionResult` ではなく自前の `PermissionDecision` にして、provider 形への
+写像はアダプタに置く（`PermissionRequest` が既に自前型なので対にした）。
+
+### 2. 中立モジュールは SDK を import しない
+
+`@anthropic-ai/claude-agent-sdk` を import してよいのは **`core/claude-adapter.ts` /
+`core/claude-parse.ts` / `core/claude-errors.ts`** だけ。他の `core/` は型も定数も引かない。
+この境界のために変えたものが 2 つある:
+
+- `core/config.ts` の `EffortLevel` / `PermissionMode` を SDK の同名 union の再エクスポートから
+  **自前の配列 + 導出型**にした（値の集合は同じ）。副作用として SDK 側に値が増えても型では
+  気付けないので、SDK 更新時に目視で追従させる。とくに `permissionMode` は Claude Code 固有の
+  概念で、他エージェントでは解釈が変わりうる（吸収するのはアダプタの仕事）。
+- `core/status-reducer.ts` から `USAGE_LIMIT_ERROR_PREFIXES` の import と `isRateLimitError` が
+  消え、CLI の文言・typed error kind・HTTP ステータスの知識は `core/claude-errors.ts` に集まった。
+  「使用制限の文言は CLI 側で変わるので SDK に追従したい」という要求は正しいが、**追従してよいのは
+  アダプタの中だけ**。
+
+### 3. 畳み込みは共通、写像だけがアダプタ
+
+`applyAgentEvent(state, event, at, agent?)`（`core/agent-events.ts`）が**全 provider 共通の唯一の
+畳み込み**で、ログの上限（`pushLogEntry`）・進捗（TODO）・サブエージェントの完了ゲート
+（`activeTaskIds` / `deferredResult`）・PR 検出（`gh pr create` の tool_use ↔ tool_result）・
+コスト集計・ストリーミングプレビューはすべてここにある。新しいエージェントは自分のストリームを
+`AgentEvent` の語彙へ写すだけでよく、codiva 固有の振る舞いを再実装しない。
+
+`AgentEvent` は provider 非依存の語彙になるよう選んである:
+`session_started` / `assistant_message` / `assistant_text` / `tool_use` / `tool_result` /
+`stream_reset` / `stream_text` / `notice` / `task_started` / `task_settled` / `turn_completed` /
+`turn_stopped` / `usage`。ツール名は `AgentToolKind`（`edit` / `shell` / `todo` / `question` /
+`other`）へ、TODO 操作は `TodoOp`（`create` / `update` / `replace`）へ、失敗は `AgentStopCause`
+（`auth` / `rate_limit` / `connection` / `failed`）へ**アダプタ側で正規化してから**渡す
+（`turn_stopped.rollup` は「これは既に診断済みの停止の要約」の印で、2 回目の報告で分類を
+やり直して精度を落とさないためのもの）。
+
+`applyClaudeMessage`（`claude-parse.ts`）は parse → fold を合成した薄い糖衣で、1,100 行超の実データ
+テスト（`claude-parse.spec.ts` + `__fixtures__/*.jsonl`）が**分割前と同じ入口を叩き続けられる**ように
+残してある = 分割のリグレッション網。新しい呼び出し側はこれを増やさず `AgentEvent` 経由にする。
+
+### 4. セッション途中でエージェントを切り替えられる
+
+`Session.setAgent(adapter)` → `CodivaEvent` の `agent_switched`。**worktree（＝実際の成果物）は
+provider に依存しない**ので、Claude で始めた作業を途中から Codex に引き継げる。一方**モデル側の
+文脈は provider をまたげない**（各 CLI が自分のトランスクリプトを持つ）ため、切替は
+「今のターンを終える → 別 provider の**新しいセッション**を同じ worktree で開く」という形になる。
+
+| 引き継がれるもの | 引き継がれないもの |
+|---|---|
+| worktree・ブランチ・作業ツリーの内容 | モデル側の会話文脈（provider ごとに別のトランスクリプト） |
+| codiva 側のログ（`messages`）・タイトル・PR・稼働時間 | `sdkSessionId`（切替先の `agentSessions` に無ければ undefined ＝新しい会話） |
+| `agentSessions`（provider ごとの resume id） | `streamingText`（前のエージェントの途中表示） |
+| セッションの状態（`SessionStatus`）| `model`（解決済みモデルは provider ごとに別物。次のターンが埋める） |
+
+戻ってきたときに続きから再開できるよう、`agentSessions: Partial<Record<AgentId, string>>` に
+provider ごとの resume id を控え、**これは永続化する**（`state.json`）。落とすと再起動をまたいで
+「Codex に切り替えて、また Claude に戻す」をしたときに過去の会話が消えて新規セッションから
+始まってしまう。保存時は現在の `sdkSessionId` も `agentSessions[agent]` へ畳む（`agent_switched` は
+切替の瞬間にしか畳まないので、切替せずに終了したセッションの id がそこから漏れる）。`agent` の
+無い（切替対応より前の）スナップショットは `'claude'` として復元する。
+
+切替の実装で守っていること:
+
+- **走っているターンを畳んでから差し替える**。2 本のストリームが同じ worktree を触らないように
+  現在の run を捨て、保留中の許可は deny で解決する（未応答の `tool_use` で終わるトランスクリプトは
+  後の resume を壊す ⇒ `stop()` と同じ理由）。新しいエージェントが立ち上がるのは次の `send()`。
+- **resume id は provider をまたいで渡さない**。切替後は `agent_switched` が据えた `sdkSessionId`
+  だけを使う（復元時の `deps.resume` は初期エージェント用なので、別 provider へ持ち込むと存在しない
+  会話を resume しようとして壊れる）。
+- **ログ行の帰属**（`LogEntry.agent`）は**切替が起きたあとだけ**刻む。単一エージェントで完結する
+  セッションのログ行の形を変えないため（切替を使っていないユーザーには何も増えない）。
+
+### 5. Claude 専用機能は capability で optional 化する
+
+`AgentCapabilities`（`permissions` / `interrupt` / `setModel` / `resume` / `modelCatalog` /
+`usage` / `cost` / `transcript`）で「そのエージェントが何をできるか」を表明する。UI はこれを見て
+段階的に縮退する（持たない機能のキー操作・表示を出さない）。**セッション途中で切り替えると変わりうる**
+ので、UI は固定値として持たず `SessionHandle.getAgent()` から引く。
+
+現状 Claude だけが持つ（＝他 provider では縮退させる想定の）機能は、使用状況ゲージ（`usage`）・
+モデルカタログと `/model`（`modelCatalog` / `setModel`）・CLI トランスクリプトからのログ復元
+（`transcript`）・学習データ利用の警告（Claude Code の認証情報を読む `utils/privacy.ts`）。
+`AgentRun.interrupt` / `setModel` はメソッド自体が optional で、新しいアダプタは
+`NO_CAPABILITIES`（全部 false）から始めて実装できたものだけ true にする。
+文言側も `i18n.ts` の `AgentLabel`（表示名 + ログインコマンド）を差し込む形にしてあり、
+`auth.hint` / `auth.listHint` / `notify.needsLogin` / `action.resumeAllPrompt` は
+`(agent: AgentLabel) => string`（既定は `DEFAULT_AGENT_LABEL` = Claude）。エージェント名は固有名詞
+なので翻訳しない（モデル名と同じ i18n の例外）。
+
+> capability による UI の縮退・`/agent` コマンド・引き継ぎプロンプトは **Phase D** で入れる。
+> Phase A で入れたのは境界と語彙だけで、実際のアダプタ（Codex / Grok）は未実装
+> （[TASKS.md](./TASKS.md) の Phase A〜D）。
+
 ## セッション状態機械
 
-`SessionStatus` の遷移。導出元はすべて SDK メッセージストリームと canUseTool コールバック。
+`SessionStatus` の遷移。導出元はすべてエージェントのイベントストリーム（`AgentEvent`）と許可要求。
+以下の記述は Claude アダプタでの具体（`SDKMessage` の subtype など）を含むが、状態機械そのものは
+provider 非依存。
 
 ```
  creating ──(worktree作成完了 & query開始)──▶ running
@@ -143,9 +270,9 @@ codiva/
 ```
 
 `interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は4つ:
-(1) **通信断**（`Session.consume` の for-await が throw、または接続断を示すエラー `result`。`core/errors.ts`
-の `isConnectionError` で判定し、resume 元となる `sdkSessionId` がある場合のみ。無い＝init 前の早期失敗は
-`failed`）。(2) **応答途中の API エラー**（後述）。(3) **アプリ終了時の丸め**（`restorableStatus` が実行中/
+(1) **通信断**（`Session.consume` の for-await が throw、または接続断を示すエラー `result`。判定は
+アダプタの `classifyError`（Claude は `core/claude-errors.ts` の `isConnectionError`）で、resume 元となる
+`sdkSessionId` がある場合のみ。無い＝init 前の早期失敗は `failed`）。(2) **応答途中の API エラー**（後述）。(3) **アプリ終了時の丸め**（`restorableStatus` が実行中/
 入力待ちを保存時に `interrupted` にする。`stop()` はメモリ上の状態を変えない）。(4) **ユーザーによる中断**
 （詳細ビューの `Ctrl+C`。後述）。いずれも `completed` と同じく idle で resumable。追加指示または
 **再開アクション（一覧/詳細の `r`）** で resume できる — 送信すると `SessionManager.send` → `Session.send`
@@ -188,7 +315,7 @@ codiva/
   result で閉じる（実測: `__fixtures__/session-interrupt.jsonl`）ため、診断が無いと `failed` に落ちる。
   先に `interrupted` を立てておけば、result 側は**すでに resumable なら診断を維持**するロールアップガード
   （`isResumable`）でコストだけを拾う。
-- **`sdk-parse` 側も `aborted_streaming` を `interrupted` に分類する**（保険）。中断のあとに assistant
+- **`claude-parse` 側も `aborted_streaming` を `interrupted` に分類する**（保険）。中断のあとに assistant
   メッセージが 1 通挟まって status が `running` へ戻っても、ターンの終わりは `failed` にならない。ログに
   書くのは `USER_INTERRUPT_DETAIL`（= `'interrupted by user'`）で、CLI の内部診断
   （`errors: ['[ede_diagnostic] …']`）は出さない。2 経路で**同じ文言**を使うので `toInterrupted` の
@@ -243,18 +370,22 @@ incomplete.`）→ それを集約する `result`（`subtype: 'success'` + `is_e
 バッジが「Completed」へ倒れてしまう（本 issue の不具合）。対策として `system/task_started` /
 `system/task_notification` で稼働中タスク集合（`activeTaskIds`）を追跡し、result 受信時にタスクが残って
 いれば `completed` にせず結果を `deferredResult` に保留して `running` を維持する。最後のタスクが
-`task_notification` で settle し集合が空になった時点で保留結果を使って `completed` を確定する
-（`sdk-parse.ts` の `onTaskStarted` / `onTaskSettled` / `completeWith`）。`skip_transcript` の雑務タスクは
+`task_notification` で settle し集合が空になった時点で保留結果を使って `completed` を確定する。
+形の解釈（`system/task_started` → `task_started` イベント）は `claude-parse.ts`、**ゲートそのものは
+`agent-events.ts` の `applyAgentEvent`**（`task_started` / `task_settled` / `completeWith`）にあり
+**全 provider 共通**なので、他のエージェントは「タスクが始まった/片付いた」を報告するだけでよい。
+`skip_transcript` の雑務タスクは
 ゲート対象外。`activeTaskIds` / `deferredResult` は transient で永続しない。実データは
 `__fixtures__/session-subagent.jsonl`（スパイクの `subagent` シナリオで採取）。
 
 `rate_limited` は「使用量／レート制限に達して止まった」セッションを表す。`completed`/`failed` と同じく
 idle だが、エラー扱い（`failed`）にはせず「制限が解けるのを待って再開できる」状態として区別する。
 検知元は SDK の `rate_limit_event`（`rate_limit_info.status === 'rejected'`）、assistant メッセージの
-`error === 'rate_limit'`、および usage-limit を示す `result`／throw されたエラー文言（`isRateLimitError`。
-SDK の `USAGE_LIMIT_ERROR_PREFIXES` に追従）。制限は一時的なので保存時は `interrupted` に丸める。
+`error === 'rate_limit'`、および usage-limit を示す `result`／throw されたエラー文言
+（`core/claude-errors.ts` の `isRateLimitError`。SDK の `USAGE_LIMIT_ERROR_PREFIXES` に追従）。
+制限は一時的なので保存時は `interrupted` に丸める。
 
-`needs_login` は「Claude の認証が切れて止まった」セッションを表す。作業自体の失敗ではなく、ユーザーが
+`needs_login` は「エージェントの認証が切れて止まった」セッションを表す。作業自体の失敗ではなく、ユーザーが
 別ターミナルで `claude` に `/login` し直せば resume できるので、`failed` とは区別する。
 
 **とくに `completed` にしてはいけない**。CLI は認証エラーを次の2メッセージで報告する（実バイナリで確認）:
@@ -275,7 +406,7 @@ auto-PR まで走ってしまう（本 issue の不具合）。そのため resu
 
 検知の優先順は次の通り:
 
-1. **assistant メッセージの型付き `error`**（`core/errors.ts` の `isAuthErrorKind` = `authentication_failed`
+1. **assistant メッセージの型付き `error`**（`core/claude-errors.ts` の `isAuthErrorKind` = `authentication_failed`
    / `oauth_org_not_allowed`）。`SDKAssistantMessageError` として型定義されており文言・ロケールに依存しない
    ため、これを一次シグナルにする（既存の `error === 'rate_limit'` フックと同じ位置）。
    `billing_error`（残高不足）は再ログインで直らないので対象外＝ `failed` のまま。
@@ -291,7 +422,8 @@ auto-PR まで走ってしまう（本 issue の不具合）。そのため resu
 
 `attention: true`（一覧に ● を出す）なのは、`rate_limited` と違い放置しても解決せずユーザーの操作が
 必須だから。UI は「別ターミナルで `claude` にログインして再開」という手順そのものを出す
-（i18n `auth.hint` / `auth.listHint`）。保存時は `interrupted` に丸める（次回起動時には再ログイン済みかも
+（i18n `auth.hint` / `auth.listHint`。どちらもエージェント名とログインコマンドを差し込む
+`(agent: AgentLabel) => string` で、既定は `DEFAULT_AGENT_LABEL` = Claude）。保存時は `interrupted` に丸める（次回起動時には再ログイン済みかも
 しれない）。なお `auth_status` メッセージは CLI の対話的 `/login` UI 用で、`--enable-auth-status`
 オプトイン時のみ流れる（この SDK 版の型にも無い）ため API 認証エラーの検知には使えない。
 
@@ -391,12 +523,14 @@ interface SessionState {
 
 1セッションのライフサイクルを保持する。
 
-- コンストラクタで `queryFn`（SDK の `query` 関数）を **DI で受け取る**。テストでは合成メッセージストリームを注入する。
-- streaming input mode を常用: `query()` の prompt に自前の `AsyncGenerator<SDKUserMessage>` を渡し、内部キュー（push可能な async queue）で管理。`send(text)` でいつでも追加メッセージを投入できる。
-- 受信ループ: `for await (const msg of query)` で各 SDK メッセージを `applySdkMessage()`（`core/sdk-parse.ts`）に畳み込む。SDK メッセージ形状の解釈はここに閉じ、純粋 reducer（`reduce(state, CodivaEvent)`）は型付きイベントだけを扱う。UI アクション（追加指示・許可・モデル切替等）は `reduce` へ dispatch。変更のたびに `onChange` を発火。
+- コンストラクタで `agent`（`AgentAdapter`）を **DI で受け取る**（省略時は `queryFn` から Claude アダプタを組み立てる短縮形）。テストでは合成イベントストリームを返すフェイクアダプタを注入する。
+- 入力は provider 非依存の `AsyncIterable<string>`: 内部キュー（push 可能な async queue）を `AgentRunRequest.prompt` として渡し、`send(text)` でいつでも追加できる。`SDKUserMessage` への包み直しはアダプタの仕事。
+- 受信ループ: `for await (const event of run)` で各 `AgentEvent` を `applyAgentEvent()`（`core/agent-events.ts`）に畳み込む。provider のメッセージ形状の解釈はアダプタ（Claude なら `core/claude-parse.ts`）に閉じ、純粋 reducer（`reduce(state, CodivaEvent)`）は codiva 起点の型付きイベントだけを扱う。UI アクション（追加指示・許可・モデル切替等）は `reduce` へ dispatch。変更のたびに `onChange` を発火。
+- `getAgent()` / `setAgent(adapter)`: 駆動するエージェントの読み取りと差し替え（後述「エージェント抽象」）。UI は `getAgent().capabilities` を見て持たない機能を隠す。
+- 例外経路の分類もアダプタ任せ: `catch` した文字列は `adapter.classifyError?.(error) ?? 'failed'` で `AgentStopCause` にしてから `aborted` / `interrupted` を dispatch する。
 - `respondToPermission(result)`: 保留中の canUseTool Promise を resolve。
 - `interrupt()` / `abort()`: SDK の interrupt / AbortController。**`interrupt()` は「走っているターンだけをやめる」**（詳細ビューの `Ctrl+C`）: サブプロセスは生かしたまま `interrupted`（idle & resumable）にし、追加指示 / `Ctrl+R` で同じ SDK 会話を続けられる状態にする。状態は SDK の応答を待たずに**先に**確定させる（体感 + 分類。下記「ユーザーによる中断」を参照）。許可/質問待ちで呼ばれた場合は `commit()` の既存経路が canUseTool の promise を deny で閉じる（未応答の `tool_use` は後の resume を壊す）。`isInterruptible` でない状態では何もしない。
-- `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`/`appendSystemPrompt`/`ignoredFiles`）を DI で受け、`query()` の `options` に反映（設定ファイル由来）。`permissionMode` 未指定時は `acceptEdits`。
+- `SessionOptions`（`model`/`effort`/`permissionMode`/`maxBudgetUsd`/`appendSystemPrompt`/`ignoredFiles`）を DI で受け、provider 非依存の `AgentRunOptions` に写してアダプタへ渡す（設定ファイル由来）。SDK の `Options`（`canUseTool` / `settingSources` / `includePartialMessages` / `permissionMode` 未指定時の `acceptEdits`）を組み立てるのはアダプタ側。
 - **systemPrompt の組み立ては純関数 `core/system-prompt.ts`（`composeSystemPrompt`）**。要素は「worktree の環境説明」→「リポジトリ追加指示」の順（前提の説明が先、著者の具体的な指示が後）で、どちらも無ければ `undefined`（= `systemPrompt` を渡さない）。`session.ts` は文言も結合順も持たない。
 - **worktree の環境説明（共有 symlink の注意書き）**: `ignoredFiles: 'symlink'`（既定）では ignore 済みパスが元リポジトリの実体を指すため、セッションが依存更新やビルドを走らせるとメインチェックアウトと並行セッションに波及する。そこで**このモードのときだけ** `SHARED_IGNORED_FILES_NOTICE` を systemPrompt に載せ、「読むのは安全 / 書く前にそのパスだけリンクを切って独立させる / リンク越しに消さない（`rm -rf <path>/` 禁止）/ 触らない作業では何もしない」を伝える。モードは合成レイヤの `sessionOptionsFrom(config, appendSystemPrompt)`（`bootstrap/build-manager.ts`。config → `SessionOptions` の対応付けだけを持つ純関数で、spec で固定してある）が `resolveIgnoredFilesMode(config)` で解決して `SessionOptions.ignoredFiles` へ渡す。解決箇所は合成レイヤの2つ（`index.tsx` の `WorktreeManager` 生成とここ）だが、どちらも同じ config 由来なので一致する。**既知の制約**: モードは state.json に永続していないので、`symlink` で作った worktree を後から `copy` / `none` 設定で復元すると注意書きが載らない（設定を変えた場合のみ。逆向き＝実体があるのに注意書きが載るケースは、手順1の `test -L` 判定で無害化される）。**codiva 側でリンクを張り替えることはしない** — 何が書き込み対象かは指示内容次第で、先回りして全部コピーすると symlink モードの利点（複製コストゼロ）が消えるため、判断はセッションに委ねる。文言は AI 向けなので英語・i18n カタログ対象外（`utils/title.ts` と同じ扱い）。
 - **リポジトリ追加指示（`.codiva/prompt.md`）**: 合成ルート（`index.tsx`）が起動時に `loadRepoPrompt(repoRoot)` で読み、`buildManager` → `SessionOptions.appendSystemPrompt` へ流す。`consume()` は上記と合成して `options.systemPrompt` として渡す。SDK は systemPrompt 省略時に空文字へ写像する（claude_code プリセットは使わない）ため、文字列を渡すのは「空への追記」と等価で現挙動を変えない。CLAUDE.md は `settingSources: ['project']` 経由で別途注入されるので、これはそれへの上乗せ。将来ベースの systemPrompt を導入する場合は array / preset-append 形へ切り替える（`session.ts` の注入コメント参照）。
@@ -422,7 +556,7 @@ interface SessionState {
   - `core/pr-recovery.ts` … 詰まった PR の立て直し判定と指示文（純粋）
   - `core/run-mode.ts` … `RunMode` + `createModePolicy`（shift+tab のツール許可モード）
   - `core/persistence.ts` の `assemblePersistedState` … state.json スナップショットの組み立て
-  - DI seam の interface（`WorktreeService` / `SessionHandle` / `PrAutomation` / `PrLookup` / `ActionResult`）は `core/session-ports.ts`（leaf）に集約し循環を防ぐ。
+  - DI seam の interface（`WorktreeService` / `SessionHandle` / `PrAutomation` / `PrLookup` / `ActionResult`）は `core/session-ports.ts`（leaf）に集約し循環を防ぐ。エージェント側の seam（`AgentAdapter` / `AgentRun` / `AgentRunRequest` / `AgentCapabilities` / `PermissionDecision`）は `core/agent-ports.ts`（同じく leaf）。`SessionManager` も `agent` を DI で受け、そこを差し替えるだけで新規セッションの provider が変わる。
 
 ### WorktreeManager (`utils/worktree-manager.ts`)
 
@@ -612,8 +746,10 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   クォータ消費なので、毎ポーリング 2 回投げていたのを 1 回に）。
 - **1 セッション 1 PR とは限らない（`core/pr-detect.ts`）**: セッションが自分で別ブランチを切って
   `gh pr create` することがある。ブランチ名（`codiva/<slug>`）からは辿れないので、**`gh pr create` を
-  実行した tool_use の結果**に出る URL から拾って `extraPrs` に積む（`sdk-parse` が tool_use id を
-  控えて tool_result と突き合わせる）。ログ全体から URL を拾わないのは誤検出を避けるため —
+  実行した tool_use の結果**に出る URL から拾って `extraPrs` に積む（`claude-parse` が
+  `tool_use.prCreate` を立て、`applyAgentEvent` が tool_use id を控えて tool_result と突き合わせる。
+  突き合わせは provider 共通側にあるので、他のエージェントは「PR 作成コマンドだった」ことを
+  報告するだけでよい）。ログ全体から URL を拾わないのは誤検出を避けるため —
   `gh pr list` の出力や `gh pr view` で覗いた他人の PR まで数えてしまう。
   表示は一覧が `#12 +2`（代表 + 件数。列幅は複数 PR の行があるときだけ広げる）、全件は詳細ビューの
   1 行に出す。**代表はセッションブランチの PR**（`prStatus` = グリフを持つ唯一の PR で、クリックで
@@ -834,7 +970,7 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
 |---|---|---|
 | `SessionState.messages` が無制限に伸び、追記ごとに全体コピー（O(n²)） | 件数 `MAX_LOG_ENTRIES` **と合計文字数 `MAX_LOG_CHARS`**（先に縛られた方で古い方から落とす）+ 1 件あたり `MAX_LOG_ENTRY_CHARS`（`…` を付けて切る） | `core/log-buffer.ts` の `pushLogEntry` |
 | 詳細ビューが**更新ごとにログ全体**を折り返し + Markdown 再パース | エントリ単位のメモ化（幅とプレフィックスが同じなら再利用）+ 保持行数の上限 `MAX_CACHED_ROWS`（LRU） | `core/scroll.ts` の `logLines` |
-| ツール結果の巨大ペイロード（10MB の `Read` / `Bash`）を平坦化 → 全行 `split` | 読む 200 文字だけ材質化（`asStringHead`）。`tool_use` の入力（`Bash` の heredoc 等）も先に切る | `core/sdk-parse.ts` |
+| ツール結果の巨大ペイロード（10MB の `Read` / `Bash`）を平坦化 → 全行 `split` | 読む 200 文字だけ材質化（`asStringHead`）。`tool_use` の入力（`Bash` の heredoc 等）も先に切る | `core/claude-parse.ts` |
 | `streamingText` に 1 メッセージ全体を溜め、毎フレーム全体を `split` | 末尾 `MAX_STREAM_PREVIEW_CHARS` だけ保持（描くのは最後の 1 行） | `core/log-buffer.ts` の `clipStreamText` |
 | 復元時に全セッションのトランスクリプト（各数 MB）を同時読み込み | 1 本ずつ読む（変換後すぐ回収される）+ **読みながら**畳む（`History`）+ `capLogEntries` | `bootstrap/restore-sessions.ts` / `core/transcript.ts` |
 
@@ -851,7 +987,7 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
 不変条件:
 
 - **追記の経路は `pushLogEntry` だけ**。`[...state.messages, entry]` を新しく書かない
-  （`appendLog` と `sdk-parse` の追記はすべてここを通す。例外は `onApiRetry` の**書き換え**
+  （`appendLog` と `applyAgentEvent` の追記はすべてここを通す。例外は `notice` の coalesce = **書き換え**
   = 末尾 1 件の差し替えで、件数を増やさないので上限に関係しない）。
 - **`seq` は振り直さない**。描画キーが `<seq>:<行>` なので、トリムしても既存行のキーは変わらない
   （= React の再マウントが起きない）。ただし後述のとおり**行 index は変わる**。
