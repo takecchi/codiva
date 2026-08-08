@@ -27,8 +27,8 @@
   provider 形への写像はアダプタが行う（Claude は `claude-adapter.ts` の `canUseTool`）。
 - その provider に無い機能は `AgentCapabilities` で表明する（`permissions` / `interrupt` /
   `setModel` / `resume` / `modelCatalog` / `usage` / `cost` / `transcript`）。UI は capability を
-  見て縮退し、`AgentRun.interrupt` / `setModel` は optional。新しいアダプタは
-  `NO_CAPABILITIES` から始めて、実装できたものだけ true にする。
+  見て縮退する（表は入っているが実際の縮退の配線は Phase D）。`AgentRun.interrupt` / `setModel` は
+  optional。新しいアダプタは `NO_CAPABILITIES` から始めて、実装できたものだけ true にする。
 
 ## 形の知識は 2 段に割る（アダプタの parse → 共通の fold）
 

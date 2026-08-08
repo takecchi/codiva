@@ -219,8 +219,9 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
 
 `AgentCapabilities`（`permissions` / `interrupt` / `setModel` / `resume` / `modelCatalog` /
 `usage` / `cost` / `transcript`）で「そのエージェントが何をできるか」を表明する。UI はこれを見て
-段階的に縮退する（持たない機能のキー操作・表示を出さない）。**セッション途中で切り替えると変わりうる**
-ので、UI は固定値として持たず `SessionHandle.getAgent()` から引く。
+段階的に縮退する（持たない機能のキー操作・表示を出さない）— **表と `getAgent()` は Phase A で入れ、
+実際の縮退の配線は Phase D**。参照するときは**固定値として持たず** `SessionHandle.getAgent()` から
+引く（セッション途中で切り替えると変わりうるため）。
 
 現状 Claude だけが持つ（＝他 provider では縮退させる想定の）機能は、使用状況ゲージ（`usage`）・
 モデルカタログと `/model`（`modelCatalog` / `setModel`）・CLI トランスクリプトからのログ復元

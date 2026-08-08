@@ -95,13 +95,15 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 ## 絶対に崩さない不変条件
 
 1. **依存は一方向**（`ui → core ← utils`）。`core/` は Ink / React / node の I/O を import しない。
-2. **状態遷移は reducer 経由だけ**。`SessionStore` に status を手書きしない。状態の性質は `STATUS_META` が唯一の表。
+2. **状態遷移は 2 本の純関数だけ**（`reduce` = codiva 起点の `CodivaEvent` / `applyAgentEvent` =
+   エージェント起点の `AgentEvent`）。`SessionStore` に status を手書きしない。状態の性質は `STATUS_META` が唯一の表。
 3. **エージェント固有の知識はアダプタに閉じる**。`core/` の中立モジュールは
    `@anthropic-ai/claude-agent-sdk` を import しない — 触ってよいのは `claude-adapter.ts` /
    `claude-parse.ts` / `claude-errors.ts` だけ。provider のストリームは
    `AgentEvent`（`core/agent-events.ts`）へ写してから畳み込む（`applyAgentEvent` が唯一の畳み込み）。
    形は想定で書かず、spike の実データでテストする。
-4. **UI 文字列はカタログのみ**（`core/i18n.ts` に ja / en 対で追加。例外は SDK 由来のモデル名）。
+4. **UI 文字列はカタログのみ**（`core/i18n.ts` に ja / en 対で追加。例外は SDK 由来のモデル名と
+   エージェント名・CLI コマンド名 = 固有名詞。差し込みは `AgentLabel`）。
 5. **1画面 1 `useInput`**（モーダルは委譲）。色・記号は `theme.ts` 経由。
 6. **git は `utils/git.ts` の `git(cwd, args)`**（execFile + 引数配列。シェル禁止）。**マージ競合は自動解消しない。**
 7. **`any` / default export 禁止**、import は**拡張子なし**（`@/core`）、ファイル名は kebab-case。
