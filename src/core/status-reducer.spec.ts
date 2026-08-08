@@ -162,19 +162,33 @@ describe('control events', () => {
   });
 });
 
-describe('reduce classifies aborted rate-limit errors', () => {
+// 分類そのもの（どの文言がどの `cause` か）はアダプタの仕事なので
+// `claude-errors.spec.ts` の `classifyClaudeError` が担当する。ここで見るのは
+// 「`cause` を受け取った reducer がどの状態へ落とすか」だけ。
+describe('reduce routes aborted stops by the adapter-supplied cause', () => {
   const running: SessionState = { ...initialState(BASE), status: 'running' };
 
-  it('an aborted event carrying a rate-limit error is rate_limited, not failed', () => {
+  it('a rate-limit cause is rate_limited, not failed', () => {
     const state = reduce(running, {
       kind: 'aborted',
       error: "Error: You've hit your limit",
+      cause: 'rate_limit',
       at: 5000,
     });
     expect(state.status).toBe('rate_limited');
   });
 
-  it('a genuine (non-limit) error still fails', () => {
+  it('a connection cause is interrupted (resumable), not failed', () => {
+    const state = reduce(running, {
+      kind: 'aborted',
+      error: 'connection reset',
+      cause: 'connection',
+      at: 5000,
+    });
+    expect(state.status).toBe('interrupted');
+  });
+
+  it('an unclassified abort (no cause) still fails', () => {
     const state = reduce(running, { kind: 'aborted', error: 'connection reset', at: 5000 });
     expect(state.status).toBe('failed');
   });
@@ -195,12 +209,12 @@ describe('reduce classifies aborted rate-limit errors', () => {
   });
 });
 
-describe('reduce classifies aborted auth errors', () => {
+describe('reduce routes an auth cause to needs_login', () => {
   const running: SessionState = { ...initialState(BASE), status: 'running' };
 
-  it('an aborted event carrying an expired login is needs_login, not failed', () => {
+  it('an aborted event with an auth cause is needs_login, not failed', () => {
     const error = 'Failed to authenticate: OAuth session expired and could not be refreshed';
-    const state = reduce(running, { kind: 'aborted', error, at: 5000 });
+    const state = reduce(running, { kind: 'aborted', error, cause: 'auth', at: 5000 });
     expect(state.status).toBe('needs_login');
     expect(state.finishedAt).toBe(5000);
     // The reason is kept so the detail view can show what the CLI reported.
@@ -215,20 +229,48 @@ describe('reduce classifies aborted auth errors', () => {
       pendingPermission: { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' },
       streamingText: 'half',
     };
-    const state = reduce(pending, { kind: 'aborted', error: 'invalid x-api-key', at: 7 });
+    const state = reduce(pending, {
+      kind: 'aborted',
+      error: 'invalid x-api-key',
+      cause: 'auth',
+      at: 7,
+    });
     expect(state.status).toBe('needs_login');
     expect(state.pendingPermission).toBeUndefined();
     expect(state.streamingText).toBeUndefined();
   });
+});
 
-  it('an auth error wins over the rate-limit / connection classifiers', () => {
-    // Auth is checked first: waiting or retrying never fixes an expired login.
-    const state = reduce(running, {
-      kind: 'aborted',
-      error: 'Failed to authenticate through the broker: request timed out',
-      at: 5000,
-    });
-    expect(state.status).toBe('needs_login');
+describe('agent_switched', () => {
+  const running: SessionState = {
+    ...initialState(BASE),
+    status: 'running',
+    sdkSessionId: 'claude-1',
+    model: 'claude-opus-4-8',
+  };
+
+  it('stashes the current resume id under the outgoing agent', () => {
+    const state = reduce(running, { kind: 'agent_switched', agent: 'codex', at: 1 });
+    expect(state.agent).toBe('codex');
+    expect(state.agentSessions?.claude).toBe('claude-1');
+    // Codex は初めてなので resume 先が無い（= 次のターンは新しい会話）。
+    expect(state.sdkSessionId).toBeUndefined();
+    // 解決済みモデルは provider ごとに別物なので持ち越さない。
+    expect(state.model).toBeUndefined();
+  });
+
+  it('restores the target agent’s own resume id when switching back', () => {
+    const switched = reduce(running, { kind: 'agent_switched', agent: 'codex', at: 1 });
+    const withCodex: SessionState = { ...switched, sdkSessionId: 'codex-1' };
+    const back = reduce(withCodex, { kind: 'agent_switched', agent: 'claude', at: 2 });
+    expect(back.agent).toBe('claude');
+    expect(back.sdkSessionId).toBe('claude-1');
+    expect(back.agentSessions?.codex).toBe('codex-1');
+  });
+
+  it('is a no-op when the agent is unchanged', () => {
+    const same = reduce(running, { kind: 'agent_switched', agent: 'claude', at: 1 });
+    expect(same).toBe(running);
   });
 });
 

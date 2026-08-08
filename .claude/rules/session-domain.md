@@ -11,20 +11,32 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
 ```
 
 - `interrupted` / `rate_limited` / `needs_login` は **resumable な idle**（エラーではない）。
-  `failed` と混同しない。分類の根拠は `core/errors.ts`（`isAuthError` → `isRateLimitError` →
-  `isConnectionError` の順に判定。**認証切れを最優先**）。
+  `failed` と混同しない。**どの文言がどれに当たるかを知るのはアダプタ**で、状態機械は分類結果の
+  `AgentStopCause`（`auth` / `rate_limit` / `connection` / `failed`）だけを見る。Claude の判定は
+  `core/claude-errors.ts` の `classifyClaudeError`（`isAuthError` → `isRateLimitError` →
+  `isConnectionError` の順。**認証切れを最優先** — 認証エラーがタイムアウトに言及することがあり、
+  通信断と読み違えると「ログインし直せ」と言うべき場面で素の再開を勧めてしまう）。
 - `conflict` はマージ競合の可視化専用。自動解消しないので**終端状態**として扱う。
 
-## 遷移の唯一の経路は reducer
+## 遷移の唯一の経路は 2 本の純関数
 
-- 状態を作るのは `reduce(state, CodivaEvent)`（`core/status-reducer.ts`、純関数）と
-  `applySdkMessage(state, SDKMessage, at)`（`core/sdk-parse.ts`）だけ。**`SessionStore` に
-  `status` を手書きで set しない**（過去に provision 失敗が reducer を迂回して、以後
-  `send`/`allow` が黙って no-op になる不具合を作った）。失敗も
-  `reduce(state, { kind: 'aborted', error, at })` を通す。
+- 状態を作るのは次の 2 つだけ。**`SessionStore` に `status` を手書きで set しない**
+  （過去に provision 失敗が reducer を迂回して、以後 `send`/`allow` が黙って no-op になる
+  不具合を作った）。失敗も `reduce(state, { kind: 'aborted', error, cause, at })` を通す。
+
+  | 関数 | 入力 | 意味 |
+  |---|---|---|
+  | `reduce(state, CodivaEvent)`（`core/status-reducer.ts`） | `CodivaEvent` | **codiva 起点**（UI / manager が起こしたこと） |
+  | `applyAgentEvent(state, AgentEvent, at, agent?)`（`core/agent-events.ts`） | `AgentEvent` | **エージェント起点**（provider に起きたこと。全 provider 共通の畳み込み） |
+
+  2 本に分けているのは役割が違うため。provider のストリームはアダプタが `AgentEvent` へ
+  正規化してから `applyAgentEvent` に渡す（[sdk-integration.md](./sdk-integration.md)）。
+  `applyClaudeMessage`（`core/claude-parse.ts`）は parse → fold を合成した薄い糖衣で、
+  既存の実データテストの入口を保つためだけに残してある。
 - `CodivaEvent` は UI/manager 由来のアクションのみ（`permission_request` / `permission_resolved` /
-  `user_input` / `model` / `title` / `pr` / `pr_lookup` / `conflict` / `aborted` / `interrupted` /
-  `archived`）。`pr` は「`gh` が答えた」ときだけ流すので `prLookup` も必ずクリアする。
+  `user_input` / `model` / `title` / `pr` / `pr_lookup` / `conflict` / `aborted` /
+  `agent_switched` / `interrupted` / `archived`）。`pr` は「`gh` が答えた」ときだけ流すので
+  `prLookup` も必ずクリアする。
   失敗（`unavailable`）は `pr_lookup: 'error'` で表現し、**`pr` を undefined で上書きしない**
   （PR 番号がポーリングごとに消える不具合の再発防止）。
 - **PR は「識別」と「状態」に分けて持つ**。`pr: PrRef`（番号・URL。ブランチに対して不変なので
@@ -34,15 +46,22 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
   （= state.json の保存）がチェックの進行ごとに走らない。番号が分かっていてステータス未取得
   （復元直後・PR 作成直後）は `prPollIntervalMs` が 0 を返し、すぐ取得して埋める。
   全 variant が `at: number` を持ち、reducer は時刻を読まない（純粋・決定的）。
-- **SDK メッセージは `CodivaEvent` ではない**。生の形を知るのは `sdk-parse.ts` だけ
-  （[sdk-integration.md](./sdk-integration.md)）。
+- **`aborted` は `cause` で分岐する**（`AgentStopCause`。省略時は `failed`）。reducer が
+  エラー文言を正規表現で見て分類し直さない — 「認証切れ」「レート制限」「通信断」の見分け方は
+  provider ごとに違うので、判定はアダプタの `classifyError` に閉じ込める。
+- **`agent_switched` は worktree を動かさない**。今の provider の resume id を `agentSessions`
+  へ退避し、切替先の id（過去に使っていれば）を `sdkSessionId` に据える。切替先が初めてなら
+  `sdkSessionId` は undefined になり、次のターンは新しい会話として始まる。`streamingText` と
+  `model`（解決済みモデルは provider ごとに別物）は捨てる。
+- **SDK メッセージは `CodivaEvent` でも `AgentEvent` でもない**。生の形を知るのは
+  `claude-parse.ts` だけ（[sdk-integration.md](./sdk-integration.md)）。
 - 状態の確定は `Session.commit` の単一経路。ここが `accrueActive` を呼ぶので、
   個別の遷移に稼働時間の計算を散らさない。
 
 ## ログ（`messages`）は上限付き
 
-- **追記の経路は `core/log-buffer.ts` の `pushLogEntry` だけ**（`appendLog` と `sdk-parse` の
-  追記もここを通す。例外は `onApiRetry` の**書き換え** = 末尾 1 件の差し替えで、件数を増やさない）。
+- **追記の経路は `core/log-buffer.ts` の `pushLogEntry` だけ**（`appendLog` と
+  `applyAgentEvent` の追記もここを通す。例外は `onApiRetry` の**書き換え** = 末尾 1 件の差し替えで、件数を増やさない）。
   `[...state.messages, entry]` を新しく書かない — 上限なしの追記 + 全体コピーが
   **実際にヒープ枯渇で TUI を落とした**（`FATAL ERROR: Ineffective mark-compacts`）。
 - 上限は 3 つ: 件数 `MAX_LOG_ENTRIES` / **合計文字数 `MAX_LOG_CHARS`** / 1 件あたり
@@ -57,6 +76,8 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
   上限が無いと一過性のゴミが永続的な保持に化ける）。エントリが immutable であること
   （変更時は必ず別オブジェクト）が前提なので `LogEntry` をその場で書き換えない。
   返る `DisplayLine` は read-only 扱い。
+- **`LogEntry.agent` は切替が起きたあとだけ入る**。単一エージェントで完結するセッションの
+  ログ行の形を変えないため（切替を使っていないユーザーには何も増えない）。復元した行も undefined。
 
 ## 状態の「性質」は STATUS_META が唯一の表
 
@@ -83,6 +104,13 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
   init 前に落ちて resume 不能なものは保存しない。
 - 読み込み側（`fromPersistedJson`）は `completed` / `interrupted` / `failed` のみ受理し、
   壊れた JSON は空状態へフォールバックする（TUI を落とさない）。
+- **エージェントも保存する**: `agent`（最後に駆動していた provider）と `agentSessions`
+  （provider ごとの resume id）。後者を落とすと、再起動をまたいで「Codex に切り替えて、また
+  Claude に戻す」をしたときに過去の会話が消えて新規セッションから始まってしまう。保存時は
+  現在の `sdkSessionId` も `agentSessions[agent]` へ畳む（`agent_switched` は切替の瞬間にしか
+  畳まないので、切替せずに終了したセッションの id がそこから漏れる）。読み込みは未知の
+  provider 名・非文字列を 1 件ずつ捨て、`agent` が無い（切替対応より前の）スナップショットは
+  `'claude'` として復元する。
 - **会話ログは永続しない**。復元時は CLI のトランスクリプトから再構築する
   （`core/transcript.ts` + `utils/transcript.ts`）。state.json はメタデータのみに保つ。
 - 稼働時間は wall-clock ではなく `activeMs` + `activeSince`（`active` な区間だけ積算）。
@@ -96,20 +124,30 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
 - **中断（`interrupt()`、詳細ビューの `Ctrl+C`）は3つ目の別物**: 走っているターンだけをやめ、
   サブプロセスは生かしたまま `interrupted`（idle & resumable）にする。状態は **SDK の応答を
   待たずに先に確定**させる — CLI が返すターン終了 result は `is_error: true` なので、
-  診断が無いと `failed` に落ちる（sdk-parse は `terminal_reason: 'aborted_streaming'` も
+  診断が無いと `failed` に落ちる（`claude-parse` は `terminal_reason: 'aborted_streaming'` も
   同じ `USER_INTERRUPT_DETAIL` で `interrupted` にするので、二重ログにも `failed` にもならない）。
   対象判定（`isInterruptible`）は `SessionManager.interrupt` に置く（`resume` と同じ理由 =
   UI の購読はスロットルされていて連打を弾けない）。
 - `stop()` / 再開可能状態へ落ちる前に**保留中の許可を deny で解決**する。未応答の `tool_use`
   で終わるトランスクリプトは後の resume を壊す。
 - 復元セッションは `start()` せず、最初の `send()` で遅延 resume（起動時にサブプロセスを乱立させない）。
-- 1 SDK セッション 1 ライター。codiva 以外（外部 `claude --resume` 等）から同じセッションに繋がない。
+- **エージェントの切替（`Session.setAgent()`）も走っているターンを畳んでから**行う。2 本の
+  ストリームが同じ worktree を触らないように現在の run を捨て、保留中の許可も deny で解決する
+  （未応答の `tool_use` で終わるトランスクリプトは後の resume を壊す）。新しいエージェントが
+  立ち上がるのは次の `send()`。
+- 1 エージェントセッション 1 ライター。codiva 以外（外部 `claude --resume` 等）から同じ
+  セッションに繋がない。**同時に 2 つの provider を 1 つの worktree で走らせない**。
 
 ## DI seam とファサード
 
-- DI 用の interface は `core/session-ports.ts`（leaf）に集約する。ここに置くことで
-  core 内の循環 import を防いでいるので、`WorktreeService` / `SessionHandle` / `PrAutomation` /
-  `PrLookup` を他ファイルで再定義しない。
+- DI 用の interface は 2 つの leaf に集約する。どちらも他モジュールを import しない末端に
+  置くことで core 内の循環 import を防いでいるので、ここにあるものを他ファイルで再定義しない。
+  - `core/session-ports.ts` … codiva 側の seam（`WorktreeService` / `SessionHandle` /
+    `PrAutomation` / `PrLookup`）。
+  - `core/agent-ports.ts` … エージェント側の seam（`AgentAdapter` / `AgentRun` /
+    `AgentRunRequest` / `AgentCapabilities` / `PermissionDecision`）。
+  `SessionHandle` の `getAgent()` / `setAgent()` は optional — 状態だけを動かすテスト用フェイク
+  （`tests/helpers.ts` の `noopSession`）にエージェントの概念を強制しないため。
 - `SessionManager` は**ファサード**。責務を戻さない:
   `session-store.ts`（購読と参照同一性）/ `session-actions.ts`（merge・discard・diffStat）/
   `pr-coordinator.ts`（autoPr・refreshPrs）/ `run-mode.ts`（`auto`⇄`confirm` ポリシー）/

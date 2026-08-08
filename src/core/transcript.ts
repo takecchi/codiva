@@ -1,5 +1,5 @@
+import { summarizeToolUse, toolResultSummary } from './claude-parse';
 import { capLogEntries, clipLogText, MAX_LOG_ENTRIES } from './log-buffer';
-import { summarizeToolUse, toolResultSummary } from './sdk-parse';
 import type { LogEntry } from './types';
 
 /**

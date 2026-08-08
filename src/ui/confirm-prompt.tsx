@@ -1,5 +1,6 @@
 import { Text } from 'ink';
 import type { FC } from 'react';
+import { DEFAULT_AGENT_LABEL } from '@/core';
 import { useMessages } from './i18n-context';
 import { theme } from './theme';
 
@@ -33,7 +34,7 @@ export const ConfirmPrompt: FC<ConfirmPromptProps> = (props) => {
   // 切れ、lifecycle 側を先に除外する書き方では count/authCount を読めない）。
   const prompt =
     props.kind === 'resumeAll'
-      ? m.action.resumeAllPrompt(props.count, props.authCount)
+      ? m.action.resumeAllPrompt(DEFAULT_AGENT_LABEL, props.count, props.authCount)
       : props.kind === 'recoverAll'
         ? m.recover.allPrompt(props.syncCount, props.ciCount)
         : props.kind === 'clear'

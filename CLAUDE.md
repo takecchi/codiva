@@ -30,7 +30,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 |---------|--------------|
 | `.claude/rules/workflow.md` | 着手前（手順・ドキュメントの役割分担・non-goals） |
 | `.claude/rules/session-domain.md` | セッションの状態・遷移・永続化に触るとき |
-| `.claude/rules/sdk-integration.md` | Agent SDK（session / sdk-parse / model catalog）に触るとき |
+| `.claude/rules/sdk-integration.md` | エージェント抽象・Agent SDK（agent-ports / claude-* / session / model catalog）に触るとき |
 | `.claude/rules/git-and-io.md` | worktree・マージ・PR・ファイル入出力に触るとき |
 | `.claude/rules/testing.md` | テストを書くとき |
 
@@ -59,12 +59,13 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | やりたいこと | 主なファイル |
 |---|---|
 | セッションの状態・遷移 | `core/types.ts`（union）/ `core/status-meta.ts`（性質の表）/ `core/status-reducer.ts`（純粋 reducer） |
-| SDK メッセージの解釈 | `core/sdk-parse.ts` **のみ** + `core/__fixtures__/*.jsonl` |
+| 別のエージェント（Codex / Grok）に対応させる | `core/agent-ports.ts`（`AgentAdapter` / `AgentCapabilities` / `PermissionDecision` = DI 境界）/ `core/agent-events.ts`（`AgentEvent` の語彙 + 全 provider 共通の畳み込み `applyAgentEvent`）/ `core/claude-adapter.ts`・`core/claude-parse.ts`・`core/claude-errors.ts`（Claude 実装の 3 点セット） |
+| SDK メッセージの解釈 | `core/claude-parse.ts` **のみ**（`parseClaudeMessage`: SDKMessage → `AgentEvent[]`）+ `core/__fixtures__/*.jsonl` |
 | セッションへ渡す systemPrompt | `core/system-prompt.ts`（worktree の共有 symlink 注意書き + `.codiva/prompt.md` の合成） |
-| セッションのライフサイクル | `core/session.ts`（1 query）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
+| セッションのライフサイクル | `core/session.ts`（1 エージェントストリーム。`setAgent()` で途中切替）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
 | worktree・マージ・破棄 | `utils/worktree-manager.ts`（I/O）/ `core/worktree.ts`（型・純関数）/ `core/session-actions.ts` |
 | PR 自動化 | `core/pr-coordinator.ts` / `utils/pr.ts`（`gh` はここだけ） |
-| 1 セッション複数 PR（`#12 +2`） | `core/pr-detect.ts`（検知・表示ヘルパ・純粋）/ `core/sdk-parse.ts`（`gh pr create` の tool_use ↔ tool_result 対応）/ `ui/pr-cell.tsx`（`PrCell` / `PrSummary`） |
+| 1 セッション複数 PR（`#12 +2`） | `core/pr-detect.ts`（検知・表示ヘルパ・純粋）/ `core/agent-events.ts`（`gh pr create` の tool_use ↔ tool_result 対応。検知は provider 共通）/ `core/claude-parse.ts`（Claude のツール名判定）/ `ui/pr-cell.tsx`（`PrCell` / `PrSummary`） |
 | 詰まった PR の立て直し | `core/pr-recovery.ts`（判定・指示文・純粋）/ `SessionManager.recover()` / `utils/worktree-manager.ts` の `syncBase`（ベース取り込み）/ `ui/hooks.ts` の `useRecovery` |
 | 一覧画面 | `ui/session-list.tsx`（composer / list の2フォーカス） |
 | 詳細画面 | `ui/session-detail.tsx`（ログ + 追加指示 + 操作パネル） |
@@ -94,9 +95,15 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 ## 絶対に崩さない不変条件
 
 1. **依存は一方向**（`ui → core ← utils`）。`core/` は Ink / React / node の I/O を import しない。
-2. **状態遷移は reducer 経由だけ**。`SessionStore` に status を手書きしない。状態の性質は `STATUS_META` が唯一の表。
-3. **SDK の形を知るのは `core/sdk-parse.ts` だけ**。形は想定で書かず、spike の実データでテストする。
-4. **UI 文字列はカタログのみ**（`core/i18n.ts` に ja / en 対で追加。例外は SDK 由来のモデル名）。
+2. **状態遷移は 2 本の純関数だけ**（`reduce` = codiva 起点の `CodivaEvent` / `applyAgentEvent` =
+   エージェント起点の `AgentEvent`）。`SessionStore` に status を手書きしない。状態の性質は `STATUS_META` が唯一の表。
+3. **エージェント固有の知識はアダプタに閉じる**。`core/` の中立モジュールは
+   `@anthropic-ai/claude-agent-sdk` を import しない — 触ってよいのは `claude-adapter.ts` /
+   `claude-parse.ts` / `claude-errors.ts` だけ。provider のストリームは
+   `AgentEvent`（`core/agent-events.ts`）へ写してから畳み込む（`applyAgentEvent` が唯一の畳み込み）。
+   形は想定で書かず、spike の実データでテストする。
+4. **UI 文字列はカタログのみ**（`core/i18n.ts` に ja / en 対で追加。例外は SDK 由来のモデル名と
+   エージェント名・CLI コマンド名 = 固有名詞。差し込みは `AgentLabel`）。
 5. **1画面 1 `useInput`**（モーダルは委譲）。色・記号は `theme.ts` 経由。
 6. **git は `utils/git.ts` の `git(cwd, args)`**（execFile + 引数配列。シェル禁止）。**マージ競合は自動解消しない。**
 7. **`any` / default export 禁止**、import は**拡張子なし**（`@/core`）、ファイル名は kebab-case。

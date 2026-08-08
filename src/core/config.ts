@@ -1,6 +1,39 @@
-import type { EffortLevel, PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import type { Lang } from './i18n';
 import type { IgnoredFilesMode } from './worktree';
+
+/**
+ * 推論の effort レベル。**この配列が唯一の出所**で、型（`EffortLevel`）も実行時検証も
+ * ここから導出する。
+ *
+ * 値の集合は Claude Agent SDK の同名 union と同じだが、`core/` を特定エージェントの
+ * SDK から独立させるため（規約: architecture.md）あえて自前で持つ。したがって
+ * **SDK 側に値が増えたらここへ追従させる必要がある**（型で気付けないので、SDK 更新時に
+ * 目視で確認する）。将来エージェントを増やすときも、解釈の差はアダプタ側で吸収する。
+ */
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** 設定で指定できる effort レベル。`EFFORT_LEVELS` から導出（追加はそちらへ）。 */
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/**
+ * ツール実行の許可モード。**この配列が唯一の出所**で、型（`PermissionMode`）も実行時検証も
+ * ここから導出する。
+ *
+ * `EFFORT_LEVELS` と同じ理由で自前定義（`core/` を SDK から独立させる / SDK に値が増えたら
+ * ここへ追従）。とくに permissionMode は Claude Code 固有の概念なので、**エージェントが
+ * 増えれば解釈が変わりうる**（同じ文字列を別エージェントがどう扱うかはアダプタの責任）。
+ */
+const PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+  'auto',
+] as const;
+
+/** 設定で指定できる許可モード。`PERMISSION_MODES` から導出（追加はそちらへ）。 */
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
  * 永続設定のドメイン型。表示言語に加え、セッション起動時に SDK へ渡す
@@ -103,16 +136,6 @@ export interface CodivaConfig {
   copyIgnored?: boolean;
 }
 
-/** SDK 由来 union の実行時検証用リテラル。型が変われば型エラーで気付ける。 */
-const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-const PERMISSION_MODES: readonly PermissionMode[] = [
-  'default',
-  'acceptEdits',
-  'bypassPermissions',
-  'plan',
-  'dontAsk',
-  'auto',
-];
 const IGNORED_FILES_MODES: readonly IgnoredFilesMode[] = ['symlink', 'copy', 'none'];
 
 /** 設定ファイルの生 JSON 形（各フィールドは unknown として受ける）。 */

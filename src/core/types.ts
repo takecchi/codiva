@@ -12,6 +12,29 @@ export type SessionStatus =
   | 'conflict' // a merge into base hit conflicts; needs manual resolution
   | 'archived'; // merged or discarded; kept for reference
 
+/**
+ * どのコーディングエージェントがセッションを駆動しているか。
+ *
+ * **セッション単位で固定ではない**: worktree（＝実際の成果物）は provider に依存しない
+ * ので、Claude で始めた作業を途中から Codex に引き継ぐことができる。モデル側の文脈は
+ * provider をまたいで移せない（各 CLI が自分のトランスクリプトを持つ）ため、切替は
+ * 「今の provider のターンを終える → 別 provider の新しいセッションを同じ worktree で
+ * 開く」という形になる。だから id ごとの resume 用セッション id を
+ * {@link SessionState.agentSessions} に控えておき、戻ってきたときは続きから再開する。
+ */
+export type AgentId = 'claude' | 'codex' | 'grok';
+
+/**
+ * ターンが「完了以外」で終わった理由の分類。`failed` だけが終端で、他の 3 つは
+ * resumable な idle（`core/status-meta.ts` の `resumable`）へ落ちる。
+ *
+ * **文言ではなく分類を運ぶ**のが要点。どの文言がどれに当たるかは provider ごとに
+ * 違う（Claude CLI の "OAuth session expired" は Codex には存在しない）ので、
+ * 判定はアダプタ（`AgentAdapter.classifyError`）に閉じ込め、状態機械はこの 4 値
+ * だけを見る。
+ */
+export type AgentStopCause = 'auth' | 'rate_limit' | 'connection' | 'failed';
+
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
 
 /** One item of Claude's own task list (from TaskCreate/TaskUpdate, or legacy TodoWrite). */
@@ -37,6 +60,12 @@ export interface LogEntry {
   kind: LogKind;
   text: string;
   timestamp?: number;
+  /**
+   * この行を出したエージェント。セッション途中で切り替えた（Claude → Codex）とき、
+   * どこからが別のエージェントの発言かをログに残すためのもの。切替を使っていない
+   * セッションでは undefined のまま（既存の行・復元した行も undefined）。
+   */
+  agent?: AgentId;
 }
 
 /**
@@ -175,7 +204,22 @@ export interface SessionState {
   progress?: { done: number; total: number };
   messages: LogEntry[];
   pendingPermission?: PermissionRequest;
+  /**
+   * 今このセッションを駆動しているエージェント。未設定は `'claude'` 相当
+   * （この項目が無かった頃に保存されたセッションの復元経路のため optional）。
+   */
+  agent?: AgentId;
+  /**
+   * 現在のエージェントの resume 用セッション id。`agentSessions[agent]` と同じ値で、
+   * 「今どれを resume すればよいか」を 1 か所で読めるようにした写し。
+   */
   sdkSessionId?: string;
+  /**
+   * エージェントごとの resume 用セッション id。切り替えて戻ってきたときに、その
+   * provider の会話を**続きから**再開するために保持する（新規セッションを開き直すと
+   * それまでの文脈が消える）。**永続化される**。
+   */
+  agentSessions?: Partial<Record<AgentId, string>>;
   /**
    * The model this session is actually running on, as reported by the SDK
    * (`system/init` and each `assistant` message). This is the *resolved* model —
@@ -282,9 +326,12 @@ export interface SessionState {
 /**
  * Everything that can change a session's state via the pure reducer. `Session`
  * dispatches these for its own lifecycle actions (user input, permissions, model,
- * abort, …). Raw SDK output is NOT an event: `Session.consume` folds each SDK
- * message straight into state via `applySdkMessage` (see core/sdk-parse.ts), which
- * keeps all SDK message-shape parsing out of the reducer.
+ * abort, …).
+ *
+ * エージェントの出力はここには来ない: provider のストリームはアダプタが
+ * `AgentEvent`（`core/agent-events.ts`）へ正規化し、`applyAgentEvent` が畳み込む。
+ * 2 本に分けているのは役割が違うため — `CodivaEvent` は「codiva（UI/manager）が
+ * 起こしたこと」、`AgentEvent` は「エージェントに起きたこと」。
  */
 export type CodivaEvent =
   | { kind: 'permission_request'; request: PermissionRequest; at: number }
@@ -307,7 +354,14 @@ export type CodivaEvent =
   // A merge of this session's branch into base hit conflicts (detected out of
   // band during the merge action). Carries the conflicted file paths.
   | { kind: 'conflict'; files: string[]; at: number }
-  | { kind: 'aborted'; error?: string; at: number }
+  // ストリームが例外で終わった。`cause` は**アダプタが分類した**停止理由
+  // （`AgentAdapter.classifyError`）。reducer が文言を見て分類し直さないのは、
+  // 「認証切れ」「レート制限」「通信断」の見分け方が provider ごとに違うため。
+  // 省略時は `failed`（UI 起点の abort など、分類する材料が無いケース）。
+  | { kind: 'aborted'; error?: string; cause?: AgentStopCause; at: number }
+  // 駆動するエージェントを切り替えた（Claude → Codex）。worktree はそのままで、
+  // 直前の provider の resume id を退避し、切替先の id（あれば）を現在値にする。
+  | { kind: 'agent_switched'; agent: AgentId; at: number }
   // The live query dropped mid-flight because the connection was interrupted
   // (see isConnectionError). Unlike `aborted` this is not a failure: the session
   // becomes `interrupted` (idle & resumable) so the user can continue it.

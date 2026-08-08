@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { type CodivaConfig, resolveIgnoredFilesMode, toConfig } from '@/core/config';
+import {
+  type CodivaConfig,
+  type EffortLevel,
+  type PermissionMode,
+  resolveIgnoredFilesMode,
+  toConfig,
+} from '@/core/config';
+
+/**
+ * `Record<union, true>` のキーで表を作ることで、union に値が増えたら**型エラー**で
+ * ここに気付ける（検証配列 = union = テストの三者一致を保つ番人）。値が実際に通ることは
+ * 下の `it.each` が実行時に確かめる。
+ */
+const EFFORT_CASES: Record<EffortLevel, true> = {
+  low: true,
+  medium: true,
+  high: true,
+  xhigh: true,
+  max: true,
+};
+
+const PERMISSION_MODE_CASES: Record<PermissionMode, true> = {
+  default: true,
+  acceptEdits: true,
+  bypassPermissions: true,
+  plan: true,
+  dontAsk: true,
+  auto: true,
+};
 
 describe('toConfig', () => {
   it.each([
@@ -35,7 +63,7 @@ describe('toConfig', () => {
     expect(toConfig({ model })).toEqual({});
   });
 
-  it.each([['low'], ['medium'], ['high'], ['xhigh'], ['max']])('keeps effort %s', (effort) => {
+  it.each(Object.keys(EFFORT_CASES))('keeps effort %s', (effort) => {
     expect(toConfig({ effort })).toEqual({ effort });
   });
 
@@ -43,12 +71,9 @@ describe('toConfig', () => {
     expect(toConfig({ effort })).toEqual({});
   });
 
-  it.each([['default'], ['acceptEdits'], ['bypassPermissions'], ['plan'], ['dontAsk'], ['auto']])(
-    'keeps permissionMode %s',
-    (permissionMode) => {
-      expect(toConfig({ permissionMode })).toEqual({ permissionMode });
-    },
-  );
+  it.each(Object.keys(PERMISSION_MODE_CASES))('keeps permissionMode %s', (permissionMode) => {
+    expect(toConfig({ permissionMode })).toEqual({ permissionMode });
+  });
 
   it.each([['yolo'], [1], [null]])('drops invalid permissionMode: %o', (permissionMode) => {
     expect(toConfig({ permissionMode })).toEqual({});

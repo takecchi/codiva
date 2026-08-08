@@ -1,4 +1,4 @@
-import type { Messages } from './i18n';
+import { type AgentLabel, DEFAULT_AGENT_LABEL, type Messages } from './i18n';
 import { STATUS_META } from './status-meta';
 import type { SessionState, SessionStatus } from './types';
 
@@ -8,9 +8,16 @@ export interface NotificationSpec {
   body: string;
 }
 
-function labelFor(status: SessionStatus, m: Messages): string | undefined {
+// Some notification labels name the agent (login required), so the catalog entry is a
+// template function while the rest stay plain strings. Resolve both shapes here instead
+// of forcing every notify key to take an argument.
+function labelFor(status: SessionStatus, m: Messages, agent: AgentLabel): string | undefined {
   const key = STATUS_META[status].notifyKey;
-  return key ? m.notify[key] : undefined;
+  if (!key) {
+    return undefined;
+  }
+  const label = m.notify[key];
+  return typeof label === 'function' ? label(agent) : label;
 }
 
 /**
@@ -24,10 +31,11 @@ export function notificationFor(
   prev: SessionState,
   next: SessionState,
   m: Messages,
+  agent: AgentLabel = DEFAULT_AGENT_LABEL,
 ): NotificationSpec | undefined {
   if (prev.status === next.status) {
     return undefined;
   }
-  const label = labelFor(next.status, m);
+  const label = labelFor(next.status, m, agent);
   return label ? { title: `codiva: ${label}`, body: next.title } : undefined;
 }

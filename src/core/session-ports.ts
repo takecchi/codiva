@@ -1,3 +1,4 @@
+import type { AgentAdapter } from './agent-ports';
 import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
 import type { DiffStat, SyncBaseResult, Worktree } from './worktree';
 
@@ -25,6 +26,15 @@ export interface WorktreeService {
 /** The subset of Session the manager drives (for DI in tests). */
 export interface SessionHandle {
   getState(): SessionState;
+  /**
+   * 現在のエージェントと、その差し替え（Claude → Codex）。UI は `getAgent()` から
+   * capability を引いて、持たない機能のキー操作を隠す。
+   *
+   * optional なのは、状態だけを動かすテスト用フェイクにエージェントの概念が
+   * 要らないため（`tests/helpers.ts` の `noopSession`）。
+   */
+  getAgent?(): AgentAdapter;
+  setAgent?(adapter: AgentAdapter): void;
   start(): void;
   send(text: string): void;
   answerPending(answers: Record<string, string>): void;
