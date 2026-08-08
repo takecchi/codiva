@@ -157,12 +157,17 @@ describe('/update', () => {
     const updater = fakeUpdater({ kind: 'unavailable' });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
     await runUpdateCommand(stdin);
+    // ダイアログはまず「確認中…」を描いてから結果に差し替わるので、1 tick 余分に
+    // 流す（他の /update テストと同じ待ち方。これが無いと負荷の高い並列実行で
+    // 確認中のまま assert してしまう）。
+    await flush();
     expect(lastFrame() ?? '').toContain(m.update.unavailable);
   });
 
   it('says nothing could be checked when no updater is injected (no network)', async () => {
     const { stdin, lastFrame } = render(<App manager={makeManager()} />);
     await runUpdateCommand(stdin);
+    await flush();
     expect(lastFrame() ?? '').toContain(m.update.unavailable);
   });
 
