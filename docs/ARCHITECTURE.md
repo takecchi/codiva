@@ -38,9 +38,10 @@ core と utils を束ねる）。副作用の配線（manager 組み立て・復
 `bootstrap/` に切り出し、`main.tsx` は「解決 → preflight → build → restore → render → shutdown」の
 直列だけに保つ。
 
-`src/index.tsx` は**起動シムだけ**（`NODE_ENV` を立ててから `./main` を動的 import する 3 文）。
+`src/index.tsx` は**起動シムだけ**（`NODE_ENV` を立ててから `./main` を動的 import する 4 文）。
 static import を 1 本でも足すと巻き上げられて意味が消えるので、`tests/entry-shim.test.ts` が固定している。
-理由は下記「React の dev ビルドとヒープ枯渇」。
+理由は下記「React の dev ビルドとヒープ枯渇」。立てた `NODE_ENV` を子プロセスへ漏らさない仕組み
+（`core/child-env.ts` / `utils/child-env.ts`）は同じ節の「子プロセスへ渡す環境変数」を参照。
 
 ## ディレクトリ構造
 
@@ -1174,6 +1175,27 @@ codiva では診断レポートから独立に同じ結論に至った）:
 副作用として `dist` が 2 ファイル（シム + チャンク）になった。`bin` が指すのは `dist/index.js` の
 ままで、パッケージルートの解決（`packageRootFrom`）も「`package.json` の 1 つ下」という前提を
 保っている。
+
+### 子プロセスへ渡す環境変数（`NODE_ENV` を漏らさない）
+
+`process.env` への代入は **spawn した子プロセス全部に継承される**。エージェントのシェルは
+codiva の子なので、上の `NODE_ENV=production` をそのまま継がせると、セッション内で叩く
+`npm install` / `npm ci` が `--omit=dev` と解釈され **devDependencies が黙って入らない**
+（型定義もテストランナーも欠けた状態になり、出るのは「依存が無い」ではなく `TS7016` のような
+型エラーなので、原因が npm だと気付けない。issue #103）。`NODE_ENV` を見るツールはほかにも
+あるので、npm 固有の回避（`--include=dev`）ではなく **env を漏らさない**方向で直す。
+
+- 起動シムは**自分で立てたときだけ** `CODIVA_NODE_ENV_INJECTED=1` を置く（`??=` が既存値を
+  尊重するのと同じ理由で、ユーザーが明示した `NODE_ENV` は子にもそのまま渡す）。
+- `core/child-env.ts` の `childEnv(env)`（純粋）が、その目印を見て `NODE_ENV` と目印自身を
+  落としたコピーを返す。実 `process.env` への適用は `utils/child-env.ts` の `childProcessEnv()`。
+- **codiva が起こすプロセスには必ずこれを渡す**（`codex exec` / `git` / `gh` / login CLI /
+  通知・URL オープン / `npm`）。Claude は SDK 経由なので `utils/claude-query.ts` の
+  `claudeQuery`（`Options.env` を被せた `query`）に入口を 1 本化した。`Options.env` は
+  `process.env` とマージされず**丸ごと置き換える**ので、渡すのは常に全体のコピーにする。
+- 番人は `src/utils/child-env.spec.ts`（`node:child_process` を import する utils は
+  `childProcessEnv` を通す / SDK の `query` を値として import してよいのは `claude-query.ts`
+  だけ）と `tests/entry-shim.test.ts`（目印の代入が `??=` より前にある）。
 
 ### 残っている上流の問題（Ink のキャッシュ）
 

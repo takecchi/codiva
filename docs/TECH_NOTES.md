@@ -480,6 +480,34 @@ zsh: abort      codiva
   **mise 経由の起動は `node <path>` 直叩きでシバンを通らない**（実際のクラッシュレポートの
   `commandLine` がこれ）ので当てにならない。
 
+#### 副作用: `NODE_ENV` は子プロセスに継承される（issue #103）
+
+`process.env.NODE_ENV = 'production'` は codiva 自身のプロセスに対する設定だが、そこから
+spawn した子（`claude` / `codex` → **エージェントのシェル**）にもそのまま渡る。npm は
+`NODE_ENV=production` を `--omit=dev` と解釈するので、セッション内の `npm ci` が
+devDependencies を落とす。実測（codiva 0.4.3 / npm 11.x / Node 24）:
+
+```console
+$ npm ci                     # セッション内（NODE_ENV=production を継承）
+added 103 packages           # @types/* も vitest も eslint も入らない
+$ NODE_ENV=development npm ci --include=dev
+added 235 packages
+```
+
+最小再現（`devDependencies` に `is-odd` だけを置いた package.json）:
+
+```console
+$ NODE_ENV=production npm install --silent; test -d node_modules/is-odd && echo YES || echo NO
+NO
+$ env -u NODE_ENV npm install --silent; test -d node_modules/is-odd && echo YES || echo NO
+YES
+```
+
+出るのは「依存が無い」ではなく `error TS7016: Could not find a declaration file for module …`
+のような型エラーなので、原因が npm だと辿り着きにくい。対策は「codiva 自身は production の
+まま、**子へ渡す env からだけ落とす**」（`core/child-env.ts` / `utils/child-env.ts`。設計は
+docs/ARCHITECTURE.md「子プロセスへ渡す環境変数」）。
+
 ### Ink 7.1.1 の上限なしキャッシュ（上流の問題）
 
 同じ調査で見つかった、もう 1 つの解放されない保持:

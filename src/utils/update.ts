@@ -14,6 +14,7 @@ import {
   type UpdateService,
   updateCommandFor,
 } from '@/core';
+import { childProcessEnv } from './child-env';
 
 const execFileAsync = promisify(execFile);
 
@@ -209,6 +210,8 @@ const defaultExec: UpdateExec = (file, args, opts) =>
     timeout: opts.timeout,
     cwd: opts.cwd,
     maxBuffer: 8 * 1024 * 1024,
+    // `npm` を起こすので `NODE_ENV` を継がせない（`childProcessEnv()` の理由は issue #103）。
+    env: childProcessEnv(),
   });
 
 /** `npm root -g` の上限。npm の起動ぶんだけ見ておけば足りる。 */

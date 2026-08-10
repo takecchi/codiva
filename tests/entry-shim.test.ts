@@ -36,8 +36,17 @@ describe('エントリシム (src/index.tsx)', () => {
     expect(source).toMatch(/process\.env\.NODE_ENV\s*\?\?=/);
   });
 
+  it('自分で NODE_ENV を立てたことを目印に残す（子プロセスへ漏らさないため）', () => {
+    // `utils/child-env.ts` の `childProcessEnv()` がこの目印を見て NODE_ENV を落とす。
+    // 立てる前の値を見る必要があるので、代入は `??=` より**前**になければならない。
+    const marker = code.findIndex((line) => line.includes('CODIVA_NODE_ENV_INJECTED'));
+    const assign = code.findIndex((line) => /process\.env\.NODE_ENV\s*\?\?=/.test(line));
+    expect(marker).toBeGreaterThanOrEqual(0);
+    expect(assign).toBeGreaterThan(marker);
+  });
+
   it('シムは main を動的 import するだけに保つ（副作用を足さない）', () => {
-    // NODE_ENV の代入 / ESM マーカーの空 export / 動的 import の 3 文だけ。
-    expect(code).toHaveLength(3);
+    // 目印の代入 / NODE_ENV の代入 / ESM マーカーの空 export / 動的 import の 4 文だけ。
+    expect(code).toHaveLength(4);
   });
 });

@@ -16,7 +16,7 @@ ui/  ──▶ core/ ◀── utils/
 - **`src/utils/`**: I/O の薄いラッパ（`git.ts` = execFile ラッパ）。`core` のみに依存。
 - **`src/ui/`**: Ink コンポーネントのみ。`core`（状態・型）を `@/core` から使う。ロジックを持たない — 状態計算は `core` の純関数に委譲する。
 - **`src/index.tsx` / `src/main.tsx` / `src/app.tsx` / `src/bootstrap/`**: 合成レイヤ（どのレイヤにも属さず core と utils を束ねる）。
-  **`index.tsx` は起動シム**（`NODE_ENV` を立てて `./main` を動的 import する 3 文）で、**static import を足さない**
+  **`index.tsx` は起動シム**（`NODE_ENV` を立てて `./main` を動的 import する 4 文）で、**static import を足さない**
   — 巻き上げられて react-reconciler が dev ビルドで評価され、描画ごとに `performance.measure()` が
   積まれてヒープが単調増加する（実測 2,230 B/フレーム ⇒ OOM。番人は `tests/entry-shim.test.ts`）。
   `main.tsx` は「解決 → preflight → build → restore → render → shutdown」の直列だけに保ち、副作用の配線は
@@ -52,8 +52,8 @@ ui/  ──▶ core/ ◀── utils/
 - **パスエイリアス `@/*` → `./src/*`**。ディレクトリを跨ぐ import は `@/core` などバレル経由。同一フォルダ内は相対（`./hooks`）。
 - **バレル `index.ts`**: 各フォルダ（core/ui/utils）に置き、`export * from './x'`。フォルダ内部モジュールはバレルを import しない（循環回避）。公開したくない補助は `internal/` に置き再エクスポートしない。
 - モノレポ化しない（単一パッケージ）。Turbo / workspaces / SWR / Storybook は入れない。
-- **同名モジュールが core と utils に併存する**（`config` / `notify` / `mouse` / `transcript` /
-  `repo-prompt` / `privacy` / `worktree`）。純粋な判定・変換が core、実 I/O が utils という対なので、
+- **同名モジュールが core と utils に併存する**（`child-env` / `config` / `notify` / `mouse` /
+  `transcript` / `repo-prompt` / `privacy` / `worktree`）。純粋な判定・変換が core、実 I/O が utils という対なので、
   import 元が `@/core` か `@/utils` かを必ず確認する（取り違えるとレイヤ違反になる）。
 
 セッションの状態・遷移・永続化の不変条件は [session-domain.md](./session-domain.md)、

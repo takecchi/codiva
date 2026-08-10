@@ -111,6 +111,10 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
 
 ## query() の使い方（`core/claude-adapter.ts` の中だけ）
 
+- **`query` は `utils/claude-query.ts` の `claudeQuery` 経由で渡す**（合成レイヤの配線）。素の
+  `query` を注入すると codiva が立てた `NODE_ENV=production` が `claude` サブプロセスから
+  エージェントのシェルまで継承され、セッション内の `npm install` が devDependencies を
+  落とす（issue #103。[git-and-io.md](./git-and-io.md)「子プロセスの環境変数」）。
 - **streaming input mode 固定**（`prompt` に `AsyncQueue` の `AsyncIterable<SDKUserMessage>` を渡す）。
   単発 string prompt は使わない（エラーで throw して終わり、追加指示・interrupt・
   `setPermissionMode` が使えない）。`Session` が持つのは `AsyncIterable<string>` で、

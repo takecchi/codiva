@@ -18,7 +18,14 @@
  * 既に値が入っているときは尊重する（`NODE_ENV=development npm run dev` で React の
  * dev 警告を戻せる）。保険として `bootstrap/perf-timeline.ts` がタイムラインを定期的に
  * 掃除する（dev ビルドで動かしたときや、将来 React 側の実装が変わったときのため）。
+ *
+ * ただし `process.env` への代入は **spawn した子プロセス全部に継承される**。エージェントの
+ * シェルもその下なので、そのままだとセッション内の `npm install` が `--omit=dev` 扱いになり
+ * devDependencies が黙って入らない（issue #103）。自分で立てたときだけ目印を置いておき、
+ * 子へ渡す env からは `utils/child-env.ts` の `childProcessEnv()` が落とす（`''` = 元から
+ * 入っていた値なのでそのまま継がせる）。
  */
+process.env.CODIVA_NODE_ENV_INJECTED = process.env.NODE_ENV === undefined ? '1' : '';
 process.env.NODE_ENV ??= 'production';
 
 // static import が無いとこのファイルは TS 的に「スクリプト」扱いになり、top-level await が

@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { AgentAvailability } from '@/core';
+import { childProcessEnv } from './child-env';
 
 const execFileAsync = promisify(execFile);
 
@@ -57,7 +58,10 @@ export async function detectClaudeAvailability(
   const env = opts.env ?? process.env;
   const home = opts.home ?? homedir();
 
-  const installed = await execFileAsync(command, ['--version'], { timeout: PROBE_TIMEOUT_MS })
+  const installed = await execFileAsync(command, ['--version'], {
+    timeout: PROBE_TIMEOUT_MS,
+    env: childProcessEnv(),
+  })
     .then(() => true)
     .catch(() => false);
   if (!installed) {
