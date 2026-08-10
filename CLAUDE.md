@@ -81,7 +81,8 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 文言・言語 | `core/i18n.ts`（カタログ）/ `ui/i18n-context.tsx`（`useMessages`） |
 | 色・記号 | `ui/theme.ts`（`.tsx` に生 ANSI 名を書かない） |
 | スラッシュコマンド | `core/commands.ts`（レジストリ）/ `ui/command-palette.tsx` / `ui/hooks.ts` の `useCommandRunner` |
-| 設定 | `core/config.ts`（検証）/ `utils/config.ts`（`~/.codiva/config.json`） |
+| 設定 | `core/config.ts`（型・検証・`mergeConfig`）/ `utils/config.ts`（`~/.codiva/config.json` の読み書き）/ `bootstrap/config-store.ts`（**唯一の書き手**。差分をマージして保存） |
+| 設定を画面から変える（`/config`）| `core/config-items.ts`（ON/OFF 項目の表・反転・純粋）/ `ui/config-select.tsx`（ダイアログ）/ `app.tsx`（今の値を state で保持）|
 | 永続・復元 | `core/persistence.ts` / `utils/state-store.ts`（`.codiva/state.json`）/ `core/transcript.ts` + `utils/transcript.ts`（CLI トランスクリプト） |
 | 通知 | `core/notify.ts`（判定・純粋）/ `utils/notify.ts`（OS I/O） |
 | 学習データ利用の警告 | `core/privacy.ts`（判定・純粋）/ `utils/privacy.ts`（キャッシュ+非公開 API）/ `ui/banner.tsx` |

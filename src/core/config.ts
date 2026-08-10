@@ -314,6 +314,24 @@ export function resolveIgnoredFilesMode(config: CodivaConfig): IgnoredFilesMode 
 }
 
 /**
+ * 設定に差分を当てた新しい設定を返す（純粋）。**`undefined` の値はキーごと消す** —
+ * 「既定へ戻す」を差分で表現できるようにするため（`{ autoPr: undefined }` = 既定に従う）。
+ *
+ * `saveConfig` は丸ごと上書きなので、書き手（`/model`・`/agent`・`/config`）が
+ * それぞれ自前のスナップショットを持つと互いの変更を消し合う。差分をこの関数で
+ * 1 つの最新値へ畳んでから保存する（合成ルートの `createConfigStore`）。
+ */
+export function mergeConfig(base: CodivaConfig, patch: Partial<CodivaConfig>): CodivaConfig {
+  const next: CodivaConfig = { ...base, ...patch };
+  for (const key of Object.keys(patch) as (keyof CodivaConfig)[]) {
+    if (patch[key] === undefined) {
+      delete next[key];
+    }
+  }
+  return next;
+}
+
+/**
  * 設定から Claude セッションの設定ソース（SDK の `settingSources`）を決める。純粋。
  *
  * `'project'` は指定に関わらず必ず含める: 対象リポジトリの CLAUDE.md はこの層でしか

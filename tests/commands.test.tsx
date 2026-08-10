@@ -1,6 +1,8 @@
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
+import { COMMANDS } from '@/core/commands';
+import type { CodivaConfig } from '@/core/config';
 import { messages } from '@/core/i18n';
 import { SessionManager } from '@/core/session-manager';
 import { reduce } from '@/core/status-reducer';
@@ -46,8 +48,28 @@ describe('slash commands', () => {
     await flush();
     const frame = lastFrame() ?? '';
     expect(frame).toContain(messages.ja.command.paletteTitle);
-    expect(frame).toContain('/help');
-    expect(frame).toContain('/exit');
+    expect(frame).toContain('/model');
+    expect(frame).toContain('/config');
+  });
+
+  // コマンドが 14 個になった時点で、24 行の端末では全件が入らなくなった（Yoga が
+  // パレットの枠自体を縮め、`/help` の行が消えてフッタと `/exit` が重なって描かれた）。
+  // 入り切らないぶんは黙って捨てず「他 N 件」に畳み、枠は壊さない。
+  it('低い端末では入り切らないコマンドを「他 N 件」に畳む（枠は潰さない）', async () => {
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 24, 100);
+    stdin.write('/');
+    await flush();
+    const lines = stripAnsi(lastFrame()).split('\n');
+    const shown = lines.filter((l) => /\s\/[a-z-]+\s{2,}/.test(l)).length;
+    expect(shown).toBeLessThan(COMMANDS.length);
+    expect(
+      lines.some((l) => l.includes(messages.ja.command.paletteMore(COMMANDS.length - shown))),
+    ).toBe(true);
+    // 枠が潰れていない（開いた枠は必ず閉じる）。
+    expect(lines.filter((l) => l.includes('╭')).length).toBe(
+      lines.filter((l) => l.includes('╰')).length,
+    );
+    app.unmount();
   });
 
   it('filters the palette by the typed prefix', async () => {
@@ -69,16 +91,24 @@ describe('slash commands', () => {
     expect(manager.getSnapshot()).toHaveLength(0);
   });
 
+  // `/help` は全件が読めることが目的なので、開いている間はヘッダ（装飾）を隠して
+  // 場所を譲る。24 行の端末でも末尾の `/help` `/exit` まで畳まれないことを固定する。
   it('/help opens the help overlay listing every command', async () => {
-    const { stdin, lastFrame } = render(<App manager={makeManager()} />);
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 24, 100);
     stdin.write('/help');
     await flush();
     stdin.write('\r');
     await flush();
-    const frame = lastFrame() ?? '';
+    const frame = stripAnsi(lastFrame());
     expect(frame).toContain(messages.ja.command.helpTitle);
     expect(frame).toContain(messages.ja.command.help); // /help description
     expect(frame).toContain(messages.ja.command.exit); // /exit description
+    expect(frame).toContain(messages.ja.command.config); // /config description
+    // 1 件も畳まれていない（畳まれると「他 N 件」が出て末尾のコマンドが消える）。
+    for (const command of COMMANDS) {
+      expect(frame).toContain(`/${command.name}`);
+    }
+    app.unmount();
   });
 
   it('/exit tears down the manager and exits', async () => {
@@ -344,6 +374,82 @@ describe('slash commands', () => {
     stdin.write('y');
     await flush();
     expect(manager.getSnapshot()).toHaveLength(0);
+  });
+
+  // `/config`: 開く → トグル → 差分が親（合成ルート = 設定ファイル）へ上がる。
+  it('/config toggles a setting and reports the patch', async () => {
+    const patches: Partial<CodivaConfig>[] = [];
+    const { stdin, lastFrame } = render(
+      <App manager={makeManager()} onConfigChange={(patch) => patches.push(patch)} />,
+    );
+    stdin.write('/config');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toContain(messages.ja.config.title);
+    // 既定 on の 1 行目（デスクトップ通知）にカーソルがあり、チェックが入っている。
+    expect(frame).toContain(messages.ja.config.notifications);
+    expect(frame).toContain('[x]');
+
+    stdin.write('\r'); // Enter でその行を反転
+    await flush();
+    expect(patches).toEqual([{ notifications: false }]);
+    // 表示も追従する（親が state を持っているので開いたまま反映される）。
+    expect(stripAnsi(lastFrame() ?? '')).toContain('[ ]');
+
+    stdin.write(' '); // Space でも切り替えられる（既定へ戻る = キー削除）
+    await flush();
+    expect(patches).toEqual([{ notifications: false }, { notifications: undefined }]);
+  });
+
+  it('/config closes on Esc and stops owning the keys', async () => {
+    const manager = makeManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('/config');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.config.title);
+    stdin.write('\x1b');
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain(messages.ja.config.title);
+    // 閉じたあとの入力は普通の指示として通る（キーを飲んだままにならない）。
+    stdin.write('build a thing');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(manager.getSnapshot()).toHaveLength(1);
+  });
+
+  // モーダルの相互排他（`/model` と同じ回帰テスト）。ガードは**マウスとキーの 2 箇所**に
+  // 要るので、片方の付け忘れをここで検出する。
+  it('/config を開いている間のドラッグは背後のヘッダを選択しない', async () => {
+    const copied: string[] = [];
+    const cwd = '/Users/hoge/codiva';
+    const { app, stdin, lastFrame } = renderFullscreen(
+      <App manager={makeManager()} cwd={cwd} onCopy={(t) => copied.push(t)} />,
+      24,
+      100,
+    );
+    stdin.write('/config');
+    await flush();
+    stdin.write('\r');
+    await flush();
+
+    const lines = stripAnsi(lastFrame()).split('\n');
+    const row = lines.findIndex((l) => l.includes(cwd));
+    expect(row).toBeGreaterThan(0);
+    const startCol = (lines[row] ?? '').indexOf(cwd);
+    stdin.write(`\x1b[<0;${startCol + 1};${row + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<32;${startCol + cwd.length + 1};${row + 1}M`);
+    await flush();
+    stdin.write(`\x1b[<0;${startCol + cwd.length + 1};${row + 1}m`);
+    await flush();
+
+    expect(copied).toEqual([]);
+    app.unmount();
   });
 
   it('reports an unknown command as an error', async () => {

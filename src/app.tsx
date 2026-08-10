@@ -1,11 +1,13 @@
 import { Box, useApp, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
+  type CodivaConfig,
   messages as catalogs,
   DEFAULT_ONLY_MODEL_OPTIONS,
   isFullscreenViewport,
   type Messages,
   type ModelOption,
+  mergeConfig,
   type SessionManager,
   type TrainingOptIn,
   type UpdateService,
@@ -70,6 +72,16 @@ export const App: FC<{
   onOpenUrl?: (url: string) => void;
   /** Copy a mouse selection (composer / header / detail log) to the clipboard (OSC 52). */
   onCopy?: (text: string) => void;
+  /**
+   * 起動時に読んだ設定（`/config` の初期表示）。表示用の最新値はここで state に持つ
+   * — 一覧はビュー切替でアンマウントされるので、あちらに置くと戻るたびに巻き戻る。
+   */
+  config?: CodivaConfig;
+  /**
+   * `/config` の変更差分を永続化する（`main.tsx` の `ConfigStore`）。未注入なら
+   * 画面上だけ変わって保存されない（テスト用）。
+   */
+  onConfigChange?: (patch: Partial<CodivaConfig>) => void;
 }> = ({
   manager,
   cwd,
@@ -84,6 +96,8 @@ export const App: FC<{
   loadBranch,
   onOpenUrl,
   onCopy,
+  config: initialConfig,
+  onConfigChange,
 }) => {
   const { exit } = useApp();
   const models = useModelCatalog(modelCatalog);
@@ -102,6 +116,10 @@ export const App: FC<{
   // 詳細から戻ったときに「前見ていた箇所」を復元できるよう、最新の表示状態をここに
   // 保持し、再マウント時の初期値として渡す（選択行 = スクロール状態なので一緒に戻る）。
   const listStateRef = useRef<ListViewState | undefined>(undefined);
+  // `/config` が触る設定。差分を畳んで持ち（`mergeConfig`）、同じ差分を親（合成ルート）へ
+  // 渡して保存させる。永続化側は `/model` や `/agent` の変更も混ざった最新値を持つので、
+  // ここでは全体ではなく**差分**を上げるのが要点（互いの変更を消し合わないため）。
+  const [config, setConfig] = useState<CodivaConfig>(initialConfig ?? {});
   // Ink はコンテンツの高さぶんしか描画しない（インラインレンダラ）ため、端末の
   // 行数を root に明示して全画面（web の 100dvh 相当）にする。リサイズにも追従。
   // overflow="hidden" は保険: フレームが端末高さを超えると Ink が全画面クリアに
@@ -155,6 +173,11 @@ export const App: FC<{
             }}
             onCopy={onCopy}
             trainingOptIn={training}
+            config={config}
+            onConfigChange={(patch) => {
+              setConfig((prev) => mergeConfig(prev, patch));
+              onConfigChange?.(patch);
+            }}
           />
         )}
       </Box>

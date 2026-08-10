@@ -23,31 +23,11 @@ import {
   lookupPrs,
   markPrReady,
   notify,
-  saveConfig,
   saveRepoPrompt,
   spawnCodex,
   spawnLogin,
   type WorktreeManager,
 } from '@/utils';
-
-/**
- * A `/model` change persists to `~/.codiva/config.json`. Config is read once at
- * startup, so we keep the latest config in a closure and merge-save it (preserving
- * the other fields) on each change.
- */
-function createModelPersister(config: CodivaConfig): (model: string | undefined) => void {
-  let current = config;
-  return (model) => {
-    const next: CodivaConfig = { ...current };
-    if (model === undefined) {
-      delete next.model;
-    } else {
-      next.model = model;
-    }
-    current = next;
-    void saveConfig(next).catch(() => undefined);
-  };
-}
 
 /**
  * 設定ファイル + リポジトリ追加指示 → セッションへ渡す knobs（`SessionOptions`）。
@@ -115,20 +95,6 @@ export function buildAgents(
 }
 
 /**
- * `/model` と同じく、`/agent`（一覧）で既定エージェントを変えたら
- * `~/.codiva/config.json` にマージ保存する（読み込みは起動時 1 回なので、他フィールドを
- * 保ったまま `agent` だけ差し替える）。
- */
-function createDefaultAgentPersister(config: CodivaConfig): (agent: AgentId) => void {
-  let current = config;
-  return (agent) => {
-    const next: CodivaConfig = { ...current, agent };
-    current = next;
-    void saveConfig(next).catch(() => undefined);
-  };
-}
-
-/**
  * Assemble the SessionManager and its injected I/O seams (SDK query, title
  * generation, desktop notifications, PR automation). `onPersist` is supplied by
  * the caller (the persist controller); everything else is wired from config here.
@@ -141,8 +107,22 @@ export function buildManager(opts: {
   onPersist: () => void;
   /** リポジトリ単位の追加指示（`.codiva/prompt.md`）。全セッションの systemPrompt に載る。 */
   appendSystemPrompt?: string;
+  /**
+   * `/model` / `/agent` の変更を `~/.codiva/config.json` へ差分保存する
+   * （`bootstrap/config-store.ts`）。**設定の書き手はストア 1 つ**に集約してあるので、
+   * ここで自前のスナップショットを持って丸ごと上書きしない（`/config` の変更を消す）。
+   */
+  saveConfigPatch?: (patch: Partial<CodivaConfig>) => void;
 }): SessionManager {
-  const { repoRoot, config, messages: t, worktrees, onPersist, appendSystemPrompt } = opts;
+  const {
+    repoRoot,
+    config,
+    messages: t,
+    worktrees,
+    onPersist,
+    appendSystemPrompt,
+    saveConfigPatch,
+  } = opts;
 
   const agents = buildAgents(config, { repoRoot });
 
@@ -167,13 +147,14 @@ export function buildManager(opts: {
     // 既定 provider の id。設定 `agent` 由来で、`/agent`（一覧）で差し替え → 下で永続化。
     // 設定が無いときは起動時に「導入済みのもの」へ自動で寄せる（`main.tsx`）。
     defaultAgentId: config.agent,
-    onDefaultAgentChange: createDefaultAgentPersister(config),
+    onDefaultAgentChange: (agent) => saveConfigPatch?.({ agent }),
     queryFn: claudeQuery,
     generateTitle: createTitleGenerator(claudeQuery, { cwd: repoRoot }),
     options: sessionOptionsFrom(config, appendSystemPrompt),
     onTransition,
     onPersist,
-    onModelChange: createModelPersister(config),
+    // 「CLI 既定に戻す」= model を消す。差分の `undefined` はキー削除として扱われる。
+    onModelChange: (model) => saveConfigPatch?.({ model }),
     // /prompt での編集を `.codiva/prompt.md` へ永続化（次回起動・新規セッションに反映）。
     onRepoPromptChange: (prompt) => {
       void saveRepoPrompt(repoRoot, prompt ?? '').catch(() => undefined);

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { COMMANDS } from './commands';
 import {
+  BANNER_ROWS,
   bannerGaugeWidth,
   DETAIL_CHROME_ROWS,
   DIALOG_CHROME_COLUMNS,
@@ -11,6 +13,8 @@ import {
   logViewportRows,
   MIN_BRANCH_COLUMN_COLUMNS,
   MIN_FULLSCREEN_ROWS,
+  PALETTE_MIN_ROWS,
+  paletteMaxRows,
   showsBranchColumn,
 } from './layout';
 
@@ -223,6 +227,33 @@ describe('bannerGaugeWidth', () => {
       const width = bannerGaugeWidth(columns);
       expect(width).toBeLessThanOrEqual(prev);
       prev = width;
+    }
+  });
+});
+
+describe('paletteMaxRows', () => {
+  // コマンド一覧が端末に入り切らないと Yoga がパレットの枠を潰して行が消えるので、
+  // 「何行まで描いてよいか」を chrome の見積りから決める（溢れは UI が畳む）。
+  it('subtracts the view chrome from the terminal rows', () => {
+    expect(paletteMaxRows(40, 'list')).toBe(40 - LIST_CHROME_ROWS);
+    expect(paletteMaxRows(40, 'detail')).toBe(40 - DETAIL_CHROME_ROWS - 3);
+  });
+
+  // `/help` はヘッダを隠して開くので、その 7 行を使ってよい（= 一覧より多く描ける）。
+  it('gives the /help overlay the rows the hidden banner frees up', () => {
+    expect(paletteMaxRows(40, 'help')).toBe(paletteMaxRows(40, 'list') + BANNER_ROWS);
+  });
+
+  // 24 行（よくある端末の下限）で全コマンドが `/help` に収まることを固定する。
+  // ここが割れたらコマンドを増やしすぎ（畳まれて末尾が読めなくなる）。
+  it('fits the whole command list into a 24-row terminal in /help', () => {
+    expect(paletteMaxRows(24, 'help')).toBeGreaterThanOrEqual(COMMANDS.length);
+  });
+
+  it('never returns less than the minimum rows', () => {
+    for (const view of ['list', 'help', 'detail'] as const) {
+      expect(paletteMaxRows(0, view)).toBe(PALETTE_MIN_ROWS);
+      expect(paletteMaxRows(10, view)).toBeGreaterThanOrEqual(PALETTE_MIN_ROWS);
     }
   });
 });

@@ -11,7 +11,10 @@ import {
   bannerText,
   bufferOf,
   COMMANDS,
+  type CodivaConfig,
+  type ConfigToggleId,
   canSelfUpdate,
+  configToggleRows,
   errorMessage,
   formatDuration,
   formatModel,
@@ -31,6 +34,7 @@ import {
   noAgentInstalled,
   otherPrs,
   PR_CELL_WIDTH,
+  paletteMaxRows,
   parseSgrMouse,
   prCellWidth,
   primaryPr,
@@ -41,6 +45,7 @@ import {
   type SessionManager,
   showsBranchColumn,
   type TrainingOptIn,
+  toggleConfigPatch,
   totalCostUsd,
   type UpdateCheck,
   type UpdateInfo,
@@ -52,6 +57,7 @@ import { AgentSelect } from './agent-select';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
 import { Composer, useComposer } from './composer';
+import { ConfigSelect } from './config-select';
 import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
@@ -167,6 +173,13 @@ export const SessionList: FC<{
    * 判定は合成ルートで行い、ここは受け渡すだけ。
    */
   trainingOptIn?: TrainingOptIn;
+  /** 現在の設定（`/config` の ON/OFF 表示に使う）。最新値は親が持つ。 */
+  config?: CodivaConfig;
+  /**
+   * `/config` で 1 項目を切り替えたときの差分。永続化は合成ルート（`main.tsx` の
+   * `ConfigStore`）が行い、ここは「何が変わったか」を上げるだけ。
+   */
+  onConfigChange?: (patch: Partial<CodivaConfig>) => void;
 }> = ({
   manager,
   onOpen,
@@ -184,6 +197,8 @@ export const SessionList: FC<{
   onViewStateChange,
   onCopy,
   trainingOptIn,
+  config,
+  onConfigChange,
 }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
@@ -227,6 +242,8 @@ export const SessionList: FC<{
   const [loginAgent, setLoginAgent] = useState<AgentId | null>(null);
   // Open when the user runs `/prompt`; the RepoPromptEditor then owns the keys.
   const [promptEdit, setPromptEdit] = useState(false);
+  // Open when the user runs `/config`; the ConfigSelect dialog then owns the keys.
+  const [configView, setConfigView] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   // `/update` のダイアログ状態（null = 閉じている）。非同期の決着が「閉じた後」や
   // 「開き直した後」に届いても勝手に再表示しないよう、世代カウンタで無効化する。
@@ -374,6 +391,8 @@ export const SessionList: FC<{
       },
       // `/prompt` はリポジトリ追加指示（.codiva/prompt.md）のエディタを開く。
       prompt: () => setPromptEdit(true),
+      // `/config` は ~/.codiva/config.json の ON/OFF 項目を切り替えるダイアログを開く。
+      config: () => setConfigView(true),
       // `/remove` は選択中のセッションを一覧から削除する（worktree とブランチも消す）。
       // `x` と同じ確認ダイアログを通す — 破棄より強い操作を無確認で走らせない。
       remove: () => {
@@ -678,7 +697,7 @@ export const SessionList: FC<{
       // （`pending` の条件が focus 依存）、モーダルの相互排他が崩れる。ホイールでの選択移動も
       // 同じ経路なので一律で無視する。`/prompt` のエディタは自前でドラッグ範囲選択を持つので、
       // ここで飲まないと同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで動く。
-      if (update || modelSelect || agentSelect || loginAgent !== null || promptEdit) {
+      if (update || modelSelect || agentSelect || loginAgent !== null || promptEdit || configView) {
         return;
       }
       // **許可/質問ダイアログが出ていてもマウスは飲まない。** ダイアログは画面の下段
@@ -726,7 +745,7 @@ export const SessionList: FC<{
     recovery.setNotice(undefined);
     // The model picker and repo-prompt editor are modal: each owns the keys (its
     // own useInput). Ignore everything here so nothing leaks through to the list.
-    if (modelSelect || agentSelect || loginAgent !== null || promptEdit) {
+    if (modelSelect || agentSelect || loginAgent !== null || promptEdit || configView) {
       return;
     }
     if (key.tab && key.shift) {
@@ -947,31 +966,40 @@ export const SessionList: FC<{
       ? m.agent.help
       : promptEdit
         ? m.prompt.help
-        : // ダイアログがキーを持っている間だけダイアログ用のヒント。list ゾーンでは
-          // ダイアログが見えていても操作対象は一覧なので、通常の一覧ヒントを出す。
-          dialogActive
-          ? m.list.helpPending
-          : zone === 'list'
-            ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
-              // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
-              // 含むヒントに切り替える。
-              target?.status === 'needs_login'
-              ? m.auth.listHint(targetAgentLabel)
-              : target && isResumable(target.status)
-                ? m.resume.listHint
-                : m.list.helpList
-            : m.list.helpComposer;
+        : configView
+          ? m.config.help
+          : // ダイアログがキーを持っている間だけダイアログ用のヒント。list ゾーンでは
+            // ダイアログが見えていても操作対象は一覧なので、通常の一覧ヒントを出す。
+            dialogActive
+            ? m.list.helpPending
+            : zone === 'list'
+              ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
+                // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
+                // 含むヒントに切り替える。
+                target?.status === 'needs_login'
+                ? m.auth.listHint(targetAgentLabel)
+                : target && isResumable(target.status)
+                  ? m.resume.listHint
+                  : m.list.helpList
+              : m.list.helpComposer;
+
+  // `/help` の全一覧はコマンドが増えるほど縦に伸びる（14 個で 24 行の端末に入らず、
+  // Yoga がパレットの枠を潰して行が消えた）。ヘッダは装飾なので、開いている間だけ
+  // 場所を譲る（`paletteMaxRows` の 'help' はこの 7 行を当てにしている）。
+  const helpOpen = showHelp && !pending;
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
-      <Banner
-        lines={headerLines}
-        selection={headerSel.selection}
-        usage={rateLimits}
-        now={now}
-        textRef={headerRef}
-        trainingOptIn={trainingOptIn}
-      />
+      {helpOpen ? null : (
+        <Banner
+          lines={headerLines}
+          selection={headerSel.selection}
+          usage={rateLimits}
+          now={now}
+          textRef={headerRef}
+          trainingOptIn={trainingOptIn}
+        />
+      )}
 
       {/* flexGrow で残り高さを占め、入力欄とフッタを画面最下部へ押し下げる。
           高さを実測し、その行数に収まるぶんだけ内部スクロールして描画する。 */}
@@ -1116,8 +1144,13 @@ export const SessionList: FC<{
         {update ? <UpdateDialog state={update} activeSessions={activeSessions} /> : null}
       </Box>
 
-      {showHelp && !pending ? (
-        <CommandPalette title={m.command.helpTitle} commands={COMMANDS} />
+      {helpOpen ? (
+        <CommandPalette
+          title={m.command.helpTitle}
+          commands={COMMANDS}
+          // ヘッダを隠しているぶん多く描ける（`paletteMaxRows` の 'help'）。
+          maxRows={paletteMaxRows(termRows, 'help')}
+        />
       ) : null}
 
       {modelSelect ? (
@@ -1173,6 +1206,19 @@ export const SessionList: FC<{
           onCancel={() => setPromptEdit(false)}
           onCopy={onCopy}
         />
+      ) : configView ? (
+        <ConfigSelect
+          rows={configToggleRows(config ?? {}, m)}
+          onToggle={(id: ConfigToggleId) => {
+            // 反転の計算は純関数（core）。ここは差分を親へ上げるだけで、保存も
+            // 「今の設定」の保持も合成ルートが持つ（UI はロジックを持たない）。
+            const patch = toggleConfigPatch(config ?? {}, id);
+            if (patch) {
+              onConfigChange?.(patch);
+            }
+          }}
+          onClose={() => setConfigView(false)}
+        />
       ) : pending && target ? (
         // `key` にセッション id を入れる: ダイアログは回答の途中経過（何問目か・複数選択の
         // チェック・自由記述）を内部 state に持つので、選択行が別セッションへ移ったら
@@ -1200,6 +1246,7 @@ export const SessionList: FC<{
             <CommandPalette
               title={m.command.paletteTitle}
               commands={matchCommands(commandPreview)}
+              maxRows={paletteMaxRows(termRows, 'list')}
             />
           ) : null}
           <Composer

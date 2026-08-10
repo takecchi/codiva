@@ -27,6 +27,7 @@ import {
   logWindow,
   type ModelOption,
   matchCommands,
+  paletteMaxRows,
   parseSgrMouse,
   resumeInstruction,
   type ScrollAnchor,
@@ -822,6 +823,7 @@ export const SessionDetail: FC<{
             title={m.command.helpTitle}
             commands={COMMANDS}
             describeOverrides={commandDescribes}
+            maxRows={paletteMaxRows(rows, 'detail')}
           />
         ) : null}
 
@@ -916,6 +918,7 @@ export const SessionDetail: FC<{
                 title={m.command.paletteTitle}
                 commands={matchCommands(commandPreview)}
                 describeOverrides={commandDescribes}
+                maxRows={paletteMaxRows(rows, 'detail')}
               />
             ) : null}
             <Composer composer={composer} focused placeholder={m.detail.followupPlaceholder} />

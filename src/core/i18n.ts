@@ -422,6 +422,8 @@ export interface Messages {
     paletteTitle: string;
     /** 前方一致するコマンドが無いときの表示 */
     paletteEmpty: string;
+    /** 端末が低くて全件描けないときに畳んだ件数（n は隠れている数） */
+    paletteMore: (n: number) => string;
     /** /help のヘルプ一覧の見出し */
     helpTitle: string;
     /** 未知のコマンドを打ったときのエラー */
@@ -454,6 +456,53 @@ export interface Messages {
     fixCi: string;
     /** /recover の説明 */
     recover: string;
+    /** /config の説明 */
+    config: string;
+  };
+  /**
+   * 設定ダイアログ（config-select.tsx。/config で開く）。項目のラベルと 1 行説明は
+   * 表示順（`core/config-items.ts` の `CONFIG_TOGGLES`）に並べてある。
+   */
+  config: {
+    /** ダイアログ見出し */
+    title: string;
+    /** ダイアログ下部の操作ヒント */
+    help: string;
+    /** 「保存済み・反映は次回起動から」の注意書き（現状の項目は全部これに当たる） */
+    restartHint: string;
+    /** notifications: デスクトップ通知 */
+    notifications: string;
+    notificationsHelp: string;
+    /** mouse: マウス操作 */
+    mouse: string;
+    mouseHelp: string;
+    /** followOrigin: origin 追従 */
+    followOrigin: string;
+    followOriginHelp: string;
+    /** autoPr: PR 自動作成 */
+    autoPr: string;
+    autoPrHelp: string;
+    /** autoSync: 競合時にベースを自動取り込み */
+    autoSync: string;
+    autoSyncHelp: string;
+    /** autoFixCi: CI 失敗時に自動で修正依頼 */
+    autoFixCi: string;
+    autoFixCiHelp: string;
+    /** claudeSettingSources に 'user' を含めるか（= Claude Code のプラグインを読む） */
+    claudePlugins: string;
+    claudePluginsHelp: string;
+    /** privacyWarning: 学習データ利用の警告 */
+    privacyWarning: string;
+    privacyWarningHelp: string;
+    /** updateCheck: 起動時の更新確認 */
+    updateCheck: string;
+    updateCheckHelp: string;
+    /** crashLog: クラッシュログ */
+    crashLog: string;
+    crashLogHelp: string;
+    /** codexNetworkAccess: Codex のネットワーク許可 */
+    codexNetworkAccess: string;
+    codexNetworkAccessHelp: string;
   };
   /**
    * クラッシュ時に通常バッファ（シェルへ戻ったあとの画面）へ出す文言。
@@ -715,6 +764,7 @@ const ja: Messages = {
   command: {
     paletteTitle: 'コマンド',
     paletteEmpty: '一致するコマンドがありません',
+    paletteMore: (n) => `他 ${n} 件（入力で絞り込めます）`,
     helpTitle: '利用可能なコマンド',
     unknown: (name) => (name ? `不明なコマンド: /${name}` : '不明なコマンドです'),
     help: 'コマンド一覧を表示',
@@ -731,6 +781,34 @@ const ja: Messages = {
     sync: 'ベースブランチを取り込む（競合はセッションに解決させる）',
     fixCi: '失敗した CI をセッションに修正させる',
     recover: 'PR が詰まっているセッションをまとめて立て直す',
+    config: '設定（ON/OFF）を変更する',
+  },
+  config: {
+    title: '設定',
+    help: '↑↓: 選択 ・ Enter / Space: 切替 ・ Esc: 閉じる',
+    restartHint: '変更はすぐ保存されます（反映は次回の起動から）',
+    notifications: 'デスクトップ通知',
+    notificationsHelp: '質問・許可要求・完了のタイミングで OS の通知を出す',
+    mouse: 'マウス操作',
+    mouseHelp: 'クリックで選択・ドラッグで範囲コピー（端末側の選択は Shift+ドラッグ）',
+    followOrigin: 'origin に追従して worktree を作る',
+    followOriginHelp: 'セッション作成時に origin/<base> を取得し、その最新から枝を切る',
+    autoPr: 'PR を自動で作る',
+    autoPrHelp: '完了したセッションを push して draft PR を作り、チェックが緑なら ready にする',
+    autoSync: '競合したらベースを自動で取り込む',
+    autoSyncHelp: 'PR がベースと競合したら取り込む（解決をセッションに頼む時点で課金が走る）',
+    autoFixCi: 'CI が落ちたら自動で修正を依頼する',
+    autoFixCiHelp: '失敗したチェック名を添えてセッションに修正を指示する（課金が走る）',
+    claudePlugins: 'Claude Code のプラグインを読み込む',
+    claudePluginsHelp: '~/.claude/settings.json を読む（プラグインのほか hooks や権限設定も載る）',
+    privacyWarning: '学習データ利用の警告を出す',
+    privacyWarningHelp: 'Claude の学習データ利用が ON のときヘッダに注意行を出す',
+    updateCheck: '起動時に更新を確認する',
+    updateCheckHelp: 'npm レジストリに新しいバージョンがないか問い合わせる',
+    crashLog: 'クラッシュログを残す',
+    crashLogHelp: '異常終了したとき ~/.codiva/logs/ にレポートを書く',
+    codexNetworkAccess: 'Codex のネットワークを許可する',
+    codexNetworkAccessHelp: 'Codex のサンドボックスから外部へ通信できるようにする',
   },
   crash: {
     title: 'codiva が予期せず終了しました',
@@ -976,6 +1054,7 @@ const en: Messages = {
   command: {
     paletteTitle: 'Commands',
     paletteEmpty: 'No matching command',
+    paletteMore: (n) => `+${n} more (keep typing to filter)`,
     helpTitle: 'Available commands',
     unknown: (name) => (name ? `Unknown command: /${name}` : 'Unknown command'),
     help: 'Show available commands',
@@ -992,6 +1071,34 @@ const en: Messages = {
     sync: 'Merge the base branch in (the session resolves any conflicts)',
     fixCi: 'Ask the session to fix its failing CI checks',
     recover: 'Recover every session whose pull request is stuck',
+    config: 'Change the on/off settings',
+  },
+  config: {
+    title: 'Settings',
+    help: '↑↓: move ・ Enter / Space: toggle ・ Esc: close',
+    restartHint: 'Saved right away (takes effect the next time codiva starts)',
+    notifications: 'Desktop notifications',
+    notificationsHelp: 'Notify on questions, permission requests and completion',
+    mouse: 'Mouse support',
+    mouseHelp: "Click to select, drag to copy (Shift+drag for the terminal's own selection)",
+    followOrigin: 'Follow origin when creating worktrees',
+    followOriginHelp: 'Fetch origin/<base> and branch from its latest commit',
+    autoPr: 'Open pull requests automatically',
+    autoPrHelp: 'Push finished sessions, open a draft PR, mark it ready once checks are green',
+    autoSync: 'Merge the base in when a PR conflicts',
+    autoSyncHelp: 'Take the base branch in; asking the session to resolve conflicts costs tokens',
+    autoFixCi: 'Ask the session to fix failing CI',
+    autoFixCiHelp: 'Send the failing check names to the session (costs tokens)',
+    claudePlugins: 'Load Claude Code plugins',
+    claudePluginsHelp: 'Read ~/.claude/settings.json (plugins, but also its hooks and permissions)',
+    privacyWarning: 'Warn about training-data use',
+    privacyWarningHelp: "Show a header notice while Claude's training-data setting is on",
+    updateCheck: 'Check for updates on start',
+    updateCheckHelp: 'Ask the npm registry whether a newer version exists',
+    crashLog: 'Write crash logs',
+    crashLogHelp: 'Leave a report in ~/.codiva/logs/ when codiva exits abnormally',
+    codexNetworkAccess: 'Allow Codex network access',
+    codexNetworkAccessHelp: 'Let the Codex sandbox reach the network',
   },
   crash: {
     title: 'codiva exited unexpectedly',

@@ -20,6 +20,7 @@ export * from './codex-parse';
 export * from './commands';
 export * from './composer-layout';
 export * from './config';
+export * from './config-items';
 export * from './cost';
 export * from './crash';
 export * from './errors';

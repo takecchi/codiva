@@ -101,6 +101,11 @@ describe('matchCommands', () => {
     expect(matchCommands('/lo').map((c) => c.name)).toEqual(['login']);
     expect(matchCommands('/pr').map((c) => c.name)).toEqual(['prompt']);
     expect(matchCommands('/cl').map((c) => c.name)).toEqual(['clear']);
+    expect(matchCommands('/co').map((c) => c.name)).toEqual(['config']);
+    // `/c` は「設定」「差分（別名 changes）」「一括削除」に当たる（レジストリ順で出す）。
+    expect(matchCommands('/c').map((c) => c.name)).toEqual(['config', 'diff', 'clear']);
+    // 別名 `/settings` も前方一致では出る（昇格しないことは toCommandInput 側で検証）。
+    expect(matchCommands('/se').map((c) => c.name)).toEqual(['config']);
     // `/re` は「立て直し」と「削除」の両方に当たる（レジストリ順で出す）。
     expect(matchCommands('/re').map((c) => c.name)).toEqual(['recover', 'remove']);
     expect(matchCommands('/rem').map((c) => c.name)).toEqual(['remove']);
@@ -141,6 +146,12 @@ describe('runCommand', () => {
   });
   it('resolves /update to the update command', () => {
     expect(runCommand('/update')).toEqual({ kind: 'run', command: findCommand('update') });
+  });
+  it('resolves /config to the config command', () => {
+    expect(runCommand('/config')).toEqual({ kind: 'run', command: findCommand('config') });
+  });
+  it('resolves the /settings alias to the same command', () => {
+    expect(runCommand('/settings')).toEqual({ kind: 'run', command: findCommand('config') });
   });
   it('treats a bare slash as help (no false unknown)', () => {
     expect(runCommand('/')).toEqual({ kind: 'run', command: findCommand('help') });
