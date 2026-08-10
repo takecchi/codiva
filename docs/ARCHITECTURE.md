@@ -907,6 +907,13 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   これを捕えて `session.markConflict(files)` → reducer が `status: 'conflict'` + `conflictFiles` を立てる。
   **自動解消はしない**（`-X ours/theirs` 等でコードを無言に捨てない）。UI はバッジ表示のみで、解消は人手。
   `conflict` は詳細ビューでも終端状態扱い（差分・操作を表示）で、破棄や再マージは一覧/詳細から可能。
+  - **`git merge` の失敗＝競合ではない**。`pre-merge-commit` / `commit-msg` フックの拒否、
+    コミット署名の失敗、不正な ref、ディスク不足も同じように失敗する。`MergeConflictError` へ
+    変換するのは**unmerged パスが 1 件以上あるときだけ**で、無ければ元の `GitError`（stderr 付き）を
+    そのまま投げ直す（`syncBase` と同じ規則）。`conflict` は人手でしか抜けられない終端バッジなので、
+    そこへ丸めると原因の唯一の手がかりである stderr を捨てた上でセッションを詰ませる。
+    `merge --abort` は `MERGE_HEAD` があるときだけ撃つ（index に触れていない失敗に abort すべき
+    ものは無い）。
 
 ## 詰まった PR の立て直し（コンフリクト取り込み / CI 修正）
 

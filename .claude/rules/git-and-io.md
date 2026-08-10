@@ -64,6 +64,11 @@
 - マージは `checkout <base>` → `merge --no-ff <branch>`。**競合したら
   競合ファイルを収集して `merge --abort` し `MergeConflictError` を投げる**（base ツリーを汚さない）。
   `-X ours/theirs` 等での**自動解消は禁止**（コードを無言に捨てる）。UI は `conflict` バッジまで。
+  - **`git merge` の失敗を競合と決めつけない**。フック拒否・署名失敗・不正な ref・ディスク不足も
+    同じ `GitError` になる。`MergeConflictError` に変換するのは **unmerged パスがあるときだけ**で、
+    無ければ元の `GitError` を投げ直す（`merge()` と `syncBase()` で同じ規則）。`conflict` は
+    人手でしか抜けられない終端バッジなので、そこへ丸めると stderr（唯一の手がかり）を捨てて
+    セッションを詰ませる。`merge --abort` は `MERGE_HEAD` があるときだけ。
 - 破棄は `worktree remove [--force]` + `branch -D`。**アプリ終了時に worktree を消さない**
   （作業内容の保全。明示操作のみで消す）。
 

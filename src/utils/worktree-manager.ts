@@ -319,11 +319,8 @@ export class WorktreeManager {
     // place). Report that rather than falling through to the dirty branch below: git
     // would refuse the merge anyway, and "commit or stash your work" is impossible
     // advice with unmerged paths in the index.
-    const merging = await git(wt.path, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])
-      .then(() => true)
-      .catch(() => false);
-    if (merging) {
-      return { kind: 'conflict', ref: base, files: await this.unmergedFiles(wt) };
+    if (await this.isMerging(wt.path)) {
+      return { kind: 'conflict', ref: base, files: await this.unmergedFiles(wt.path) };
     }
     // `--untracked-files=no`: a stray untracked file (agent scratch notes, an
     // un-ignored build artifact, a leftover *.orig) does not block `git merge`, so
@@ -351,7 +348,7 @@ export class WorktreeManager {
       return { kind: 'updated', ref };
     } catch (err) {
       if (err instanceof GitError) {
-        const files = await this.unmergedFiles(wt);
+        const files = await this.unmergedFiles(wt.path);
         if (files.length > 0) {
           return { kind: 'conflict', ref, files };
         }
@@ -362,10 +359,17 @@ export class WorktreeManager {
     }
   }
 
-  /** Paths git currently reports as unmerged in `wt` (empty when not conflicted). */
-  private async unmergedFiles(wt: Worktree): Promise<string[]> {
-    const raw = await git(wt.path, ['diff', '--name-only', '--diff-filter=U']).catch(() => '');
+  /** Paths git currently reports as unmerged in `cwd` (empty when not conflicted). */
+  private async unmergedFiles(cwd: string): Promise<string[]> {
+    const raw = await git(cwd, ['diff', '--name-only', '--diff-filter=U']).catch(() => '');
     return raw.split('\n').filter(Boolean);
+  }
+
+  /** Whether git left a merge in progress in `cwd` (`MERGE_HEAD` exists). */
+  private async isMerging(cwd: string): Promise<boolean> {
+    return git(cwd, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])
+      .then(() => true)
+      .catch(() => false);
   }
 
   /** Committed diff stat vs. the base branch plus any uncommitted paths. */
@@ -379,19 +383,32 @@ export class WorktreeManager {
    * Merge the session branch into `base` (run from the main repo). On conflict
    * the merge is aborted (base tree stays clean) and a `MergeConflictError`
    * carrying the conflicted file paths is thrown; we never auto-resolve.
+   *
+   * A `git merge` failure is **not** proof of a conflict: a rejected
+   * `pre-merge-commit` / `commit-msg` hook, a failing commit signature, a bad
+   * ref or a full disk fail the same way. Only unmerged paths make it a
+   * conflict; otherwise the original `GitError` is rethrown so its stderr — the
+   * only clue to the real cause — survives, and the session doesn't get stuck
+   * behind a terminal `conflict` badge it can never resolve (same rule as
+   * {@link syncBase}).
    */
   async merge(wt: Worktree, base: string): Promise<void> {
     await git(this.repoRoot, ['checkout', base]);
     try {
       await git(this.repoRoot, ['merge', '--no-ff', wt.branch]);
     } catch (err) {
-      if (err instanceof GitError) {
-        // Capture conflicted paths before aborting resets the index.
-        const raw = await git(this.repoRoot, ['diff', '--name-only', '--diff-filter=U']).catch(
-          () => '',
-        );
-        const files = raw.split('\n').filter(Boolean);
+      if (!(err instanceof GitError)) {
+        throw err;
+      }
+      // Capture conflicted paths before aborting resets the index.
+      const files = await this.unmergedFiles(this.repoRoot);
+      // Abort only what git actually started. `--abort` without a merge in
+      // progress fails anyway, and a failure that never touched the index (a
+      // refused checkout, an unknown ref) leaves nothing of ours to reset.
+      if (await this.isMerging(this.repoRoot)) {
         await git(this.repoRoot, ['merge', '--abort']).catch(() => undefined);
+      }
+      if (files.length > 0) {
         throw new MergeConflictError(wt.branch, base, files);
       }
       throw err;
