@@ -2938,16 +2938,18 @@ describe('App list view (/agent default + availability)', () => {
   it('/model uses the selected default agent catalog', async () => {
     const app = render(
       <App
-        manager={new SessionManager({
-          worktrees,
-          agents: {
-            claude: fakeAdapter('claude', 'Claude'),
-            codex: fakeAdapter('codex', 'Codex'),
-          },
-          agent: fakeAdapter('codex', 'Codex'),
-          defaultAgentId: 'codex',
-          now: () => 0,
-        })}
+        manager={
+          new SessionManager({
+            worktrees,
+            agents: {
+              claude: fakeAdapter('claude', 'Claude'),
+              codex: fakeAdapter('codex', 'Codex'),
+            },
+            agent: fakeAdapter('codex', 'Codex'),
+            defaultAgentId: 'codex',
+            now: () => 0,
+          })
+        }
         modelCatalog={Promise.resolve(MODEL_CATALOG)}
         codexModelCatalog={Promise.resolve(CODEX_MODEL_CATALOG)}
       />,
