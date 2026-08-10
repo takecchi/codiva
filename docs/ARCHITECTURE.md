@@ -855,7 +855,11 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   `activeElapsedMs` で稼働中セグメントを畳み込んで凍結し、復元時は `activeSince` を未設定
   （idle）にしてオフライン時間を数えない。
   保存は `onPersist` → debounce（合成ルート）＋終了時の最終フラッシュ＋ SIGTERM/SIGHUP 時の
-  同期フラッシュ（`saveStateSync`）。`stop()` は保留中の許可要求を deny で解決してから停止し、
+  同期フラッシュ（`saveStateSync`）。**書き込みは temp → fsync → rename の atomic 差し替え**で、
+  非同期の書き込みはパスごとに直列化する（`utils/state-store.ts`）。直接書くと、途中で死んだときに
+  切れた JSON が残って `loadState` が空状態へ落ち、復元できるセッションを全部失う。
+  保存する snapshot は**書き始めた時点**で読む（`persist-controller`）ので、飛んでいる最中の
+  古い書き込みが最新状態を巻き戻すことはない。`stop()` は保留中の許可要求を deny で解決してから停止し、
   resume 先のトランスクリプトが未応答の `tool_use` で終わらないようにする（best-effort）。
 
 ## Phase 10 機能（origin 追従 / PR 自動化 / 競合検知）

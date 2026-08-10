@@ -116,6 +116,16 @@
   設定ミスや壊れた JSON で TUI を落とさない。
 - 保存は debounce（500ms、`bootstrap/persist-controller.ts`）+ 終了時 flush +
   SIGTERM/SIGHUP の**同期 flush**（`saveStateSync`）。この3経路を1つに減らさない。
+- **`state.json` は直接書かない**（`utils/state-store.ts`）。同じディレクトリの一時ファイルへ書き、
+  **fsync → close → rename** で差し替える。途中で死んで切れた JSON が残ると `loadState` が
+  空状態へフォールバックし、**復元可能なセッションが全部消える**（worktree は残るが codiva から
+  辿れない）。一時ファイル名は `<path>.<pid>.<async|sync>.tmp` 固定で、
+  **非同期の書き込みはパスごとに直列化**する（同名の temp を 2 本同時に開かないため。
+  ついでに rename の順序が呼び出し順と一致するので、古い保存が新しい保存を上書きしない）。
+- **保存内容は「書き始めた時点」の snapshot にする**（`persist-controller` が直列化したキューの中で
+  `snapshot()` を呼ぶ）。スケジュール時に固めると、debounce の書き込みが飛んでいる最中に
+  最終 flush が走ったとき、遅れて完了した古い書き込みが最新状態を巻き戻す。
+  同期 flush は世代カウンタを上げ、その最中に走っていた非同期書き込みは**完了後に書き直す**。
 
 ## 端末・OS への副作用
 

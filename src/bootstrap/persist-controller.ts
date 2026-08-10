@@ -21,7 +21,28 @@ export function createPersistController(
   statePath: string,
 ): PersistController {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const save = () => saveState(snapshot(), statePath).catch(() => undefined);
+  // Bumped by every synchronous flush. An async write that was already running
+  // captured the snapshot *before* that flush, so its rename rolled the file back
+  // to older state — write the current snapshot again to repair it. (In the real
+  // shutdown path `process.exit` follows the sync flush and nothing runs, but the
+  // repair keeps the ordering honest wherever the process survives.)
+  let syncGeneration = 0;
+  // Writes are chained so the *content* is current too: the snapshot is read when
+  // the write starts, never when it was scheduled. That makes it impossible for a
+  // queued save to land state older than what the previous write already published.
+  let queue: Promise<void> = Promise.resolve();
+  const save = (): Promise<void> => {
+    const run = queue.then(async () => {
+      const generation = syncGeneration;
+      await saveState(snapshot(), statePath);
+      if (generation !== syncGeneration) {
+        await saveState(snapshot(), statePath);
+      }
+    });
+    // Keep the chain alive after a failed write; saves are best-effort.
+    queue = run.catch(() => undefined);
+    return queue;
+  };
   return {
     schedule: () => {
       if (timer) {
@@ -36,6 +57,8 @@ export function createPersistController(
         saveStateSync(snapshot(), statePath);
       } catch {
         // best-effort — never block shutdown on a failed save
+      } finally {
+        syncGeneration += 1;
       }
     },
     flushAsync: async () => {
