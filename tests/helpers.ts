@@ -66,7 +66,10 @@ export async function settle(
  */
 export async function waitFor(
   predicate: () => boolean,
-  { tickMs = 25, timeoutMs = 5_000 } = {},
+  // 既定のタイムアウトは vitest の testTimeout（5s）より**短く**する。同じにすると
+  // 条件が成立しないとき「テストがタイムアウト」で終わり、どの expect が落ちたのか
+  // 分からなくなる（短ければ待ったあとの expect が普通に失敗して差分が出る）。
+  { tickMs = 25, timeoutMs = 4_000 } = {},
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
