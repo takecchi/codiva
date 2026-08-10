@@ -27,7 +27,8 @@ export type CommandAction =
   | 'update'
   | 'sync'
   | 'fixCi'
-  | 'recover';
+  | 'recover'
+  | 'config';
 
 /** 1 つのスラッシュコマンドの定義。 */
 export interface CommandSpec {
@@ -50,6 +51,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'agent', action: 'agent', describe: (m) => m.command.agent },
   { name: 'login', action: 'login', describe: (m) => m.command.login },
   { name: 'prompt', action: 'prompt', describe: (m) => m.command.prompt },
+  // `/config` は ~/.codiva/config.json の ON/OFF 項目を対話的に切り替える
+  // （多肢選択の項目は載せない。設定画面に出る一覧は `core/config-items.ts`）。
+  { name: 'config', aliases: ['settings'], action: 'config', describe: (m) => m.command.config },
   { name: 'diff', aliases: ['changes'], action: 'diff', describe: (m) => m.command.diff },
   { name: 'sync', action: 'sync', describe: (m) => m.command.sync },
   // `fix-ci` はハイフン入り。`parseCommand` は最初の空白までを名前として取るので

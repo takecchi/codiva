@@ -4,6 +4,19 @@ import type { CommandSpec } from '@/core';
 import { useMessages } from './i18n-context';
 import { glyph, theme } from './theme';
 
+/** `maxRows` に収まる行と、畳んだ件数（純粋な切り出し）。 */
+function fitRows(
+  commands: readonly CommandSpec[],
+  maxRows: number | undefined,
+): { rows: readonly CommandSpec[]; hidden: number } {
+  if (maxRows === undefined || commands.length <= maxRows) {
+    return { rows: commands, hidden: 0 };
+  }
+  // 溢れたら「他 N 件」の 1 行を枠内に取る（総行数を maxRows に保つ）。
+  const shown = Math.max(1, maxRows - 1);
+  return { rows: commands.slice(0, shown), hidden: commands.length - shown };
+}
+
 /**
  * Presentational list of slash commands shown above the composer while the user
  * is typing a `/command` (and as the full list for `/help`). No key handling —
@@ -19,8 +32,14 @@ export const CommandPalette: FC<{
    * 呼び出し側がカタログから引いて渡す（i18n 規約: .tsx に直書きしない）。
    */
   describeOverrides?: Readonly<Record<string, string>>;
-}> = ({ title, commands, describeOverrides }) => {
+  /**
+   * 描いてよいコマンド行数（`core/layout.ts` の `paletteMaxRows`）。溢れた分は
+   * 最終行の「他 N 件」に畳む。省略すると全件描く（低い端末では枠が潰れる）。
+   */
+  maxRows?: number;
+}> = ({ title, commands, describeOverrides, maxRows }) => {
   const m = useMessages();
+  const { rows, hidden } = fitRows(commands, maxRows);
   return (
     // `flexShrink={0}`: コマンドが増えて縦に入り切らなくなると Yoga はこの枠を
     // **縮める**（クリップではなく行が潰れて混ざる）ため、`/help` の一覧が
@@ -39,7 +58,7 @@ export const CommandPalette: FC<{
       {commands.length === 0 ? (
         <Text dimColor>{m.command.paletteEmpty}</Text>
       ) : (
-        commands.map((c) => (
+        rows.map((c) => (
           <Box key={c.name}>
             <Box width={12}>
               <Text color={theme.accent}>/{c.name}</Text>
@@ -48,6 +67,8 @@ export const CommandPalette: FC<{
           </Box>
         ))
       )}
+      {/* 黙って切らない: 絞り込めば出てくることが分かるように件数を出す。 */}
+      {hidden > 0 ? <Text dimColor>{m.command.paletteMore(hidden)}</Text> : null}
     </Box>
   );
 };

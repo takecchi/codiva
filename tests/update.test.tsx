@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { App } from '@/app';
 import { messages } from '@/core/i18n';
 import type { UpdateCheck, UpdateInfo, UpdateRun, UpdateService } from '@/core/update';
-import { flush, makeManager } from './helpers';
+import { flush, makeManager, waitFor } from './helpers';
 
 // Feature test for the update notification + `/update`, driven through the whole
 // App. The pure comparison lives in src/core/update.spec.ts and the registry/npm
@@ -44,19 +44,36 @@ function fakeUpdater(
   };
 }
 
-/** Type `/update` and submit it. */
-async function runUpdateCommand(stdin: { write: (s: string) => void }): Promise<void> {
+/**
+ * Type `/update` and submit it, then **wait until the check has landed**.
+ *
+ * ダイアログはまず「確認中…」を描き、`check()`（Promise）が解決してから結果に
+ * 差し替わる。固定 `flush()` で待つと、負荷の高い並列実行では確認中のフレームを
+ * 掴んで落ちる（実際にフルスイートで 5 件同時に落ちた）。出るはずのものを待つ。
+ */
+async function runUpdateCommand(
+  stdin: { write: (s: string) => void },
+  lastFrame?: () => string | undefined,
+): Promise<void> {
   stdin.write('/update');
   await flush();
   stdin.write('\r');
   await flush();
+  if (lastFrame) {
+    await waitFor(() => !(lastFrame() ?? '').includes(m.update.checking));
+  }
+}
+
+/** `text` がフレームに出るまで待つ（出なければタイムアウト → 続く expect が落ちる）。 */
+async function untilFrame(lastFrame: () => string | undefined, text: string): Promise<void> {
+  await waitFor(() => (lastFrame() ?? '').includes(text));
 }
 
 describe('update notification (banner)', () => {
   it('shows a one-line notice when the registry is ahead', async () => {
     const updater = fakeUpdater({ kind: 'available', info: availableInfo });
     const { lastFrame } = render(<App manager={makeManager()} version="0.2.9" updater={updater} />);
-    await flush();
+    await untilFrame(lastFrame, m.update.available('0.3.0'));
     expect(lastFrame() ?? '').toContain(m.update.available('0.3.0'));
     expect(lastFrame() ?? '').toContain(m.update.availableHint);
   });
@@ -83,7 +100,8 @@ describe('/update', () => {
   it('re-checks the registry and reports being up to date', async () => {
     const updater = fakeUpdater({ kind: 'up-to-date', current: '0.2.9' });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.upToDate('0.2.9'));
     expect(lastFrame() ?? '').toContain(m.update.upToDate('0.2.9'));
     // 起動時の結果を使い回さず、打つたびに問い合わせ直す。
     expect(updater.checks).toBe(1);
@@ -91,18 +109,19 @@ describe('/update', () => {
     // （開いている間の入力はすべて飲まれる = 背後の入力欄が汚れない）。
     stdin.write('');
     await flush();
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
     expect(updater.checks).toBe(2);
   });
 
   it('asks before installing, then runs the update and tells the user to restart', async () => {
     const updater = fakeUpdater({ kind: 'available', info: availableInfo });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.confirm('0.3.0', 'npm install -g codiva@latest'));
     expect(lastFrame() ?? '').toContain(m.update.confirm('0.3.0', 'npm install -g codiva@latest'));
     expect(updater.installs).toEqual([]); // 確認前は絶対に実行しない
     stdin.write('y');
-    await flush();
+    await untilFrame(lastFrame, m.update.installed('0.3.0'));
     expect(updater.installs).toEqual([availableInfo]);
     expect(lastFrame() ?? '').toContain(m.update.installed('0.3.0'));
   });
@@ -110,7 +129,7 @@ describe('/update', () => {
   it('n cancels without touching npm', async () => {
     const updater = fakeUpdater({ kind: 'available', info: availableInfo });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
     stdin.write('n');
     await flush();
     expect(updater.installs).toEqual([]);
@@ -123,9 +142,9 @@ describe('/update', () => {
       { run: { ok: false, detail: 'npm error code EACCES' } },
     );
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
     stdin.write('y');
-    await flush();
+    await untilFrame(lastFrame, m.update.failed('npm error code EACCES'));
     expect(lastFrame() ?? '').toContain(m.update.failed('npm error code EACCES'));
   });
 
@@ -133,7 +152,8 @@ describe('/update', () => {
     const info: UpdateInfo = { ...availableInfo, install: 'npx' };
     const updater = fakeUpdater({ kind: 'available', info });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.npx('0.3.0'));
     expect(lastFrame() ?? '').toContain(m.update.npx('0.3.0'));
     // y は確認キーではなく「閉じる」— npx で npm install を走らせてはいけない。
     stdin.write('y');
@@ -146,7 +166,8 @@ describe('/update', () => {
     const info: UpdateInfo = { ...availableInfo, install: 'unknown' };
     const updater = fakeUpdater({ kind: 'available', info });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.manual('0.3.0', 'npm install -g codiva@latest'));
     expect(lastFrame() ?? '').toContain(m.update.manual('0.3.0', 'npm install -g codiva@latest'));
     stdin.write('y');
     await flush();
@@ -156,25 +177,22 @@ describe('/update', () => {
   it('reports an unreachable registry as unknown, not as up to date', async () => {
     const updater = fakeUpdater({ kind: 'unavailable' });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
-    // ダイアログはまず「確認中…」を描いてから結果に差し替わるので、1 tick 余分に
-    // 流す（他の /update テストと同じ待ち方。これが無いと負荷の高い並列実行で
-    // 確認中のまま assert してしまう）。
-    await flush();
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.unavailable);
     expect(lastFrame() ?? '').toContain(m.update.unavailable);
   });
 
   it('says nothing could be checked when no updater is injected (no network)', async () => {
     const { stdin, lastFrame } = render(<App manager={makeManager()} />);
-    await runUpdateCommand(stdin);
-    await flush();
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.unavailable);
     expect(lastFrame() ?? '').toContain(m.update.unavailable);
   });
 
   it('closes on any key and swallows it (never leaks into the composer)', async () => {
     const updater = fakeUpdater({ kind: 'up-to-date', current: '0.2.9' });
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
     stdin.write('x');
     await flush();
     const frame = lastFrame() ?? '';
@@ -193,9 +211,9 @@ describe('/update', () => {
       install: () => new Promise<UpdateRun>(() => {}),
     };
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
     stdin.write('y');
-    await flush();
+    await untilFrame(lastFrame, m.update.installing);
     expect(lastFrame() ?? '').toContain(m.update.installing);
     stdin.write('\x1b');
     await flush();
@@ -209,9 +227,9 @@ describe('/update', () => {
     const { stdin, lastFrame } = render(<App manager={makeManager()} updater={updater} />);
     await flush();
     expect(lastFrame() ?? '').toContain(m.update.availableHint);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
     stdin.write('y');
-    await flush();
+    await untilFrame(lastFrame, m.update.installed('0.3.0'));
     // 実行中プロセスは旧版のままなので、案内は「再起動してください」に一本化する。
     expect(lastFrame() ?? '').toContain(m.update.installed('0.3.0'));
     expect(lastFrame() ?? '').not.toContain(m.update.availableHint);
@@ -223,7 +241,8 @@ describe('/update', () => {
     await flush();
     const updater = fakeUpdater({ kind: 'available', info: availableInfo });
     const { stdin, lastFrame } = render(<App manager={manager} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.activeWarning(1));
     const frame = lastFrame() ?? '';
     expect(frame).toContain(m.update.activeWarning(1));
     // 警告は出すがブロックはしない。
@@ -244,7 +263,8 @@ describe('/update', () => {
     await flush();
     const updater = fakeUpdater({ kind: 'available', info: availableInfo });
     const { stdin, lastFrame } = render(<App manager={manager} updater={updater} />);
-    await runUpdateCommand(stdin);
+    await runUpdateCommand(stdin, lastFrame);
+    await untilFrame(lastFrame, m.update.title);
     expect(lastFrame() ?? '').toContain(m.update.title);
     for (const report of ['\x1b[<64;5;5M', '\x1b[<65;5;5M', '\x1b[<0;5;5M', '\x1b[<0;5;5m']) {
       stdin.write(report);
@@ -259,7 +279,7 @@ describe('/update', () => {
     expect(frame).not.toContain('[<0');
     // 続けて y を押せば通常どおり更新が走る（キー処理が壊れていない）。
     stdin.write('y');
-    await flush();
+    await waitFor(() => updater.installs.length > 0);
     expect(updater.installs).toEqual([availableInfo]);
   });
 

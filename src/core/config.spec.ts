@@ -3,6 +3,7 @@ import {
   type ClaudeSettingSource,
   type CodivaConfig,
   type EffortLevel,
+  mergeConfig,
   type PermissionMode,
   resolveClaudeSettingSources,
   resolveIgnoredFilesMode,
@@ -290,6 +291,29 @@ describe('toConfig', () => {
       ignoredFilesExclude: ['!dist'],
       copyIgnored: false,
     });
+  });
+});
+
+describe('mergeConfig', () => {
+  it('overlays the patch', () => {
+    expect(mergeConfig({ autoPr: false, model: 'x' }, { autoPr: true })).toEqual({
+      autoPr: true,
+      model: 'x',
+    });
+  });
+
+  // 「既定に戻す」を差分で表現するため、undefined はキーごと消す（キーが
+  // undefined 値で残ると `'autoPr' in config` 系の判定や JSON 出力がぶれる）。
+  it('removes keys whose patch value is undefined', () => {
+    const next = mergeConfig({ autoPr: false, model: 'x' }, { autoPr: undefined });
+    expect(next).toEqual({ model: 'x' });
+    expect(Object.hasOwn(next, 'autoPr')).toBe(false);
+  });
+
+  it('does not mutate the base', () => {
+    const base: CodivaConfig = { autoPr: false };
+    mergeConfig(base, { autoPr: true, model: 'x' });
+    expect(base).toEqual({ autoPr: false });
   });
 });
 

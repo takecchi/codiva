@@ -51,7 +51,8 @@ codiva/
 │   ├── index.tsx              # bin エントリ。解決 → preflight → build → restore → render → shutdown（合成ルート・薄い）
 │   ├── app.tsx                # ルートコンポーネント。list ⇔ detail のビュー切替
 │   ├── bootstrap/             # 副作用の配線（合成の分解。core/utils にのみ依存）
-│   │   ├── build-manager.ts   # config + I/O seam → SessionManager 組み立て + /model の config 永続・/prompt の prompt.md 永続
+│   │   ├── build-manager.ts   # config + I/O seam → SessionManager 組み立て + /model・/agent の config 永続（ConfigStore 経由）・/prompt の prompt.md 永続
+│   │   ├── config-store.ts    # ~/.codiva/config.json の唯一の書き手（差分をマージして保存）
 │   │   ├── restore-sessions.ts # state.json + transcript から復元
 │   │   ├── persist-controller.ts # debounce保存 / SIGTERM同期flush / 最終flush を集約
 │   │   ├── crash-handler.ts   # uncaughtException/unhandledRejection → 端末復元 + クラッシュログ
@@ -93,6 +94,7 @@ codiva/
 │   │   ├── composer.tsx       # 入力欄の共通実装（useComposer = キー/マウス/バッファ, <Composer> = 描画）
 │   │   ├── prompt-input.tsx   # 上下横罫線 + ❯ キャレットの入力欄（presentational）
 │   │   ├── repo-prompt-editor.tsx # /prompt のリポジトリ追加指示エディタ（モーダル・composer を置換）
+│   │   ├── config-select.tsx  # /config の設定 ON/OFF ダイアログ（モーダル・composer を置換）
 │   │   ├── dialog-box.tsx / confirm-prompt.tsx / choice-row.tsx  # 共有 presentational（角丸枠・y/n 確認行・選択肢1件）
 │   │   ├── update-dialog.tsx  # /update の表示（presentational・useInput を持たない）
 │   │   ├── status-footer.tsx / permission-dialog.tsx / model-select.tsx / command-palette.tsx / progress-badge.tsx
@@ -664,6 +666,10 @@ interface SessionState {
 - `onPersist()`: 永続対象が変わった合図（合成ルートで debounce 保存に配線）。`persistableState()` が state.json 用スナップショットを組み立てる。
 - **モデル切替（`/model`）**: `SessionOptions` を可変フィールドとして保持し、`getModel()` / `setModel(model)` で公開。`setModel` は**以降の新規セッション**に適用（実行中セッションは起動時のモデルを維持）し、`onModelChange(model)` で合成ルートに通知 → `~/.codiva/config.json` の `model` にマージ保存される。選択肢は **Claude Code のカタログ**（`Query.supportedModels()`）を唯一の出所にし、取得は `utils/model-catalog.ts`（`fetchModelCatalog`）・変換と突き合わせは `core/models.ts`（`toModelOptions` / `isCurrentModel`）が担う（詳細は [TECH_NOTES.md](./TECH_NOTES.md) の supportedModels 節）。コマンド解析は `core/commands.ts`（`parseSlashCommand`）。
 - **リポジトリ追加指示の編集（`/prompt`）**: モデル切替と同じ形。`getRepoPrompt()` / `setRepoPrompt(text)` で `SessionOptions.appendSystemPrompt` を可変管理し、`setRepoPrompt` は**以降の新規セッション**に適用（実行中セッションは起動時の指示を維持。systemPrompt は query 開始時に確定するため）、`onRepoPromptChange(text)` で合成ルートに通知 → `utils/saveRepoPrompt()` が `<repo>/.codiva/prompt.md` へ永続化（空なら削除）。UI は一覧の `/prompt` で `ui/repo-prompt-editor.tsx`（現在値をシードしたモーダル。Enter 保存 / Shift+Enter 改行 / Esc 取消。composer と同じ `input.ts` の chord モデル）を開く。起動時読込は従来どおり `loadRepoPrompt()`。
+- **設定の対話的変更（`/config`）**: モデル切替・リポジトリ指示と違い、これは `SessionManager` を**通らない**（対象が「codiva 自身の設定」でセッションの状態ではないため）。項目の表と反転は純粋な `core/config-items.ts`（`CONFIG_TOGGLES` / `configToggleRows` / `toggleConfigPatch`）、表示は `ui/config-select.tsx`、今の値の保持は `app.tsx` の state、保存は合成ルートの `bootstrap/config-store.ts`（`ConfigStore`）。
+  - **UI が上げるのは全体ではなく差分**（`Partial<CodivaConfig>`）にしてある。`saveConfig` はファイルを丸ごと上書きするので、書き手（`/model` / `/agent` / `/config`）がそれぞれ起動時のスナップショットを持つと後勝ちで互いの変更を消す。`ConfigStore` を唯一の書き手にして `mergeConfig`（`core/config.ts`。`undefined` はキー削除 = 既定へ戻す）で畳む。`/model` と `/agent` の永続化も `buildManager` の `saveConfigPatch` 経由で同じストアを通る。
+  - 載せるのは**真偽値として意味が通る項目だけ**（多肢選択は設定ファイル直編集）。`claudeSettingSources` は配列だが「`'user'` 層を読むか」= Claude Code のプラグインを使うかに畳めるので、専用の read/write を持たせて例外的に載せている。
+  - 現状の項目は**すべて起動時にしか読まれない**（アダプタ・WorktreeManager・端末セットアップに焼き込まれる）ので、ダイアログは「保存済み・反映は次回起動から」を 1 行出す。即時反映できる項目を足すときに行ごとの印を導入する。
 - `restore(persisted)`: 起動時に前回セッションを再構築（worktree meta を再配線し、`Session` に `resume`/`restored` を渡す。id/slug を予約して衝突回避）。
 - **責務分割**: SessionManager はライフサイクルと配線のファサードで、以下を委譲する:
   - `core/session-store.ts`（`SessionStore`）… 購読可能スナップショット（順序・状態・参照同一性保持）

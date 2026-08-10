@@ -47,12 +47,23 @@ export interface CodivaConfig {
 
 ## 3. TUI から変更できるようにする場合
 
-`/model` と `/prompt` が前例。パターンは共通:
+**真偽値なら `/config` に 1 行足すだけ**（専用コマンドを作らない）:
+
+1. `core/config-items.ts` の `CONFIG_TOGGLES` に `booleanToggle(...)` を 1 エントリ追加
+   （既定値もここで宣言する。既定と同じ値に戻したらキーごと消える）。
+2. `core/i18n.ts` の `config` グループに `<key>` と `<key>Help` を **ja / en 両方**。
+3. `core/config-items.spec.ts` の表（表示順・既定値）を更新。
+4. 反映が次回起動からで良いか確認する（`/config` はそう案内している）。即時反映が要るなら
+   下の「値を持ち回すもの」の手順で setter を足し、行ごとの印を導入する。
+
+多肢選択・文字列など**値を持ち回すもの**は `/model` と `/prompt` が前例:
 
 1. `SessionManager` に `getX()` / `setX(v)` を足し、**以降の新規セッション**に適用する
    （稼働中セッションは起動時の値を維持。SDK options は query 開始時に確定するため）。
 2. `onXChange(v)` コールバックで合成ルートへ通知。
-3. `bootstrap/build-manager.ts` が `saveConfig` の**マージ保存**（他キーを消さない）に配線。
+3. `bootstrap/build-manager.ts` の `saveConfigPatch`（= `bootstrap/config-store.ts` の
+   `ConfigStore.update`）へ**差分**で渡す。**`saveConfig` を直接呼ばない** — 丸ごと上書きなので、
+   自前のスナップショットを持つと他の書き手（`/config` 等）の変更を消す。
 4. UI は `/コマンド` + ダイアログ（skill `add-slash-command` を参照）。
 
 ## 4. テスト

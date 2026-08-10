@@ -19,6 +19,7 @@ import {
   renderFullscreen,
   settle,
   stripAnsi,
+  waitFor,
   fakeWorktrees as worktrees,
 } from './helpers';
 
@@ -3011,9 +3012,12 @@ describe('App /login (in-TUI sign-in)', () => {
     stdin.write('/login');
     await flush();
     stdin.write('\r');
-    // ログインプロセスの出力は非同期に届くので、**固定 flush ではなく静止まで待つ**
-    // （フルスイート負荷下だと 150ms に間に合わず URL 行が出ないことがある）。
-    await settle(() => lastFrame() ?? '');
+    // ログインプロセスの出力は非同期に届く。**静止待ちでは足りない** — URL が届く前の
+    // 「サインインを開始しています…」の画面も静止しているので、遅い環境ではそこで
+    // 返ってしまう（CI の 2 コアランナーで実際に落ちた）。出るはずのものを待つ。
+    // 待つのは「全部届いた」状態: URL 行 → 自動オープン → コード行の順に非同期で進むので、
+    // どれか 1 つで止めると残りが未了のフレームを掴む。
+    await waitFor(() => opened.length > 0 && stripAnsi(lastFrame() ?? '').includes('ABCD-1234'));
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('Claude にサインイン');
     expect(frame).toContain('https://auth.example.com/device');

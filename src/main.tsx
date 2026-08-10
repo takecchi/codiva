@@ -35,6 +35,7 @@ import {
 import { App } from './app';
 import {
   buildManager,
+  createConfigStore,
   createPersistController,
   type Diagnostic,
   installCrashHandlers,
@@ -109,6 +110,9 @@ async function main(): Promise<void> {
   const persist = createPersistController(() => manager.persistableState(), statePath);
   // リポジトリ固有の追加指示（`.codiva/prompt.md`）を全セッションの systemPrompt に載せる。
   const appendSystemPrompt = await loadRepoPrompt(repoRoot);
+  // 設定ファイルの書き手はここ 1 つに集約する（`/model` `/agent` `/config` が
+  // それぞれ起動時のスナップショットで丸ごと上書きすると互いの変更を消すため）。
+  const configStore = createConfigStore(config);
   manager = buildManager({
     repoRoot,
     config,
@@ -116,6 +120,9 @@ async function main(): Promise<void> {
     worktrees,
     onPersist: persist.schedule,
     appendSystemPrompt,
+    saveConfigPatch: (patch) => {
+      configStore.update(patch);
+    },
   });
 
   // クラッシュ時の後始末を配線する。alt screen のまま死ぬと例外の内容が画面ごと消え、
@@ -255,6 +262,10 @@ async function main(): Promise<void> {
       loadBranch={() => worktrees.currentBranch()}
       onOpenUrl={openUrl}
       onCopy={(text) => copyToClipboard(text)}
+      config={config}
+      onConfigChange={(patch) => {
+        configStore.update(patch);
+      }}
     />,
     { exitOnCtrlC: false },
   );

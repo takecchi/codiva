@@ -107,12 +107,55 @@ export function logViewportRows(rows: number): number {
 export const LIST_CHROME_ROWS = 15;
 
 /**
+ * ヘッダ（マスコット + 前後の余白）が使う縦幅。`/help` の一覧はヘッダを隠して
+ * その場所を使うので、確保済み chrome から差し引くために切り出してある。
+ */
+export const BANNER_ROWS = 7;
+
+/**
  * 一覧で実際にセッション行を描ける行数のおおよその見積り。端末全体の rows から
  * 固定 chrome を引く（実測できないときのフォールバック。通常は行ボックスの実測
  * 高さを優先する）。
  */
 export function listViewportRows(rows: number): number {
   return Math.max(1, rows - LIST_CHROME_ROWS);
+}
+
+/**
+ * コマンドパレット（`ui/command-palette.tsx`）が枠と見出しに使う縦幅: 枠線 2 + 見出し 1。
+ * 溢れたときの「他 N 件」行は**コマンド行の枠内**に収める（listView のインジケータと
+ * 同じ考え方で、出しても総行数が変わらないようにする）。
+ */
+export const PALETTE_CHROME_ROWS = 3;
+
+/** パレットに必ず残すコマンド行数（極端に低い端末でも 0 行にしない）。 */
+export const PALETTE_MIN_ROWS = 3;
+
+/** 詳細ビューでパレットの下に残すログの行数（全部パレットに使わせない）。 */
+const PALETTE_LOG_RESERVE = 3;
+
+/**
+ * パレットに描いてよいコマンド行数を端末高から求める純関数。溢れる分は呼び出し側が
+ * 「他 N 件」の 1 行に畳む（`CommandPalette` の `maxRows`）。
+ *
+ * 畳まないと Yoga がパレットの枠自体を**縮める**（クリップではなく行が潰れて混ざる）。
+ * 実際、コマンドが 14 個になった時点で 24 行の端末では `/help` の行が消え、フッタと
+ * `/exit` が重なって描かれた。`flexShrink={0}` は「縮む役を他へ回す」だけなので、
+ * 他が全部最小まで縮んだあとはパレット自身が潰れる = 行数を自分で抑える必要がある。
+ *
+ * `view` で確保済みの chrome が変わる:
+ * - `'list'` … ヘッダ + 入力欄 + フッタ（`LIST_CHROME_ROWS`）
+ * - `'help'` … `/help` の全一覧。**ヘッダを隠して場所を空ける**ので、その 7 行が戻る
+ * - `'detail'`… 詳細ビュー（`DETAIL_CHROME_ROWS`）+ ログを数行残す
+ */
+export function paletteMaxRows(rows: number, view: 'list' | 'help' | 'detail'): number {
+  const reserved =
+    view === 'list'
+      ? LIST_CHROME_ROWS
+      : view === 'help'
+        ? LIST_CHROME_ROWS - BANNER_ROWS
+        : DETAIL_CHROME_ROWS + PALETTE_LOG_RESERVE;
+  return Math.max(PALETTE_MIN_ROWS, rows - reserved);
 }
 
 /**
