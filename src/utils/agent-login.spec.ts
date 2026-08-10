@@ -21,6 +21,42 @@ describe('spawnLogin', () => {
     expect(proc.result().code).toBe(0);
   });
 
+  it('keeps stdout and stderr on separate lines when chunks interleave', async () => {
+    // 改行で終わっていない stdout の途中チャンク → stderr の 1 行、の順で流す。
+    // 行バッファを共有していると `Open https://auth.example/device` に
+    // `warning: ...` が連結され、URL の抽出が壊れる（issue #113）。
+    const proc = spawnLogin(process.execPath, [
+      '-e',
+      [
+        "process.stdout.write('Open https://auth.example/device');",
+        'setTimeout(() => {',
+        "  process.stderr.write('warning: retrying\\n');",
+        '  setTimeout(() => process.exit(0), 20);',
+        '}, 20);',
+      ].join(''),
+    ]);
+    const lines: string[] = [];
+    for await (const line of proc) {
+      lines.push(line);
+    }
+    expect(lines).toContain('Open https://auth.example/device');
+    expect(lines).toContain('warning: retrying');
+    expect(lines.some((l) => l.includes('device') && l.includes('warning'))).toBe(false);
+  });
+
+  it('flushes each stream trailing partial line independently', async () => {
+    const proc = spawnLogin(process.execPath, [
+      '-e',
+      "process.stdout.write('out-tail');process.stderr.write('err-tail');",
+    ]);
+    const lines: string[] = [];
+    for await (const line of proc) {
+      lines.push(line);
+    }
+    expect([...lines].sort()).toEqual(['err-tail', 'out-tail']);
+    expect(proc.result().code).toBe(0);
+  });
+
   it('ends (does not hang) and reports failure when the binary is missing', async () => {
     const proc = spawnLogin('/nonexistent/login-binary-for-tests', ['login']);
     const lines: string[] = [];
