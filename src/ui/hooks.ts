@@ -593,6 +593,8 @@ function useRangeSelection<P, R>(
 ): {
   selection: R | undefined;
   dragging: () => boolean;
+  /** ドラッグ中のアンカー（press した点）。release すると undefined に戻る。 */
+  anchor: () => P | undefined;
   begin: (at: P) => void;
   extend: (at: P) => void;
   /** ドラッグを終了し、確定した範囲を返す（何も選択していなければ undefined）。 */
@@ -639,7 +641,8 @@ function useRangeSelection<P, R>(
     }
   };
   const dragging = () => anchorRef.current !== undefined;
-  return { selection, dragging, begin, extend, finish, clear };
+  const anchor = () => anchorRef.current;
+  return { selection, dragging, anchor, begin, extend, finish, clear };
 }
 
 /**
@@ -671,6 +674,13 @@ export interface LogDragSelection {
   selection: LogRange | undefined;
   /** True between a press and its release (a drag is in progress). */
   dragging: () => boolean;
+  /**
+   * ドラッグ中のアンカー（press した行 + 桁）。release で undefined に戻る。
+   * 「まだ範囲になっていないドラッグ」がどこから始まったかを知るために要る —
+   * ドラッグの最中に行の意味が変わったら（ストリーミング中の本文が確定エントリへ
+   * 差し替わる等）アンカーごと捨てないと、離した時点で**触っていない行**がコピーされる。
+   */
+  anchor: () => LogPoint | undefined;
   /** Mouse press on a log row: set the anchor and drop any old selection. */
   begin: (at: LogPoint) => void;
   /** Mouse drag (or an auto-scroll tick): move the focus end, updating the highlight. */
@@ -688,7 +698,7 @@ export interface LogDragSelection {
  * release で 1 回だけ、その時点の表示行から作る（`core/log-selection.ts`）。
  */
 export function useLogDragSelection(onCopy?: (text: string) => void): LogDragSelection {
-  const { selection, dragging, begin, extend, finish, clear } =
+  const { selection, dragging, anchor, begin, extend, finish, clear } =
     useRangeSelection(normalizeLogSelection);
   const end = (lines: readonly DisplayLine[]) => {
     const range = finish();
@@ -702,7 +712,7 @@ export function useLogDragSelection(onCopy?: (text: string) => void): LogDragSel
       onCopy?.(text);
     }
   };
-  return { selection, dragging, begin, extend, end, clear };
+  return { selection, dragging, anchor, begin, extend, end, clear };
 }
 
 export interface RecoveryAction {

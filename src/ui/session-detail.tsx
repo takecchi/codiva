@@ -33,7 +33,7 @@ import {
   type SessionManager,
   scrollDown,
   scrollUp,
-  streamTail,
+  streamLines,
   WHEEL_SCROLL_LINES,
 } from '@/core';
 import { AgentSelect } from './agent-select';
@@ -311,14 +311,9 @@ export const SessionDetail: FC<{
   // scroll smoothly instead of jumping an entry at a time. Width accounts for
   // the view's horizontal padding (1 cell each side).
   const messages = session?.messages;
-  // ログ行の折返し幅。状態行のプレビューも**同じ幅**で切る（食い違うと 1 行に
-  // 収まらず、状態行が 2 行になってログの高さを削ってしまう）。
+  // ログ行の折返し幅。ストリーミング中の行も**同じ幅**で折り返す（食い違うと確定した
+  // 瞬間に行の割れ方が変わって画面が組み変わる）。
   const logWidth = Math.max(1, columns - 2);
-  const lines = useMemo<DisplayLine[]>(
-    () => (messages ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind]) : []),
-    [messages, logWidth],
-  );
-  const total = lines.length;
   // ログを描く行数 = スクロール1回の移動量の基準 = アンカーの下限。`logWindow` と
   // スクロール（移動量・アンカーの下限）で必ずこの同じ値を使う — 食い違うと最上部で
   // アンカーが 1 行手前で止まり、先頭行に到達できなくなる。
@@ -326,20 +321,34 @@ export const SessionDetail: FC<{
   // インライン描画時（端末が低くて全画面化しない）はクリップされず端末スクロールに
   // 任せるため実測は使わず（高さ=内容なので測っても自分自身になる）、再描画コストの
   // 上限として端末 rows を使う。
-  // **スクロール位置にもストリーミングにも依存しない**のが要点: プレビュー行も
-  // スクロール案内もログ枠の外の状態行（常に 1 行）へ出す（`logStatusRow`）。
-  // ここを可変にすると見えているログ全体が 1 行跳ねる（= ガクガクする）。
+  // **スクロール位置にもストリーミングにも依存しない**のが要点: スクロール案内は
+  // ログ枠の外の状態行（常に 1 行）へ出す（`logStatusRow`）。ここを可変にすると
+  // 見えているログ全体が 1 行跳ねる（= ガクガクする）。
   const logCap = isFullscreenViewport(rows)
     ? Math.max(1, Math.floor(measuredLogRows ?? logViewportRows(rows)))
     : Math.max(1, rows);
-  // ライブ入力中のプレビュー。幅で切ってから渡す — Ink は測った文字列をプロセス
-  // グローバルな上限なしキャッシュへ永久に積むので、デルタごとに変わる長い行を
-  // そのまま渡すとヒープが単調増加する（`streamTail` の注記参照）。
-  const preview = session?.streamingText ? streamTail(session.streamingText, logWidth) : '';
+  const entryRows = useMemo<DisplayLine[]>(
+    () => (messages ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind]) : []),
+    [messages, logWidth],
+  );
+  // ストリーミング中の本文。**ログの末尾の行として**描くので、返ってきたぶんだけ
+  // 下へ伸びていき、末尾にいなければ（アンカーが数値なら）視界は動かない。
+  // Markdown 整形とリンク検出をしないのは、途中テキストを整形すると毎デルタで全行の
+  // 折り返しが変わり Ink のキャッシュが膨れるため（`streamLines` の注記）。
+  const streaming = session?.streamingText;
+  const streamRows = useMemo<DisplayLine[]>(
+    () => (streaming ? streamLines(streaming, logWidth, LOG_PREFIX.assistant_text, logCap) : []),
+    [streaming, logWidth, logCap],
+  );
+  const lines = useMemo<DisplayLine[]>(
+    () => (streamRows.length === 0 ? entryRows : [...entryRows, ...streamRows]),
+    [entryRows, streamRows],
+  );
+  const total = lines.length;
   // 実際に描くウィンドウ。当たり判定（どの行をクリックしたか）と描画で**同じ結果**を使う。
   const win = logWindow(lines, logCap, anchor);
-  // ログ直下に必ず 1 行描く状態行（プレビュー / スクロール案内 / 空行）。
-  const logStatus = logStatusRow(win, preview);
+  // ログ直下に必ず 1 行描く状態行（スクロール案内 / 空行）。
+  const logStatus = logStatusRow(win);
   /**
    * ログ可視域の幾何。すべて描画に使った実測値・同じウィンドウから組むので、クリック位置の
    * 逆算が別の行に当たらない。実測前とインライン描画時（低い端末＝マウス捕捉もしない）は
@@ -406,11 +415,43 @@ export const SessionDetail: FC<{
   // からの表示行 index なので、先頭が消えると別の行を指す = 触っていない行がコピーされる）。
   const widthRef = useRef(columns);
   const firstSeqRef = useRef(messages?.[0]?.seq);
+  // ストリーミング中の行（= 確定行より後ろ）に掛かった選択の番人。行 index は文書に対する
+  // 位置なので、ライブ領域の行が入れ替わると同じ index が別の文字を指す（触っていない行が
+  // コピーされる）。3 つの手掛かりで検知する — 詳細は下の effect のコメント。
+  const live = {
+    entries: entryRows.length,
+    rows: streamRows.length,
+    head: streamRows[0]?.key,
+  };
+  const liveRef = useRef(live);
   useEffect(() => {
     const firstSeq = messages?.[0]?.seq;
     if (widthRef.current !== columns || firstSeqRef.current !== firstSeq) {
       widthRef.current = columns;
       firstSeqRef.current = firstSeq;
+      liveRef.current = live;
+      clearLogSelection();
+      return;
+    }
+    const prev = liveRef.current;
+    // 末尾に**足されただけ**（行数が増えただけ）なら既存行の index はズレないので何もしない
+    // — ここで捨てると、流れている本文をドラッグしている最中に毎デルタ選択が消える。
+    // 崩れるのは 3 つ: 確定行が増えた（ライブ領域全体が下へずれる）/ 先頭行が変わった
+    // （cap で画面外へ押し出された）/ 行数が減った（`clipStreamText` が頭を落とした）。
+    const shifted =
+      prev.entries !== live.entries || prev.head !== live.head || live.rows < prev.rows;
+    if (!shifted) {
+      liveRef.current = live;
+      return;
+    }
+    // ライブ領域は「これまでの確定行数」から下。そこに掛かっている選択だけ捨てる。
+    // **まだ範囲になっていないドラッグ（アンカーだけ）も見る** — press した時点では
+    // 選択がまだ無いので、見ないとドラッグ中に確定したときアンカーだけが古い行を指したまま
+    // 残り、離した瞬間に触っていない行がコピーされる。
+    const reach = Math.max(logSel.anchor()?.row ?? -1, logSel.selection?.end.row ?? -1);
+    const touchesLive = reach >= prev.entries;
+    liveRef.current = live;
+    if (touchesLive) {
       clearLogSelection();
     }
   });
@@ -715,11 +756,7 @@ export const SessionDetail: FC<{
        * 下のブロックに `marginTop` は付けない（付けると空行が 2 行並ぶ）。
        */}
       <Box flexShrink={0}>
-        {logStatus.kind === 'preview' ? (
-          <Text color={theme.accent} dimColor wrap="truncate-end">
-            {logStatus.text}
-          </Text>
-        ) : logStatus.kind === 'scrollback' ? (
+        {logStatus.kind === 'scrollback' ? (
           <Text color={theme.warn} dimColor wrap="truncate-end">
             {m.detail.scrollHint(logStatus.hiddenBelow)}
           </Text>

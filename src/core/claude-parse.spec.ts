@@ -3,7 +3,12 @@ import { fileURLToPath } from 'node:url';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { applyClaudeMessage, summarizeToolUse, toolResultSummary } from '@/core/claude-parse';
-import { MAX_LOG_ENTRIES, MAX_LOG_ENTRY_CHARS, MAX_STREAM_PREVIEW_CHARS } from '@/core/log-buffer';
+import {
+  MAX_LOG_ENTRIES,
+  MAX_LOG_ENTRY_CHARS,
+  MAX_STREAM_PREVIEW_CHARS,
+  STREAM_PREVIEW_KEEP_CHARS,
+} from '@/core/log-buffer';
 import { initialState, reduce } from '@/core/status-reducer';
 import type { CreateSessionInput, PermissionRequest, SessionState } from '@/core/types';
 
@@ -841,10 +846,10 @@ describe('applyClaudeMessage over streaming partial messages', () => {
     expect(state.streamingText).toBe('Hello');
   });
 
-  it('keeps only the tail of a long stream (プレビューは最後の行しか出さない)', () => {
+  it('keeps only the tail of a long stream (詳細ビューが描くのは末尾の数十行だけ)', () => {
     let state = sdk(initialState(BASE), streamText('x'.repeat(MAX_STREAM_PREVIEW_CHARS)));
     state = sdk(state, streamText('TAIL'));
-    expect(state.streamingText).toHaveLength(MAX_STREAM_PREVIEW_CHARS);
+    expect(state.streamingText).toHaveLength(STREAM_PREVIEW_KEEP_CHARS);
     expect(state.streamingText?.endsWith('TAIL')).toBe(true);
   });
 

@@ -28,56 +28,6 @@ export interface LogWindow<T = LogEntry> {
 }
 
 /**
- * 表示幅 `width` セルぶんに切る（グラフェム単位 = `stringWidth` と同じ単位）。
- * 端で溢れる全角文字は落とす（1 セルだけはみ出させない）。**先頭から数えて
- * 溢れた時点で打ち切る**ので、長い行でも全体を走査しない。
- *
- * ANSI エスケープを含む行は切らずに返す。`stringWidth` はエスケープを幅 0 と
- * 数えるので `slice` がシーケンスの途中を断ち切り得るため（そのまま渡せば
- * Ink 側の ANSI 対応の truncate が効く）。
- */
-export function clipToWidth(text: string, width: number): string {
-  if (width <= 0 || text.includes('\x1b')) {
-    return text;
-  }
-  let cells = 0;
-  let index = 0;
-  for (const { segment } of GRAPHEMES.segment(text)) {
-    const w = stringWidth(segment);
-    if (cells + w > width) {
-      return text.slice(0, index);
-    }
-    cells += w;
-    index += segment.length;
-  }
-  return text;
-}
-
-/**
- * The live-typing preview line: the last non-empty line of the streamed text so
- * far, clipped to `width` cells. The detail view shows just this one line while
- * a turn streams in.
- *
- * **`width` は「実際に描く幅」を渡す**（呼び出し側はログ行の折返しと同じ幅を使う）。
- * 見た目は `<Text wrap="truncate-end">` と同じだが、渡す文字列そのものを短くする
- * ことが重要: Ink は測った文字列を**プロセスグローバルな上限なしキャッシュ**に
- * 永久に積む（`ink/build/measure-text.js` と `wrap-text.js`。実測で 1 描画あたり
- * 約 17.8KB / 4,000 文字、解放経路なし ⇒ ヒープ枯渇）。デルタごとに変わる長い行を
- * そのまま渡すと毎フレーム別のキーが 1 本増えるが、幅で切れば行が幅を超えた時点で
- * 文字列が変わらなくなり、キャッシュに当たるようになる。
- */
-export function streamTail(text: string, width: number): string {
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (line && line.length > 0) {
-      return clipToWidth(line, width);
-    }
-  }
-  return '';
-}
-
-/**
  * One physical terminal row of the detail-view log. Entries are expanded into
  * these by {@link logLines} — the scroll model works in physical rows, not log
  * entries, so multi-line messages neither fill the viewport with a single entry
@@ -403,6 +353,74 @@ export function logLines(
   return out;
 }
 
+/**
+ * ストリーミング中の本文だけが持つ kind。流れてくるのは assistant のテキストだけ
+ * （`AgentEvent` の `stream_text`）なので、確定後のエントリと同じ色・同じ prefix で描ける。
+ */
+const STREAM_KIND: LogKind = 'assistant_text';
+
+/**
+ * ストリーミング中の本文（`SessionState.streamingText`）を、確定済みのログと同じ物理行へ
+ * 展開する。**ログの末尾に足して同じビューポートで描く**ためのもので、これにより返って
+ * きたぶんだけ本文が下へ伸びていく。末尾追従／スクロール中の固定は `logWindow` の
+ * アンカーがそのまま面倒を見る（追従の判定をここに書かない）。
+ *
+ * 確定エントリ（{@link logLines}）と違い **Markdown 整形もリンク検出もしない**。理由は 2 つ:
+ *
+ * 1. 未完の `**` や ``` を含む途中テキストを整形すると、デルタが 1 つ届くたびに
+ *    **全行の折り返しが変わる**。Ink は測った文字列をプロセスグローバルな上限なし
+ *    キャッシュへ永久に積むので（`ink/build/measure-text.js`）、毎フレーム全行が別の
+ *    文字列になるとヒープが単調増加する（過去に 3 回 OOM した経路）。素のまま末尾へ
+ *    足すだけなら**確定した行の文字列は変わらない**のでキャッシュに当たり続け、増えるのは
+ *    「書きかけの最終行」1 本だけ = 従来の 1 行プレビューと同じコストで済む。
+ * 2. 途中まで打たれた URL をクリックできるようにしても行き先が無い。
+ *
+ * `cap` は描く行数の上限（ビューポート高さ）。**末尾から必要なぶんだけ**折り返すので、
+ * 本文がどれだけ長くなっても 1 デルタのコストは可視域ぶんで頭打ちになる（論理行の
+ * 折り返しはその行の先頭から決まるので、途中の行から始めても結果は同じ）。末尾の空行は
+ * 落とす — 改行が届いた瞬間だけ下に空行が生えて画面が 1 行跳ねるのを防ぐためで、
+ * 確定時の `trim()` とも揃う。
+ */
+export function streamLines(
+  text: string,
+  width: number,
+  prefix: string,
+  cap: number,
+): DisplayLine[] {
+  const indent = ' '.repeat(stringWidth(prefix));
+  const content = Math.max(1, width - stringWidth(prefix));
+  const logical = text.split(LINE_BREAK);
+  // 末尾の空行はそもそも折り返さない（行として数えると、改行が続いたときに空行だけで
+  // cap が埋まってしまう）。
+  let end = logical.length;
+  while (end > 0 && (logical[end - 1] ?? '').trim().length === 0) {
+    end -= 1;
+  }
+  const limit = cap > 0 ? cap : Number.POSITIVE_INFINITY;
+  const chunks: DisplayLine[][] = [];
+  let count = 0;
+  for (let i = end - 1; i >= 0 && count < limit; i -= 1) {
+    const chunk = wrapLogical(logical[i] ?? '', content).map((row, r) => ({
+      // key は**論理行 index + 行内 index**。折り返していない先頭側の行数を知らなくても
+      // 決まり、本文が末尾へ伸びても既存行の key が変わらない。
+      key: `stream:${i}:${r}`,
+      kind: STREAM_KIND,
+      text: (i === 0 && r === 0 ? prefix : indent) + row,
+    }));
+    chunks.unshift(chunk);
+    count += chunk.length;
+  }
+  const rows: DisplayLine[] = [];
+  for (const chunk of chunks) {
+    // 1 件ずつ push する（`push(...chunk)` は行数ぶんの引数になり、極端に長い 1 行で
+    // スタックが溢れる。`logLines` と同じ理由）。
+    for (const row of chunk) {
+      rows.push(row);
+    }
+  }
+  return rows.length > limit ? rows.slice(rows.length - limit) : rows;
+}
+
 /** How many lines a PageUp/PageDown moves — a comfortable half-viewport chunk. */
 export function pageStep(rows: number): number {
   return Math.max(1, Math.floor(Math.max(1, rows) / 2));
@@ -455,14 +473,13 @@ export function logWindow<T>(
 /**
  * ログのすぐ下に詳細ビューが描く**1 行だけの状態行**の中身。
  *
- * - `'preview'`: 末尾追従中で、ターンがストリーミング中（タイピング風プレビュー）
  * - `'scrollback'`: 末尾から離れている（あと何行下にあるかの案内）
- * - `'idle'`: どちらでもない（**空行を 1 行描く**）
+ * - `'idle'`: 末尾追従中（**空行を 1 行描く**）
  *
- * なぜ 3 値を 1 つの行に畳むか: この行が出たり消えたりすると、その上のログ
+ * なぜ 2 値を 1 つの行に畳むか: この行が出たり消えたりすると、その上のログ
  * ビューポートの高さが 1 行変わり、**見えているログ全体が 1 行ぶん跳ねる**。
- * かつてはプレビューがログの可視域を共有し（描くときだけ 1 行引く）、スクロール
- * 案内はログ枠の外に条件付きで現れていたため、
+ * かつてはストリーミングのプレビューがログの可視域を共有し（描くときだけ 1 行引く）、
+ * スクロール案内はログ枠の外に条件付きで現れていたため、
  *
  * 1. 末尾から `↑` を 1 回押しても、案内行が増えたぶんビューポートが 1 行縮み、
  *    上端の行は動かず末尾の 1 行が消えるだけ（= 1 回目のキーが効いていないように見える）
@@ -471,30 +488,26 @@ export function logWindow<T>(
  * という「スクロールがガクガクする」挙動になっていた。**常に 1 行**にしておけば
  * ログの高さはスクロール位置にもストリーミングにも依存しない。
  *
+ * ストリーミング中の本文はこの行ではなく**ログの末尾の行そのもの**として描く
+ * （`streamLines`）。可視域の外（= この状態行）に置いていた頃は「1 行が次々に
+ * 書き換わる」表示になり、返ってきた本文を読み進められなかった。
+ *
  * 一覧の `listView`（`core/layout.ts`）が「さらに N 件」インジケータに 1 行を
  * 予約して描画行数を常に `cap` に保つのと同じ考え方。
  */
 export type LogStatusRow =
-  | { readonly kind: 'preview'; readonly text: string }
   | { readonly kind: 'scrollback'; readonly hiddenBelow: number }
   | { readonly kind: 'idle' };
 
 /**
- * ログ直下の状態行に何を描くかを決める（純粋）。`preview` は `streamTail` で
- * 表示幅に切った 1 行（空文字 = ストリーミングしていない）。
- *
- * 末尾から離れているときはプレビューより**スクロール案内を優先**する。過去ログを
- * 読んでいる最中に末尾のタイピングを出しても行き先が分からないうえ、案内が無いと
- * 「最新まであと何行か」を知る手段が無くなるため。
+ * ログ直下の状態行に何を描くかを決める（純粋）。末尾から離れている間だけ「最新まで
+ * あと何行か」を出す — 過去ログを読んでいる最中は、そこが末尾でないことと戻る距離が
+ * 分かることのほうが重要なため。
  */
 export function logStatusRow(
   win: Pick<LogWindow<unknown>, 'atBottom' | 'hiddenBelow'>,
-  preview: string,
 ): LogStatusRow {
-  if (!win.atBottom) {
-    return { kind: 'scrollback', hiddenBelow: win.hiddenBelow };
-  }
-  return preview.length > 0 ? { kind: 'preview', text: preview } : { kind: 'idle' };
+  return win.atBottom ? { kind: 'idle' } : { kind: 'scrollback', hiddenBelow: win.hiddenBelow };
 }
 
 /**

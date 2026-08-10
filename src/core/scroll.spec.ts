@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { clipStreamText } from './log-buffer';
 import {
   clearLogLinesCache,
-  clipToWidth,
+  type DisplayLine,
   type LogStatusRow,
   logLines,
   logStatusRow,
@@ -11,7 +12,7 @@ import {
   type ScrollAnchor,
   scrollDown,
   scrollUp,
-  streamTail,
+  streamLines,
   wrapDisplayLines,
   wrapRichLine,
 } from './scroll';
@@ -87,29 +88,14 @@ describe('logWindow (scrolled up, numeric anchor)', () => {
 });
 
 describe('logStatusRow', () => {
-  // ログ直下は**常に 1 行**。3 状態のどれかが必ず返る（undefined を返さない）ことが
+  // ログ直下は**常に 1 行**。2 状態のどちらかが必ず返る（undefined を返さない）ことが
   // 「ログの高さがスクロール位置・ストリーミングで変わらない」の担保になっている。
-  const cases: [string, boolean, number, string, LogStatusRow][] = [
-    [
-      '末尾追従 + ストリーミング中 → プレビュー',
-      true,
-      0,
-      'typing…',
-      { kind: 'preview', text: 'typing…' },
-    ],
-    ['末尾追従 + 何も流れていない → 空行', true, 0, '', { kind: 'idle' }],
-    ['スクロール中 → 残り行数の案内', false, 7, '', { kind: 'scrollback', hiddenBelow: 7 }],
-    // 過去ログを読んでいる間は末尾のタイピングより「最新まであと何行か」を優先する。
-    [
-      'スクロール中はプレビューより案内を優先',
-      false,
-      3,
-      'typing…',
-      { kind: 'scrollback', hiddenBelow: 3 },
-    ],
+  const cases: [string, boolean, number, LogStatusRow][] = [
+    ['末尾追従中 → 空行', true, 0, { kind: 'idle' }],
+    ['スクロール中 → 残り行数の案内', false, 7, { kind: 'scrollback', hiddenBelow: 7 }],
   ];
-  it.each(cases)('%s', (_name, atBottom, hiddenBelow, preview, expected) => {
-    expect(logStatusRow({ atBottom, hiddenBelow }, preview)).toEqual(expected);
+  it.each(cases)('%s', (_name, atBottom, hiddenBelow, expected) => {
+    expect(logStatusRow({ atBottom, hiddenBelow })).toEqual(expected);
   });
 });
 
@@ -491,54 +477,99 @@ describe('scrollUp / scrollDown', () => {
   });
 });
 
-describe('clipToWidth', () => {
-  const cases: [label: string, text: string, width: number, want: string][] = [
-    ['幅に収まる行はそのまま', 'abc', 10, 'abc'],
-    ['ちょうど幅の行はそのまま', 'abcde', 5, 'abcde'],
-    ['溢れた分を落とす', 'abcdefg', 3, 'abc'],
-    ['全角は 2 セルで数える', 'あいう', 4, 'あい'],
-    // 幅 3 に 2 セルの全角は 1 つしか入らない（半端に 1 セルだけ描かない）
-    ['端で溢れる全角は落とす（半端に切らない）', 'あいう', 3, 'あ'],
-    ['異体字セレクタ付きの絵文字は 1 グラフェム 2 セル', '⚠️⚠️', 2, '⚠️'],
-    ['ZWJ で繋いだ絵文字を分断しない', '👨‍👩‍👦x', 2, '👨‍👩‍👦'],
-    ['幅 0 以下は切らない', 'abc', 0, 'abc'],
-    ['空文字', '', 5, ''],
-  ];
+describe('streamLines (ストリーミング中の本文をログの行として展開する)', () => {
+  const text = (rows: readonly DisplayLine[]) => rows.map((r) => r.text);
 
-  it.each(cases)('%s', (_label, text, width, want) => {
-    expect(clipToWidth(text, width)).toBe(want);
+  it('改行で行を分け、幅で折り返す', () => {
+    expect(text(streamLines('hello\nworld wide', 5, '', 10))).toEqual(['hello', 'world', ' wide']);
   });
 
-  it('ANSI エスケープを含む行は切らない（シーケンスを断ち切らないため）', () => {
-    const text = `\x1b[31mred and quite long\x1b[39m`;
-    expect(clipToWidth(text, 3)).toBe(text);
-  });
-});
-
-describe('streamTail', () => {
-  it('returns the last non-empty line', () => {
-    expect(streamTail('foo\nbar\nbaz', 80)).toBe('baz');
+  it('全角は 2 セルで数える（確定エントリと同じ折り返し）', () => {
+    expect(text(streamLines('あいうえ', 4, '', 10))).toEqual(['あい', 'うえ']);
+    expect(text(streamLines('あいうえ', 4, '', 10))).toEqual(wrapDisplayLines('あいうえ', 4));
   });
 
-  it('skips trailing empty lines', () => {
-    expect(streamTail('foo\nbar\n\n', 80)).toBe('bar');
+  it('prefix は先頭行だけ、継続行は同じ表示幅で字下げする', () => {
+    expect(text(streamLines('abcdef', 5, '> ', 10))).toEqual(['> abc', '  def']);
   });
 
-  it('returns an empty string for all-empty input', () => {
-    expect(streamTail('', 80)).toBe('');
-    expect(streamTail('\n\n', 80)).toBe('');
+  // 改行が届いた瞬間だけ下に空行が生えて画面が 1 行跳ねるのを防ぐ（確定時の trim と揃う）。
+  it('末尾の空行は落とす / 中身が無ければ 1 行も返さない', () => {
+    expect(text(streamLines('done\n\n', 20, '', 10))).toEqual(['done']);
+    expect(streamLines('', 20, '', 10)).toEqual([]);
+    expect(streamLines('\n \n', 20, '', 10)).toEqual([]);
   });
 
-  it('returns a single line unchanged', () => {
-    expect(streamTail('just one', 80)).toBe('just one');
+  it('cap を超えたぶんは先頭から落とす（可視域に入らないので下端を残す）', () => {
+    const rows = streamLines('a\nb\nc\nd\ne', 20, '', 3);
+    expect(text(rows)).toEqual(['c', 'd', 'e']);
   });
 
-  it('幅で切る（Ink の上限なしキャッシュへ長い文字列を渡さない）', () => {
-    expect(streamTail(`head\n${'x'.repeat(4_000)}`, 20)).toBe('x'.repeat(20));
+  /**
+   * この 2 本が OOM 回帰の番人。Ink は測った文字列をプロセスグローバルな上限なし
+   * キャッシュへ積むので、**確定した行の文字列が毎デルタ変わらない**ことが要件になる。
+   * 変わってよいのは書きかけの最終行だけ。
+   */
+  it('伸びても既に確定した行の文字列は変わらない（Ink のキャッシュに当たり続ける）', () => {
+    const before = text(streamLines('hello world and', 6, '', 50));
+    const after = text(streamLines('hello world and then some', 6, '', 50));
+    expect(after.slice(0, before.length - 1)).toEqual(before.slice(0, before.length - 1));
   });
 
-  it('幅を超えて伸びた行は同じ文字列を返す（= キャッシュに当たる）', () => {
-    const at = (n: number) => streamTail('x'.repeat(n), 20);
-    expect(at(100)).toBe(at(4_000));
+  it.each([
+    ['prefix なし', ''],
+    // prefix / 字下げの当て方（先頭行だけ prefix）を間違えると、行が 1 つ増えるたびに
+    // 全行の lead が付け替わって別文字列になる。
+    ['prefix あり', '> '],
+  ])('デルタで増えるのは最終行 1 本だけ（新しい文字列の本数・%s）', (_name, prefix) => {
+    const chunks = 'the quick brown fox jumps over the lazy dog'.split(' ');
+    const seen = new Set<string>();
+    let acc = '';
+    for (const chunk of chunks) {
+      acc += `${chunk} `;
+      for (const row of streamLines(acc, 10, prefix, 50)) {
+        seen.add(row.text);
+      }
+    }
+    const rows = streamLines(acc, 10, prefix, 50);
+    // 全デルタを通して現れた文字列 = 確定した行 + 各デルタの書きかけ 1 本ぶん。
+    // 「毎デルタ全行が別文字列」なら行数 × デルタ数まで膨らむ。
+    expect(seen.size).toBeLessThanOrEqual(rows.length + chunks.length);
+  });
+
+  /**
+   * 頭を落とす経路（`clipStreamText`）と合わせた通しの番人。行頭で落とせたときは
+   * **残った行の文字列が 1 つも変わらない**こと（= Ink のキャッシュに当たり続け、
+   * 画面もズレない）が、上限を超えて伸び続ける長文での前提になっている。
+   */
+  it('clipStreamText で頭が落ちても、残った行の文字列は変わらない', () => {
+    // 切り出し位置のすぐ先に改行が来る形（= 行頭で落とせる経路）。
+    const long = `${'A'.repeat(20_000)}\n${'B'.repeat(15_000)}\nC tail`;
+    const before = streamLines(long, 80, '', 50).map((r) => r.text);
+    const after = streamLines(clipStreamText(long), 80, '', 50).map((r) => r.text);
+    expect(after.length).toBeGreaterThan(0);
+    expect(before.slice(before.length - after.length)).toEqual(after);
+  });
+
+  it('末尾の必要な行数ぶんだけ折り返す（長文でも 1 デルタのコストが頭打ちになる）', () => {
+    const long = `${'A'.repeat(200_000)}\n${'B'.repeat(40)}\n${'C'.repeat(40)}`;
+    const rows = streamLines(long, 40, '', 2);
+    // 先頭の巨大な論理行には触らずに済んでいる（触れば 5,000 行に展開される）。
+    expect(rows.map((r) => r.text)).toEqual(['B'.repeat(40), 'C'.repeat(40)]);
+  });
+
+  it('Markdown 整形もリンク検出もしない（途中テキストは素で描く）', () => {
+    const rows = streamLines('**bold** https://example.com', 80, '', 10);
+    expect(rows[0]?.text).toBe('**bold** https://example.com');
+    expect(rows[0]?.spans).toBeUndefined();
+    expect(rows[0]?.links).toBeUndefined();
+    expect(rows[0]?.kind).toBe('assistant_text');
+  });
+
+  it('key は論理行 index + 行内 index（伸びても既存行の key が変わらない）', () => {
+    const before = streamLines('one\ntwo', 20, '', 10).map((r) => r.key);
+    const after = streamLines('one\ntwo\nthree', 20, '', 10).map((r) => r.key);
+    expect(before).toEqual(['stream:0:0', 'stream:1:0']);
+    expect(after.slice(0, before.length)).toEqual(before);
   });
 });

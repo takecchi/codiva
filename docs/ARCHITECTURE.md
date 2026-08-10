@@ -619,7 +619,7 @@ interface SessionState {
   totalCostUsd?: number;      // result の total_cost_usd 累計
   error?: string;
   rateLimitResetsAt?: number; // rate_limited のときの解除予定時刻
-  streamingText?: string;     // stream_event の text_delta プレビュー（transient・永続しない）
+  streamingText?: string;     // stream_event の text_delta（書きかけの本文。transient・永続しない）
   activeTaskIds?: string[];   // 稼働中のサブエージェント（完了ゲート用。transient）
   deferredResult?: { at: number; totalCostUsd?: number; resultText: string }; // 保留した result（同上）
   logSeq: number;             // LogEntry の採番カウンタ
@@ -756,10 +756,16 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   `ui/log-line.tsx` の `LogLine` に分けてある（`SessionDetail` は行の並べ方と入力に専念）。
   描く行数は**実測した可視高さ**（`useBoxHeight`）に収める — Ink/Yoga は溢れた子を縮小するため、
   多く描くと行が虫食いで欠落する。
+  **ストリーミング中の本文（`streamingText`）はログの行として描く**（`core/scroll.ts` の
+  `streamLines` で折り返し、確定済みの行の後ろに足して同じ `logWindow` へ渡す）。返ってきた
+  ぶんだけ本文が下へ伸び、末尾追従／固定はアンカーがそのまま担う（`'bottom'` なら流れてきて、
+  上へスクロールして数値アンカーになっていれば 1 行も動かない）。**途中テキストは Markdown
+  整形しない** — 未完の `**` や ``` で毎デルタ全行の折り返しが変わり、Ink の上限なし
+  キャッシュが膨れるため（下記）。
   **ログのすぐ下は常に 1 行の状態行**（`core/scroll.ts` の `logStatusRow` → `LogStatusRow`）で、
-  `streamingText` のタイピング風プレビュー / 「過去ログを表示中」の案内 / 空行のいずれかを描く。
-  出し入れしないのが要点で、以前はプレビューがログの可視域を共有し（描くときだけ 1 行引く）
-  案内はログ枠の外に条件付きで現れていたため、**末尾から `↑` を 1 回押しても上端が動かず**
+  「過去ログを表示中」の案内 / 空行のどちらかを描く。
+  出し入れしないのが要点で、以前はストリーミングのプレビューがログの可視域を共有し
+  （描くときだけ 1 行引く）案内はログ枠の外に条件付きで現れていたため、**末尾から `↑` を 1 回押しても上端が動かず**
   （案内行のぶんビューポートが 1 行縮み、末尾の 1 行が消えるだけ）、ターンの開始／終了ごとに
   ログ全体が 1 行上下に揺れていた（= 「上へスクロールするとガクガクする」）。ターンごとに
   出入りする操作ヒント行（`Ctrl+C` / 再開 / 認証）も同じ理由で常に 1 行にしてある。
@@ -1180,9 +1186,11 @@ codiva では診断レポートから独立に同じ結論に至った）:
 Ink 7.1.1 は `measure-text.js` と `wrap-text.js` で**上限のないモジュールレベルキャッシュ**
 （キー = テキスト全文）を持ち、解放経路が無い。約 100 文字の行 1 本で約 1.7KB、
 4,000 文字の `<Text>` 1 描画で約 17.8KB が永久に残る。codiva 側でできるのは
-**毎フレーム変わる長い文字列を渡さないこと**なので、ストリーミングプレビューは
-`streamTail(text, width)` で**表示幅に切ってから**渡す（`wrap="truncate-end"` と見た目は同じ。
-行が幅を超えると文字列が変わらなくなるのでキャッシュに当たるようになる）。
+**毎フレーム変わる長い文字列を渡さないこと**なので、ストリーミング中の本文は
+`streamLines(text, width, …)` で**行に折り返してから 1 行ずつ**渡す。末尾に足すだけなら
+確定した行の文字列は変わらないのでキャッシュに当たり続け、毎デルタで新しく積まれるのは
+書きかけの最終行 1 本だけになる（途中テキストを Markdown 整形したり、行の途中で頭を
+切ったりするとこの性質が壊れて全行が毎フレーム別のキーになる）。
 上限そのものは ink 側の修正が必要なので issue で報告している
 （[ink#986](https://github.com/vadimdemedes/ink/issues/986)）。
 
