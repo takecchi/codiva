@@ -2,6 +2,7 @@ import { Box, useApp, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   messages as catalogs,
+  DEFAULT_ONLY_MODEL_OPTIONS,
   isFullscreenViewport,
   type Messages,
   type ModelOption,
@@ -37,6 +38,12 @@ export const App: FC<{
    */
   modelCatalog?: Promise<readonly ModelOption[]>;
   /**
+   * Codex のモデルカタログ取得（`codex debug models`）。Claude とは選べるモデルが
+   * まったく別なので、`/model` はセッションを駆動しているエージェントに応じて
+   * こちらを出す。未注入なら「デフォルト」1 行だけになる。
+   */
+  codexModelCatalog?: Promise<readonly ModelOption[]>;
+  /**
    * 学習データ利用（claude.ai の「Help improve our AI models」）の判定。合成ルートが
    * render 前に開始した Promise をそのまま受け、解決したら一覧のバナーに注意行を出す
    * （`'on'` のときだけ）。設定 `privacyWarning: false` では未指定になる。
@@ -71,6 +78,7 @@ export const App: FC<{
   // 既定は ja。main.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
   modelCatalog,
+  codexModelCatalog,
   trainingOptIn,
   updater,
   loadBranch,
@@ -79,6 +87,8 @@ export const App: FC<{
 }) => {
   const { exit } = useApp();
   const models = useModelCatalog(modelCatalog);
+  // 取得に失敗しても Claude のモデル名を Codex の選択肢に出さない（別物なので）。
+  const codexModels = useModelCatalog(codexModelCatalog, DEFAULT_ONLY_MODEL_OPTIONS);
   const training = useTrainingOptIn(trainingOptIn);
   const { info: updateInfo, clear: clearUpdateInfo } = useUpdateCheck(updater?.initial);
   const [view, setView] = useState<View>({ mode: 'list' });
@@ -120,6 +130,7 @@ export const App: FC<{
             manager={manager}
             id={view.id}
             models={models}
+            codexModels={codexModels}
             onBack={() => setView({ mode: 'list' })}
             onCopy={onCopy}
             onOpenUrl={onOpenUrl}

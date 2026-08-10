@@ -1135,20 +1135,71 @@ zsh: abort      codiva
 
 ---
 
-## Phase B: ACP アダプタ + Codex 対応（未着手）
+## Phase B: Codex 対応（`codex exec --json`）✅
 
-> Codex は Agent Client Protocol（ACP）を話す。`AgentAdapter` を 1 本実装し、
-> **Phase A で共通化した畳み込みに載せるだけ**にする。
+> **当初の計画（「Codex は Agent Client Protocol（ACP）を話すので ACP アダプタを書く」）は
+> 誤りだったので破棄した。** `codex` CLI がネイティブに話すのは ACP ではなく、
+> `codex exec --json` が stdout へ 1 行 1 件で吐く**自前の JSONL**（union の定義は Codex の
+> `codex-rs/exec/src/exec_events.rs`）。ACP は外部エディタから Codex を使うための別レイヤで、
+> codiva のように「CLI をサブプロセスとして駆動する」使い方には要らない層が挟まるだけになる。
+> 実際に採取した出力に合わせて JSONL アダプタを 1 本書き、**Phase A で共通化した畳み込みに
+> 載せるだけ**にした。
+>
+> 実行形態も方針を決めた: **`@openai/codex-sdk` を npm 依存に足さず、ユーザーがインストールした
+> `codex` CLI を起動する**（`gh` / `git` と同じ扱い）。SDK を依存に入れると Codex を使わない
+> ユーザーにもプラットフォーム別のバイナリが降ってくるため。認証も `codex login` に委ねる。
 
-- [ ] ACP のメッセージを実データで採取する（`npm run spike` 相当のシナリオを ACP 向けに用意し、
-      `src/core/__fixtures__/` へサニタイズして昇格。**形を想定で書かない**）
-- [ ] `core/acp-parse.ts`: ACP メッセージ → `AgentEvent[]`（`claude-parse.ts` と対になる純関数）
-- [ ] `core/codex-adapter.ts`: `AgentAdapter` 実装 + `CODEX_CAPABILITIES`（`NO_CAPABILITIES` から
-      始めて実装できたものだけ true）+ `classifyError`（Codex CLI の文言 → `AgentStopCause`）
-- [ ] 許可要求の写像（ACP の permission request ↔ `PermissionDecision`）と、質問（`QuestionSpec`）を
-      表現できるかの確認。できない場合は capability を false にして UI を縮退させる
-- [ ] 合成レイヤ（`bootstrap/build-manager.ts`）で設定からアダプタを選べるようにする
-- [ ] テスト: フィクスチャ駆動の `acp-parse.spec.ts` + フェイクアダプタでの `session.spec.ts`
+- [x] 実データの採取: 実 `codex`（0.144.5）をローカルのモック Responses API に向けて走らせ、
+      `src/core/__fixtures__/codex-*.jsonl` へ昇格（basic / reasoning / shell / shell-fail /
+      patch / todo / failure / auth-error の 8 本）。**形を想定で書かない**（手法は
+      `docs/TECH_NOTES.md`「Codex CLI」節）
+- [x] `core/codex-events.ts`: JSONL の union（`thread.*` / `turn.*` / `item.*` / `error`）と
+      `CodexItem` の型 + 受理ガード `toCodexEvent`（未知の型・必須フィールド欠落は捨てる）
+- [x] `core/codex-parse.ts`: `parseCodexEvent`（`CodexEvent` → `AgentEvent[]`。**状態を変えない**）。
+      `claude-parse.ts` と対になる純関数。`item.started`/`item.completed` を codiva のログの
+      tool_use / tool_result 2 段組みへ写し、`todo_list` を `TodoOp` へ正規化
+- [x] `core/codex-errors.ts`: Codex CLI の文言 → `AgentStopCause`（`classifyCodexError`。
+      **認証切れが最優先**の順序は Claude 側と同じ）+ 再試行実況の判定 `isCodexRetryNotice`
+- [x] `core/codex-adapter.ts`: `AgentAdapter` 実装 + `CODEX_CAPABILITIES`。**1 ターン = 1 プロセス**
+      （`codex exec` は 1 ターンで終了するので、続きは `codex exec resume <thread_id>`）を
+      プロンプトキューのループで包み、外からは Claude と同じ 1 本のストリームに見せる
+- [x] `utils/codex.ts`: 唯一の I/O（`codexArgs` = 引数の組み立て・`spawnCodex` = 1 ターンの起動と
+      stdout の行分割・`fetchCodexModelCatalog` = `codex debug models`）
+- [x] `core/codex-models.ts`: `toCodexModelOptions`（`codex debug models` の JSON → `ModelOption[]`。
+      `visibility: 'list'` 以外は除外）。取得できないときは `DEFAULT_ONLY_MODEL_OPTIONS`
+      （「デフォルト」1 行のみ）— Codex の slug は実 ID でエイリアスが無いため**モデル名を直書きしない**
+- [x] 許可要求の写像 → **できないので `permissions: false`**。`codex exec` の JSON モードは
+      承認要求（コマンド実行 / パッチ適用 / MCP）を CLI 内部で自動 reject し JSONL には何も出さない
+      （`codex-rs/exec/src/lib.rs` の `handle_server_request`）。**ダイアログを偽装せず capability を
+      false にする**方針にし、安全弁はサンドボックス（`codexSandbox`）に寄せた
+- [x] 合成レイヤ: `bootstrap/build-manager.ts` の `buildAgents(config, { repoRoot })` が
+      id → アダプタの対応表を組み立て、`SessionManager` に `agents` として注入。既定 provider は
+      設定 `agent`（未設定は `claude`）
+- [x] 設定: `agent` / `codexSandbox`（既定 `workspace-write`）/ `codexNetworkAccess`（既定 `true` —
+      Codex 自身の既定はネットワーク遮断で、それだと `npm install` / `gh` が失敗して大半の作業が
+      完了しないため）
+- [x] テスト: フィクスチャ駆動の `codex-parse.spec.ts`（parse → `applyAgentEvent` の end-to-end）/
+      `codex-errors.spec.ts`（テーブルドリブン）/ `codex-adapter.spec.ts`（フェイク `spawn` で
+      resume の引き回し・systemPrompt の前置・中断・終端イベント無しの終了）/ `utils/codex.spec.ts`
+      （引数の組み立て）
+
+> 実績メモ:
+> - セルフレビューで塞いだ取りこぼし: 初回のターンが `thread.started` 前に落ちると
+>   systemPrompt を二度と渡せなくなる（latch をやめて `threadId` から導出）/ 捨てられた run が
+>   `codex exec` を孤児として残す（Rust は `SIGPIPE` を無視するので明示的に kill）/ `stderr` の
+>   `'error'` 未処理で TUI がプロセス死し得た / 1 行の上限が無く OOM の余地があった
+>   （枠切りを純粋な `createJsonlSplitter` へ切り出してテスト）。詳細は `docs/TECH_NOTES.md`。
+> - **`--json` と `--experimental-json` は同じフラグ**（clap の alias）。codiva は `--json` を使う。
+> - **`{"type":"error"}` は終了ではない**。実測で `Reconnecting... 1/5 (stream disconnected …)` が
+>   同じ型で流れ、5 回粘ってから諦めたときだけ `turn.failed` が出る。素直に失敗扱いにすると
+>   **勝手に回復するセッションが赤くなる**ので、`error` は system 行 1 行（連発は
+>   `coalesceKey` で 1 行に畳む）にとどめ、ターンの終わりは `turn.failed` と終了コードだけで決める。
+> - **コストとアカウント使用状況は取れない**（`turn.completed` はトークン数だけで USD が無い）ので
+>   `cost` / `usage` は false。`transcript` も false（`~/.codex/sessions` の rollout は別形式）。
+> - Codex には `--system-prompt` 相当が無いので、codiva の systemPrompt（worktree の共有 symlink
+>   注意書き + `.codiva/prompt.md`）は**最初のターンの指示文に前置**する。`AGENTS.md` は書かない
+>   （対象リポジトリのファイルを codiva が勝手に触らない）。
+> - タイトル生成は Claude の haiku を使い回す（短文のために `codex exec` をもう 1 本起こすのは高い）。
 
 ## Phase C: Grok 対応（未着手）
 
@@ -1157,21 +1208,59 @@ zsh: abort      codiva
       `resume: false` なら切替・再起動で文脈が切れることを UI が明示する必要がある）
 - [ ] `classifyError`（Grok 側の認証切れ / レート制限の文言）
 
-## Phase D: capability による UI 縮退 / `/agent` / 引き継ぎ（未着手）
+## Phase D: capability による UI 縮退 / `/agent` / 引き継ぎ（一部完了）
 
-- [ ] UI が `SessionHandle.getAgent().capabilities` を見て段階的に縮退する:
-      `/model`（`modelCatalog` / `setModel`）・使用状況ゲージ（`usage`）・コスト表示（`cost`）・
-      `Ctrl+C` の中断（`interrupt`）・許可ダイアログ（`permissions`）・トランスクリプト復元
-      （`transcript`）。**持たない機能のキー操作・ヒントを出さない**
-- [ ] `/agent` コマンド（`add-slash-command` skill の手順で追加）: 一覧・詳細から駆動エージェントを
-      切り替える。確認を挟む（モデル側の文脈が切れることを伝える）
+> Phase B（Codex 対応）に必要なぶんだけ先に入れた。**残りは未着手**なので下の未チェック項目を
+> そのまま次の作業単位にする。
+
+- [x] `/model` の縮退: `SessionManager.getSessionAgent(id).capabilities` を詳細ビューが見て、
+      `setModel` を持たない provider では**ダイアログを開かず理由を出す**（黙って無反応にしない）。
+      選択肢も駆動中のエージェントで出し分ける（Claude = `Query.supportedModels()` /
+      Codex = `codex debug models`。取得失敗時に**互いのモデル名を出さない**）
+- [x] `Ctrl+C` の縮退: `interrupt` を持たない provider では中断のヒント行を出さない
+- [x] `/agent` コマンド（`add-slash-command` skill の手順で追加）: **詳細ビュー**から駆動エージェントを
+      切り替える（`ui/agent-select.tsx`。`ModelSelect` と同じ単一選択モーダル）。確認は挟まず、
+      ダイアログ内に「会話の文脈は引き継がれません」の注意書きを常時出す
+- [x] 設定 `~/.codiva/config.json` に既定エージェント `agent`（`add-config-option` skill の手順。
+      Codex 用の `codexSandbox` / `codexNetworkAccess` も同時に追加）
+- [x] **一覧ビューの `/agent`** = 新規セッションの既定を選ぶ（`AgentSelect` の `mode:'default'`）。
+      選ぶと `onDefaultAgentChange` → `config.agent` に**自動保存**（`/model` と同じ二層構造。
+      手編集不要）。`SessionManager.getDefaultAgentId` / `setDefaultAgent`（`persist` 既定 true）
+- [x] **導入・ログイン検出**（`/agent` の各行に表示 + 未導入時の案内）: `AgentAdapter.checkAvailability`
+      を各アダプタ工場へ注入（`utils/claude.ts` `detectClaudeAvailability` = `claude --version` +
+      env/資格情報ファイル、keychain は見ず不明は `'unknown'` / `utils/codex.ts`
+      `detectCodexAvailability` = `codex --version` + `codex login status`）。判定は
+      `SessionManager.checkAgents`（多重起動を 1 本に畳みキャッシュ）。純粋部は
+      `core/agent-availability.ts`（`resolveDefaultAgentId` / `noAgentInstalled`）
+- [x] **未導入でも起動でき、案内を出す**: 設定 `agent` が無ければ起動時検出で**導入済みのものへ
+      自動で寄せる**（`resolveDefaultAgentId`、永続はしない）。どれも未導入なら一覧に
+      `agent.noneInstalled` の 1 行を出す（`noAgentInstalled` が全件未導入で確定したときだけ）
+- [ ] **残りの capability 縮退**: 使用状況ゲージ（`usage`）・コスト表示（`cost`）・許可ダイアログ
+      （`permissions`）・トランスクリプト復元（`transcript`）は**まだ capability を見ていない**。
+      現状は実害が出ていないだけ（Codex は USD を運ばないのでヘッダの合計コスト行は
+      `cost > 0` の条件で自然に出ない / 許可要求がそもそも届かないのでダイアログも出ない /
+      Claude のトランスクリプトパスに Codex の thread id のファイルは無いので復元が空になるだけ）。
+      **混在時に嘘をつく余地が残っている**ので、明示的な分岐に置き換える
+- [x] **TUI 内ログイン**（`/login` コマンド + `/agent` ダイアログの `l`）。端末を明け渡さず
+      `<cli> login` を裏で起動し、出力の認証 URL / デバイスコードをダイアログに出して自動で
+      ブラウザを開く（`core/agent-login.ts` = 進行の畳み込み・純粋 / `utils/agent-login.ts` =
+      プロセス起動 / `ui/login-dialog.tsx` / `AgentAdapter.login` の seam + `SessionManager.startLogin`
+      / `canLogin` / `refreshAgents`）。Codex は `login --device-auth`、Claude は `auth login`。
+      **色付き出力の ANSI を剥がしてから URL/コードを拾う**（実測: 拾えず → 修正）。
+      完了後 `refreshAgents` で状態を再判定
 - [ ] **引き継ぎプロンプトの生成**: 切替先は前の会話を持たないので、worktree の状況（ブランチ・
       差分・直前の指示）を要約した最初の指示文を組み立てる純関数を core に置く
-- [ ] i18n: `AgentLabel` を `DEFAULT_AGENT_LABEL` 固定ではなく**セッションのエージェント**から
-      引くよう配線（現状は UI が既定値を渡している）
+- [x] i18n: `AgentLabel` を `DEFAULT_AGENT_LABEL` 固定ではなく**セッションのエージェント**から
+      引くよう配線（`agentLabelOf()` + `SessionManager.getSessionAgentLabel()`）。認証切れの案内は
+      一覧・詳細・デスクトップ通知の 3 経路すべてで駆動中の provider を出す — Codex のセッションに
+      「`claude` でログインし直して」と言ってしまうため
+- [x] **`Session.setAgent()` が実際には切り替わっていなかったのを修正**（Phase A の積み残し）。
+      `run = undefined` は参照を捨てるだけで consume ループもアダプタも止まらないため、切替後の
+      指示を**古いエージェントが受け取っていた**。入力キューを閉じて新しいキューに差し替え、
+      進行中のターンは `run.interrupt()` で畳み、積み残しの指示は `drain()` で新しいキューへ
+      移す（詳細は `.claude/rules/session-domain.md`）。`/agent` を入れて初めて踏める経路だった
 - [ ] 一覧・詳細にエージェントの表示（どのセッションが何で走っているか）と、`LogEntry.agent` を
-      使ったログ上の区切り表示
-- [ ] 設定 `~/.codiva/config.json` に既定エージェント（`add-config-option` skill の手順）
+      使ったログ上の区切り表示（状態には載っているが**どこにも描いていない**）
 
 ---
 

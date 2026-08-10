@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"019feb30-23c1-7c40-ad8a-109f7d572ecd"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'echo to-stderr 1>&2; exit 3'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'echo to-stderr 1>&2; exit 3'","aggregated_output":"to-stderr\n","exit_code":3,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"The command exited with 3."}}
+{"type":"turn.completed","usage":{"input_tokens":2468,"cached_input_tokens":256,"output_tokens":154,"reasoning_output_tokens":44}}

@@ -8,6 +8,25 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
   private readonly waiters: ((r: IteratorResult<T>) => void)[] = [];
   private closed = false;
 
+  /**
+   * まだ誰にも取り出されていない要素数。`Session` がエージェント切替でストリームを
+   * 畳んだあと、「積んだままの指示が残っているか」を同期的に知るために使う
+   * （残っていれば新しいエージェントで消費し直す）。
+   */
+  get pending(): number {
+    return this.buffer.length;
+  }
+
+  /**
+   * まだ誰にも渡していない要素を**取り出して空にする**。エージェント切替で
+   * このキューを閉じるとき、積み残しの指示を新しいキューへ移し替えるために使う
+   * （閉じたキューからも `[Symbol.asyncIterator]` は buffer を先に吐き出すので、
+   * 移さないと**古いエージェントが実行してしまう**。捨てると指示が消える）。
+   */
+  drain(): T[] {
+    return this.buffer.splice(0, this.buffer.length);
+  }
+
   push(item: T): void {
     if (this.closed) {
       return;

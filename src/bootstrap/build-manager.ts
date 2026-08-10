@@ -1,6 +1,11 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
+  type AgentAdapter,
+  type AgentId,
+  agentLabelOf,
   type CodivaConfig,
+  createClaudeAdapter,
+  createCodexAdapter,
   type Messages,
   notificationFor,
   resolveIgnoredFilesMode,
@@ -11,12 +16,16 @@ import {
 import {
   createPr,
   createTitleGenerator,
+  detectClaudeAvailability,
+  detectCodexAvailability,
   lookupPr,
   lookupPrs,
   markPrReady,
   notify,
   saveConfig,
   saveRepoPrompt,
+  spawnCodex,
+  spawnLogin,
   type WorktreeManager,
 } from '@/utils';
 
@@ -66,6 +75,55 @@ export function sessionOptionsFrom(
 }
 
 /**
+ * 使えるエージェントの対応表を組み立てる。**ここが provider の実 I/O を注入する
+ * 唯一の場所**（`core/` は SDK もサブプロセスも知らない）。
+ *
+ * Codex はユーザーがインストールした `codex` CLI を起動する（`gh` と同じ方針で
+ * npm 依存を増やさない）。未インストールでも登録自体は害がない — 実際に選ばれた
+ * ときに起動が失敗し、`needs_login` / `failed` として普通に扱われる。
+ */
+export function buildAgents(
+  config: CodivaConfig,
+  deps: { repoRoot: string },
+): Partial<Record<AgentId, AgentAdapter>> {
+  // タイトル生成は Claude の haiku を使い回す（Codex にも同じものを渡す）。Codex 側の
+  // 短文生成のためだけに `codex exec` をもう 1 本起こすのは高くつくため。
+  const generateTitle = createTitleGenerator(query, { cwd: deps.repoRoot });
+  return {
+    claude: createClaudeAdapter({
+      queryFn: query,
+      generateTitle,
+      // 導入・ログイン検出（`/agent` とセットアップ案内）。keychain は読まない。
+      checkAvailability: () => detectClaudeAvailability(),
+      // TUI 内ログイン（`/login` / `/agent` の `l`）。端末は明け渡さない。
+      spawnLogin,
+    }),
+    codex: createCodexAdapter({
+      spawn: spawnCodex,
+      sandbox: config.codexSandbox,
+      networkAccess: config.codexNetworkAccess,
+      generateTitle,
+      checkAvailability: () => detectCodexAvailability(),
+      spawnLogin,
+    }),
+  };
+}
+
+/**
+ * `/model` と同じく、`/agent`（一覧）で既定エージェントを変えたら
+ * `~/.codiva/config.json` にマージ保存する（読み込みは起動時 1 回なので、他フィールドを
+ * 保ったまま `agent` だけ差し替える）。
+ */
+function createDefaultAgentPersister(config: CodivaConfig): (agent: AgentId) => void {
+  let current = config;
+  return (agent) => {
+    const next: CodivaConfig = { ...current, agent };
+    current = next;
+    void saveConfig(next).catch(() => undefined);
+  };
+}
+
+/**
  * Assemble the SessionManager and its injected I/O seams (SDK query, title
  * generation, desktop notifications, PR automation). `onPersist` is supplied by
  * the caller (the persist controller); everything else is wired from config here.
@@ -81,12 +139,16 @@ export function buildManager(opts: {
 }): SessionManager {
   const { repoRoot, config, messages: t, worktrees, onPersist, appendSystemPrompt } = opts;
 
+  const agents = buildAgents(config, { repoRoot });
+
   // Notifications default on; disable with `"notifications": false` in config.
   const onTransition =
     config.notifications === false
       ? undefined
       : (prev: SessionState, next: SessionState) => {
-          const spec = notificationFor(prev, next, t);
+          // 認証切れの通知は provider ごとに文言が変わる（`codex` へログインし直せ、
+          // という通知を Claude の名前で出さない）。
+          const spec = notificationFor(prev, next, t, agentLabelOf(agents[next.agent ?? 'claude']));
           if (spec) {
             notify(spec);
           }
@@ -94,6 +156,13 @@ export function buildManager(opts: {
 
   return new SessionManager({
     worktrees,
+    agents,
+    // 新規セッションの既定 provider の**フォールバック**（`defaultAgentId` を引けないとき）。
+    agent: agents[config.agent ?? 'claude'] ?? agents.claude,
+    // 既定 provider の id。設定 `agent` 由来で、`/agent`（一覧）で差し替え → 下で永続化。
+    // 設定が無いときは起動時に「導入済みのもの」へ自動で寄せる（`main.tsx`）。
+    defaultAgentId: config.agent,
+    onDefaultAgentChange: createDefaultAgentPersister(config),
     queryFn: query,
     generateTitle: createTitleGenerator(query, { cwd: repoRoot }),
     options: sessionOptionsFrom(config, appendSystemPrompt),

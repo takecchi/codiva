@@ -2,6 +2,7 @@ import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
+import { type AgentAdapter, type AgentLoginProcess, NO_CAPABILITIES } from '@/core/agent-ports';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/claude-adapter';
 import { DEFAULT_AGENT_LABEL, messages } from '@/core/i18n';
@@ -9,7 +10,7 @@ import { PR_POLL_STABLE_MS } from '@/core/pr-refresh';
 import { SessionManager } from '@/core/session-manager';
 import type { PrLookup, WorktreeService } from '@/core/session-ports';
 import { reduce } from '@/core/status-reducer';
-import type { PrInfo, PrLookupResult, SessionState } from '@/core/types';
+import type { AgentId, PrInfo, PrLookupResult, SessionState } from '@/core/types';
 import { glyph } from '@/ui/theme';
 import {
   flush,
@@ -2592,5 +2593,298 @@ describe('PR の立て直し（/sync · /fix-ci · Ctrl+F）', () => {
 
     await runCommand(stdin, '/sync');
     expect(ctx.syncs).toEqual(['task-0']);
+  });
+});
+
+/**
+ * `/agent`（Phase D）: セッションを駆動する provider の切替。Codex アダプタは実
+ * `codex` プロセスを起こすので、ここではフェイクのアダプタ 2 本を登録して
+ * 「一覧に出る → 選ぶと切り替わる」配線だけを検証する（実 I/O は
+ * `core/codex-adapter.spec.ts` が担保）。
+ */
+describe('App detail view (/agent)', () => {
+  function fakeAdapter(
+    id: AgentId,
+    displayName: string,
+    capabilities = NO_CAPABILITIES,
+  ): AgentAdapter {
+    return {
+      id,
+      displayName,
+      loginCommand: id,
+      capabilities,
+      open: () => ({
+        async *[Symbol.asyncIterator]() {
+          // 切替の配線のテストなのでイベントは流さない。
+        },
+      }),
+    };
+  }
+
+  /** 詳細ビューを開いた状態まで進める。 */
+  async function openDetail(agents: Partial<Record<AgentId, AgentAdapter>>) {
+    const manager = new SessionManager({
+      worktrees,
+      agents,
+      agent: agents.claude,
+      now: () => 0,
+    });
+    const view = render(<App manager={manager} />);
+    view.stdin.write('switch me');
+    await flush();
+    view.stdin.write('\r');
+    await flush();
+    view.stdin.write('\t'); // focus the list
+    await flush();
+    view.stdin.write('\r'); // open the detail view
+    await flush();
+    return { manager, ...view };
+  }
+
+  it('/agent lists the registered agents and switches on Enter', async () => {
+    const claude = fakeAdapter('claude', 'Claude');
+    const codex = fakeAdapter('codex', 'Codex', { ...NO_CAPABILITIES, setModel: true });
+    const { manager, stdin, lastFrame } = await openDetail({ claude, codex });
+    const id = manager.getSnapshot()[0]?.id ?? '';
+    expect(manager.getSessionAgent(id)).toBe(claude);
+
+    stdin.write('/agent');
+    await flush();
+    stdin.write('\r'); // run the command → the picker opens
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toContain('エージェントを選択');
+    expect(frame).toContain('Claude');
+    expect(frame).toContain('Codex');
+    // 文脈が引き継がれないことを必ず伝える（切替の唯一の副作用）。
+    expect(frame).toContain('会話の文脈は引き継がれません');
+
+    stdin.write('\x1b[B'); // ↓ → Codex
+    await flush();
+    stdin.write('\r'); // confirm
+    await flush();
+    expect(manager.getSessionAgent(id)).toBe(codex);
+    // 切替後は状態にも載る（永続・復元がこれを読む）。
+    expect(manager.getSnapshot()[0]?.agent).toBe('codex');
+  });
+
+  it('Esc closes the picker without switching', async () => {
+    const claude = fakeAdapter('claude', 'Claude');
+    const codex = fakeAdapter('codex', 'Codex');
+    const { manager, stdin, lastFrame } = await openDetail({ claude, codex });
+    const id = manager.getSnapshot()[0]?.id ?? '';
+
+    stdin.write('/agent');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    stdin.write('\x1b'); // Esc
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain('エージェントを選択');
+    expect(manager.getSessionAgent(id)).toBe(claude);
+  });
+
+  /**
+   * capability による縮退。Codex はモデル切替を持つが、持たない provider では
+   * `/model` を黙って開かず理由を出す（無反応にすると壊れて見える）。
+   */
+  it('/model on an agent without setModel reports it instead of opening', async () => {
+    const claude = fakeAdapter('claude', 'Claude', { ...NO_CAPABILITIES, setModel: false });
+    const { stdin, lastFrame } = await openDetail({ claude });
+
+    stdin.write('/model');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).not.toContain('モデルを選択');
+    expect(frame).toContain('Claude はこの操作に対応していません');
+  });
+});
+
+/**
+ * `/agent`（一覧）= 新規セッションの既定を選ぶ + 導入状態の表示 + 未導入時のセットアップ
+ * 案内。実 CLI を起こさないフェイクアダプタで配線だけ検証する。
+ */
+describe('App list view (/agent default + availability)', () => {
+  function fakeAdapter(
+    id: AgentId,
+    displayName: string,
+    availability?: { installed: boolean; loggedIn: boolean | 'unknown' },
+  ): AgentAdapter {
+    return {
+      id,
+      displayName,
+      loginCommand: id,
+      capabilities: NO_CAPABILITIES,
+      open: () => ({
+        async *[Symbol.asyncIterator]() {
+          // フェイクはイベントを流さない（配線だけを見る）。
+        },
+      }),
+      checkAvailability: availability ? async () => availability : undefined,
+    };
+  }
+
+  function renderList(
+    agents: Partial<Record<AgentId, AgentAdapter>>,
+    extra: {
+      defaultAgentId?: AgentId;
+      onDefaultAgentChange?: (a: AgentId) => void;
+    } = {},
+  ) {
+    const manager = new SessionManager({
+      worktrees,
+      agents,
+      agent: agents.claude ?? Object.values(agents)[0],
+      now: () => 0,
+      ...extra,
+    });
+    return { manager, ...render(<App manager={manager} />) };
+  }
+
+  it('/agent picks the default for new sessions and persists it', async () => {
+    const persisted: AgentId[] = [];
+    const { manager, stdin, lastFrame } = renderList(
+      {
+        claude: fakeAdapter('claude', 'Claude', { installed: true, loggedIn: true }),
+        codex: fakeAdapter('codex', 'Codex', { installed: true, loggedIn: false }),
+      },
+      { onDefaultAgentChange: (a) => persisted.push(a) },
+    );
+    await flush();
+    expect(manager.getDefaultAgentId()).toBe('claude');
+
+    stdin.write('/agent');
+    await flush();
+    stdin.write('\r'); // run → picker opens (default mode)
+    // 導入・ログイン状態は非同期検出なので、固定 flush ではなく静止まで待つ。
+    await settle(() => lastFrame() ?? '');
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toContain('エージェントを選択');
+    // 導入・ログイン状態の行が出る。
+    expect(frame).toContain('使用できます'); // claude: logged in
+    expect(frame).toContain('未ログイン'); // codex: installed, not logged in
+    expect(frame).toContain('以降の新規セッションに適用');
+
+    stdin.write('\x1b[B'); // ↓ → Codex
+    await flush();
+    stdin.write('\r'); // confirm
+    await flush();
+    // 既定が変わり、config へ永続化される（手編集不要）。
+    expect(manager.getDefaultAgentId()).toBe('codex');
+    expect(persisted).toEqual(['codex']);
+  });
+
+  it('shows a setup hint when no agent is installed', async () => {
+    const { lastFrame } = renderList({
+      claude: fakeAdapter('claude', 'Claude', { installed: false, loggedIn: false }),
+      codex: fakeAdapter('codex', 'Codex', { installed: false, loggedIn: false }),
+    });
+    // 一覧はマウント時に検出を回す。全件「未導入」で確定したらセットアップ案内が出る
+    // （非同期なので静止まで待つ）。
+    await settle(() => lastFrame() ?? '');
+    expect(stripAnsi(lastFrame() ?? '')).toContain('コーディングエージェントが見つかりません');
+  });
+
+  it('does not show the setup hint when an agent is installed', async () => {
+    const { lastFrame } = renderList({
+      claude: fakeAdapter('claude', 'Claude', { installed: true, loggedIn: true }),
+      codex: fakeAdapter('codex', 'Codex', { installed: false, loggedIn: false }),
+    });
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain('コーディングエージェントが見つかりません');
+  });
+});
+
+/**
+ * `/login`（と `/agent` の `l`）で TUI 内ログイン。端末は明け渡さず、裏の login プロセスの
+ * 出力の URL をダイアログに出す。フェイクの login プロセス（実 CLI 非依存）で配線を検証。
+ */
+describe('App /login (in-TUI sign-in)', () => {
+  /**
+   * 指定行を流したあと**開いたまま待つ**フェイクの login プロセス。終了させないのは、
+   * 終わると成功表示に切り替わって URL 行が消えるため（URL を出す挙動を検証したい）。
+   */
+  function fakeLogin(lines: readonly string[]) {
+    let cancelled = false;
+    return {
+      cancelled: () => cancelled,
+      proc: {
+        async *[Symbol.asyncIterator]() {
+          for (const l of lines) {
+            yield l;
+          }
+          // 認証完了を待っている状態を再現（ブラウザ側で進む）。cancel / unmount まで開く。
+          await new Promise<void>(() => {});
+        },
+        cancel: () => {
+          cancelled = true;
+        },
+        result: () => ({ code: 0 }),
+      },
+    };
+  }
+
+  function fakeAdapter(id: AgentId, displayName: string, login?: () => AgentLoginProcess) {
+    return {
+      id,
+      displayName,
+      loginCommand: id,
+      capabilities: NO_CAPABILITIES,
+      open: () => ({
+        async *[Symbol.asyncIterator]() {
+          // 配線のテストなのでイベントは流さない。
+        },
+      }),
+      login,
+    } satisfies AgentAdapter;
+  }
+
+  it('/login opens the dialog and surfaces the auth URL (auto-opened)', async () => {
+    const opened: string[] = [];
+    const login = fakeLogin(['Open https://auth.example.com/device to sign in', 'code: ABCD-1234']);
+    const manager = new SessionManager({
+      worktrees,
+      agents: { claude: fakeAdapter('claude', 'Claude', () => login.proc) },
+      agent: fakeAdapter('claude', 'Claude', () => login.proc),
+      now: () => 0,
+    });
+    const { stdin, lastFrame } = render(
+      <App manager={manager} onOpenUrl={(u) => opened.push(u)} />,
+    );
+    await flush();
+
+    stdin.write('/login');
+    await flush();
+    stdin.write('\r');
+    // ログインプロセスの出力は非同期に届くので、**固定 flush ではなく静止まで待つ**
+    // （フルスイート負荷下だと 150ms に間に合わず URL 行が出ないことがある）。
+    await settle(() => lastFrame() ?? '');
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toContain('Claude にサインイン');
+    expect(frame).toContain('https://auth.example.com/device');
+    expect(frame).toContain('ABCD-1234');
+    // URL は自動でブラウザへ渡る（onOpenUrl / onOpenPr 経由）。
+    expect(opened).toContain('https://auth.example.com/device');
+  });
+
+  it('/login reports when the agent cannot sign in from codiva', async () => {
+    // login() を持たないアダプタ = TUI 内ログイン未対応。
+    const manager = new SessionManager({
+      worktrees,
+      agents: { claude: fakeAdapter('claude', 'Claude') },
+      agent: fakeAdapter('claude', 'Claude'),
+      now: () => 0,
+    });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await flush();
+    stdin.write('/login');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).not.toContain('にサインイン');
+    expect(frame).toContain('codiva 内でのサインインに対応していません');
   });
 });

@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"019feb2e-d1df-7831-91a1-a77f6b5adce9"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'echo hello-from-mock-shell'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'echo hello-from-mock-shell'","aggregated_output":"hello-from-mock-shell\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"The command printed hello-from-mock-shell."}}
+{"type":"turn.completed","usage":{"input_tokens":2468,"cached_input_tokens":256,"output_tokens":154,"reasoning_output_tokens":44}}

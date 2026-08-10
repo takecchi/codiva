@@ -10,6 +10,8 @@ import {
 import {
   type AccountSummary,
   type ActionResult,
+  type AgentAvailability,
+  type AgentId,
   COMPOSER_PREFIX_CELLS,
   type CommandAction,
   type DisplayLine,
@@ -346,34 +348,60 @@ export function useUpdateCheck(initial?: Promise<UpdateCheck>): {
  */
 export function useModelCatalog(
   catalog?: Promise<readonly ModelOption[]>,
+  fallback: readonly ModelOption[] = FALLBACK_MODEL_OPTIONS,
 ): readonly ModelOption[] | undefined {
   const [models, setModels] = useState<readonly ModelOption[] | undefined>(
     // No fetch injected (tests, and any host that opts out) → use the fallback
     // immediately instead of parking on a loading line forever.
-    catalog ? undefined : FALLBACK_MODEL_OPTIONS,
+    catalog ? undefined : fallback,
   );
   useEffect(() => {
     if (!catalog) {
-      setModels(FALLBACK_MODEL_OPTIONS);
+      setModels(fallback);
       return;
     }
     let live = true;
     catalog
       .then((options) => {
         if (live) {
-          setModels(options.length > 0 ? options : FALLBACK_MODEL_OPTIONS);
+          setModels(options.length > 0 ? options : fallback);
         }
       })
       .catch(() => {
         if (live) {
-          setModels(FALLBACK_MODEL_OPTIONS);
+          setModels(fallback);
         }
       });
     return () => {
       live = false;
     };
-  }, [catalog]);
+  }, [catalog, fallback]);
   return models;
+}
+
+/**
+ * 登録エージェントの導入・ログイン状態を購読する。
+ *
+ * `manager.getAgentAvailability()` は検出済みの Map（未検出は空）で、検出は
+ * `manager.checkAgents()` が非同期に埋めて `store.notify()` する。`enabled` が true に
+ * なった最初のフレームで検出を起動する（`/agent` を開いたときだけ叩く用）。起動時にも
+ * `main.tsx` が 1 回叩くので、多くの場合は開いた時点で解決済み。
+ */
+export function useAgentAvailability(
+  manager: SessionManager,
+  enabled: boolean,
+): ReadonlyMap<AgentId, AgentAvailability> {
+  const availability = useSyncExternalStore(
+    (onChange) => manager.subscribe(onChange),
+    () => manager.getAgentAvailability(),
+    () => manager.getAgentAvailability(),
+  );
+  useEffect(() => {
+    if (enabled) {
+      void manager.checkAgents().catch(() => undefined);
+    }
+  }, [enabled, manager]);
+  return availability;
 }
 
 /**

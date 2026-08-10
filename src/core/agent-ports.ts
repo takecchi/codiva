@@ -35,6 +35,36 @@ export interface PermissionDecision {
 }
 
 /**
+ * その CLI が使える状態か。`/agent` の各行と、どれも使えないときのセットアップ案内に使う。
+ * 検出は provider ごとに違う I/O（PATH 探索・ログイン確認）なのでアダプタが行う。
+ */
+export interface AgentAvailability {
+  /** CLI が導入されているか（PATH にあり、起動できる）。 */
+  installed: boolean;
+  /**
+   * ログイン済みか。`'unknown'` は「確実に判定できない」= 案内を出さない側に倒す。
+   * ここで見るのは**資格情報の有無**であってトークンの有効性ではない（期限切れは
+   * セッション実行時に `needs_login` として現れる）。
+   */
+  loggedIn: boolean | 'unknown';
+}
+
+/** 検出前・検出不能のときの中立値（案内で嘘をつかない側へ倒す）。 */
+export const UNKNOWN_AVAILABILITY: AgentAvailability = { installed: true, loggedIn: 'unknown' };
+
+/**
+ * 起動中のログインプロセス（`<cli> login`）。**端末を明け渡さず** codiva の TUI 内で
+ * 進めるため、stdout/stderr を行で流し（認証 URL を拾う）、終わったら終了コードを返す。
+ * 実 I/O は `utils/agent-login.ts`、進行の畳み込みは `core/agent-login.ts`。
+ */
+export interface AgentLoginProcess extends AsyncIterable<string> {
+  /** ユーザーがキャンセルした（Esc）。プロセスを殺す。 */
+  cancel(): void;
+  /** 終了コード（ストリームを最後まで読んだあとに読む）。 */
+  result(): { code: number | null };
+}
+
+/**
  * そのエージェントが何をできるか。UI はこれを見て段階的に縮退する
  * （持たない機能のキー操作・表示を出さない）。**セッション途中で切り替えると
  * 変わりうる**ので、UI 側は固定値として持たずアダプタから引く。
@@ -117,6 +147,19 @@ export interface AgentAdapter {
   classifyError?(text: string): AgentStopCause;
   /** 指示文から短いタイトルを作る（省略可・best-effort）。 */
   generateTitle?(prompt: string): Promise<string | null | undefined>;
+  /**
+   * その CLI が使える状態か（導入・ログイン）を調べる。best-effort で throw しない。
+   * 省略時は {@link UNKNOWN_AVAILABILITY}（= 導入済み・ログイン不明）として扱う。
+   * 実 I/O（PATH 探索・ログイン確認）はアダプタ工場に注入する。
+   */
+  checkAvailability?(): Promise<AgentAvailability>;
+  /**
+   * TUI 内でログインを開始する（`/login` / `/agent` の `l`）。端末は明け渡さず、
+   * 出力の認証 URL をダイアログに出してブラウザへ渡す。実 I/O（プロセス起動）は
+   * アダプタ工場に注入する。**TUI 内ログインを表現できない provider は省略**する
+   * （UI はその行のログインキーを出さない）。
+   */
+  login?(): AgentLoginProcess;
 }
 
 /** capability を全部 false にした素の値（新しいアダプタの出発点）。 */

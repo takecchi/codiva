@@ -135,6 +135,24 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
   ストリームが同じ worktree を触らないように現在の run を捨て、保留中の許可も deny で解決する
   （未応答の `tool_use` で終わるトランスクリプトは後の resume を壊す）。新しいエージェントが
   立ち上がるのは次の `send()`。
+  - **「run を捨てる」の実体は入力キューを閉じること**（`this.run = undefined` ではない）。
+    参照を捨てても consume ループはそのオブジェクトを掴んだまま回り続け、アダプタ側は
+    共有キューを await して止まっているので、閉じない限り**切替後に送った指示を古い
+    エージェントが受け取る**（切り替えたのに何も起きないように見える。実際に起きた不具合で、
+    番人は `session.spec.ts` の「routes the next instruction to the new agent」）。
+    `setAgent()` は現在のキューを `close()` して新しい `AsyncQueue` を用意し、畳んだループが
+    終わった時点で積み残しがあれば（`AsyncQueue.pending`）新しいエージェントで再開する。
+    セッション全体の `abortController` は使わない — あれを abort するとセッションごと終わる。
+  - **キューを閉じるだけでは「ターンの最中」は止まらない**。走っているターンの run は
+    キューではなく provider の出力を await しているので、`run.interrupt()` も呼ぶ
+    （best-effort。持たない provider もある）。呼ばないと古い provider が worktree を
+    触り続け、遅れて届く `turn_completed` がセッションを completed に戻して auto-PR まで
+    走らせる。
+  - **積み残しの指示は新しいキューへ移す**（`AsyncQueue.drain()`）。閉じたキューも
+    `[Symbol.asyncIterator]` は buffer を先に吐き出すので、置いていくと**古いエージェントが
+    実行**してしまい、捨てるとユーザーの指示が黙って消える（ログには `user_input` として
+    残るのに実行されない）。番人は `session.spec.ts` の
+    「stops the in-flight turn and hands queued follow-ups to the NEW agent」。
 - 1 エージェントセッション 1 ライター。codiva 以外（外部 `claude --resume` 等）から同じ
   セッションに繋がない。**同時に 2 つの provider を 1 つの worktree で走らせない**。
 

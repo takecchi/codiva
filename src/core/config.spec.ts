@@ -178,6 +178,37 @@ describe('toConfig', () => {
     expect(toConfig({ ignoredFiles })).toEqual({});
   });
 
+  it.each([['claude'], ['codex']] as const)('keeps a supported agent: %o', (agent) => {
+    expect(toConfig({ agent })).toEqual({ agent });
+  });
+
+  // `grok` は型（`AgentId`）にはあるがアダプタが無いので設定では選ばせない。
+  it.each([['grok'], ['gpt'], [true], [1], [null]])('drops an unsupported agent: %o', (agent) => {
+    expect(toConfig({ agent })).toEqual({});
+  });
+
+  it.each([['read-only'], ['workspace-write'], ['danger-full-access']] as const)(
+    'keeps valid codexSandbox %o',
+    (codexSandbox) => {
+      expect(toConfig({ codexSandbox })).toEqual({ codexSandbox });
+    },
+  );
+
+  it.each([['full'], ['write'], [true], [null]])(
+    'drops invalid codexSandbox: %o',
+    (codexSandbox) => {
+      expect(toConfig({ codexSandbox })).toEqual({});
+    },
+  );
+
+  it.each([[true], [false]])('keeps codexNetworkAccess %o', (codexNetworkAccess) => {
+    expect(toConfig({ codexNetworkAccess })).toEqual({ codexNetworkAccess });
+  });
+
+  it.each([['yes'], [1], [null]])('drops invalid codexNetworkAccess: %o', (codexNetworkAccess) => {
+    expect(toConfig({ codexNetworkAccess })).toEqual({});
+  });
+
   it('keeps a list of exclude patterns and trims them', () => {
     expect(toConfig({ ignoredFilesExclude: ['  .next ', '!dist'] })).toEqual({
       ignoredFilesExclude: ['.next', '!dist'],

@@ -24,8 +24,24 @@ export interface AgentLabel {
   loginCommand: string;
 }
 
-/** 既定のエージェント表示情報（現状は Claude のみ）。 */
+/** 既定のエージェント表示情報（アダプタが分からないときのフォールバック）。 */
 export const DEFAULT_AGENT_LABEL: AgentLabel = { name: 'Claude', loginCommand: 'claude' };
+
+/**
+ * アダプタから差し込み用のラベルを作る。**認証切れの案内は provider ごとに違う**
+ * （Codex のセッションに「`claude` でログインし直して」と言ってはいけない）ので、
+ * 文言を出す側は必ずセッションのエージェントからこれを引く。
+ *
+ * 引数は `AgentAdapter` の構造部分だけを受ける（`core/i18n.ts` を `agent-ports.ts`
+ * から独立させたままにするため）。
+ */
+export function agentLabelOf(
+  agent: { displayName: string; loginCommand: string } | undefined,
+): AgentLabel {
+  return agent
+    ? { name: agent.displayName, loginCommand: agent.loginCommand }
+    : DEFAULT_AGENT_LABEL;
+}
 
 /**
  * 全 UI 文字列の型。ja/en 両カタログはこの型を満たすため、キー欠落は型エラーで検知できる
@@ -153,6 +169,67 @@ export interface Messages {
     defaultRow: string;
     /** 選択確定後のフッタ通知（name は選んだモデルの表示名） */
     saved: (name: string) => string;
+  };
+  /** エージェント選択ダイアログ（agent-select.tsx。/agent コマンドで開く） */
+  agent: {
+    /** ダイアログ見出し */
+    title: string;
+    /** ダイアログ下部の操作ヒント */
+    help: string;
+    /**
+     * 切替の注意書き。モデル側の文脈は provider をまたげない（各 CLI が自分の
+     * トランスクリプトを持つ）ので、引き継がれるのは worktree と codiva のログだけ。
+     */
+    warning: string;
+    /** 今このセッションを駆動している行に付ける印（詳細ビュー） */
+    current: string;
+    /** 新規セッションの既定に選ばれている行に付ける印（一覧ビュー） */
+    currentDefault: string;
+    /** 一覧の `/agent` は「新規セッションの既定」を選ぶ、の注記（session 用 warning の代わり） */
+    defaultHint: string;
+    /** 検出中の行の説明 */
+    checking: string;
+    /** 導入済み + ログイン済み */
+    ready: string;
+    /** 導入済みだがログインが要る（cmd = ログインコマンド名） */
+    notLoggedIn: (cmd: string) => string;
+    /** 導入済みだがログイン状態を判定できなかった（keychain を見ないため） */
+    loginUnknown: string;
+    /** 未導入（cmd = 入れるべき CLI コマンド名） */
+    notInstalled: (cmd: string) => string;
+    /** どのエージェントも導入されていないときの一覧のセットアップ案内 */
+    noneInstalled: string;
+    /** 切替後のフッタ通知（name はエージェントの表示名） */
+    switched: (name: string) => string;
+    /** 既定を変えたときのフッタ通知（name はエージェントの表示名） */
+    defaultSet: (name: string) => string;
+    /** 切替できなかったとき（未対応・既に同じ・セッション未起動） */
+    unavailable: string;
+    /** そのエージェントが持たない機能を使おうとしたとき（name は表示名） */
+    unsupported: (name: string) => string;
+    /** `/agent` の行で `l` を押すとログインできる、のヒント */
+    loginKey: string;
+  };
+  /** TUI 内ログイン（login-dialog.tsx。`/login` と `/agent` の `l` で開く） */
+  login: {
+    /** 見出し（name = エージェント表示名） */
+    title: (name: string) => string;
+    /** 起動直後（URL がまだ出ていない）のプレースホルダ */
+    starting: string;
+    /** 認証 URL の前置き（クリック / 自動オープンで開く） */
+    openUrl: string;
+    /** デバイスコードの前置き（code = 表示するコード） */
+    code: (code: string) => string;
+    /** URL が出てから完了を待っている間の案内 */
+    waiting: string;
+    /** 成功（name = エージェント表示名） */
+    succeeded: (name: string) => string;
+    /** 失敗（name = エージェント表示名） */
+    failed: (name: string) => string;
+    /** 操作ヒント（実行中は中止、終了後は閉じる） */
+    help: string;
+    /** TUI 内ログインに対応していないエージェントを選んだとき（name = 表示名） */
+    unsupported: (name: string) => string;
   };
   /** リポジトリ追加指示エディタ（repo-prompt-editor.tsx。/prompt コマンドで開く） */
   prompt: {
@@ -357,6 +434,10 @@ export interface Messages {
     exitDetail: string;
     /** /model の説明 */
     model: string;
+    /** /agent の説明 */
+    agent: string;
+    /** /login の説明 */
+    login: string;
     /** /diff の説明 */
     diff: string;
     /** /prompt の説明 */
@@ -479,6 +560,37 @@ const ja: Messages = {
     loading: 'モデル一覧を取得中…',
     defaultRow: 'デフォルト（推奨）',
     saved: (name) => `モデルを ${name} に変更しました（以降の新規セッションに適用）`,
+  },
+  agent: {
+    title: 'エージェントを選択',
+    help: '↑↓: 選択 ・ Enter: 決定 ・ Esc: キャンセル',
+    warning: '会話の文脈は引き継がれません（worktree の変更とログはそのまま）',
+    current: '使用中',
+    currentDefault: '既定',
+    defaultHint: '以降の新規セッションに適用されます',
+    checking: '確認中…',
+    ready: '使用できます',
+    notLoggedIn: (cmd) => `未ログイン（\`${cmd} login\` を実行）`,
+    loginUnknown: '導入済み',
+    notInstalled: (cmd) => `未導入（\`${cmd}\` をインストール）`,
+    noneInstalled:
+      'コーディングエージェントが見つかりません。`claude` か `codex` を入れてログインしてください',
+    switched: (name) => `${name} に切り替えました（次の指示から適用）`,
+    defaultSet: (name) => `新規セッションの既定を ${name} にしました`,
+    unavailable: 'エージェントを切り替えられませんでした',
+    unsupported: (name) => `${name} はこの操作に対応していません`,
+    loginKey: 'l: ログイン',
+  },
+  login: {
+    title: (name) => `${name} にサインイン`,
+    starting: 'サインインを開始しています…',
+    openUrl: 'ブラウザで次の URL を開いてサインインしてください（クリックでも開けます）:',
+    code: (code) => `コード: ${code}`,
+    waiting: 'サインインの完了を待っています…',
+    succeeded: (name) => `${name} にサインインしました`,
+    failed: (name) => `${name} のサインインに失敗しました`,
+    help: 'Esc: 中止 / 閉じる',
+    unsupported: (name) => `${name} は codiva 内でのサインインに対応していません`,
   },
   prompt: {
     title: 'リポジトリの追加指示（.codiva/prompt.md）',
@@ -609,6 +721,8 @@ const ja: Messages = {
     exit: 'codiva を終了',
     exitDetail: '詳細を閉じて一覧へ戻る',
     model: 'モデルを切り替え',
+    agent: 'このセッションのエージェントを切り替え',
+    login: 'エージェントに codiva 内でサインイン',
     diff: '変更差分サマリの表示を切り替え',
     prompt: 'リポジトリの追加指示を編集',
     remove: '選択中のセッションを削除（worktree とブランチも消す）',
@@ -711,6 +825,36 @@ const en: Messages = {
     loading: 'Loading models…',
     defaultRow: 'Default (recommended)',
     saved: (name) => `Model set to ${name} (applies to new sessions)`,
+  },
+  agent: {
+    title: 'Select agent',
+    help: '↑↓: select · Enter: confirm · Esc: cancel',
+    warning: 'The conversation context does not carry over (worktree changes and log stay)',
+    current: 'in use',
+    currentDefault: 'default',
+    defaultHint: 'Applies to new sessions from now on',
+    checking: 'Checking…',
+    ready: 'Ready',
+    notLoggedIn: (cmd) => `Not logged in (run \`${cmd} login\`)`,
+    loginUnknown: 'Installed',
+    notInstalled: (cmd) => `Not installed (install \`${cmd}\`)`,
+    noneInstalled: 'No coding agent found. Install `claude` or `codex` and log in',
+    switched: (name) => `Switched to ${name} (applies to the next instruction)`,
+    defaultSet: (name) => `New sessions will use ${name}`,
+    unavailable: 'Could not switch the agent',
+    unsupported: (name) => `${name} does not support this`,
+    loginKey: 'l: sign in',
+  },
+  login: {
+    title: (name) => `Sign in to ${name}`,
+    starting: 'Starting sign-in…',
+    openUrl: 'Open this URL in your browser to sign in (or click it):',
+    code: (code) => `Code: ${code}`,
+    waiting: 'Waiting for sign-in to complete…',
+    succeeded: (name) => `Signed in to ${name}`,
+    failed: (name) => `Sign-in to ${name} failed`,
+    help: 'Esc: cancel / close',
+    unsupported: (name) => `${name} does not support signing in from codiva`,
   },
   prompt: {
     title: 'Repository instructions (.codiva/prompt.md)',
@@ -838,6 +982,8 @@ const en: Messages = {
     exit: 'Quit codiva',
     exitDetail: 'Close the session view (back to the list)',
     model: 'Switch the model',
+    agent: 'Switch the agent driving this session',
+    login: 'Sign in to an agent from within codiva',
     diff: 'Toggle the changes summary',
     prompt: 'Edit the repository instructions',
     remove: 'Remove the selected session (worktree and branch deleted too)',

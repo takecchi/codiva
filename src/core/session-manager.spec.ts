@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { type AgentAdapter, type AgentAvailability, NO_CAPABILITIES } from '@/core/agent-ports';
 import { messages } from '@/core/i18n';
 import type { RateLimitInfoJson } from '@/core/rate-limit';
 import { SessionManager } from '@/core/session-manager';
 import type { PrAutomation, SessionHandle, WorktreeService } from '@/core/session-ports';
 import { initialState, reduce } from '@/core/status-reducer';
 import type {
+  AgentId,
   CreateSessionInput,
   PrInfo,
   PrLookupResult,
@@ -1736,6 +1738,238 @@ describe('SessionManager', () => {
       manager.create('second');
       await flush();
       expect(prompts).toEqual([undefined, 'Open a PR when done']);
+    });
+  });
+
+  describe('agent registry (/agent)', () => {
+    /** 状態だけを動かすフェイク + エージェントの差し替え口（optional な 2 メソッド）。 */
+    class AgentFakeSession extends FakeSession {
+      current: AgentAdapter = claude;
+      getAgent() {
+        return this.current;
+      }
+      setAgent(next: AgentAdapter) {
+        this.current = next;
+      }
+    }
+
+    function fakeAdapter(id: AgentId, displayName: string): AgentAdapter {
+      return {
+        id,
+        displayName,
+        loginCommand: id,
+        capabilities: NO_CAPABILITIES,
+        open: () => ({
+          async *[Symbol.asyncIterator]() {
+            // 状態遷移のテストなのでイベントは流さない。
+          },
+        }),
+      };
+    }
+
+    const claude = fakeAdapter('claude', 'Claude');
+    const codex = fakeAdapter('codex', 'Codex');
+
+    function managerWithAgents() {
+      return new SessionManager({
+        worktrees: fakeWorktrees(),
+        agents: { claude, codex },
+        agent: claude,
+        now: () => 1,
+        createSession: ({ input, onChange }) => new AgentFakeSession(input, onChange),
+      });
+    }
+
+    it('lists the registered adapters as /agent choices', () => {
+      expect(managerWithAgents().listAgents()).toEqual([claude, codex]);
+    });
+
+    it('falls back to the single default adapter when no registry is wired', () => {
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        agent: claude,
+        now: () => 1,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      expect(manager.listAgents()).toEqual([claude]);
+    });
+
+    it('switches a session to another registered agent', async () => {
+      const manager = managerWithAgents();
+      const id = manager.create('do the thing');
+      await flush();
+      expect(manager.getSessionAgent(id)).toBe(claude);
+      expect(manager.setSessionAgent(id, 'codex')).toBe(true);
+      expect(manager.getSessionAgent(id)).toBe(codex);
+    });
+
+    it('is a no-op when the session already runs on that agent', async () => {
+      const manager = managerWithAgents();
+      const id = manager.create('do the thing');
+      await flush();
+      expect(manager.setSessionAgent(id, 'claude')).toBe(false);
+    });
+
+    it('refuses an agent that has no registered adapter', async () => {
+      const manager = managerWithAgents();
+      const id = manager.create('do the thing');
+      await flush();
+      // `grok` は型にはあるがアダプタ未登録 — UI へは出ないし切り替わらない。
+      expect(manager.setSessionAgent(id, 'grok')).toBe(false);
+      expect(manager.getSessionAgent(id)).toBe(claude);
+    });
+
+    it('returns false for an unknown session id', () => {
+      expect(managerWithAgents().setSessionAgent('nope', 'codex')).toBe(false);
+    });
+  });
+
+  describe('default agent (list /agent + auto-pick)', () => {
+    function fakeAdapter(
+      id: AgentId,
+      availability?: AgentAvailability,
+    ): AgentAdapter & { checks: number } {
+      const adapter = {
+        id,
+        displayName: id,
+        loginCommand: id,
+        capabilities: NO_CAPABILITIES,
+        checks: 0,
+        open: () => ({
+          async *[Symbol.asyncIterator]() {
+            // フェイクはイベントを流さない（状態遷移の配線だけを見る）。
+          },
+        }),
+        checkAvailability: availability
+          ? async () => {
+              adapter.checks += 1;
+              return availability;
+            }
+          : undefined,
+      };
+      return adapter;
+    }
+
+    const YES: AgentAvailability = { installed: true, loggedIn: true };
+    const MISSING: AgentAvailability = { installed: false, loggedIn: false };
+
+    function managerWith(
+      agents: Partial<Record<AgentId, AgentAdapter>>,
+      extra: {
+        defaultAgentId?: AgentId;
+        onDefaultAgentChange?: (agent: AgentId) => void;
+      } = {},
+    ) {
+      // 新規セッションがどのアダプタで作られたかを記録するフェイク。
+      const created: { id: AgentId }[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        agents,
+        agent: agents.claude ?? Object.values(agents)[0],
+        now: () => 1,
+        createSession: ({ input, onChange, restored }) => {
+          const s = new FakeSession(input, onChange, restored);
+          // 記録は defaultAgentId 経由の解決結果を反映する（buildSession の分岐）。
+          created.push({ id: manager.getDefaultAgentId() ?? 'claude' });
+          return s;
+        },
+        ...extra,
+      });
+      return { manager, created };
+    }
+
+    it('reports the configured default agent id', () => {
+      const { manager } = managerWith(
+        { claude: fakeAdapter('claude'), codex: fakeAdapter('codex') },
+        { defaultAgentId: 'codex' },
+      );
+      expect(manager.getDefaultAgentId()).toBe('codex');
+    });
+
+    it('persists a new default via onDefaultAgentChange and applies it to new sessions', () => {
+      const onDefaultAgentChange = vi.fn();
+      const { manager } = managerWith(
+        { claude: fakeAdapter('claude'), codex: fakeAdapter('codex') },
+        { onDefaultAgentChange },
+      );
+      expect(manager.setDefaultAgent('codex')).toBe(true);
+      expect(onDefaultAgentChange).toHaveBeenCalledWith('codex');
+      expect(manager.getDefaultAgentId()).toBe('codex');
+    });
+
+    it('does not persist an auto-pick (persist: false)', () => {
+      const onDefaultAgentChange = vi.fn();
+      const { manager } = managerWith(
+        { claude: fakeAdapter('claude'), codex: fakeAdapter('codex') },
+        { onDefaultAgentChange },
+      );
+      expect(manager.setDefaultAgent('codex', { persist: false })).toBe(true);
+      expect(onDefaultAgentChange).not.toHaveBeenCalled();
+      expect(manager.getDefaultAgentId()).toBe('codex');
+    });
+
+    it('refuses an unregistered agent and a no-op change', () => {
+      const { manager } = managerWith({ claude: fakeAdapter('claude') });
+      expect(manager.setDefaultAgent('codex')).toBe(false); // 未登録
+      expect(manager.setDefaultAgent('claude')).toBe(false); // 既に既定
+    });
+
+    it('detects availability once and caches it (concurrent calls share one probe)', async () => {
+      const claude = fakeAdapter('claude', YES);
+      const codex = fakeAdapter('codex', MISSING);
+      const { manager } = managerWith({ claude, codex });
+      const [a, b] = await Promise.all([manager.checkAgents(), manager.checkAgents()]);
+      expect(a).toBe(b); // 同じ probe にまとまる
+      expect(claude.checks).toBe(1);
+      expect(codex.checks).toBe(1);
+      expect(manager.getAgentAvailability().get('claude')).toEqual(YES);
+      expect(manager.getAgentAvailability().get('codex')).toEqual(MISSING);
+    });
+
+    it('treats an adapter without checkAvailability as installed/unknown', async () => {
+      const { manager } = managerWith({ claude: fakeAdapter('claude') });
+      await manager.checkAgents();
+      expect(manager.getAgentAvailability().get('claude')).toEqual({
+        installed: true,
+        loggedIn: 'unknown',
+      });
+    });
+
+    it('re-probes on refreshAgents (invalidates the cache)', async () => {
+      const claude = fakeAdapter('claude', YES);
+      const { manager } = managerWith({ claude });
+      await manager.checkAgents();
+      await manager.checkAgents(); // cached → no new probe
+      expect(claude.checks).toBe(1);
+      await manager.refreshAgents(); // force
+      expect(claude.checks).toBe(2);
+    });
+
+    it('exposes login capability and starts a login process', () => {
+      let started = 0;
+      const loginProc = {
+        async *[Symbol.asyncIterator]() {
+          // フェイクは行を流さない（capability と startLogin の配線だけを見る）。
+        },
+        cancel: () => {},
+        result: () => ({ code: 0 }),
+      };
+      const claude: AgentAdapter = {
+        ...fakeAdapter('claude'),
+        login: () => {
+          started += 1;
+          return loginProc;
+        },
+      };
+      const codex = fakeAdapter('codex'); // login 未対応
+      const { manager } = managerWith({ claude, codex });
+
+      expect(manager.canLogin('claude')).toBe(true);
+      expect(manager.canLogin('codex')).toBe(false);
+      expect(manager.canLogin('grok')).toBe(false); // 未登録
+      expect(manager.startLogin('claude')).toBe(loginProc);
+      expect(started).toBe(1);
+      expect(manager.startLogin('codex')).toBeUndefined();
     });
   });
 });

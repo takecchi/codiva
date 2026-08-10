@@ -2,10 +2,12 @@ import { createRequire } from 'node:module';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
 import {
+  DEFAULT_AGENT_ORDER,
   errorMessage,
   formatMemoryUsage,
   messages,
   parseCliArgs,
+  resolveDefaultAgentId,
   resolveIgnoredFilesMode,
   resolveLang,
   type SessionManager,
@@ -18,6 +20,7 @@ import {
   defaultStatePath,
   detectInstallKind,
   enableFatalErrorReports,
+  fetchCodexModelCatalog,
   fetchModelCatalog,
   fetchTrainingOptIn,
   fetchUsageSnapshot,
@@ -162,6 +165,12 @@ async function main(): Promise<void> {
     cwd: repoRoot,
     signal: probeAbort.signal,
   });
+  // Codex 側の選択肢（`codex debug models`）。ローカルのカタログを読むだけで推論は
+  // 走らず、`codex` が入っていなければ空配列になる（`/model` は「デフォルト」のみ）。
+  const codexModelCatalog = fetchCodexModelCatalog({
+    cwd: repoRoot,
+    signal: probeAbort.signal,
+  });
 
   // プラン（Pro / Max / Team …）と使用リミット枠をステータスバーに出すための取得。
   // `rate_limit_event` はセッションがターンを回している間しか届かないので、待機中も
@@ -202,6 +211,27 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  // 登録エージェントの導入・ログイン状態を検出する（`/agent` とセットアップ案内が読む）。
+  // await しない（サブプロセスを数本起こすだけで起動はブロックしない）。設定 `agent` が
+  // 無いときは、検出が済み次第「導入済みのもの」を新規セッションの既定に寄せる
+  // （永続化はしない = ユーザーが選んでいない値を config へ書かない）。
+  void manager
+    .checkAgents()
+    .then((availability) => {
+      if (config.agent === undefined) {
+        const pick = resolveDefaultAgentId(
+          undefined,
+          manager.listAgents().map((a) => a.id),
+          availability,
+          DEFAULT_AGENT_ORDER,
+        );
+        if (pick) {
+          manager.setDefaultAgent(pick, { persist: false });
+        }
+      }
+    })
+    .catch(() => undefined);
+
   await restoreSessions(manager, statePath);
   const stopPrPolling = startPrPolling(manager);
   // React の dev ビルドが積む user timing を溜め込まないための保険（本筋は
@@ -219,6 +249,7 @@ async function main(): Promise<void> {
       version={appVersion}
       messages={t}
       modelCatalog={modelCatalog}
+      codexModelCatalog={codexModelCatalog}
       trainingOptIn={trainingOptIn}
       updater={updater}
       loadBranch={() => worktrees.currentBranch()}
