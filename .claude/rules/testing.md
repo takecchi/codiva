@@ -40,6 +40,13 @@ vitest でのテスト配置・書き方の決まり。**テストを追加/変�
 - 時刻は `now: () => number` を注入して決定的にする（`makeManager()` は `now: () => 0`）。
 - 実 git が必要なもの（`utils/git.spec.ts` / `utils/worktree-manager.spec.ts`）は
   `mkdtemp` + `git init` で使い捨てリポジトリを作る。**このリポジトリ自体を対象にしない。**
+  - **開発者のグローバル git 設定に依存させない**。`git init` した一時リポジトリにも
+    `~/.gitconfig` は効くので、`commit.gpgSign = true` の環境ではコミットを作るテストが
+    まとめて落ちていた（issue #110）。`tests/setup-git-config.ts`（vitest の `setupFiles`）が
+    `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` を `/dev/null` に向けて設定ファイルごと
+    無効化する。**identity はリポジトリ単位で設定する**（グローバルに無いので、
+    コミットするテストは `user.name` / `user.email` を自分で入れる）。この 2 つの env を
+    消さない（番人は `git.spec.ts` の「グローバル / システムの git 設定を継承しない」）。
 - UI は `ink-testing-library`（全画面レイアウトの検証は `renderFullscreen`）。
   「1画面 1 `useInput`」前提でキーを流すので、キー処理の分岐は view のハンドラを通して検証する。
 

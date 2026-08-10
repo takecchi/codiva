@@ -11,11 +11,25 @@ import { WorktreeManager } from './worktree-manager';
 const execFileAsync = promisify(execFile);
 const g = (cwd: string, ...args: string[]) => execFileAsync('git', args, { cwd });
 
+/**
+ * コミットを作れる最小構成をリポジトリ単位で設定する。
+ *
+ * 署名を明示的に切るのは、グローバル設定の `commit.gpgSign = true` を継承すると
+ * 署名エージェントの無い実行環境でコミットが作れず、ここのテストがまとめて
+ * `failed to write commit object` で落ちるため（issue #110）。`tests/setup-git-config.ts`
+ * がグローバル設定自体を切り離しているが、リポジトリ側にも書いて二重に守る
+ * （linked worktree は `.git/config` を共有するので、worktree 内のコミットにも効く）。
+ */
+async function configureRepo(dir: string): Promise<void> {
+  await g(dir, 'config', 'user.email', 'test@codiva.test');
+  await g(dir, 'config', 'user.name', 'codiva test');
+  await g(dir, 'config', 'commit.gpgSign', 'false');
+}
+
 async function makeRepo(withCommit: boolean): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'codiva-wt-'));
   await g(dir, 'init', '-b', 'main');
-  await g(dir, 'config', 'user.email', 'test@codiva.test');
-  await g(dir, 'config', 'user.name', 'codiva test');
+  await configureRepo(dir);
   if (withCommit) {
     await writeFile(join(dir, 'README.md'), '# test\n');
     await g(dir, 'add', '-A');
@@ -232,8 +246,7 @@ describe('WorktreeManager', () => {
       // advance origin/main beyond local main
       const clone = await mkdtemp(join(tmpdir(), 'codiva-clone-'));
       await g(clone, 'clone', origin, '.');
-      await g(clone, 'config', 'user.email', 'test@codiva.test');
-      await g(clone, 'config', 'user.name', 'codiva test');
+      await configureRepo(clone);
       await writeFile(join(clone, 'upstream.txt'), 'ahead\n');
       await g(clone, 'add', '-A');
       await g(clone, 'commit', '-m', 'upstream commit');
@@ -496,6 +509,52 @@ describe('WorktreeManager', () => {
       expect(next).toBe('dup-2');
       const wt2 = await wm.add(next);
       expect(wt2.branch).toBe('codiva/dup-2');
+    });
+  });
+
+  // issue #110: グローバル設定は一時リポジトリにも効くので、署名を強制する環境では
+  // コミットを作るテストが全滅していた。ここでは実行環境の設定に頼らず、壊れた署名を
+  // 強制するグローバル設定を実際に被せて、テスト用リポジトリが影響を受けないことを見る。
+  describe('グローバル git 設定からの独立', () => {
+    let configDir: string;
+    let previousGlobal: string | undefined;
+
+    beforeEach(async () => {
+      configDir = await mkdtemp(join(tmpdir(), 'codiva-gitconfig-'));
+      const config = join(configDir, 'gitconfig');
+      // 署名を必須にし、署名プログラムを存在しないパスへ向ける（= 署名は必ず失敗する）。
+      await writeFile(config, '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /nonexistent/gpg\n');
+      previousGlobal = process.env.GIT_CONFIG_GLOBAL;
+      process.env.GIT_CONFIG_GLOBAL = config;
+    });
+
+    afterEach(async () => {
+      if (previousGlobal === undefined) {
+        delete process.env.GIT_CONFIG_GLOBAL;
+      } else {
+        process.env.GIT_CONFIG_GLOBAL = previousGlobal;
+      }
+      await rm(configDir, { recursive: true, force: true });
+    });
+
+    it('署名を強制するグローバル設定でも初期コミットを作れる', async () => {
+      repo = await makeRepo(true);
+      const head = await g(repo, 'log', '--oneline');
+      expect(head.stdout).toContain('initial');
+    });
+
+    it('署名を強制するグローバル設定でも worktree のコミットとマージができる', async () => {
+      repo = await makeRepo(true);
+      const wm = new WorktreeManager(repo);
+      const base = await wm.baseBranch();
+      const wt = await wm.add('signed');
+      await writeFile(join(wt.path, 'feature.txt'), 'done\n');
+      await g(wt.path, 'add', '-A');
+      await g(wt.path, 'commit', '-m', 'feature');
+
+      // merge --no-ff はマージコミットを作るので、署名設定が漏れていればここで落ちる。
+      await wm.merge(wt, base);
+      expect(await readFile(join(repo, 'feature.txt'), 'utf8')).toBe('done\n');
     });
   });
 });

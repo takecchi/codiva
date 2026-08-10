@@ -11,6 +11,8 @@ export default defineConfig({
     // Unit tests are co-located as *.spec.ts next to their module; feature /
     // integration tests (whole-App e2e) live in tests/ as *.test.ts.
     include: ['src/**/*.spec.{ts,tsx}', 'tests/**/*.test.{ts,tsx}'],
+    // 実 git を叩くテストを開発者のグローバル設定から切り離す（issue #110）。
+    setupFiles: ['./tests/setup-git-config.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/core/**', 'src/utils/**'],
