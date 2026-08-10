@@ -1184,6 +1184,11 @@ zsh: abort      codiva
       （引数の組み立て）
 
 > 実績メモ:
+> - セルフレビューで塞いだ取りこぼし: 初回のターンが `thread.started` 前に落ちると
+>   systemPrompt を二度と渡せなくなる（latch をやめて `threadId` から導出）/ 捨てられた run が
+>   `codex exec` を孤児として残す（Rust は `SIGPIPE` を無視するので明示的に kill）/ `stderr` の
+>   `'error'` 未処理で TUI がプロセス死し得た / 1 行の上限が無く OOM の余地があった
+>   （枠切りを純粋な `createJsonlSplitter` へ切り出してテスト）。詳細は `docs/TECH_NOTES.md`。
 > - **`--json` と `--experimental-json` は同じフラグ**（clap の alias）。codiva は `--json` を使う。
 > - **`{"type":"error"}` は終了ではない**。実測で `Reconnecting... 1/5 (stream disconnected …)` が
 >   同じ型で流れ、5 回粘ってから諦めたときだけ `turn.failed` が出る。素直に失敗扱いにすると
@@ -1234,8 +1239,9 @@ zsh: abort      codiva
       「`claude` でログインし直して」と言ってしまうため
 - [x] **`Session.setAgent()` が実際には切り替わっていなかったのを修正**（Phase A の積み残し）。
       `run = undefined` は参照を捨てるだけで consume ループもアダプタも止まらないため、切替後の
-      指示を**古いエージェントが受け取っていた**。入力キューを閉じて新しいキューに差し替える方式へ
-      変更（詳細は `.claude/rules/session-domain.md`）。`/agent` を入れて初めて踏める経路だった
+      指示を**古いエージェントが受け取っていた**。入力キューを閉じて新しいキューに差し替え、
+      進行中のターンは `run.interrupt()` で畳み、積み残しの指示は `drain()` で新しいキューへ
+      移す（詳細は `.claude/rules/session-domain.md`）。`/agent` を入れて初めて踏める経路だった
 - [ ] 一覧・詳細にエージェントの表示（どのセッションが何で走っているか）と、`LogEntry.agent` を
       使ったログ上の区切り表示（状態には載っているが**どこにも描いていない**）
 

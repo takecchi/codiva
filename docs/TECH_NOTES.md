@@ -936,6 +936,31 @@ codex exec --json --skip-git-repo-check
 `-c sandbox_workspace_write.network_access=true`（設定 `codexNetworkAccess`、既定 true）を
 明示しないと `npm install` / `gh` が失敗して大半の作業が完了しない。
 
+### プロセスの扱いで踏んだところ（`utils/codex.ts`）
+
+1 ターン = 1 プロセスなので、`spawnCodex` の後始末がそのままセッションの寿命に効く。
+
+- **`codex` は Rust バイナリで、Rust は起動時に `SIGPIPE` を無視する。** stdout を読むのを
+  やめてもパイプが壊れて死んでくれない（`EPIPE` の書き込みエラーになるだけ）ので、
+  **捨てた run は明示的に `kill()` する**。しないと `codex exec` が worktree を触ったまま
+  残る（セッションは `failed` 表示なのに裏で作業が続く）。
+- **`SIGTERM` だけに賭けない。** 無視されると stdout が閉じず `for await` が返らないので、
+  ターンが二度と進まない。`KILL_ESCALATE_MS` 後に `SIGKILL` へ上げる（タイマーは
+  `unref()` して TUI の終了を妨げない）。
+- **`'close'` は全 stdio が閉じてから**なので、`'exit'` もフォールバックにする。
+  どちらか早い方で終了コードを確定させないと、stderr を掴んだままの子がいるだけで
+  ターンが永久に止まる。
+- **`child.stderr` に `'error'` リスナを付ける。** listener の無い `'error'` は
+  EventEmitter が throw し、TUI ではプロセス死になる（stdout は for-await 中の
+  非同期イテレータが面倒を見るので、素の emitter はここだけ）。
+- **1 行の長さに上限を置く。** `command_execution` は `aggregated_output` を丸ごと 1 行で
+  運ぶので、長いビルドの出力が数十 MB の 1 行になる。溜め切ってから `JSON.parse` すると
+  同じものが 2 部ヒープに載るため、`MAX_LINE_CHARS` を超えた行は捨てて次の改行から復帰する
+  （枠切りは純粋な `createJsonlSplitter`（`core/codex-events.ts`）に切り出してテストしてある）。
+- **stderr のバッファは必ず上限で切る。** 1 チャンクは 64KB になりうるので
+  「短ければ足す」だけだとその 1 回で大きく超え、それが `turn_stopped.detail` →
+  `state.error` に載る（ログ行と違って `state.error` はクリップされない）。
+
 ### `codex debug models` — モデル一覧のローカル取得
 
 - ローカルのモデルカタログを JSON で吐くだけで**推論は走らない**（トークンもコストもゼロ）。
