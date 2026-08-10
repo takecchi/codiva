@@ -33,8 +33,10 @@ export const AgentSelect: FC<{
   current: AgentId | undefined;
   agents: readonly AgentChoice[];
   onSelect: (agent: AgentId) => void;
+  /** `l` でハイライト中のエージェントに codiva 内ログインを開始する（省略可）。 */
+  onLogin?: (agent: AgentId) => void;
   onCancel: () => void;
-}> = ({ mode, current, agents, onSelect, onCancel }) => {
+}> = ({ mode, current, agents, onSelect, onLogin, onCancel }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
   const width = dialogContentWidth(columns);
@@ -72,6 +74,14 @@ export const AgentSelect: FC<{
       const choice = agents[cursor];
       if (choice) {
         onSelect(choice.id);
+      }
+      return;
+    }
+    // `l` = ハイライト中のエージェントに codiva 内ログイン（`onLogin` があるときだけ）。
+    if (onLogin && (rawInput === 'l' || rawInput === 'L')) {
+      const choice = agents[cursor];
+      if (choice) {
+        onLogin(choice.id);
       }
     }
   });
@@ -121,7 +131,7 @@ export const AgentSelect: FC<{
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>{mode === 'session' ? m.agent.warning : m.agent.defaultHint}</Text>
-        <Text dimColor>{m.agent.help}</Text>
+        <Text dimColor>{onLogin ? `${m.agent.help} ・ ${m.agent.loginKey}` : m.agent.help}</Text>
       </Box>
     </Box>
   );

@@ -53,6 +53,18 @@ export interface AgentAvailability {
 export const UNKNOWN_AVAILABILITY: AgentAvailability = { installed: true, loggedIn: 'unknown' };
 
 /**
+ * 起動中のログインプロセス（`<cli> login`）。**端末を明け渡さず** codiva の TUI 内で
+ * 進めるため、stdout/stderr を行で流し（認証 URL を拾う）、終わったら終了コードを返す。
+ * 実 I/O は `utils/agent-login.ts`、進行の畳み込みは `core/agent-login.ts`。
+ */
+export interface AgentLoginProcess extends AsyncIterable<string> {
+  /** ユーザーがキャンセルした（Esc）。プロセスを殺す。 */
+  cancel(): void;
+  /** 終了コード（ストリームを最後まで読んだあとに読む）。 */
+  result(): { code: number | null };
+}
+
+/**
  * そのエージェントが何をできるか。UI はこれを見て段階的に縮退する
  * （持たない機能のキー操作・表示を出さない）。**セッション途中で切り替えると
  * 変わりうる**ので、UI 側は固定値として持たずアダプタから引く。
@@ -141,6 +153,13 @@ export interface AgentAdapter {
    * 実 I/O（PATH 探索・ログイン確認）はアダプタ工場に注入する。
    */
   checkAvailability?(): Promise<AgentAvailability>;
+  /**
+   * TUI 内でログインを開始する（`/login` / `/agent` の `l`）。端末は明け渡さず、
+   * 出力の認証 URL をダイアログに出してブラウザへ渡す。実 I/O（プロセス起動）は
+   * アダプタ工場に注入する。**TUI 内ログインを表現できない provider は省略**する
+   * （UI はその行のログインキーを出さない）。
+   */
+  login?(): AgentLoginProcess;
 }
 
 /** capability を全部 false にした素の値（新しいアダプタの出発点）。 */

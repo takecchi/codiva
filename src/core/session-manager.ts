@@ -1,5 +1,5 @@
 import { type AccountSummary, sameAccountSummary } from './account';
-import type { AgentAdapter, AgentAvailability } from './agent-ports';
+import type { AgentAdapter, AgentAvailability, AgentLoginProcess } from './agent-ports';
 import { UNKNOWN_AVAILABILITY } from './agent-ports';
 import type { QueryFn } from './claude-adapter';
 import { errorMessage } from './errors';
@@ -645,6 +645,29 @@ export class SessionManager {
     return this.availability;
   }
 
+  /** そのエージェントが TUI 内ログインに対応しているか（`login()` を持つか）。 */
+  canLogin(agentId: AgentId): boolean {
+    return this.agentFor(agentId)?.login !== undefined;
+  }
+
+  /**
+   * TUI 内ログインを開始する（`/login` / `/agent` の `l`）。端末は明け渡さず、返る
+   * プロセスの行ストリームを UI が消費して認証 URL を出す。未登録・未対応なら undefined。
+   */
+  startLogin(agentId: AgentId): AgentLoginProcess | undefined {
+    return this.agentFor(agentId)?.login?.();
+  }
+
+  /**
+   * 可用性のキャッシュを捨てて検出し直す（ログイン成功後の再判定）。`checkAgents` は
+   * 結果をキャッシュするので、ログインで状態が変わったあとはこちらで force する。
+   */
+  refreshAgents(): Promise<ReadonlyMap<AgentId, AgentAvailability>> {
+    this.availability = new Map();
+    this.availabilityProbe = undefined;
+    return this.checkAgents();
+  }
+
   /**
    * 登録アダプタの導入・ログイン状態を検出する（`/agent` を開いたときと起動時に呼ぶ）。
    * best-effort（各アダプタの `checkAvailability` は throw しない前提だが保険で握り潰す）。
@@ -652,6 +675,11 @@ export class SessionManager {
    * `checkAvailability` を持たないアダプタは {@link UNKNOWN_AVAILABILITY}（導入済み扱い）。
    */
   checkAgents(): Promise<ReadonlyMap<AgentId, AgentAvailability>> {
+    // 検出済みならそのまま返す（起動時と `/agent` を開くたびにサブプロセスを起こさない）。
+    // 状態が変わったあと（ログイン成功）は `refreshAgents()` で明示的に force する。
+    if (this.availability.size > 0) {
+      return Promise.resolve(this.availability);
+    }
     if (this.availabilityProbe) {
       return this.availabilityProbe;
     }

@@ -1934,5 +1934,42 @@ describe('SessionManager', () => {
         loggedIn: 'unknown',
       });
     });
+
+    it('re-probes on refreshAgents (invalidates the cache)', async () => {
+      const claude = fakeAdapter('claude', YES);
+      const { manager } = managerWith({ claude });
+      await manager.checkAgents();
+      await manager.checkAgents(); // cached → no new probe
+      expect(claude.checks).toBe(1);
+      await manager.refreshAgents(); // force
+      expect(claude.checks).toBe(2);
+    });
+
+    it('exposes login capability and starts a login process', () => {
+      let started = 0;
+      const loginProc = {
+        async *[Symbol.asyncIterator]() {
+          // フェイクは行を流さない（capability と startLogin の配線だけを見る）。
+        },
+        cancel: () => {},
+        result: () => ({ code: 0 }),
+      };
+      const claude: AgentAdapter = {
+        ...fakeAdapter('claude'),
+        login: () => {
+          started += 1;
+          return loginProc;
+        },
+      };
+      const codex = fakeAdapter('codex'); // login 未対応
+      const { manager } = managerWith({ claude, codex });
+
+      expect(manager.canLogin('claude')).toBe(true);
+      expect(manager.canLogin('codex')).toBe(false);
+      expect(manager.canLogin('grok')).toBe(false); // 未登録
+      expect(manager.startLogin('claude')).toBe(loginProc);
+      expect(started).toBe(1);
+      expect(manager.startLogin('codex')).toBeUndefined();
+    });
   });
 });

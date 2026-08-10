@@ -1,6 +1,7 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  type AgentId,
   ARROW_SCROLL_LINES,
   agentLabelOf,
   COMMANDS,
@@ -54,6 +55,7 @@ import {
 import { useMessages } from './i18n-context';
 import { normalizeChord } from './input';
 import { BLANK_ROW, LOG_PREFIX, LogLine } from './log-line';
+import { LoginDialog } from './login-dialog';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PrSummary } from './pr-cell';
@@ -141,6 +143,8 @@ export const SessionDetail: FC<{
   const [modelSelect, setModelSelect] = useState(false);
   // Open when the user runs `/agent`; the AgentSelect dialog then owns the keys.
   const [agentSelect, setAgentSelect] = useState(false);
+  // codiva 内ログイン中のエージェント（null = 閉じている）。開くと LoginDialog がキーを持つ。
+  const [loginAgent, setLoginAgent] = useState<AgentId | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [diff, setDiff] = useState<DiffStat | undefined>(undefined);
   // 変更差分サマリは既定で畳んでおき（ログの縦幅を優先）、`/diff` でトグルする。
@@ -262,6 +266,15 @@ export const SessionDetail: FC<{
       },
       // `/agent` はこのセッションを駆動する provider を切り替える。
       agent: () => setAgentSelect(true),
+      // `/login` はこのセッションの provider に codiva 内でサインインする。
+      login: () => {
+        const id = session?.agent;
+        if (id && manager.canLogin(id)) {
+          setLoginAgent(id);
+        } else {
+          setActionError(m.login.unsupported(agent?.displayName ?? ''));
+        }
+      },
       // `/diff` toggles the changes summary (hidden by default for log room).
       diff: () => setShowChanges((v) => !v),
       // `/sync` merges the base branch into THIS session's worktree; a conflict is
@@ -449,7 +462,7 @@ export const SessionDetail: FC<{
       // `parseSgrMouse` で弾くのは自分のハンドラを守るだけで、同じ生入力は兄弟の
       // useInput にも届く。飲まないとダイアログ上の 1 クリックで背後のログの選択が
       // 動き、URL の上ならブラウザまで開いてしまう（許可待ちの最中に）。
-      if (modelSelect || agentSelect || pending) {
+      if (modelSelect || agentSelect || loginAgent !== null || pending) {
         return;
       }
       if (mouse.kind === 'wheel') {
@@ -516,7 +529,7 @@ export const SessionDetail: FC<{
     recovery.setNotice(undefined);
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
     // everything here so nothing leaks through to the composer underneath.
-    if (modelSelect || agentSelect) {
+    if (modelSelect || agentSelect || loginAgent !== null) {
       return;
     }
     // The /help overlay is dismissed by any key (swallowed so it doesn't also
@@ -775,7 +788,19 @@ export const SessionDetail: FC<{
           />
         ) : null}
 
-        {agentSelect ? (
+        {loginAgent !== null ? (
+          <LoginDialog
+            agentName={manager.listAgents().find((a) => a.id === loginAgent)?.displayName ?? ''}
+            start={() => manager.startLogin(loginAgent)}
+            onOpenUrl={onOpenUrl}
+            onClose={(succeeded) => {
+              setLoginAgent(null);
+              if (succeeded) {
+                void manager.refreshAgents().catch(() => undefined);
+              }
+            }}
+          />
+        ) : agentSelect ? (
           <AgentSelect
             mode="session"
             current={session.agent}
@@ -789,6 +814,12 @@ export const SessionDetail: FC<{
                 setActionError(m.agent.unavailable);
               }
               applyAnchor('bottom');
+            }}
+            onLogin={(id2) => {
+              if (manager.canLogin(id2)) {
+                setAgentSelect(false);
+                setLoginAgent(id2);
+              }
             }}
             onCancel={() => setAgentSelect(false)}
           />

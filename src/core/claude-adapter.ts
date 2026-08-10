@@ -10,6 +10,7 @@ import type {
   AgentAdapter,
   AgentAvailability,
   AgentCapabilities,
+  AgentLoginProcess,
   AgentRun,
   AgentRunRequest,
 } from './agent-ports';
@@ -74,7 +75,10 @@ export function createClaudeAdapter(deps: {
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
   /** 導入・ログイン検出（I/O は `utils/claude.ts` の `detectClaudeAvailability`）。 */
   checkAvailability?: () => Promise<AgentAvailability>;
+  /** TUI 内ログインのプロセス起動（I/O は `utils/agent-login.ts` の `spawnLogin`）。 */
+  spawnLogin?: (command: string, args: readonly string[]) => AgentLoginProcess;
 }): AgentAdapter {
+  const spawnLogin = deps.spawnLogin;
   return {
     id: 'claude',
     displayName: 'Claude',
@@ -83,6 +87,9 @@ export function createClaudeAdapter(deps: {
     classifyError: classifyClaudeError,
     generateTitle: deps.generateTitle,
     checkAvailability: deps.checkAvailability,
+    // `claude auth login` はブラウザ OAuth。端末は明け渡さないので、出力に現れる
+    // 認証 URL を codiva が拾って開く（既定は claude.ai サブスク。`--console` 等は付けない）。
+    login: spawnLogin ? () => spawnLogin('claude', ['auth', 'login']) : undefined,
 
     open(request: AgentRunRequest): AgentRun {
       const canUseTool = async (

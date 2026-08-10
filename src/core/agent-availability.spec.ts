@@ -69,7 +69,7 @@ describe('noAgentInstalled', () => {
     expect(noAgentInstalled(REG, avail({ claude: MISSING, codex: MISSING }))).toBe(true);
   });
 
-  it('is true when there are no registered agents at all', () => {
-    expect(noAgentInstalled([], new Map())).toBe(true);
+  it('is false when there are no registered agents at all (misconfig / test scaffold)', () => {
+    expect(noAgentInstalled([], new Map())).toBe(false);
   });
 });

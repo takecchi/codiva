@@ -25,6 +25,7 @@ import {
   saveConfig,
   saveRepoPrompt,
   spawnCodex,
+  spawnLogin,
   type WorktreeManager,
 } from '@/utils';
 
@@ -94,6 +95,8 @@ export function buildAgents(
       generateTitle,
       // 導入・ログイン検出（`/agent` とセットアップ案内）。keychain は読まない。
       checkAvailability: () => detectClaudeAvailability(),
+      // TUI 内ログイン（`/login` / `/agent` の `l`）。端末は明け渡さない。
+      spawnLogin,
     }),
     codex: createCodexAdapter({
       spawn: spawnCodex,
@@ -101,6 +104,7 @@ export function buildAgents(
       networkAccess: config.codexNetworkAccess,
       generateTitle,
       checkAvailability: () => detectCodexAvailability(),
+      spawnLogin,
     }),
   };
 }

@@ -1241,6 +1241,13 @@ zsh: abort      codiva
       `cost > 0` の条件で自然に出ない / 許可要求がそもそも届かないのでダイアログも出ない /
       Claude のトランスクリプトパスに Codex の thread id のファイルは無いので復元が空になるだけ）。
       **混在時に嘘をつく余地が残っている**ので、明示的な分岐に置き換える
+- [x] **TUI 内ログイン**（`/login` コマンド + `/agent` ダイアログの `l`）。端末を明け渡さず
+      `<cli> login` を裏で起動し、出力の認証 URL / デバイスコードをダイアログに出して自動で
+      ブラウザを開く（`core/agent-login.ts` = 進行の畳み込み・純粋 / `utils/agent-login.ts` =
+      プロセス起動 / `ui/login-dialog.tsx` / `AgentAdapter.login` の seam + `SessionManager.startLogin`
+      / `canLogin` / `refreshAgents`）。Codex は `login --device-auth`、Claude は `auth login`。
+      **色付き出力の ANSI を剥がしてから URL/コードを拾う**（実測: 拾えず → 修正）。
+      完了後 `refreshAgents` で状態を再判定
 - [ ] **引き継ぎプロンプトの生成**: 切替先は前の会話を持たないので、worktree の状況（ブランチ・
       差分・直前の指示）を要約した最初の指示文を組み立てる純関数を core に置く
 - [x] i18n: `AgentLabel` を `DEFAULT_AGENT_LABEL` 固定ではなく**セッションのエージェント**から

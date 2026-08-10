@@ -1,3 +1,4 @@
+export * from './agent-login';
 export * from './alt-screen';
 export * from './claude';
 export * from './clipboard';

@@ -50,8 +50,10 @@ export function noAgentInstalled(
   registered: readonly AgentId[],
   availability: ReadonlyMap<AgentId, AgentAvailability>,
 ): boolean {
+  // 登録アダプタが 1 つも無いのは設定ミス / テスト scaffold であって「導入してください」の
+  // 状況ではない（本番は必ず claude/codex が登録される）ので案内は出さない。
   if (registered.length === 0) {
-    return true;
+    return false;
   }
   // 1 件でも「検出済みかつ導入済み」があれば案内は不要。検出できていない（情報なし）は
   // 「まだ分からない」なので導入済みとはみなさないが、案内も出さない（下の判定）。

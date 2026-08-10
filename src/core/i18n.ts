@@ -207,6 +207,29 @@ export interface Messages {
     unavailable: string;
     /** そのエージェントが持たない機能を使おうとしたとき（name は表示名） */
     unsupported: (name: string) => string;
+    /** `/agent` の行で `l` を押すとログインできる、のヒント */
+    loginKey: string;
+  };
+  /** TUI 内ログイン（login-dialog.tsx。`/login` と `/agent` の `l` で開く） */
+  login: {
+    /** 見出し（name = エージェント表示名） */
+    title: (name: string) => string;
+    /** 起動直後（URL がまだ出ていない）のプレースホルダ */
+    starting: string;
+    /** 認証 URL の前置き（クリック / 自動オープンで開く） */
+    openUrl: string;
+    /** デバイスコードの前置き（code = 表示するコード） */
+    code: (code: string) => string;
+    /** URL が出てから完了を待っている間の案内 */
+    waiting: string;
+    /** 成功（name = エージェント表示名） */
+    succeeded: (name: string) => string;
+    /** 失敗（name = エージェント表示名） */
+    failed: (name: string) => string;
+    /** 操作ヒント（実行中は中止、終了後は閉じる） */
+    help: string;
+    /** TUI 内ログインに対応していないエージェントを選んだとき（name = 表示名） */
+    unsupported: (name: string) => string;
   };
   /** リポジトリ追加指示エディタ（repo-prompt-editor.tsx。/prompt コマンドで開く） */
   prompt: {
@@ -413,6 +436,8 @@ export interface Messages {
     model: string;
     /** /agent の説明 */
     agent: string;
+    /** /login の説明 */
+    login: string;
     /** /diff の説明 */
     diff: string;
     /** /prompt の説明 */
@@ -554,6 +579,18 @@ const ja: Messages = {
     defaultSet: (name) => `新規セッションの既定を ${name} にしました`,
     unavailable: 'エージェントを切り替えられませんでした',
     unsupported: (name) => `${name} はこの操作に対応していません`,
+    loginKey: 'l: ログイン',
+  },
+  login: {
+    title: (name) => `${name} にサインイン`,
+    starting: 'サインインを開始しています…',
+    openUrl: 'ブラウザで次の URL を開いてサインインしてください（クリックでも開けます）:',
+    code: (code) => `コード: ${code}`,
+    waiting: 'サインインの完了を待っています…',
+    succeeded: (name) => `${name} にサインインしました`,
+    failed: (name) => `${name} のサインインに失敗しました`,
+    help: 'Esc: 中止 / 閉じる',
+    unsupported: (name) => `${name} は codiva 内でのサインインに対応していません`,
   },
   prompt: {
     title: 'リポジトリの追加指示（.codiva/prompt.md）',
@@ -685,6 +722,7 @@ const ja: Messages = {
     exitDetail: '詳細を閉じて一覧へ戻る',
     model: 'モデルを切り替え',
     agent: 'このセッションのエージェントを切り替え',
+    login: 'エージェントに codiva 内でサインイン',
     diff: '変更差分サマリの表示を切り替え',
     prompt: 'リポジトリの追加指示を編集',
     remove: '選択中のセッションを削除（worktree とブランチも消す）',
@@ -805,6 +843,18 @@ const en: Messages = {
     defaultSet: (name) => `New sessions will use ${name}`,
     unavailable: 'Could not switch the agent',
     unsupported: (name) => `${name} does not support this`,
+    loginKey: 'l: sign in',
+  },
+  login: {
+    title: (name) => `Sign in to ${name}`,
+    starting: 'Starting sign-in…',
+    openUrl: 'Open this URL in your browser to sign in (or click it):',
+    code: (code) => `Code: ${code}`,
+    waiting: 'Waiting for sign-in to complete…',
+    succeeded: (name) => `Signed in to ${name}`,
+    failed: (name) => `Sign-in to ${name} failed`,
+    help: 'Esc: cancel / close',
+    unsupported: (name) => `${name} does not support signing in from codiva`,
   },
   prompt: {
     title: 'Repository instructions (.codiva/prompt.md)',
@@ -933,6 +983,7 @@ const en: Messages = {
     exitDetail: 'Close the session view (back to the list)',
     model: 'Switch the model',
     agent: 'Switch the agent driving this session',
+    login: 'Sign in to an agent from within codiva',
     diff: 'Toggle the changes summary',
     prompt: 'Edit the repository instructions',
     remove: 'Remove the selected session (worktree and branch deleted too)',

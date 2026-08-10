@@ -19,6 +19,7 @@ export type CommandAction =
   | 'exit'
   | 'model'
   | 'agent'
+  | 'login'
   | 'diff'
   | 'prompt'
   | 'remove'
@@ -47,6 +48,7 @@ export interface CommandSpec {
 export const COMMANDS: readonly CommandSpec[] = [
   { name: 'model', action: 'model', describe: (m) => m.command.model },
   { name: 'agent', action: 'agent', describe: (m) => m.command.agent },
+  { name: 'login', action: 'login', describe: (m) => m.command.login },
   { name: 'prompt', action: 'prompt', describe: (m) => m.command.prompt },
   { name: 'diff', aliases: ['changes'], action: 'diff', describe: (m) => m.command.diff },
   { name: 'sync', action: 'sync', describe: (m) => m.command.sync },

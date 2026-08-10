@@ -98,6 +98,7 @@ describe('matchCommands', () => {
     expect(matchCommands('/h').map((c) => c.name)).toEqual(['help']);
     expect(matchCommands('/mo').map((c) => c.name)).toEqual(['model']);
     expect(matchCommands('/ag').map((c) => c.name)).toEqual(['agent']);
+    expect(matchCommands('/lo').map((c) => c.name)).toEqual(['login']);
     expect(matchCommands('/pr').map((c) => c.name)).toEqual(['prompt']);
     expect(matchCommands('/cl').map((c) => c.name)).toEqual(['clear']);
     // `/re` は「立て直し」と「削除」の両方に当たる（レジストリ順で出す）。
@@ -125,6 +126,9 @@ describe('runCommand', () => {
   });
   it('resolves /agent to the agent command', () => {
     expect(runCommand('/agent')).toEqual({ kind: 'run', command: findCommand('agent') });
+  });
+  it('resolves /login to the login command', () => {
+    expect(runCommand('/login')).toEqual({ kind: 'run', command: findCommand('login') });
   });
   it('resolves /prompt to the prompt command', () => {
     expect(runCommand('/prompt')).toEqual({ kind: 'run', command: findCommand('prompt') });

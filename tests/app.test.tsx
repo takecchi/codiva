@@ -2,7 +2,7 @@ import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
-import { type AgentAdapter, NO_CAPABILITIES } from '@/core/agent-ports';
+import { type AgentAdapter, type AgentLoginProcess, NO_CAPABILITIES } from '@/core/agent-ports';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/claude-adapter';
 import { DEFAULT_AGENT_LABEL, messages } from '@/core/i18n';
@@ -2792,5 +2792,95 @@ describe('App list view (/agent default + availability)', () => {
     });
     await flush();
     expect(stripAnsi(lastFrame() ?? '')).not.toContain('コーディングエージェントが見つかりません');
+  });
+});
+
+/**
+ * `/login`（と `/agent` の `l`）で TUI 内ログイン。端末は明け渡さず、裏の login プロセスの
+ * 出力の URL をダイアログに出す。フェイクの login プロセス（実 CLI 非依存）で配線を検証。
+ */
+describe('App /login (in-TUI sign-in)', () => {
+  /**
+   * 指定行を流したあと**開いたまま待つ**フェイクの login プロセス。終了させないのは、
+   * 終わると成功表示に切り替わって URL 行が消えるため（URL を出す挙動を検証したい）。
+   */
+  function fakeLogin(lines: readonly string[]) {
+    let cancelled = false;
+    return {
+      cancelled: () => cancelled,
+      proc: {
+        async *[Symbol.asyncIterator]() {
+          for (const l of lines) {
+            yield l;
+          }
+          // 認証完了を待っている状態を再現（ブラウザ側で進む）。cancel / unmount まで開く。
+          await new Promise<void>(() => {});
+        },
+        cancel: () => {
+          cancelled = true;
+        },
+        result: () => ({ code: 0 }),
+      },
+    };
+  }
+
+  function fakeAdapter(id: AgentId, displayName: string, login?: () => AgentLoginProcess) {
+    return {
+      id,
+      displayName,
+      loginCommand: id,
+      capabilities: NO_CAPABILITIES,
+      open: () => ({
+        async *[Symbol.asyncIterator]() {
+          // 配線のテストなのでイベントは流さない。
+        },
+      }),
+      login,
+    } satisfies AgentAdapter;
+  }
+
+  it('/login opens the dialog and surfaces the auth URL (auto-opened)', async () => {
+    const opened: string[] = [];
+    const login = fakeLogin(['Open https://auth.example.com/device to sign in', 'code: ABCD-1234']);
+    const manager = new SessionManager({
+      worktrees,
+      agents: { claude: fakeAdapter('claude', 'Claude', () => login.proc) },
+      agent: fakeAdapter('claude', 'Claude', () => login.proc),
+      now: () => 0,
+    });
+    const { stdin, lastFrame } = render(
+      <App manager={manager} onOpenUrl={(u) => opened.push(u)} />,
+    );
+    await flush();
+
+    stdin.write('/login');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toContain('Claude にサインイン');
+    expect(frame).toContain('https://auth.example.com/device');
+    expect(frame).toContain('ABCD-1234');
+    // URL は自動でブラウザへ渡る（onOpenUrl / onOpenPr 経由）。
+    expect(opened).toContain('https://auth.example.com/device');
+  });
+
+  it('/login reports when the agent cannot sign in from codiva', async () => {
+    // login() を持たないアダプタ = TUI 内ログイン未対応。
+    const manager = new SessionManager({
+      worktrees,
+      agents: { claude: fakeAdapter('claude', 'Claude') },
+      agent: fakeAdapter('claude', 'Claude'),
+      now: () => 0,
+    });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    await flush();
+    stdin.write('/login');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).not.toContain('にサインイン');
+    expect(frame).toContain('codiva 内でのサインインに対応していません');
   });
 });

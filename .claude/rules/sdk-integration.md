@@ -64,6 +64,14 @@
   差し替えて（Codex なら `-c model_provider=...` でローカルのモック Responses API へ向ける）
   実 CLI を走らせ、出力をサニタイズして `src/core/__fixtures__/` へ昇格させる
   （手順は [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)「Codex CLI」節）。
+- **TUI 内ログインは「端末を明け渡さない」形で書く**。login を提供する provider は
+  `AgentAdapter.login()`（`AgentLoginProcess` を返す）を実装する。全画面 TUI の中で
+  `<cli> login` を裏で起動し、**出力の認証 URL / デバイスコードを拾ってダイアログに出す**
+  （純粋な畳み込みは `core/agent-login.ts`、起動は `utils/agent-login.ts` の `spawnLogin`）。
+  ブラウザで進む OAuth を選ぶ（Codex は stdin もローカルサーバも要らない
+  `login --device-auth`）。**login CLI は URL を色付き（ANSI）で出す**ので、拾う前に必ず
+  エスケープを剥がす（実測で取りこぼした）。TUI 内ログインを表現できない provider は
+  `login()` を省略する（UI はログインの導線を出さない）。
 
 ## 形の知識は 2 段に割る（アダプタの parse → 共通の fold）
 

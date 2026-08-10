@@ -3,6 +3,7 @@ import type {
   AgentAdapter,
   AgentAvailability,
   AgentCapabilities,
+  AgentLoginProcess,
   AgentRun,
   AgentRunRequest,
 } from './agent-ports';
@@ -93,9 +94,12 @@ export function createCodexAdapter(deps: {
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
   /** 導入・ログイン検出（I/O は `utils/codex.ts` の `detectCodexAvailability`）。 */
   checkAvailability?: () => Promise<AgentAvailability>;
+  /** TUI 内ログインのプロセス起動（I/O は `utils/agent-login.ts` の `spawnLogin`）。 */
+  spawnLogin?: (command: string, args: readonly string[]) => AgentLoginProcess;
 }): AgentAdapter {
   const sandbox = deps.sandbox ?? 'workspace-write';
   const networkAccess = deps.networkAccess ?? true;
+  const spawnLogin = deps.spawnLogin;
 
   return {
     id: 'codex',
@@ -105,6 +109,10 @@ export function createCodexAdapter(deps: {
     classifyError: classifyCodexError,
     generateTitle: deps.generateTitle,
     checkAvailability: deps.checkAvailability,
+    // `--device-auth` を選ぶのは、端末を明け渡さない TUI 内ログインに最も素直だから:
+    // ローカルのブラウザ起動やコールバックサーバ・stdin 入力を必要とせず、認証 URL と
+    // デバイスコードを標準出力に出して待つ（codiva がその URL を拾って開く）。
+    login: spawnLogin ? () => spawnLogin('codex', ['login', '--device-auth']) : undefined,
 
     open(request: AgentRunRequest): AgentRun {
       // ターンをまたいで持ち回るもの。`threadId` は resume の鍵で、`thread.started` を

@@ -1,6 +1,7 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useRef, useState } from 'react';
 import {
+  type AgentId,
   activeElapsedMs,
   atFirstComposerRow,
   atLastComposerRow,
@@ -70,6 +71,7 @@ import {
 } from './hooks';
 import { useMessages } from './i18n-context';
 import { editText, normalizeChord } from './input';
+import { LoginDialog } from './login-dialog';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PrCell } from './pr-cell';
@@ -221,6 +223,8 @@ export const SessionList: FC<{
   const [modelSelect, setModelSelect] = useState(false);
   // Open when the user runs `/agent`; the AgentSelect dialog then owns the keys.
   const [agentSelect, setAgentSelect] = useState(false);
+  // codiva 内ログイン中のエージェント（null = 閉じている）。開くと LoginDialog がキーを持つ。
+  const [loginAgent, setLoginAgent] = useState<AgentId | null>(null);
   // Open when the user runs `/prompt`; the RepoPromptEditor then owns the keys.
   const [promptEdit, setPromptEdit] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -358,6 +362,16 @@ export const SessionList: FC<{
       // `/agent` は**新規セッションの既定 provider**を選ぶ（詳細ビューの `/agent` は
       // 「そのセッションを切り替える」で意味が違う）。選ぶと config に永続化する。
       agent: () => setAgentSelect(true),
+      // `/login` は既定エージェントに codiva 内でサインインする（他エージェントは
+      // `/agent` を開いて `l`）。
+      login: () => {
+        const id = manager.getDefaultAgentId();
+        if (id && manager.canLogin(id)) {
+          setLoginAgent(id);
+        } else {
+          setActionError(m.login.unsupported(''));
+        }
+      },
       // `/prompt` はリポジトリ追加指示（.codiva/prompt.md）のエディタを開く。
       prompt: () => setPromptEdit(true),
       // `/remove` は選択中のセッションを一覧から削除する（worktree とブランチも消す）。
@@ -664,7 +678,7 @@ export const SessionList: FC<{
       // （`pending` の条件が focus 依存）、モーダルの相互排他が崩れる。ホイールでの選択移動も
       // 同じ経路なので一律で無視する。`/prompt` のエディタは自前でドラッグ範囲選択を持つので、
       // ここで飲まないと同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで動く。
-      if (update || modelSelect || agentSelect || promptEdit) {
+      if (update || modelSelect || agentSelect || loginAgent !== null || promptEdit) {
         return;
       }
       // **許可/質問ダイアログが出ていてもマウスは飲まない。** ダイアログは画面の下段
@@ -712,7 +726,7 @@ export const SessionList: FC<{
     recovery.setNotice(undefined);
     // The model picker and repo-prompt editor are modal: each owns the keys (its
     // own useInput). Ignore everything here so nothing leaks through to the list.
-    if (modelSelect || agentSelect || promptEdit) {
+    if (modelSelect || agentSelect || loginAgent !== null || promptEdit) {
       return;
     }
     if (key.tab && key.shift) {
@@ -1116,6 +1130,18 @@ export const SessionList: FC<{
           }}
           onCancel={() => setModelSelect(false)}
         />
+      ) : loginAgent !== null ? (
+        <LoginDialog
+          agentName={manager.listAgents().find((a) => a.id === loginAgent)?.displayName ?? ''}
+          start={() => manager.startLogin(loginAgent)}
+          onOpenUrl={onOpenPr}
+          onClose={(succeeded) => {
+            setLoginAgent(null);
+            if (succeeded) {
+              void manager.refreshAgents().catch(() => undefined);
+            }
+          }}
+        />
       ) : agentSelect ? (
         <AgentSelect
           mode="default"
@@ -1127,6 +1153,12 @@ export const SessionList: FC<{
               const name = manager.listAgents().find((a) => a.id === agent)?.displayName ?? '';
               // 既定変更はエラーではないので、成功通知の緑チャンネル（recovery.notice）に出す。
               recovery.setNotice(m.agent.defaultSet(name));
+            }
+          }}
+          onLogin={(id) => {
+            if (manager.canLogin(id)) {
+              setAgentSelect(false);
+              setLoginAgent(id);
             }
           }}
           onCancel={() => setAgentSelect(false)}

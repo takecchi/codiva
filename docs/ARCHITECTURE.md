@@ -208,6 +208,15 @@ Claude のログインは env / 資格情報ファイルで分かるときだけ
 **`claude` も `codex` も入っていなくても codiva は起動できる**（起動時のプローブはすべて失敗を
 握り潰す）。
 
+**サインインも TUI の中で完結する**（`/login` / `/agent` の `l`）。端末は明け渡さず、`<cli> login` を
+裏で起動して**出力の認証 URL・デバイスコードをダイアログに出す**（自動でブラウザも開く）。進行の
+畳み込みは純粋な `core/agent-login.ts`、プロセス起動は `utils/agent-login.ts`、seam は
+`AgentAdapter.login()` +`SessionManager.startLogin` / `refreshAgents`。Codex は
+`login --device-auth`（ローカルサーバも stdin も要らない headless 向けフロー）、Claude は
+`auth login`。**login CLI は URL を色付き（ANSI）で出す**ので、拾う前にエスケープを剥がす
+（実測で取りこぼして直した）。ブラウザ側で認証が終わってプロセスが終了したら `refreshAgents` で
+状態を再判定する。
+
 **切替の実体は「今の run の入力キューを閉じて、新しいキューに差し替える」こと。**
 `this.run = undefined` は参照を捨てるだけで、consume ループはその `AgentRun` を掴んだまま回り続け、
 アダプタ側は共有キューを `await` して止まっている — つまり閉じない限り**切替後に送った指示は
