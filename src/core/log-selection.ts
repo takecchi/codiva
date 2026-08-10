@@ -62,8 +62,9 @@ export interface LogViewport {
   /** 描いているウィンドウの先頭行の文書 index（`LogWindow.hiddenAbove`）。 */
   readonly firstRow: number;
   /**
-   * 描いているログ行数。ストリーミングのプレビュー行・スクロール案内は**この可視域の
-   * 外**（`core/scroll.ts` の `LogStatusRow`。ログ枠の下に常に 1 行）なので含まれない。
+   * 描いているログ行数。ストリーミング中の本文も**ログの行**なのでここに含まれ、確定行と
+   * 同じように選択・コピーできる（`core/scroll.ts` の `streamLines`）。スクロール案内だけは
+   * 可視域の外（`LogStatusRow`。ログ枠の下に常に 1 行）なので含まれない。
    */
   readonly rows: number;
 }

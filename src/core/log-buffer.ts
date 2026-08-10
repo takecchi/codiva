@@ -48,11 +48,30 @@ export const MAX_LOG_CHARS = 400_000;
 export const MAX_LOG_ENTRY_CHARS = 20_000;
 
 /**
- * Cap on the streamed "typing" preview. Only its last non-empty line is ever
- * rendered (`streamTail`), but the buffer used to hold a whole assistant message
- * and got re-split on every frame — so keep just the tail.
+ * ストリーミング中の本文（`SessionState.streamingText`）が保持する上限。超えたぶんは
+ * {@link STREAM_PREVIEW_KEEP_CHARS} まで頭を落とす。
+ *
+ * 上限（32k）と落とし先（16k）を**別の値にしてある**のが要点。詳細ビューはこの文字列を
+ * 折り返してログの末尾に描く（`core/scroll.ts` の `streamLines`）ので、頭を落とすと
+ * **残った行の折り返し位置がズレて全行が別の文字列になる** — Ink は測った文字列を
+ * プロセスグローバルな上限なしキャッシュへ永久に積むため、それが毎デルタ起きると
+ * ヒープが単調増加する（過去に 3 回 OOM した経路）。同じ値にすると上限に達した以降
+ * 1 文字届くたびに切り直すことになるので、間を空けて「16k 文字流れるごとに 1 回」に抑える。
+ *
+ * 文字列自体のコスト（32KB / セッション）は誤差。折り返しは**末尾の必要な行数ぶんだけ**
+ * 行う（`streamLines`）ので、上限を大きく取っても毎デルタのコストは増えない。
  */
-export const MAX_STREAM_PREVIEW_CHARS = 4_000;
+export const MAX_STREAM_PREVIEW_CHARS = 32_000;
+
+/**
+ * 頭を落としたあとに残す長さの目安（{@link clipStreamText}）。
+ *
+ * **可視域に入る文字数より確実に多く**取る。ここが足りないと、長い回答を読んでいる
+ * 最中に切り捨てが起きて**いま画面に出ている本文が上から消え**、代わりに前のターンの
+ * 確定ログが現れる。16k は 200 桁 × 80 行ぶんに相当する（切ったあと残るのは最悪でも
+ * その半分 = 200 桁 × 40 行）ので、現実的な端末サイズでは可視域を割らない。
+ */
+export const STREAM_PREVIEW_KEEP_CHARS = 16_000;
 
 /** Marker appended to a clipped text so the log doesn't look silently complete. */
 const CLIPPED_SUFFIX = ' …';
@@ -75,15 +94,35 @@ export function clipLogText(text: string): string {
     : text.slice(0, safeCut(text, MAX_LOG_ENTRY_CHARS)) + CLIPPED_SUFFIX;
 }
 
-/** Keep only the tail of a streaming preview (see {@link MAX_STREAM_PREVIEW_CHARS}). */
+/**
+ * ストリーミング中の本文の頭を落として長さを抑える（{@link MAX_STREAM_PREVIEW_CHARS}）。
+ *
+ * **できるだけ行頭で落とす**のが要点。行の途中で落とすと、残ったテキストの折り返し位置が
+ * すべてズレて描画済みの行が別の文字列になり、(1) 画面に見えている行が横にズレて跳ね、
+ * (2) Ink の上限なしキャッシュに新しいキーが一気に積まれる。行境界なら残る行の折り返しは
+ * 変わらないので、どちらも起きない。
+ *
+ * 落とす位置の探索は前方（切り出し位置から次の改行）だが、**行が長すぎるときは諦めて
+ * 文字単位で切る** — さもないと「巨大な 1 行 + 短い行」で見えている内容まで消える。
+ * 諦めた場合のズレは残るが、ヒステリシス（上限 8k / 残す 4k）により
+ * 4k 文字ごとに 1 回で済む。
+ */
 export function clipStreamText(text: string): string {
   if (text.length <= MAX_STREAM_PREVIEW_CHARS) {
     return text;
   }
-  const from = text.length - MAX_STREAM_PREVIEW_CHARS;
+  const cut = text.length - STREAM_PREVIEW_KEEP_CHARS;
+  // 改行の並びは `core/scroll.ts` の折り返し（`LINE_BREAK`）と揃える。片方だけ狭いと
+  // CR 単独で改行する本文が常に「行途中で切る」フォールバックに落ちる。
+  const breaks = /\r\n|[\r\n\v\f]/g;
+  breaks.lastIndex = cut;
+  const next = breaks.exec(text);
+  if (next && next.index - cut <= STREAM_PREVIEW_KEEP_CHARS / 2) {
+    return text.slice(next.index + next[0].length);
+  }
   // Drop a leading low surrogate (0xDC00–0xDFFF) whose partner was cut off.
-  const code = text.charCodeAt(from);
-  return text.slice(code >= 0xdc00 && code <= 0xdfff ? from + 1 : from);
+  const code = text.charCodeAt(cut);
+  return text.slice(code >= 0xdc00 && code <= 0xdfff ? cut + 1 : cut);
 }
 
 /** Clip an entry's text if needed, keeping the same object when it isn't. */

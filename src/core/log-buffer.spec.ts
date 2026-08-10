@@ -8,6 +8,7 @@ import {
   MAX_LOG_ENTRY_CHARS,
   MAX_STREAM_PREVIEW_CHARS,
   pushLogEntry,
+  STREAM_PREVIEW_KEEP_CHARS,
 } from './log-buffer';
 import type { LogEntry } from './types';
 
@@ -46,19 +47,46 @@ describe('clipStreamText', () => {
     expect(clipStreamText(text)).toBe(text);
   });
 
-  it('超えたら末尾だけ残す（プレビューは最後の行しか出さない）', () => {
+  it('超えたら末尾だけ残す', () => {
     const text = `${'a'.repeat(MAX_STREAM_PREVIEW_CHARS)}TAIL`;
     const clipped = clipStreamText(text);
-    expect(clipped.length).toBe(MAX_STREAM_PREVIEW_CHARS);
+    expect(clipped.length).toBe(STREAM_PREVIEW_KEEP_CHARS);
     expect(clipped.endsWith('TAIL')).toBe(true);
+  });
+
+  // 行の途中で落とすと、残ったテキストの折り返し位置が全部ズレて描画済みの行が
+  // 別の文字列になる（画面が横に跳ね、Ink の上限なしキャッシュにキーが積まれる）。
+  it('できるだけ行頭で落とす（残る行の折り返しが変わらない）', () => {
+    // 切り出し位置のすぐ先に改行がある形。CR / VT / FF も折り返し側と同じ扱いにする。
+    for (const br of ['\n', '\r\n', '\r', '\v', '\f']) {
+      const tail = 'B'.repeat(STREAM_PREVIEW_KEEP_CHARS - 1_000);
+      const clipped = clipStreamText(
+        `${'A'.repeat(MAX_STREAM_PREVIEW_CHARS - 10_000)}${br}${tail}`,
+      );
+      expect(clipped).toBe(tail);
+    }
+  });
+
+  // 行境界を優先するあまり、見えている内容まで捨ててはいけない。
+  it('次の行頭が遠すぎるときは文字単位で落とす', () => {
+    const clipped = clipStreamText(`${'A'.repeat(MAX_STREAM_PREVIEW_CHARS)}\n${'C'.repeat(1_000)}`);
+    expect(clipped.length).toBe(STREAM_PREVIEW_KEEP_CHARS);
+    expect(clipped.startsWith('A')).toBe(true);
+  });
+
+  // 上限と落とし先が同じ値だと、上限に達して以降 1 文字届くたびに切り直すことになり
+  // 毎デルタで折り返しがズレる。切ったあとは次の上限まで余裕があること。
+  it('切ったあとは上限まで余裕が残る（毎デルタで切り直さない）', () => {
+    const clipped = clipStreamText('a'.repeat(MAX_STREAM_PREVIEW_CHARS + 1));
+    expect(clipped.length).toBeLessThanOrEqual(MAX_STREAM_PREVIEW_CHARS / 2);
+    expect(clipStreamText(clipped)).toBe(clipped);
   });
 
   it('先頭に孤立した下位サロゲートを残さない', () => {
     // 切り出し位置がちょうど絵文字の途中に来る長さにする
-    const text = `x🎉${'a'.repeat(MAX_STREAM_PREVIEW_CHARS - 1)}`;
-    const clipped = clipStreamText(text);
-    expect(clipped.startsWith('a')).toBe(true);
-    expect(clipped.length).toBe(MAX_STREAM_PREVIEW_CHARS - 1);
+    const tail = 'a'.repeat(STREAM_PREVIEW_KEEP_CHARS - 1);
+    const clipped = clipStreamText(`${'x'.repeat(STREAM_PREVIEW_KEEP_CHARS + 1)}🎉${tail}`);
+    expect(clipped).toBe(tail);
   });
 });
 

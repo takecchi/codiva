@@ -1666,7 +1666,8 @@ describe('App detail view (in-app connection)', () => {
     expect(visible()).toEqual(tail);
     expect(lastFrame()).not.toContain('過去ログを表示中');
 
-    // ストリーミングのプレビューが出てもログは 1 行も削られない（= 跳ねない）。
+    // ストリーミング中の本文はログの**行として**末尾に足される。行数（可視域の高さ）は
+    // 変わらないので、増えた 1 行ぶんだけ上端が古い方から押し出される。
     out.push(
       asMsg({
         type: 'stream_event',
@@ -1674,8 +1675,74 @@ describe('App detail view (in-app connection)', () => {
       }),
     );
     await flush();
-    expect(lastFrame()).toContain('typing-now'); // プレビューは出ている
-    expect(visible()).toEqual(tail); // が、ログの行は 1 つも入れ替わっていない
+    const streaming = visible();
+    expect(lastFrame()).toContain('typing-now');
+    expect(streaming.length).toBe(tail.length - 1); // 1 行ぶんストリーミング行に譲った
+    expect(streaming[0]).toBe((tail[0] ?? 0) + 1);
+    expect(streaming.at(-1)).toBe(39); // 確定済みの末尾行はまだ見えている
+    expectUnbrokenRun(streaming);
+    app.unmount();
+  }, 30000);
+
+  /**
+   * ストリーミング中の本文は、可視域の外の 1 行に押し込むのではなく**ログの末尾の行**
+   * として下へ伸びていく（1 行が次々に書き換わるだけでは読み進められないため）。
+   *
+   * 末尾追従／固定は `logWindow` のアンカーがそのまま担う: `'bottom'` なら伸びたぶんが
+   * 流れてきて、上へスクロールして数値アンカーになっていれば**1 行も動かない**。
+   */
+  it('ストリーミング中の本文がログの末尾に伸び、上にスクロール中は追従しない', async () => {
+    const { app, stdin, lastFrame, visible, out } = await detailWithLog(40);
+    const delta = (text: string) =>
+      out.push(
+        asMsg({
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+        }),
+      );
+
+    // 複数行が届いたら複数行とも見える（従来は最後の 1 行しか出なかった）。
+    delta('stream-line-a\nstream-line-b');
+    await flush();
+    expect(lastFrame()).toContain('stream-line-a');
+    expect(lastFrame()).toContain('stream-line-b');
+
+    // 追記されるたびに下へ伸びる（既に出ている行はそのまま残る）。
+    delta('\nstream-line-c');
+    await flush();
+    for (const line of ['stream-line-a', 'stream-line-b', 'stream-line-c']) {
+      expect(lastFrame()).toContain(line);
+    }
+
+    // 上へスクロールしたら追従しない = 見えているログ行が 1 つも動かない。
+    stdin.write('\x1b[5~'); // PgUp
+    await flush();
+    const parked = visible();
+    expect(parked.at(-1)).not.toBe(39); // 末尾から離れている
+    delta('\nstream-line-d');
+    await flush();
+    expect(visible()).toEqual(parked);
+    expect(lastFrame()).not.toContain('stream-line-d');
+    expect(lastFrame()).toContain('過去ログを表示中');
+
+    // 末尾へ戻せばまた追従する（離れている間に伸びたぶん、半画面ずつ 2 回)。
+    stdin.write('\x1b[6~'); // PgDn
+    await flush();
+    stdin.write('\x1b[6~');
+    await flush();
+    expect(lastFrame()).not.toContain('過去ログを表示中');
+    expect(lastFrame()).toContain('stream-line-d');
+
+    // 確定したら同じ本文が二重に出ない（ストリーミング行 → 確定エントリへ差し替わる）。
+    out.push(
+      asMsg({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'stream-line-d final' }] },
+      }),
+    );
+    await flush();
+    expect(lastFrame()?.match(/stream-line-d/g)).toHaveLength(1);
+    expect(lastFrame()).toContain('stream-line-d final');
     app.unmount();
   }, 30000);
 
@@ -1708,6 +1775,92 @@ describe('App detail view (in-app connection)', () => {
     expect(copied, `frame:\n${stripAnsi(lastFrame())}`).toEqual(['log-30\nlog-31\nlog-32']);
     // ログのクリックはコンポーザへ文字を入れない（レポートを先取りして飲んでいる）。
     expect(lastFrame()).toContain('追加の指示を入力');
+    app.unmount();
+  }, 30000);
+
+  /**
+   * ドラッグの途中でターンが確定すると、書きかけの行は Markdown 整形された確定エントリへ
+   * **差し替わる**（行数も変わる）。選択の位置は文書の行 index なので、アンカーを持ったまま
+   * にすると離した瞬間に**触っていない行**がコピーされる。ライブ領域に掛かっていた選択は
+   * その時点で捨てる。
+   */
+  it('ドラッグ中に確定したら、書きかけの行に掛かっていた選択を捨てる', async () => {
+    const copied: string[] = [];
+    const { app, stdin, lastFrame, out } = await detailWithLog(40, 24, 80, undefined, (t) =>
+      copied.push(t),
+    );
+    const rowsOf = () => stripAnsi(lastFrame()).split('\n');
+    const rowOf = (label: string) => rowsOf().findIndex((l) => l.includes(label));
+
+    out.push(
+      asMsg({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'live-one\nlive-two' },
+        },
+      }),
+    );
+    await settle(lastFrame);
+    const from = rowOf('live-one');
+    expect(from).toBeGreaterThan(0);
+    expect(rowOf('live-two')).toBe(from + 1);
+
+    // 書きかけの行の上で押さえる（まだ離していない = アンカーだけがある状態）。
+    stdin.write(press(1, from));
+    await settle(lastFrame);
+
+    // ここでターンが確定 → ライブ領域の行が確定エントリへ差し替わる。
+    out.push(
+      asMsg({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'live-one live-two done' }] },
+      }),
+    );
+    await settle(lastFrame);
+    expect(lastFrame()).toContain('live-one live-two done');
+
+    // そのままドラッグして離しても、古いアンカーからのコピーは起きない。
+    const last = rowOf('live-one live-two done');
+    stdin.write(dragTo(40, last));
+    await settle(lastFrame);
+    stdin.write(release(40, last));
+    await settle(lastFrame);
+    expect(copied, `frame:\n${stripAnsi(lastFrame())}`).toEqual([]);
+    app.unmount();
+  }, 30000);
+
+  // 逆に、末尾へ**足されただけ**のときは選択を捨てない（既存行の index はズレないので、
+  // 流れている本文をドラッグしている最中に毎デルタ選択が消えては困る）。
+  it('ストリーミングが伸びてもドラッグ中の選択は消えない', async () => {
+    const copied: string[] = [];
+    const { app, stdin, lastFrame, out } = await detailWithLog(40, 24, 80, undefined, (t) =>
+      copied.push(t),
+    );
+    const delta = (text: string) =>
+      out.push(
+        asMsg({
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+        }),
+      );
+    const rowsOf = () => stripAnsi(lastFrame()).split('\n');
+    const rowOf = (label: string) => rowsOf().findIndex((l) => l.includes(label));
+
+    delta('live-one');
+    await settle(lastFrame);
+    const from = rowOf('live-one');
+    stdin.write(press(1, from));
+    await settle(lastFrame);
+
+    delta('\nlive-two'); // ドラッグ中に本文が伸びる
+    await settle(lastFrame);
+    const to = rowOf('live-two');
+    stdin.write(dragTo('live-two'.length + 3, to));
+    await settle(lastFrame);
+    stdin.write(release('live-two'.length + 3, to));
+    await settle(lastFrame);
+    expect(copied, `frame:\n${stripAnsi(lastFrame())}`).toEqual(['live-one\nlive-two']);
     app.unmount();
   }, 30000);
 
