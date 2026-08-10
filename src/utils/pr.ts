@@ -10,6 +10,7 @@ import {
   type PrMergeStatus,
   type PrUnavailableReason,
 } from '@/core';
+import { childProcessEnv } from './child-env';
 
 /**
  * `gh pr list --json …` は最大 100 件ぶんのチェック rollup を運ぶため、execFile 既定の
@@ -24,7 +25,8 @@ const execFileAsync = (
   args: string[],
   opts: { cwd: string },
 ): Promise<{ stdout: string }> =>
-  execFileRaw(file, args, { ...opts, maxBuffer: MAX_GH_OUTPUT_BYTES });
+  // `env` は `childProcessEnv()`（`gh` は push で git フックを起こす）。
+  execFileRaw(file, args, { ...opts, maxBuffer: MAX_GH_OUTPUT_BYTES, env: childProcessEnv() });
 
 /** execFile-shaped runner, injectable so PR helpers can be unit-tested without `gh`/`git`. */
 export type ExecLike = (

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { AgentLoginProcess } from '@/core';
+import { childProcessEnv } from './child-env';
 
 /**
  * `<cli> login ...` を起動する provider 非依存の I/O。stdout/stderr を行で流し、
@@ -14,7 +15,10 @@ import type { AgentLoginProcess } from '@/core';
 const MAX_LINE_CHARS = 64 * 1024;
 
 export function spawnLogin(command: string, args: readonly string[]): AgentLoginProcess {
-  const child = spawn(command, [...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, [...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: childProcessEnv(),
+  });
 
   let code: number | null = null;
   let spawnError: Error | undefined;

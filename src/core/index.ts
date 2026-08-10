@@ -6,6 +6,7 @@ export * from './agent-ports';
 export * from './ansi';
 export * from './async-queue';
 export * from './banner-lines';
+export * from './child-env';
 export * from './choice-lines';
 export * from './claude-adapter';
 export * from './claude-errors';

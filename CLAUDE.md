@@ -88,11 +88,12 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | モデル選択 | `core/models.ts` / `utils/model-catalog.ts`（Claude）/ `core/codex-models.ts` + `utils/codex.ts` の `fetchCodexModelCatalog`（Codex）/ `ui/model-select.tsx` |
 | 選択肢リストの表示（質問・モデル） | `core/choice-lines.ts`（折返し + クリック逆算 `choiceRowHeights`/`choiceIndexAtRow`・純粋）/ `ui/choice-row.tsx`（1件の描画） |
 | アップデート通知・`/update` | `core/update.ts`（比較・判定・DI 境界）/ `utils/update.ts`（registry fetch・経路判定・`npm install`）/ `ui/update-dialog.tsx` |
+| 子プロセスへ渡す env（`NODE_ENV` を漏らさない） | `core/child-env.ts`（`childEnv` = 純粋）/ `utils/child-env.ts`（`childProcessEnv` = 実 `process.env`）/ `utils/claude-query.ts`（SDK の `query` に `Options.env` を被せた入口）。**プロセスを起こすときは必ず通す**（issue #103） |
 | 起動・副作用の配線 | `src/index.tsx`（**起動シム**。NODE_ENV を立てて `./main` を動的 import するだけ。static import を足さない）/ `src/main.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / crash-handler / runtime / perf-timeline） |
 | クラッシュ時の後始末・原因調査 | `core/crash.ts`（レポート整形・純粋）/ `utils/crash-log.ts`（`~/.codiva/logs/`・同期書き込み・診断レポート）/ `bootstrap/crash-handler.ts`（配線）/ `core/cli.ts` + `utils/terminal-mode.ts` の `resetTerminalModes`（`--reset-terminal`） |
 | 共有 UI フック | `ui/hooks.ts`（`useSessions` / `useCommandRunner` / `useLifecycleAction` / `useTextBufferRef` / `useComposerSelection` …） |
 
-> 落とし穴: `config.ts` / `notify.ts` / `mouse.ts` / `transcript.ts` / `repo-prompt.ts` / `privacy.ts` / `worktree*.ts` は
+> 落とし穴: `child-env.ts` / `config.ts` / `notify.ts` / `mouse.ts` / `transcript.ts` / `repo-prompt.ts` / `privacy.ts` / `worktree*.ts` は
 > **core と utils に同名で存在する**（純粋版と I/O 版）。import 元が `@/core` か `@/utils` かを必ず確認する。
 
 ## 絶対に崩さない不変条件

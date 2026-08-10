@@ -1,4 +1,3 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
   type AgentAdapter,
   type AgentId,
@@ -14,6 +13,7 @@ import {
   type SessionState,
 } from '@/core';
 import {
+  claudeQuery,
   createPr,
   createTitleGenerator,
   detectClaudeAvailability,
@@ -88,10 +88,10 @@ export function buildAgents(
 ): Partial<Record<AgentId, AgentAdapter>> {
   // タイトル生成は Claude の haiku を使い回す（Codex にも同じものを渡す）。Codex 側の
   // 短文生成のためだけに `codex exec` をもう 1 本起こすのは高くつくため。
-  const generateTitle = createTitleGenerator(query, { cwd: deps.repoRoot });
+  const generateTitle = createTitleGenerator(claudeQuery, { cwd: deps.repoRoot });
   return {
     claude: createClaudeAdapter({
-      queryFn: query,
+      queryFn: claudeQuery,
       generateTitle,
       // 導入・ログイン検出（`/agent` とセットアップ案内）。keychain は読まない。
       checkAvailability: () => detectClaudeAvailability(),
@@ -163,8 +163,8 @@ export function buildManager(opts: {
     // 設定が無いときは起動時に「導入済みのもの」へ自動で寄せる（`main.tsx`）。
     defaultAgentId: config.agent,
     onDefaultAgentChange: createDefaultAgentPersister(config),
-    queryFn: query,
-    generateTitle: createTitleGenerator(query, { cwd: repoRoot }),
+    queryFn: claudeQuery,
+    generateTitle: createTitleGenerator(claudeQuery, { cwd: repoRoot }),
     options: sessionOptionsFrom(config, appendSystemPrompt),
     onTransition,
     onPersist,

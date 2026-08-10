@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { childProcessEnv } from './child-env';
 
 /**
  * Run a command fire-and-forget: ignore all output and never throw. Used for
@@ -8,7 +9,7 @@ import { execFile } from 'node:child_process';
  */
 export function fireAndForget(file: string, args: string[]): void {
   try {
-    execFile(file, args, () => {
+    execFile(file, args, { env: childProcessEnv() }, () => {
       // Ignore all errors and output — this call is never load-bearing.
     });
   } catch {

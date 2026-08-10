@@ -8,6 +8,7 @@ import {
   type ModelOption,
   toCodexModelOptions,
 } from '@/core';
+import { childProcessEnv } from './child-env';
 
 const execFileAsync = promisify(execFile);
 
@@ -74,11 +75,15 @@ export function codexArgs(request: CodexSpawnRequest): string[] {
  *
  * stdin は **`'ignore'`（= 空）**にする — 引数で指示文を渡していても、
  * codex はパイプされた stdin を追加入力として読もうとしてブロックする。
+ *
+ * `env` は `childProcessEnv()`。エージェントのシェルはこのプロセスの子なので、
+ * codiva が立てた `NODE_ENV=production` を継がせない（issue #103）。
  */
 export function spawnCodex(request: CodexSpawnRequest, command = 'codex'): CodexProcess {
   const child = spawn(command, codexArgs(request), {
     cwd: request.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: childProcessEnv(),
   });
 
   let stderr = '';
@@ -185,6 +190,7 @@ export async function fetchCodexModelCatalog(opts?: {
       signal: opts?.signal,
       maxBuffer: CATALOG_MAX_BUFFER,
       timeout: CATALOG_TIMEOUT_MS,
+      env: childProcessEnv(),
     });
     return toCodexModelOptions(JSON.parse(stdout) as unknown);
   } catch {
@@ -206,13 +212,14 @@ const PROBE_TIMEOUT_MS = 4000;
  * throw しない（すべて「導入なし / ログイン不明」へ倒す）。
  */
 export async function detectCodexAvailability(command = 'codex'): Promise<AgentAvailability> {
-  const installed = await execFileAsync(command, ['--version'], { timeout: PROBE_TIMEOUT_MS })
+  const probe = { timeout: PROBE_TIMEOUT_MS, env: childProcessEnv() };
+  const installed = await execFileAsync(command, ['--version'], probe)
     .then(() => true)
     .catch(() => false);
   if (!installed) {
     return { installed: false, loggedIn: false };
   }
-  const loggedIn = await execFileAsync(command, ['login', 'status'], { timeout: PROBE_TIMEOUT_MS })
+  const loggedIn = await execFileAsync(command, ['login', 'status'], probe)
     .then(() => true)
     .catch(() => false);
   return { installed: true, loggedIn };

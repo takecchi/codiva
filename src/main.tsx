@@ -1,5 +1,4 @@
 import { createRequire } from 'node:module';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { render } from 'ink';
 import {
   DEFAULT_AGENT_ORDER,
@@ -14,6 +13,7 @@ import {
   summarizeStatuses,
 } from '@/core';
 import {
+  claudeQuery,
   copyToClipboard,
   createUpdateService,
   defaultLogDir,
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
   // 終了時に取得を打ち切るためのハンドル（取得中に /exit されたときサブプロセスと
   // タイマーを残さない = シェルのプロンプトが返らない事故を防ぐ）。
   const probeAbort = new AbortController();
-  const modelCatalog = fetchModelCatalog(query, {
+  const modelCatalog = fetchModelCatalog(claudeQuery, {
     cwd: repoRoot,
     signal: probeAbort.signal,
   });
@@ -177,7 +177,7 @@ async function main(): Promise<void> {
   // 表示を保つために定期ポーリングで補う（1回ごとに短命な probe サブプロセスを
   // 1本。推論は走らないのでトークン消費は無い）。取れない環境では自動で止まる。
   const stopUsagePolling = startUsagePolling({
-    fetch: () => fetchUsageSnapshot(query, { cwd: repoRoot, signal: probeAbort.signal }),
+    fetch: () => fetchUsageSnapshot(claudeQuery, { cwd: repoRoot, signal: probeAbort.signal }),
     apply: (snapshot) => manager.applyUsage(snapshot),
     // カタログ取得の後にずらす（どちらも probe サブプロセスを立てるので、起動直後に
     // 2本同時に走らせない）。失敗しても取得は行う。

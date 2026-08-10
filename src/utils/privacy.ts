@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { type TrainingOptIn, toTrainingOptIn, trainingOptInFromClaudeJson } from '@/core';
+import { childProcessEnv } from './child-env';
 
 /**
  * 学習データ利用（claude.ai の「Help improve our AI models」）の状態を調べる I/O。
@@ -82,7 +83,7 @@ const keychainSecret: KeychainReader = async (service, { signal, timeoutMs }) =>
     const { stdout } = await execFileAsync(
       'security',
       ['find-generic-password', '-s', service, '-w'],
-      { signal, timeout: timeoutMs },
+      { signal, timeout: timeoutMs, env: childProcessEnv() },
     );
     const value = stdout.trim();
     return value.length > 0 ? value : undefined;

@@ -3,6 +3,22 @@
 `src/utils/` の副作用と、対象リポジトリに触る操作の不変条件。**worktree・マージ・PR・
 ファイル入出力に触るときに読む。**
 
+## 子プロセスの環境変数
+
+- **プロセスを起こすときは必ず `env: childProcessEnv()`（`utils/child-env.ts`）を渡す**。
+  判定は純粋な `core/child-env.ts` の `childEnv()`。
+  起動シム（`src/index.tsx`）が立てる `NODE_ENV=production` は
+  **spawn した子全部に継承される**ため、渡さないとエージェントのシェルまで漏れ、
+  セッション内の `npm install` / `npm ci` が `--omit=dev` 扱いになって devDependencies が
+  黙って入らない（issue #103。`NODE_ENV` を見るツールすべてが production 前提で動く）。
+  シムが**自分で立てたときだけ**目印（`CODIVA_NODE_ENV_INJECTED=1`）を置くので、
+  ユーザーが明示した `NODE_ENV` はそのまま子へ渡る。
+- **Claude は `utils/claude-query.ts` の `claudeQuery` から起こす**（SDK の `query` に
+  `Options.env` を被せた 1 本）。`Options.env` は `process.env` とマージされず**丸ごと
+  置き換える**ので、部分的な差分ではなく `childProcessEnv()` の全体コピーを渡す。
+- 番人は `utils/child-env.spec.ts`（`node:child_process` を import する utils は
+  `childProcessEnv` を通す / SDK の `query` の値 import は `claude-query.ts` だけ）。
+
 ## git の実行
 
 - git は必ず `utils/git.ts` の `git(cwd, args)` を使う（`promisify(execFile)` + **引数配列**）。
