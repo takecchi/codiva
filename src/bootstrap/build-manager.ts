@@ -7,6 +7,7 @@ import {
   createCodexAdapter,
   type Messages,
   notificationFor,
+  resolveClaudeSettingSources,
   resolveIgnoredFilesMode,
   SessionManager,
   type SessionOptions,
@@ -93,6 +94,10 @@ export function buildAgents(
     claude: createClaudeAdapter({
       queryFn: claudeQuery,
       generateTitle,
+      // 既定は project のみ。設定 `claudeSettingSources` に 'user' を足すと
+      // `~/.claude/settings.json` = Claude Code のプラグイン（`enabledPlugins`）も
+      // セッションにロードされる。
+      settingSources: resolveClaudeSettingSources(config),
       // 導入・ログイン検出（`/agent` とセットアップ案内）。keychain は読まない。
       checkAvailability: () => detectClaudeAvailability(),
       // TUI 内ログイン（`/login` / `/agent` の `l`）。端末は明け渡さない。

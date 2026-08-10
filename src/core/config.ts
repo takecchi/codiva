@@ -37,6 +37,22 @@ const PERMISSION_MODES = [
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
+ * Claude Code がディスクから読む設定ファイルの層。**この配列が唯一の出所**で、型も
+ * 実行時検証もここから導出する（`EFFORT_LEVELS` と同じ理由で SDK からは引かない）。
+ *
+ * - `'user'`   … `~/.claude/settings.json`
+ * - `'project'`… `<repo>/.claude/settings.json`
+ * - `'local'`  … `<repo>/.claude/settings.local.json`
+ *
+ * 並びは Claude Code の優先順位（user < project < local）に合わせてあり、
+ * `resolveClaudeSettingSources` はこの順で正規化する。
+ */
+const CLAUDE_SETTING_SOURCES = ['user', 'project', 'local'] as const;
+
+/** 設定で指定できる Claude の設定ソース。`CLAUDE_SETTING_SOURCES` から導出。 */
+export type ClaudeSettingSource = (typeof CLAUDE_SETTING_SOURCES)[number];
+
+/**
  * 永続設定のドメイン型。表示言語に加え、セッション起動時に SDK へ渡す
  * model / effort / permissionMode / maxBudgetUsd と、通知の on/off を持つ。
  * 外部 JSON からの変換は必ず `toConfig()` に閉じ込める（規約: coding-rules.md）。
@@ -136,6 +152,26 @@ export interface CodivaConfig {
    */
   agent?: AgentId;
   /**
+   * Claude セッションで読み込む設定ファイルの層（`AgentAdapter` 経由で SDK の
+   * `settingSources` になる）。未設定は `['project']`（= 対象リポジトリの
+   * `.claude/settings.json` と CLAUDE.md だけ）。
+   *
+   * **Claude Code のプラグインを codiva のセッションでも使いたいときはここに
+   * `'user'` を足す**。`claude plugin install` で入れたプラグインの有効化
+   * （`enabledPlugins`）は `~/.claude/settings.json` に書かれるので、user 層を
+   * 読まない既定のままではプラグインの skill / command / agent / hook / MCP が
+   * 一切ロードされない（実測: `plugins: []`）。
+   *
+   * 副作用として、その層の他の設定（hooks・permissions・statusLine など）も
+   * セッションに載る。既定を `['project']` に据えているのはそのため — セッションは
+   * ユーザーの手元ではなく worktree で自動的に走るので、手元の Claude Code 用の
+   * 設定を黙って持ち込まない側に倒している。
+   *
+   * `'project'` は指定に関わらず必ず含まれる（対象リポジトリの CLAUDE.md を
+   * セッションに読ませる唯一の経路なので、設定ミスで落とせないようにする）。
+   */
+  claudeSettingSources?: ClaudeSettingSource[];
+  /**
    * Codex セッションのサンドボックス。未設定は `'workspace-write'`
    * （書き込みは worktree 内に限定しつつ、読み取りは全体に許す）。
    *
@@ -189,6 +225,7 @@ interface CodivaConfigJson {
   ignoredFilesExclude?: unknown;
   crashLog?: unknown;
   agent?: unknown;
+  claudeSettingSources?: unknown;
   codexSandbox?: unknown;
   codexNetworkAccess?: unknown;
   copyIgnored?: unknown;
@@ -196,6 +233,20 @@ interface CodivaConfigJson {
 
 function toAgent(value: unknown): AgentId | undefined {
   return CONFIGURABLE_AGENTS.includes(value as AgentId) ? (value as AgentId) : undefined;
+}
+
+/**
+ * 設定ソースの配列を検証する。既知の層だけを残し、重複は畳む（順序の正規化は
+ * `resolveClaudeSettingSources` の仕事）。1 件も残らなければ未設定扱い —
+ * 空配列は SDK では「設定を一切読まない」を意味するが、それでは対象リポジトリの
+ * CLAUDE.md まで落ちるので、設定ミスの受け皿にはしない。
+ */
+function toClaudeSettingSources(value: unknown): ClaudeSettingSource[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const sources = CLAUDE_SETTING_SOURCES.filter((source) => value.includes(source));
+  return sources.length > 0 ? sources : undefined;
 }
 
 function toCodexSandbox(value: unknown): CodexSandbox | undefined {
@@ -260,6 +311,20 @@ export function resolveIgnoredFilesMode(config: CodivaConfig): IgnoredFilesMode 
     return config.copyIgnored ? 'copy' : 'none';
   }
   return 'symlink';
+}
+
+/**
+ * 設定から Claude セッションの設定ソース（SDK の `settingSources`）を決める。純粋。
+ *
+ * `'project'` は指定に関わらず必ず含める: 対象リポジトリの CLAUDE.md はこの層でしか
+ * 読まれず、落とすと「リポジトリの決まりを知らないセッション」が黙って生まれる。
+ * 返りは常に Claude Code の優先順位（user < project < local）の並びに正規化する。
+ */
+export function resolveClaudeSettingSources(config: CodivaConfig): ClaudeSettingSource[] {
+  const requested = config.claudeSettingSources ?? [];
+  return CLAUDE_SETTING_SOURCES.filter(
+    (source) => source === 'project' || requested.includes(source),
+  );
 }
 
 /**
@@ -340,6 +405,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const agent = toAgent(raw.agent);
   if (agent !== undefined) {
     config.agent = agent;
+  }
+  const claudeSettingSources = toClaudeSettingSources(raw.claudeSettingSources);
+  if (claudeSettingSources !== undefined) {
+    config.claudeSettingSources = claudeSettingSources;
   }
   const codexSandbox = toCodexSandbox(raw.codexSandbox);
   if (codexSandbox !== undefined) {

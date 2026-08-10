@@ -4,6 +4,7 @@ import type {
   Query,
   SDKMessage,
   SDKUserMessage,
+  SettingSource,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEvent } from './agent-events';
 import type {
@@ -69,16 +70,31 @@ async function* toSdkPrompt(prompt: AsyncIterable<string>): AsyncIterable<SDKUse
   }
 }
 
+/**
+ * 設定ソースの既定。対象リポジトリの `.claude/settings.json` と CLAUDE.md だけを読み、
+ * ユーザーの手元設定（`~/.claude/settings.json`）は持ち込まない。設定
+ * `claudeSettingSources` で広げられる（プラグインを使うなら `'user'` が要る）。
+ */
+const DEFAULT_SETTING_SOURCES: SettingSource[] = ['project'];
+
 /** `AgentAdapter` を Claude 用に組み立てる。`queryFn` は DI（テストはフェイクを注入）。 */
 export function createClaudeAdapter(deps: {
   queryFn: QueryFn;
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
+  /**
+   * SDK に渡す設定ソース（省略時は {@link DEFAULT_SETTING_SOURCES}）。合成ルートが
+   * 設定から解決して渡す（`core/config.ts` の `resolveClaudeSettingSources`）。
+   * `'user'` を含めると `~/.claude/settings.json` の `enabledPlugins`＝
+   * Claude Code のプラグインもセッションにロードされる。
+   */
+  settingSources?: SettingSource[];
   /** 導入・ログイン検出（I/O は `utils/claude.ts` の `detectClaudeAvailability`）。 */
   checkAvailability?: () => Promise<AgentAvailability>;
   /** TUI 内ログインのプロセス起動（I/O は `utils/agent-login.ts` の `spawnLogin`）。 */
   spawnLogin?: (command: string, args: readonly string[]) => AgentLoginProcess;
 }): AgentAdapter {
   const spawnLogin = deps.spawnLogin;
+  const settingSources = deps.settingSources ?? DEFAULT_SETTING_SOURCES;
   return {
     id: 'claude',
     displayName: 'Claude',
@@ -119,7 +135,10 @@ export function createClaudeAdapter(deps: {
           permissionMode: opts.permissionMode ?? 'acceptEdits',
           canUseTool,
           abortController: request.abortController,
-          settingSources: ['project'],
+          // 既定は project のみ（対象リポジトリの CLAUDE.md を読ませる）。設定
+          // `claudeSettingSources` に 'user' を足すと手元の Claude Code 設定 =
+          // プラグインもロードされる。
+          settingSources,
           // Stream partial assistant text so the detail view shows a live preview
           // (reduced into state.streamingText). See claude-parse fromStreamEvent.
           includePartialMessages: true,
