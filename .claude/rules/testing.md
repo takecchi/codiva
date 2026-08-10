@@ -26,8 +26,14 @@ vitest でのテスト配置・書き方の決まり。**テストを追加/変�
 - **純関数はテーブルドリブン**（`it.each` / 配列 + ループ）。分岐ごとに関数を呼び分けるテストを
   量産しない。
 - **フェイクは `tests/helpers.ts` に集約**。すでにあるものをコピペで再定義しない:
-  `flush(ms)` / `fakeWorktrees` / `noopSession(input)` / `makeManager()` / `FakeStdin` /
-  `renderFullscreen(element, rows, columns)`。
+  `flush(ms)` / `settle(lastFrame)` / `fakeWorktrees` / `noopSession(input)` / `makeManager()` /
+  `FakeStdin` / `renderFullscreen(element, rows, columns)` / `stripAnsi(frame)`。
+- **フレームから座標を割り出して触るテストは `settle(lastFrame)` で待つ**（固定 `flush()` にしない）。
+  マウスの当たり判定はアプリが実測した幾何で行われるので、まだ描き変わる余地があるうちに
+  クリックを合成すると別の行に当たる。`settle` は**描画が止まるまで**待つので、遅い CI では
+  自然に長く待つ（固定 150ms の賭けで 1 度だけ落ちた: 詳細ログのドラッグ選択が空コピーになる）。
+  静止の窓はストア購読のまとめ窓（~100ms）より長くとってある。逆に**タイマーで動き続ける
+  ことを確かめるテスト**（端の自動スクロール）はここで待ってはいけない（止まるまで待ってしまう）。
 - SDK なしで core を駆動する: `Session` に `queryFn` を DI し、フェイクが
   「`SDKMessage` を順に yield し、`canUseTool` を任意タイミングで発火する」形にする。
   **ネットワークにも実 `claude` にも依存させない。**
