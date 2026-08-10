@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  type ClaudeSettingSource,
   type CodivaConfig,
   type EffortLevel,
   type PermissionMode,
+  resolveClaudeSettingSources,
   resolveIgnoredFilesMode,
   toConfig,
 } from '@/core/config';
@@ -27,6 +29,13 @@ const PERMISSION_MODE_CASES: Record<PermissionMode, true> = {
   plan: true,
   dontAsk: true,
   auto: true,
+};
+
+/** 設定ソースも同じ番人（union に層が増えたらここが型エラーになる）。 */
+const CLAUDE_SETTING_SOURCE_CASES: Record<ClaudeSettingSource, true> = {
+  user: true,
+  project: true,
+  local: true,
 };
 
 describe('toConfig', () => {
@@ -187,6 +196,27 @@ describe('toConfig', () => {
     expect(toConfig({ agent })).toEqual({});
   });
 
+  it('keeps known claudeSettingSources and normalizes their order', () => {
+    expect(toConfig({ claudeSettingSources: ['local', 'user'] })).toEqual({
+      claudeSettingSources: ['user', 'local'],
+    });
+  });
+
+  it('drops unknown entries and duplicates from claudeSettingSources', () => {
+    expect(
+      toConfig({ claudeSettingSources: ['user', 'user', 'managed', 'flag', 1, null] }),
+    ).toEqual({ claudeSettingSources: ['user'] });
+  });
+
+  // 空配列は SDK では「設定を一切読まない」だが、それだと対象リポジトリの CLAUDE.md も
+  // 落ちる。設定ミスの受け皿にはせず未設定（= 既定の project のみ）へ倒す。
+  it.each([['user'], [1], [null], [{}], [[]], [['managed']]])(
+    'drops invalid claudeSettingSources: %o',
+    (claudeSettingSources) => {
+      expect(toConfig({ claudeSettingSources })).toEqual({});
+    },
+  );
+
   it.each([['read-only'], ['workspace-write'], ['danger-full-access']] as const)(
     'keeps valid codexSandbox %o',
     (codexSandbox) => {
@@ -260,6 +290,39 @@ describe('toConfig', () => {
       ignoredFilesExclude: ['!dist'],
       copyIgnored: false,
     });
+  });
+});
+
+describe('resolveClaudeSettingSources', () => {
+  it.each<[CodivaConfig, ClaudeSettingSource[]]>([
+    // 未設定は project のみ（= 従来の挙動）。
+    [{}, ['project']],
+    [{ claudeSettingSources: ['project'] }, ['project']],
+    // プラグインを使う設定（`~/.claude/settings.json` の enabledPlugins を読ませる）。
+    [{ claudeSettingSources: ['user'] }, ['user', 'project']],
+    [{ claudeSettingSources: ['user', 'local'] }, ['user', 'project', 'local']],
+    // 並びは常に user < project < local へ正規化する。
+    [{ claudeSettingSources: ['local', 'project', 'user'] }, ['user', 'project', 'local']],
+  ])('resolves %o', (config, expected) => {
+    expect(resolveClaudeSettingSources(config)).toEqual(expected);
+  });
+
+  // 対象リポジトリの CLAUDE.md は project 層でしか読まれないので、明示的に外されても
+  // 落とさない（「リポジトリの決まりを知らないセッション」を設定ミスで作らせない）。
+  it('always includes project even when it is not requested', () => {
+    expect(resolveClaudeSettingSources({ claudeSettingSources: ['local'] })).toEqual([
+      'project',
+      'local',
+    ]);
+  });
+
+  it('accepts every known source', () => {
+    const all = Object.keys(CLAUDE_SETTING_SOURCE_CASES) as ClaudeSettingSource[];
+    expect(resolveClaudeSettingSources({ claudeSettingSources: all })).toEqual([
+      'user',
+      'project',
+      'local',
+    ]);
   });
 });
 

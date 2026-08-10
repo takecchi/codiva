@@ -120,7 +120,9 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
   `setPermissionMode` が使えない）。`Session` が持つのは `AsyncIterable<string>` で、
   `SDKUserMessage` への包み直しはアダプタの `toSdkPrompt`。
 - 既定の options: `cwd`=セッションの worktree、`permissionMode`（設定優先、既定 `acceptEdits`）、
-  `canUseTool`、`abortController`、`settingSources: ['project']`（対象リポジトリの CLAUDE.md を読ませる）、
+  `canUseTool`、`abortController`、`settingSources`（既定 `['project']` = 対象リポジトリの CLAUDE.md を
+  読ませる。設定 `claudeSettingSources` で `'user'`／`'local'` を足せる＝ Claude Code のプラグインが
+  載る。**`'project'` は必ず含める**）、
   `includePartialMessages: true`（ストリーミングプレビュー用）。**この既定を組み立てるのはアダプタ**で、
   `Session` は provider 非依存の `AgentRunOptions`（model / effort / permissionMode / maxBudgetUsd /
   systemPrompt）しか渡さない。各項目をどう解釈するか（無視も可）はアダプタの裁量。

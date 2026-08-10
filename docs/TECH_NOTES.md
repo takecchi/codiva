@@ -99,13 +99,38 @@ const options = {
   canUseTool,                    // 下記参照
   abortController,               // セッション強制終了用
   maxTurns: 200,                 // 暴走防止の上限（要調整）
-  settingSources: ['project'],   // 対象リポジトリの CLAUDE.md / settings を読ませる
+  settingSources,                // 既定 ['project']（対象リポジトリの CLAUDE.md / settings）。
+                                 // 設定 claudeSettingSources で 'user' / 'local' を追加できる（下記）
   // Phase 6 で公開済み（設定ファイル ~/.codiva/config.json 由来、SessionOptions 経由で注入）:
   model, effort, maxBudgetUsd,   // それぞれ存在時のみ付与
   systemPrompt,                  // composeSystemPrompt() の結果。中身があるときのみ付与（下記メモ参照）
   resume: sdkSessionId,          // 復元時のみ付与。モデル側の会話コンテキストを引き継いで継続
 };
 ```
+
+**`settingSources` と Claude Code のプラグイン（実測）**:
+
+プラグインの有効化（`enabledPlugins`）は `claude plugin install` が **`~/.claude/settings.json`（user 層）**
+へ書く。`settingSources` に `'user'` が無いとその層自体が読まれないため、**プラグインは 1 つもロードされない**。
+同一マシン・同一プラグイン構成（`frontend-design@…` / `rust-analyzer-lsp@…` の 2 件が有効）で
+`claude --print --output-format stream-json --verbose` の `system/init` を比較した実測:
+
+| 設定ソース | init の `plugins` | プラグイン由来の slash command |
+|---|---|---|
+| `--setting-sources project`（codiva の既定） | `[]` | なし |
+| 既定（user + project + local） | 2 件ロード | `/frontend-design:frontend-design` |
+
+そこで設定 `claudeSettingSources`（`core/config.ts`）で層を選べるようにし、
+`resolveClaudeSettingSources()` → `createClaudeAdapter({ settingSources })` で注入する
+（配線は `bootstrap/build-manager.ts` の `buildAgents`。`codexSandbox` と同じ「provider 固有の
+設定はアダプタ工場へ」の形）。**`'project'` は指定に関わらず必ず含める** — CLAUDE.md はこの層でしか
+読まれず、設定ミスで落ちると「リポジトリの決まりを知らないセッション」が黙って生まれるため。
+既定を広げなかったのは、user 層を読むと hooks / permissions / statusLine といった**手元の Claude Code
+用の設定まで worktree のセッションに載る**から（オプトインにして README に副作用を明記した）。
+
+なお probe（`utils/sdk-probe.ts` = モデルカタログと `/usage`）は `['project']` 固定のまま。
+init と control channel しか読まない短命プロセスで、プラグインも CLAUDE.md も要らない一方、
+user 層を読むと**ポーリングのたびにユーザーの SessionStart hook が走る**ことになる。
 
 **Phase 6 実装メモ（Options 関連）**:
 - `model` (`string`) / `effort` (`'low'|'medium'|'high'|'xhigh'|'max'`) / `permissionMode`

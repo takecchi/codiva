@@ -121,7 +121,9 @@ export async function runSdkProbe<T>(
       options: {
         cwd: opts.cwd,
         abortController,
-        // 実セッションと同じ設定ソースで問い合わせる（session.ts と揃える）。
+        // probe は init と control channel しか読まないので、実セッションの設定
+        // （`claudeSettingSources`）には追従せず最小構成で固定する。user 層まで読むと
+        // ポーリングのたびにユーザーの hook が走る（`docs/TECH_NOTES.md`）。
         settingSources: ['project'],
       },
     });

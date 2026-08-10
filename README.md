@@ -319,6 +319,11 @@ Codiva v0.3.1   3 セッション
 - `autoFixCi`: PR の CI が落ちたら自動でセッションに修正を依頼するか。既定 `false`（上記）。
 - `crashLog`: 予期せず終了したときに `~/.codiva/logs/` へクラッシュログを残すか。既定 `true`（下記）。`false` にするとファイルは書かず、理由の表示と端末の復元だけを行います。
 - `agent`: 新しいセッションを既定でどのエージェントで動かすか。`"claude"`（既定）/ `"codex"`。**一覧の `/agent` で選ぶとここへ自動保存**されるので、通常は手で書く必要はありません。セッションごとの途中切替は詳細ビューの `/agent` です（上記）。
+- `claudeSettingSources`: Claude セッションが読み込む設定ファイルの層の配列。`"user"`（`~/.claude/settings.json`）/ `"project"`（`<repo>/.claude/settings.json`）/ `"local"`（`<repo>/.claude/settings.local.json`）。既定は `["project"]` で、`"project"` は指定しなくても必ず含まれます（対象リポジトリの CLAUDE.md はこの層でしか読まれないため）。
+  ```json
+  { "claudeSettingSources": ["user", "project", "local"] }
+  ```
+  **Claude Code のプラグインを codiva のセッションでも使いたいときは `"user"` を足してください。** `claude plugin install` で入れたプラグインの有効化（`enabledPlugins`）は `~/.claude/settings.json` に書かれるので、既定のままではプラグインの skill / コマンド / サブエージェント / hook / MCP サーバが一切ロードされません。副作用として、その層の**ほかの設定（hooks・permissions・statusLine など）もセッションに載ります**。既定を `["project"]` にしているのはそのためで、セッションは手元ではなく worktree で自動的に走るため、手元の Claude Code 用の設定を黙って持ち込まない側に倒しています。
 - `codexSandbox`: Codex セッションのサンドボックス。`"read-only"` / `"workspace-write"`（既定）/ `"danger-full-access"`。Codex はツール使用の許可を尋ねられないため、**ここが Codex セッションに対する唯一の安全弁**です。既定の `workspace-write` は「読み取りは全体・書き込みはセッションの worktree 内だけ」です。
 - `codexNetworkAccess`: `codexSandbox` が `"workspace-write"` のときネットワークアクセスを許可するか。既定 `true`。Codex 自身の既定は遮断ですが、それだと `npm install` や `gh` が失敗して大半の作業が完了しないため codiva 側では開けています（塞ぎたいときは `false`）。
 
