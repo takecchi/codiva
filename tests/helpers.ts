@@ -53,6 +53,27 @@ export async function settle(
   }
 }
 
+/**
+ * **出るはずのものが出るまで**待つ（`predicate` が true を返す or `timeoutMs` 経過）。
+ *
+ * `settle`（静止するまで待つ）とは使い分ける。静止待ちが正しいのは「描画が落ち着いた
+ * 幾何に対してクリックを合成する」ような場合で、**非同期に後から届く内容**を待つのには
+ * 使えない: 届く前の画面も"静止"しているので、遅い環境では内容が来る前に返ってしまう。
+ * 実際に CI（2 コアのランナー）で `/login` の URL 行がまだ出ていないフレームを掴んで
+ * 落ちた（ローカルでは CPU 負荷をかけても再現せず）。
+ *
+ * 条件を満たしたら即返るので、速い環境では待ち時間が増えない。
+ */
+export async function waitFor(
+  predicate: () => boolean,
+  { tickMs = 25, timeoutMs = 5_000 } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await flush(tickMs);
+  }
+}
+
 // 制御文字を正規表現リテラルに直接書くと Biome の noControlCharactersInRegex に触れるので組み立てる。
 const ESC = String.fromCharCode(27);
 const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'g');
