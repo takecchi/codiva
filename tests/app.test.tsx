@@ -2758,7 +2758,8 @@ describe('App list view (/agent default + availability)', () => {
     stdin.write('/agent');
     await flush();
     stdin.write('\r'); // run → picker opens (default mode)
-    await flush();
+    // 導入・ログイン状態は非同期検出なので、固定 flush ではなく静止まで待つ。
+    await settle(() => lastFrame() ?? '');
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('エージェントを選択');
     // 導入・ログイン状態の行が出る。
@@ -2780,8 +2781,9 @@ describe('App list view (/agent default + availability)', () => {
       claude: fakeAdapter('claude', 'Claude', { installed: false, loggedIn: false }),
       codex: fakeAdapter('codex', 'Codex', { installed: false, loggedIn: false }),
     });
-    // 一覧はマウント時に検出を回す。全件「未導入」で確定したらセットアップ案内が出る。
-    await flush();
+    // 一覧はマウント時に検出を回す。全件「未導入」で確定したらセットアップ案内が出る
+    // （非同期なので静止まで待つ）。
+    await settle(() => lastFrame() ?? '');
     expect(stripAnsi(lastFrame() ?? '')).toContain('コーディングエージェントが見つかりません');
   });
 
@@ -2856,7 +2858,9 @@ describe('App /login (in-TUI sign-in)', () => {
     stdin.write('/login');
     await flush();
     stdin.write('\r');
-    await flush();
+    // ログインプロセスの出力は非同期に届くので、**固定 flush ではなく静止まで待つ**
+    // （フルスイート負荷下だと 150ms に間に合わず URL 行が出ないことがある）。
+    await settle(() => lastFrame() ?? '');
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('Claude にサインイン');
     expect(frame).toContain('https://auth.example.com/device');
