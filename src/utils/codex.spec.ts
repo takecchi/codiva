@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CodexSpawnRequest } from '@/core';
-import { codexArgs } from '@/utils/codex';
+import { codexArgs, spawnCodex } from '@/utils/codex';
 
 /**
  * `codex exec` の引数組み立てだけを見る純粋なテスト。**実プロセスは起動しない**
@@ -141,4 +141,40 @@ describe('codexArgs', () => {
       expect(args.at(-2)).toBe('--');
     },
   );
+});
+
+/**
+ * `spawnCodex` の実プロセス経路のうち、**引数に依存せず・実 `codex` が要らない**部分。
+ * 起動できないケースはユーザー環境で普通に起きる（未インストール）ので、
+ * 「ハングしない・理由が残る」ことを固定しておく。
+ */
+describe('spawnCodex', () => {
+  const request: CodexSpawnRequest = {
+    cwd: process.cwd(),
+    prompt: 'do the thing',
+    sandbox: 'read-only',
+    networkAccess: false,
+  };
+
+  it('ends the stream and reports the reason when the binary is missing', async () => {
+    const proc = spawnCodex(request, '/nonexistent/codex-binary-for-tests');
+    const events: unknown[] = [];
+    for await (const event of proc) {
+      events.push(event);
+    }
+    // イベントは 1 件も出ないが、**必ず終わる**（ここでハングするとターンが固まる）。
+    expect(events).toEqual([]);
+    expect(proc.result().stderr).toContain('ENOENT');
+  });
+
+  it('kill() on a process that never started is a no-op', async () => {
+    const proc = spawnCodex(request, '/nonexistent/codex-binary-for-tests');
+    for await (const _event of proc) {
+      // drain
+    }
+    // 終了済みに対する kill で例外を投げない（中断・切替の経路が必ず通る）。
+    expect(() => {
+      proc.kill();
+    }).not.toThrow();
+  });
 });

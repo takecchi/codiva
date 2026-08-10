@@ -866,6 +866,55 @@ describe('Session.setAgent', () => {
     expect(a.seen).toEqual(['do the thing', 'back to claude']);
   });
 
+  it('stops the in-flight turn and hands queued follow-ups to the NEW agent', async () => {
+    // ターンの最中（アダプタがキューではなく provider の出力を待っている状態）を作る。
+    let interrupts = 0;
+    const held = new AsyncQueue<string>();
+    const a: AgentAdapter = {
+      id: 'claude',
+      displayName: 'claude',
+      loginCommand: 'claude',
+      capabilities: NO_CAPABILITIES,
+      open: (request) => ({
+        async *[Symbol.asyncIterator]() {
+          for await (const text of request.prompt) {
+            seenByA.push(text);
+            // ターンが動き出したことにする（実アダプタも turn の頭でこれを出す）。
+            yield { kind: 'assistant_message' } as const;
+            // ターン中: プロンプトではなく provider の出力を待つ。
+            for await (const _ of held) {
+              // 中断されるまで返らない
+            }
+          }
+        },
+        interrupt: async () => {
+          interrupts += 1;
+          held.close();
+        },
+      }),
+    };
+    const seenByA: string[] = [];
+    const b = recorder('codex');
+    const session = new Session({ agent: a, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+    expect(seenByA).toEqual(['do the thing']);
+
+    // ターン実行中に追加指示 → まだ誰にも渡っていない（キューに積まれるだけ）。
+    session.send('follow up');
+    await tick();
+    expect(seenByA).toEqual(['do the thing']);
+
+    session.setAgent(b.adapter);
+    await tick();
+    await tick();
+
+    // 走っていたターンは畳まれ、積み残しは**新しいエージェント**が実行する。
+    expect(interrupts).toBe(1);
+    expect(b.seen).toEqual(['follow up']);
+    expect(seenByA).toEqual(['do the thing']);
+  });
+
   it('is a no-op when the agent is unchanged (keeps the running stream)', async () => {
     const a = recorder('claude');
     const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });

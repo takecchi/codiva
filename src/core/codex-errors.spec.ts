@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCodexError, isCodexRetryNotice } from '@/core/codex-errors';
+import { CODEX_RETRY_PREFIX, classifyCodexError, isCodexRetryNotice } from '@/core/codex-errors';
 import type { AgentStopCause } from '@/core/types';
 
 /** The token-refresh failure captured verbatim in `__fixtures__/codex-auth-error.jsonl`. */
@@ -51,8 +51,6 @@ describe('isCodexRetryNotice', () => {
   it.each([
     'Reconnecting... 1/5 (stream disconnected before completion: mock upstream exploded)',
     'Reconnecting... 5/5 (stream disconnected before completion: mock upstream exploded)',
-    '  reconnecting to the model',
-    'RECONNECTING',
   ])('treats %j as a retry notice', (message) => {
     expect(isCodexRetryNotice(message)).toBe(true);
   });
@@ -64,7 +62,16 @@ describe('isCodexRetryNotice', () => {
     // 行頭でなければ実況ではない。
     'the tool suggested reconnecting the socket',
     '',
+    // **大小・前置空白は許さない**（緩めてはいけない）: 畳み込み側のまとめ判定は
+    // `startsWith(CODEX_RETRY_PREFIX)` で大小を区別するので、ここだけ緩いと
+    // 「実況と判定したのにまとまらない」= リトライごとにログが 1 行ずつ増える。
+    '  reconnecting to the model',
+    'RECONNECTING',
   ])('does not treat %j as a retry notice', (message) => {
     expect(isCodexRetryNotice(message)).toBe(false);
+  });
+
+  it('shares its prefix with the coalesce key so the two can never drift', () => {
+    expect(isCodexRetryNotice(`${CODEX_RETRY_PREFIX}... 1/5 (…)`)).toBe(true);
   });
 });

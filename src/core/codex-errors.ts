@@ -63,5 +63,15 @@ export function classifyCodexError(text: string): AgentStopCause {
  * これをそのまま失敗として扱うと、勝手に回復するセッションが赤くなる。
  */
 export function isCodexRetryNotice(message: string): boolean {
-  return /^\s*reconnecting\b/i.test(message);
+  // **`CODEX_RETRY_PREFIX` と同じ綴り・同じ厳しさで判定する**。畳み込み側の
+  // まとめ判定は `startsWith(coalesceKey)`（大小を区別し、前置の空白も許さない）
+  // なので、ここだけ緩く（`/i`・先頭空白許容）すると「再試行と判定したのに
+  // まとまらない」= リトライごとにログが 1 行ずつ増える、という食い違いになる。
+  return message.startsWith(CODEX_RETRY_PREFIX);
 }
+
+/**
+ * 再試行の実況の接頭辞（実測: `Reconnecting... 1/5 (...)`）。ログ行をまとめる
+ * `coalesceKey` と {@link isCodexRetryNotice} の**唯一の出所**。
+ */
+export const CODEX_RETRY_PREFIX = 'Reconnecting';

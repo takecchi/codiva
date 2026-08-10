@@ -105,8 +105,6 @@ export function createCodexAdapter(deps: {
       // `Ctrl+C` で殺したターンは失敗ではない（Session が先に `interrupted` を確定させる）。
       let interrupted = false;
       let current: CodexProcess | undefined;
-      // 最初のターンだけ systemPrompt を前置する（resume 済みなら不要）。
-      let sentSystemPrompt = threadId !== undefined;
 
       const abort = () => {
         current?.kill();
@@ -121,10 +119,13 @@ export function createCodexAdapter(deps: {
                 return;
               }
               interrupted = false;
-              const prompt = sentSystemPrompt
-                ? text
-                : withSystemPrompt(text, request.options.systemPrompt);
-              sentSystemPrompt = true;
+              // systemPrompt は「そのスレッドがまだ読んでいないとき」だけ前置する。
+              // **フラグで latch しない** — 初回のターンが `thread.started` より前に落ちる
+              // （`codex` 未導入 / 未ログイン / 不正な `--model` / 即 `Ctrl+C`）と threadId が
+              // 付かず、次のターンは**新しいスレッド**として始まる。latch していると
+              // そこで前置されず、systemPrompt を一度も渡せないセッションになる
+              // （symlink 共有の注意書きが落ちると、リンク越しに元リポジトリを壊しうる）。
+              const prompt = threadId ? text : withSystemPrompt(text, request.options.systemPrompt);
 
               const proc = deps.spawn({
                 cwd: request.cwd,
@@ -156,6 +157,11 @@ export function createCodexAdapter(deps: {
                 }
               } finally {
                 current = undefined;
+                // **必ず殺す**。正常に読み切ったあとは no-op だが、途中で捨てられた場合
+                // （`parseCodexEvent` の throw / 消費側の throw で `run.return()` が呼ばれる）
+                // ここを通らないと `codex exec` が worktree を触ったまま残る。パイプが
+                // 壊れても死なない（Rust は SIGPIPE を無視する）ので、放置は効かない。
+                proc.kill();
               }
 
               if (interrupted || request.abortController.signal.aborted) {

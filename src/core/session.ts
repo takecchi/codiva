@@ -199,13 +199,26 @@ export class Session {
       this.pending.resolve({ behavior: 'deny', message: 'agent switched' });
       this.pending = undefined;
     }
+    // 進行中のターンを止める。キューを閉じるだけでは足りない — ターンの最中の run は
+    // キューではなく provider の出力を await しているので、そのままだと古い provider が
+    // worktree を触り続け、遅れて届く `turn_completed` がセッションを completed に
+    // 戻して auto-PR まで走らせてしまう。best-effort（持たない provider もある）。
+    void Promise.resolve(this.run?.interrupt?.()).catch(() => undefined);
     // 走っている run のプロンプト源を閉じる。**これが「ストリームを畳む」実体** —
     // `run = undefined` は参照を捨てるだけで、consume ループはそのオブジェクトを
     // 掴んだまま回り続けるし、アダプタ側は共有キューを await して止まっている。
     // 閉じないと、切替後に送った指示を**古いエージェントが受け取る**（切り替えたのに
-    // 何も起きないように見える）。次の run には新しいキューを渡す。
+    // 何も起きないように見える）。
+    //
+    // 積み残し（ターン実行中に送られてまだ渡っていない指示）は**新しいキューへ移す**。
+    // 閉じたキューも buffer を先に吐き出すので、置いていくと古いエージェントが実行して
+    // しまうし、捨てるとユーザーの指示が黙って消える（ログには残るのに実行されない）。
+    const carried = this.inputQueue.drain();
     this.inputQueue.close();
     this.inputQueue = new AsyncQueue<string>();
+    for (const text of carried) {
+      this.inputQueue.push(text);
+    }
     this.restartAfterSwitch = this.consuming;
     this.run = undefined;
     this.adapter = adapter;

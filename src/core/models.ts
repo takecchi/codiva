@@ -35,16 +35,6 @@ export interface ModelOption {
 }
 
 /**
- * カタログ取得に失敗したときだけ使う最小の代替一覧。
- *
- * **バージョンを含む ID は置かない**（それが陳腐化の原因なので）。Claude Code が
- * カタログの `value` にも使うファミリーエイリアスだけを並べる。エイリアスは
- * 常に現行世代へ解決されるため、モデルが更新されても古びない。
- *
- * 既定行の `displayName` は表示に使われない（UI がカタログの `model.defaultRow` を
- * 引くため）。ここに置いてあるのは型を満たすためだけの不活性な値。
- */
-/**
  * 「CLI 既定」だけのフォールバック。カタログを取れなかったときに**モデル名を
  * 推測で並べたくない** provider（Codex）向け。Claude の
  * {@link FALLBACK_MODEL_OPTIONS} と違ってファミリーエイリアスすら置かないのは、
@@ -55,6 +45,16 @@ export const DEFAULT_ONLY_MODEL_OPTIONS: readonly ModelOption[] = [
   { value: DEFAULT_MODEL_VALUE, displayName: 'Default' },
 ];
 
+/**
+ * カタログ取得に失敗したときだけ使う最小の代替一覧。
+ *
+ * **バージョンを含む ID は置かない**（それが陳腐化の原因なので）。Claude Code が
+ * カタログの `value` にも使うファミリーエイリアスだけを並べる。エイリアスは
+ * 常に現行世代へ解決されるため、モデルが更新されても古びない。
+ *
+ * 既定行の `displayName` は表示に使われない（UI がカタログの `model.defaultRow` を
+ * 引くため）。ここに置いてあるのは型を満たすためだけの不活性な値。
+ */
 export const FALLBACK_MODEL_OPTIONS: readonly ModelOption[] = [
   { value: DEFAULT_MODEL_VALUE, displayName: 'Default' },
   { value: 'opus', displayName: 'Opus' },

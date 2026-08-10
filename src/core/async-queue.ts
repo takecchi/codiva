@@ -17,6 +17,16 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     return this.buffer.length;
   }
 
+  /**
+   * まだ誰にも渡していない要素を**取り出して空にする**。エージェント切替で
+   * このキューを閉じるとき、積み残しの指示を新しいキューへ移し替えるために使う
+   * （閉じたキューからも `[Symbol.asyncIterator]` は buffer を先に吐き出すので、
+   * 移さないと**古いエージェントが実行してしまう**。捨てると指示が消える）。
+   */
+  drain(): T[] {
+    return this.buffer.splice(0, this.buffer.length);
+  }
+
   push(item: T): void {
     if (this.closed) {
       return;

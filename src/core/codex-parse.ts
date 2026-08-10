@@ -1,5 +1,5 @@
 import type { AgentEvent, TodoOp } from './agent-events';
-import { classifyCodexError, isCodexRetryNotice } from './codex-errors';
+import { CODEX_RETRY_PREFIX, classifyCodexError, isCodexRetryNotice } from './codex-errors';
 import type { CodexEvent, CodexItem } from './codex-events';
 import { MAX_LOG_ENTRY_CHARS } from './log-buffer';
 import { isPrCreateCommand, PR_DETECT_SCAN_CHARS } from './pr-detect';
@@ -183,13 +183,6 @@ function fromItemCompleted(item: CodexItem): AgentEvent[] {
 }
 
 /**
- * 再試行の実況をまとめる接頭辞（連発するので直前の同種行を書き換える）。
- * `applyAgentEvent` の畳み込みは `startsWith` で**大小を区別する**ので、
- * 実際に届く文言（`Reconnecting... 1/5 (...)`）と同じ綴りにする。
- */
-const RETRY_PREFIX = 'Reconnecting';
-
-/**
  * Codex のイベント 1 件を中立イベント列へ写す。**アダプタの入口**。
  * 状態は見ない（純粋・イベント単位で決まる）。
  */
@@ -239,7 +232,7 @@ export function parseCodexEvent(event: CodexEvent): AgentEvent[] {
         {
           kind: 'notice',
           text: event.message,
-          coalesceKey: isCodexRetryNotice(event.message) ? RETRY_PREFIX : undefined,
+          coalesceKey: isCodexRetryNotice(event.message) ? CODEX_RETRY_PREFIX : undefined,
         },
       ];
 

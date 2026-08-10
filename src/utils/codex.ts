@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import {
   type CodexProcess,
   type CodexSpawnRequest,
+  createJsonlSplitter,
   type ModelOption,
   toCodexModelOptions,
 } from '@/core';
@@ -19,6 +20,17 @@ const execFileAsync = promisify(execFile);
 
 /** stderr をどれだけ覚えておくか（失敗理由の診断用。ログの氾濫は防ぐ）。 */
 const MAX_STDERR_CHARS = 4000;
+
+/** SIGTERM で死ななかったときに SIGKILL へ上げるまでの猶予。 */
+const KILL_ESCALATE_MS = 2000;
+
+/**
+ * 1 行（= 1 JSON イベント）の上限。`command_execution` は `aggregated_output` を
+ * 丸ごと 1 行で運ぶので、長時間走るビルドの出力が数十 MB の 1 行になりうる。
+ * バッファに溜め切ってから `JSON.parse` すると**同じものを 2 部**ヒープに置くことに
+ * なるため、超えた行は捨てる（このリポジトリは同種の積み上げで実際に OOM している）。
+ */
+const MAX_LINE_CHARS = 1024 * 1024;
 
 /** `codex exec` の引数を組み立てる。**シェルは使わない**（引数配列で渡す）。 */
 export function codexArgs(request: CodexSpawnRequest): string[] {
@@ -71,9 +83,18 @@ export function spawnCodex(request: CodexSpawnRequest, command = 'codex'): Codex
   let stderr = '';
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => {
+    // **必ず上限で切る**。1 チャンクは 64KB になりうるので `if (短ければ足す)` だけだと
+    // その 1 回で大きく超え、それがそのまま `turn_stopped.detail` → `state.error` に載る
+    // （ログ行と違って state.error はクリップされない）。
     if (stderr.length < MAX_STDERR_CHARS) {
-      stderr += chunk;
+      stderr = (stderr + chunk).slice(0, MAX_STDERR_CHARS);
     }
+  });
+  // パイプ自体のエラー（kill/exit 前後の EPIPE・ECONNRESET）。**listener が無いと
+  // EventEmitter は throw し、TUI ではプロセス死になる**（stdout は for-await 中の
+  // 非同期イテレータが面倒を見るので、素の emitter はここだけ）。
+  child.stderr?.on('error', () => {
+    // 診断以上の意味は無いので握り潰す。
   });
 
   let code: number | null = null;
@@ -84,47 +105,49 @@ export function spawnCodex(request: CodexSpawnRequest, command = 'codex'): Codex
   });
 
   async function* lines(): AsyncGenerator<unknown> {
-    let buffer = '';
+    // 枠切りは純粋な `createJsonlSplitter`（`core/codex-events.ts`）へ委譲する。
+    const splitter = createJsonlSplitter(MAX_LINE_CHARS);
     child.stdout?.setEncoding('utf8');
-    // stdout が尽きるまで読む。プロセスの終了は下の `closed` で待つ。
+    // stdout が尽きるまで読む。プロセスの終了は下で待つ。
     for await (const chunk of child.stdout ?? []) {
-      buffer += chunk as string;
-      let nl = buffer.indexOf('\n');
-      while (nl !== -1) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (line.length > 0) {
-          try {
-            yield JSON.parse(line);
-          } catch {
-            // JSONL 以外の行（想定外）は捨てる。TUI を落とさない。
-          }
-        }
-        nl = buffer.indexOf('\n');
+      for (const event of splitter.push(chunk as string)) {
+        yield event;
       }
     }
-    const tail = buffer.trim();
-    if (tail.length > 0) {
-      try {
-        yield JSON.parse(tail);
-      } catch {
-        // 末尾の切れた行は捨てる。
-      }
+    for (const event of splitter.flush()) {
+      yield event;
     }
     // 終了コードが確定するまで待つ（`result()` が読めるようにする）。
+    // `'close'` は**全 stdio が閉じてから**なので、それだけに賭けない — 何かが stderr を
+    // 掴んだままだとターンが永久に止まる。`'exit'` でも解決させる（どちらか早い方）。
     code = await new Promise<number | null>((resolve) => {
       if (child.exitCode !== null || child.signalCode !== null) {
         resolve(child.exitCode);
         return;
       }
       child.once('close', (c) => resolve(c));
+      child.once('exit', (c) => resolve(c));
     });
   }
 
   return {
     [Symbol.asyncIterator]: () => lines()[Symbol.asyncIterator](),
     kill: () => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return;
+      }
       child.kill('SIGTERM');
+      // SIGTERM を無視するプロセスに備えて追い討ちをかける。掛けないと stdout が
+      // 閉じず `for await` が返らないため、**ターンが二度と進まない**（中断したはずの
+      // セッションへ次の指示を送っても、その裏で古いループが生き続ける）。
+      const escalate = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill('SIGKILL');
+        }
+      }, KILL_ESCALATE_MS);
+      // TUI を終了させない（タイマーだけでイベントループを起こし続けない）。
+      escalate.unref?.();
+      child.once('exit', () => clearTimeout(escalate));
     },
     result: () => ({
       code,

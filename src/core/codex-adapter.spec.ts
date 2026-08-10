@@ -423,4 +423,66 @@ describe('createCodexAdapter stream mapping', () => {
     });
     expect(await adapter.generateTitle?.('fix the bug')).toBe('title: fix the bug');
   });
+
+  /**
+   * リグレッション: 初回のターンが `thread.started` より前に落ちる（`codex` 未導入・
+   * 未ログイン・不正な `--model`）と threadId が付かず、次のターンは**新しいスレッド**に
+   * なる。フラグで latch していると、そこで systemPrompt を前置しそこねて
+   * **一度も渡らないセッション**になる（symlink 共有の注意書きが落ちる = 実害が大きい）。
+   */
+  it('re-sends the systemPrompt when the first turn died before thread.started', async () => {
+    const codex = makeFakeCodex([{ code: 1, stderr: 'not logged in' }, {}]);
+    const adapter = createCodexAdapter({ spawn: codex.spawn });
+    const { prompts, events, done } = drive(adapter, {
+      options: { systemPrompt: 'WORKTREE NOTES' },
+    });
+
+    prompts.push('first');
+    await waitFor(() => codex.requests.length === 1, 'the first spawn');
+    expect(codex.requests[0]?.prompt).toBe('WORKTREE NOTES\n\n---\n\nfirst');
+    // thread.started を出さずに終了（起動に失敗したのと同じ形）。
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_stopped'), 'the failed turn');
+
+    prompts.push('second');
+    await waitFor(() => codex.requests.length === 2, 'the second spawn');
+    // resume 先が無い = 新しいスレッドなので、systemPrompt はもう一度必要。
+    expect(codex.requests[1]?.resume).toBeUndefined();
+    expect(codex.requests[1]?.prompt).toBe('WORKTREE NOTES\n\n---\n\nsecond');
+
+    codex.at(1).end();
+    prompts.close();
+    await done;
+  });
+
+  /**
+   * リグレッション: 消費側が途中で捨てた（`run.return()`）ときにプロセスを殺さないと、
+   * `codex exec` が worktree を触ったまま残る。パイプが壊れても Rust は SIGPIPE を
+   * 無視するので、放っておいても死なない。
+   */
+  it('kills the child when the consumer abandons the stream mid-turn', async () => {
+    const codex = makeFakeCodex();
+    const adapter = createCodexAdapter({ spawn: codex.spawn });
+    const prompts = new AsyncQueue<string>();
+    const run = adapter.open({
+      cwd: '/tmp/wt',
+      prompt: prompts,
+      options: {},
+      requestPermission: async () => ({ behavior: 'allow' }),
+      abortController: new AbortController(),
+    });
+
+    // 1 イベントだけ受け取って break する（= generator を捨てる）。
+    prompts.push('do the thing');
+    const iterate = (async () => {
+      for await (const _event of run) {
+        break;
+      }
+    })();
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    await iterate;
+
+    expect(codex.at(0).wasKilled()).toBe(true);
+  });
 });
