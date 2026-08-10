@@ -1,5 +1,6 @@
 import { type AccountSummary, sameAccountSummary } from './account';
-import type { AgentAdapter } from './agent-ports';
+import type { AgentAdapter, AgentAvailability } from './agent-ports';
+import { UNKNOWN_AVAILABILITY } from './agent-ports';
 import type { QueryFn } from './claude-adapter';
 import { errorMessage } from './errors';
 import { type AgentLabel, agentLabelOf, type Messages } from './i18n';
@@ -57,6 +58,18 @@ export interface SessionManagerDeps {
    * エージェントへ勝手に乗り換えてしまう。
    */
   agents?: Partial<Record<AgentId, AgentAdapter>>;
+  /**
+   * 新規セッションの既定エージェント id（設定 `config.agent` 由来）。`agent` が
+   * 具体アダプタなのに対し、こちらは「どれを既定にするか」の id で、`/agent`（一覧）で
+   * 変えられる（`setDefaultAgent`）。未指定なら `agent` / 最初の登録アダプタに倒す。
+   */
+  defaultAgentId?: AgentId;
+  /**
+   * `/agent`（一覧）で既定エージェントを変えたときに呼ぶ（`config.agent` を永続化する
+   * 配線。`onModelChange` と同じ役）。自動選択（設定が無いときの導入済み優先）では
+   * 呼ばない。
+   */
+  onDefaultAgentChange?: (agent: AgentId) => void;
   /** Claude Agent SDK の `query`。`agent` を渡す場合は不要。 */
   queryFn?: QueryFn;
   /** Optional Claude-backed title generator; forwarded to each fresh session. */
@@ -189,12 +202,23 @@ export class SessionManager {
    * model for sessions created later in this run.
    */
   private options: SessionOptions;
+  /**
+   * 新規セッションの既定エージェント id。設定由来（`deps.defaultAgentId`）で初期化し、
+   * `/agent`（一覧）や起動時の自動選択で差し替わる。`undefined` は「登録アダプタの
+   * 既定に任せる」。
+   */
+  private defaultAgentId?: AgentId;
+  /** 直近の可用性検出結果（`/agent` とセットアップ案内が読む）。空 = 未検出。 */
+  private availability: Map<AgentId, AgentAvailability> = new Map();
+  /** 検出の多重起動を防ぐ（同時に開かれても 1 本にまとめる）。 */
+  private availabilityProbe?: Promise<ReadonlyMap<AgentId, AgentAvailability>>;
   /** Default policy when a session doesn't get an explicit one; reads `this.mode` live. */
   private readonly modePolicy: PermissionPolicy = createModePolicy(() => this.mode);
 
   constructor(private readonly deps: SessionManagerDeps) {
     this.now = deps.now ?? Date.now;
     this.options = { ...deps.options };
+    this.defaultAgentId = deps.defaultAgentId;
     this.prs = new PrCoordinator({
       worktrees: deps.worktrees,
       autoPr: deps.autoPr,
@@ -375,9 +399,13 @@ export class SessionManager {
       return this.deps.createSession({ input, onChange, onRateLimit, ...extra });
     }
     return new Session({
-      // 復元したセッションは自分が走っていた provider を覚えているので、それを
-      // 優先する（覚えていない = 切替対応より前のスナップショットなら既定へ）。
-      agent: this.agentFor(extra?.restored?.agent) ?? this.deps.agent,
+      // 復元したセッションは自分が走っていた provider を覚えているので、それを最優先。
+      // 覚えていない（切替対応より前のスナップショット）なら、現在の既定エージェント
+      // （`/agent` や自動選択で決まる）へ。どちらも引けなければ deps.agent。
+      agent:
+        this.agentFor(extra?.restored?.agent) ??
+        this.agentFor(this.defaultAgentId) ??
+        this.deps.agent,
       queryFn: this.deps.queryFn,
       input,
       options: this.options,
@@ -582,6 +610,70 @@ export class SessionManager {
       return this.deps.agent ? [this.deps.agent] : [];
     }
     return Object.values(registry).filter((a): a is AgentAdapter => a !== undefined);
+  }
+
+  /** 新規セッションの既定エージェント id（一覧の `/agent` のカーソル初期位置）。 */
+  getDefaultAgentId(): AgentId | undefined {
+    return this.defaultAgentId ?? this.deps.agent?.id ?? this.listAgents()[0]?.id;
+  }
+
+  /**
+   * 新規セッションの既定エージェントを変える（一覧の `/agent`）。以後作るセッションに
+   * 効く（走っているセッションはそのまま）。`persist` が既定 true のとき
+   * `onDefaultAgentChange` で `config.agent` に保存する。**起動時の自動選択は
+   * `persist: false`** で呼び、ユーザーが選んでいない値を設定ファイルへ書かない。
+   * 未登録の id は無視する。
+   */
+  setDefaultAgent(agentId: AgentId, opts?: { persist?: boolean }): boolean {
+    if (!this.agentFor(agentId)) {
+      return false;
+    }
+    // 実効の既定（未設定なら deps.agent）と同じなら何もしない。生フィールドで比較すると、
+    // 「未設定だが実効は claude」の状態で claude を選んだときに no-op にならない。
+    if (this.getDefaultAgentId() === agentId) {
+      return false;
+    }
+    this.defaultAgentId = agentId;
+    if (opts?.persist !== false) {
+      this.deps.onDefaultAgentChange?.(agentId);
+    }
+    return true;
+  }
+
+  /** 直近の可用性検出結果（未検出のものは含まれない）。UI が同期的に読む。 */
+  getAgentAvailability(): ReadonlyMap<AgentId, AgentAvailability> {
+    return this.availability;
+  }
+
+  /**
+   * 登録アダプタの導入・ログイン状態を検出する（`/agent` を開いたときと起動時に呼ぶ）。
+   * best-effort（各アダプタの `checkAvailability` は throw しない前提だが保険で握り潰す）。
+   * 多重起動は 1 本にまとめ、結果はキャッシュして同期読み（`getAgentAvailability`）に供する。
+   * `checkAvailability` を持たないアダプタは {@link UNKNOWN_AVAILABILITY}（導入済み扱い）。
+   */
+  checkAgents(): Promise<ReadonlyMap<AgentId, AgentAvailability>> {
+    if (this.availabilityProbe) {
+      return this.availabilityProbe;
+    }
+    const agents = this.listAgents();
+    const probe = Promise.all(
+      agents.map(async (adapter): Promise<[AgentId, AgentAvailability]> => {
+        try {
+          const result = (await adapter.checkAvailability?.()) ?? UNKNOWN_AVAILABILITY;
+          return [adapter.id, result];
+        } catch {
+          return [adapter.id, UNKNOWN_AVAILABILITY];
+        }
+      }),
+    ).then((entries) => {
+      this.availability = new Map(entries);
+      this.availabilityProbe = undefined;
+      // 検出後に「新規セッションを開始できる」ことを購読側へ知らせる（バナーの出し引き）。
+      this.store.notify();
+      return this.availability;
+    });
+    this.availabilityProbe = probe;
+    return probe;
   }
 
   /**

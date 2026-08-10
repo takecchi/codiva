@@ -1,4 +1,5 @@
 export * from './alt-screen';
+export * from './claude';
 export * from './clipboard';
 export * from './codex';
 export * from './config';

@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
+  type AgentAvailability,
   type CodexProcess,
   type CodexSpawnRequest,
   createJsonlSplitter,
@@ -190,4 +191,29 @@ export async function fetchCodexModelCatalog(opts?: {
     // `codex` 未導入・タイムアウト・JSON 破損。どれも /model を壊さない。
     return [];
   }
+}
+
+/** 導入・ログイン確認の上限（サブプロセスが固まっても TUI を止めない）。 */
+const PROBE_TIMEOUT_MS = 4000;
+
+/**
+ * Codex CLI が使える状態かを調べる（`AgentAdapter.checkAvailability` の実体）。
+ *
+ * - 導入: `codex --version` が 0 で返るか（PATH 直読みより確実 — shim・alias も拾える）。
+ * - ログイン: `codex login status` の終了コード。**資格情報の有無**を見るだけで、
+ *   トークンの有効性までは分からない（期限切れはセッション実行時に `needs_login` で出る）。
+ *
+ * throw しない（すべて「導入なし / ログイン不明」へ倒す）。
+ */
+export async function detectCodexAvailability(command = 'codex'): Promise<AgentAvailability> {
+  const installed = await execFileAsync(command, ['--version'], { timeout: PROBE_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+  if (!installed) {
+    return { installed: false, loggedIn: false };
+  }
+  const loggedIn = await execFileAsync(command, ['login', 'status'], { timeout: PROBE_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+  return { installed: true, loggedIn };
 }

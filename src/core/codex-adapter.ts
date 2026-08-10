@@ -1,5 +1,11 @@
 import type { AgentEvent } from './agent-events';
-import type { AgentAdapter, AgentCapabilities, AgentRun, AgentRunRequest } from './agent-ports';
+import type {
+  AgentAdapter,
+  AgentAvailability,
+  AgentCapabilities,
+  AgentRun,
+  AgentRunRequest,
+} from './agent-ports';
 import { classifyCodexError } from './codex-errors';
 import { toCodexEvent } from './codex-events';
 import { parseCodexEvent } from './codex-parse';
@@ -85,6 +91,8 @@ export function createCodexAdapter(deps: {
   sandbox?: CodexSandbox;
   networkAccess?: boolean;
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
+  /** 導入・ログイン検出（I/O は `utils/codex.ts` の `detectCodexAvailability`）。 */
+  checkAvailability?: () => Promise<AgentAvailability>;
 }): AgentAdapter {
   const sandbox = deps.sandbox ?? 'workspace-write';
   const networkAccess = deps.networkAccess ?? true;
@@ -96,6 +104,7 @@ export function createCodexAdapter(deps: {
     capabilities: CODEX_CAPABILITIES,
     classifyError: classifyCodexError,
     generateTitle: deps.generateTitle,
+    checkAvailability: deps.checkAvailability,
 
     open(request: AgentRunRequest): AgentRun {
       // ターンをまたいで持ち回るもの。`threadId` は resume の鍵で、`thread.started` を

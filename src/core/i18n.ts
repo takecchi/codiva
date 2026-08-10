@@ -181,10 +181,28 @@ export interface Messages {
      * トランスクリプトを持つ）ので、引き継がれるのは worktree と codiva のログだけ。
      */
     warning: string;
-    /** 今このセッションを駆動している行に付ける印 */
+    /** 今このセッションを駆動している行に付ける印（詳細ビュー） */
     current: string;
+    /** 新規セッションの既定に選ばれている行に付ける印（一覧ビュー） */
+    currentDefault: string;
+    /** 一覧の `/agent` は「新規セッションの既定」を選ぶ、の注記（session 用 warning の代わり） */
+    defaultHint: string;
+    /** 検出中の行の説明 */
+    checking: string;
+    /** 導入済み + ログイン済み */
+    ready: string;
+    /** 導入済みだがログインが要る（cmd = ログインコマンド名） */
+    notLoggedIn: (cmd: string) => string;
+    /** 導入済みだがログイン状態を判定できなかった（keychain を見ないため） */
+    loginUnknown: string;
+    /** 未導入（cmd = 入れるべき CLI コマンド名） */
+    notInstalled: (cmd: string) => string;
+    /** どのエージェントも導入されていないときの一覧のセットアップ案内 */
+    noneInstalled: string;
     /** 切替後のフッタ通知（name はエージェントの表示名） */
     switched: (name: string) => string;
+    /** 既定を変えたときのフッタ通知（name はエージェントの表示名） */
+    defaultSet: (name: string) => string;
     /** 切替できなかったとき（未対応・既に同じ・セッション未起動） */
     unavailable: string;
     /** そのエージェントが持たない機能を使おうとしたとき（name は表示名） */
@@ -523,7 +541,17 @@ const ja: Messages = {
     help: '↑↓: 選択 ・ Enter: 決定 ・ Esc: キャンセル',
     warning: '会話の文脈は引き継がれません（worktree の変更とログはそのまま）',
     current: '使用中',
+    currentDefault: '既定',
+    defaultHint: '以降の新規セッションに適用されます',
+    checking: '確認中…',
+    ready: '使用できます',
+    notLoggedIn: (cmd) => `未ログイン（\`${cmd} login\` を実行）`,
+    loginUnknown: '導入済み',
+    notInstalled: (cmd) => `未導入（\`${cmd}\` をインストール）`,
+    noneInstalled:
+      'コーディングエージェントが見つかりません。`claude` か `codex` を入れてログインしてください',
     switched: (name) => `${name} に切り替えました（次の指示から適用）`,
+    defaultSet: (name) => `新規セッションの既定を ${name} にしました`,
     unavailable: 'エージェントを切り替えられませんでした',
     unsupported: (name) => `${name} はこの操作に対応していません`,
   },
@@ -765,7 +793,16 @@ const en: Messages = {
     help: '↑↓: select · Enter: confirm · Esc: cancel',
     warning: 'The conversation context does not carry over (worktree changes and log stay)',
     current: 'in use',
+    currentDefault: 'default',
+    defaultHint: 'Applies to new sessions from now on',
+    checking: 'Checking…',
+    ready: 'Ready',
+    notLoggedIn: (cmd) => `Not logged in (run \`${cmd} login\`)`,
+    loginUnknown: 'Installed',
+    notInstalled: (cmd) => `Not installed (install \`${cmd}\`)`,
+    noneInstalled: 'No coding agent found. Install `claude` or `codex` and log in',
     switched: (name) => `Switched to ${name} (applies to the next instruction)`,
+    defaultSet: (name) => `New sessions will use ${name}`,
     unavailable: 'Could not switch the agent',
     unsupported: (name) => `${name} does not support this`,
   },

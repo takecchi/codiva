@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CodexSpawnRequest } from '@/core';
-import { codexArgs, spawnCodex } from '@/utils/codex';
+import { codexArgs, detectCodexAvailability, spawnCodex } from '@/utils/codex';
 
 /**
  * `codex exec` の引数組み立てだけを見る純粋なテスト。**実プロセスは起動しない**
@@ -176,5 +176,16 @@ describe('spawnCodex', () => {
     expect(() => {
       proc.kill();
     }).not.toThrow();
+  });
+});
+
+/**
+ * 導入・ログイン検出。実 `codex` が要らない部分（未導入 = `--version` が投げる経路）を
+ * 固定する。導入済みでのログイン判定は実バイナリに依存するのでここでは見ない。
+ */
+describe('detectCodexAvailability', () => {
+  it('reports not-installed (and not-logged-in) when the binary is missing', async () => {
+    const a = await detectCodexAvailability('/nonexistent/codex-binary-for-tests');
+    expect(a).toEqual({ installed: false, loggedIn: false });
   });
 });

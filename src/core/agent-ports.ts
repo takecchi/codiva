@@ -35,6 +35,24 @@ export interface PermissionDecision {
 }
 
 /**
+ * その CLI が使える状態か。`/agent` の各行と、どれも使えないときのセットアップ案内に使う。
+ * 検出は provider ごとに違う I/O（PATH 探索・ログイン確認）なのでアダプタが行う。
+ */
+export interface AgentAvailability {
+  /** CLI が導入されているか（PATH にあり、起動できる）。 */
+  installed: boolean;
+  /**
+   * ログイン済みか。`'unknown'` は「確実に判定できない」= 案内を出さない側に倒す。
+   * ここで見るのは**資格情報の有無**であってトークンの有効性ではない（期限切れは
+   * セッション実行時に `needs_login` として現れる）。
+   */
+  loggedIn: boolean | 'unknown';
+}
+
+/** 検出前・検出不能のときの中立値（案内で嘘をつかない側へ倒す）。 */
+export const UNKNOWN_AVAILABILITY: AgentAvailability = { installed: true, loggedIn: 'unknown' };
+
+/**
  * そのエージェントが何をできるか。UI はこれを見て段階的に縮退する
  * （持たない機能のキー操作・表示を出さない）。**セッション途中で切り替えると
  * 変わりうる**ので、UI 側は固定値として持たずアダプタから引く。
@@ -117,6 +135,12 @@ export interface AgentAdapter {
   classifyError?(text: string): AgentStopCause;
   /** 指示文から短いタイトルを作る（省略可・best-effort）。 */
   generateTitle?(prompt: string): Promise<string | null | undefined>;
+  /**
+   * その CLI が使える状態か（導入・ログイン）を調べる。best-effort で throw しない。
+   * 省略時は {@link UNKNOWN_AVAILABILITY}（= 導入済み・ログイン不明）として扱う。
+   * 実 I/O（PATH 探索・ログイン確認）はアダプタ工場に注入する。
+   */
+  checkAvailability?(): Promise<AgentAvailability>;
 }
 
 /** capability を全部 false にした素の値（新しいアダプタの出発点）。 */

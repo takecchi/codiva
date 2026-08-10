@@ -1223,14 +1223,24 @@ zsh: abort      codiva
       ダイアログ内に「会話の文脈は引き継がれません」の注意書きを常時出す
 - [x] 設定 `~/.codiva/config.json` に既定エージェント `agent`（`add-config-option` skill の手順。
       Codex 用の `codexSandbox` / `codexNetworkAccess` も同時に追加）
+- [x] **一覧ビューの `/agent`** = 新規セッションの既定を選ぶ（`AgentSelect` の `mode:'default'`）。
+      選ぶと `onDefaultAgentChange` → `config.agent` に**自動保存**（`/model` と同じ二層構造。
+      手編集不要）。`SessionManager.getDefaultAgentId` / `setDefaultAgent`（`persist` 既定 true）
+- [x] **導入・ログイン検出**（`/agent` の各行に表示 + 未導入時の案内）: `AgentAdapter.checkAvailability`
+      を各アダプタ工場へ注入（`utils/claude.ts` `detectClaudeAvailability` = `claude --version` +
+      env/資格情報ファイル、keychain は見ず不明は `'unknown'` / `utils/codex.ts`
+      `detectCodexAvailability` = `codex --version` + `codex login status`）。判定は
+      `SessionManager.checkAgents`（多重起動を 1 本に畳みキャッシュ）。純粋部は
+      `core/agent-availability.ts`（`resolveDefaultAgentId` / `noAgentInstalled`）
+- [x] **未導入でも起動でき、案内を出す**: 設定 `agent` が無ければ起動時検出で**導入済みのものへ
+      自動で寄せる**（`resolveDefaultAgentId`、永続はしない）。どれも未導入なら一覧に
+      `agent.noneInstalled` の 1 行を出す（`noAgentInstalled` が全件未導入で確定したときだけ）
 - [ ] **残りの capability 縮退**: 使用状況ゲージ（`usage`）・コスト表示（`cost`）・許可ダイアログ
       （`permissions`）・トランスクリプト復元（`transcript`）は**まだ capability を見ていない**。
       現状は実害が出ていないだけ（Codex は USD を運ばないのでヘッダの合計コスト行は
       `cost > 0` の条件で自然に出ない / 許可要求がそもそも届かないのでダイアログも出ない /
       Claude のトランスクリプトパスに Codex の thread id のファイルは無いので復元が空になるだけ）。
       **混在時に嘘をつく余地が残っている**ので、明示的な分岐に置き換える
-- [ ] `/agent` を**一覧ビュー**からも使えるようにする（現状は詳細ビューにしかハンドラが無く、
-      一覧でコマンドパレットに出るのに実行しても何も起きない）
 - [ ] **引き継ぎプロンプトの生成**: 切替先は前の会話を持たないので、worktree の状況（ブランチ・
       差分・直前の指示）を要約した最初の指示文を組み立てる純関数を core に置く
 - [x] i18n: `AgentLabel` を `DEFAULT_AGENT_LABEL` 固定ではなく**セッションのエージェント**から

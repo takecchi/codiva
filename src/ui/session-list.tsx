@@ -27,6 +27,7 @@ import {
   type MouseEvent,
   matchCommands,
   needsAttention,
+  noAgentInstalled,
   otherPrs,
   PR_CELL_WIDTH,
   parseSgrMouse,
@@ -46,6 +47,7 @@ import {
   type UpdateService,
   type UpdateViewState,
 } from '@/core';
+import { AgentSelect } from './agent-select';
 import { Banner } from './banner';
 import { CommandPalette } from './command-palette';
 import { Composer, useComposer } from './composer';
@@ -54,6 +56,7 @@ import { DialogBox } from './dialog-box';
 import {
   useAbsolutePosition,
   useAccount,
+  useAgentAvailability,
   useBoxHeight,
   useClock,
   useCommandRunner,
@@ -216,6 +219,8 @@ export const SessionList: FC<{
   const [confirmRecoverAll, setConfirmRecoverAll] = useState(false);
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
+  // Open when the user runs `/agent`; the AgentSelect dialog then owns the keys.
+  const [agentSelect, setAgentSelect] = useState(false);
   // Open when the user runs `/prompt`; the RepoPromptEditor then owns the keys.
   const [promptEdit, setPromptEdit] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -238,6 +243,22 @@ export const SessionList: FC<{
   // provider から引く** — Codex のセッションに「`claude` でログインし直して」と
   // 言ってしまわないため。
   const targetAgentLabel = manager.getSessionAgentLabel(target?.id ?? '');
+  // 導入・ログイン状態。一覧では**マウント時に 1 回**検出する（キャッシュ済みなら
+  // 即返る）— セットアップ案内（下の `noAgents`）を「起動して待つだけ」で出すため。
+  // `/agent` を開くまで待つと、未導入のユーザーに何も出せない。
+  const agentAvailability = useAgentAvailability(manager, true);
+  const agentChoices = manager.listAgents().map((a) => ({
+    id: a.id,
+    displayName: a.displayName,
+    command: a.loginCommand,
+    availability: agentAvailability.get(a.id),
+  }));
+  // どのエージェントも導入されていない＝新規セッションを始められない。起動時の検出
+  // （`main.tsx` が 1 回叩く）が「全て未導入」で確定したときだけ true になる。
+  const noAgents = noAgentInstalled(
+    manager.listAgents().map((a) => a.id),
+    agentAvailability,
+  );
   // 確認/実行中/エラー + マージ・破棄の実行は共有フックへ（選択セッションが対象）。
   const { confirm, setConfirm, busy, actionError, setActionError, run } = useLifecycleAction(
     manager,
@@ -334,6 +355,9 @@ export const SessionList: FC<{
       help: () => setShowHelp(true),
       // `/model` はセッションを作らずモデル選択ダイアログを開く。
       model: () => setModelSelect(true),
+      // `/agent` は**新規セッションの既定 provider**を選ぶ（詳細ビューの `/agent` は
+      // 「そのセッションを切り替える」で意味が違う）。選ぶと config に永続化する。
+      agent: () => setAgentSelect(true),
       // `/prompt` はリポジトリ追加指示（.codiva/prompt.md）のエディタを開く。
       prompt: () => setPromptEdit(true),
       // `/remove` は選択中のセッションを一覧から削除する（worktree とブランチも消す）。
@@ -640,7 +664,7 @@ export const SessionList: FC<{
       // （`pending` の条件が focus 依存）、モーダルの相互排他が崩れる。ホイールでの選択移動も
       // 同じ経路なので一律で無視する。`/prompt` のエディタは自前でドラッグ範囲選択を持つので、
       // ここで飲まないと同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで動く。
-      if (update || modelSelect || promptEdit) {
+      if (update || modelSelect || agentSelect || promptEdit) {
         return;
       }
       // **許可/質問ダイアログが出ていてもマウスは飲まない。** ダイアログは画面の下段
@@ -688,7 +712,7 @@ export const SessionList: FC<{
     recovery.setNotice(undefined);
     // The model picker and repo-prompt editor are modal: each owns the keys (its
     // own useInput). Ignore everything here so nothing leaks through to the list.
-    if (modelSelect || promptEdit) {
+    if (modelSelect || agentSelect || promptEdit) {
       return;
     }
     if (key.tab && key.shift) {
@@ -905,22 +929,24 @@ export const SessionList: FC<{
 
   const footerHint = modelSelect
     ? m.model.help
-    : promptEdit
-      ? m.prompt.help
-      : // ダイアログがキーを持っている間だけダイアログ用のヒント。list ゾーンでは
-        // ダイアログが見えていても操作対象は一覧なので、通常の一覧ヒントを出す。
-        dialogActive
-        ? m.list.helpPending
-        : zone === 'list'
-          ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
-            // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
-            // 含むヒントに切り替える。
-            target?.status === 'needs_login'
-            ? m.auth.listHint(targetAgentLabel)
-            : target && isResumable(target.status)
-              ? m.resume.listHint
-              : m.list.helpList
-          : m.list.helpComposer;
+    : agentSelect
+      ? m.agent.help
+      : promptEdit
+        ? m.prompt.help
+        : // ダイアログがキーを持っている間だけダイアログ用のヒント。list ゾーンでは
+          // ダイアログが見えていても操作対象は一覧なので、通常の一覧ヒントを出す。
+          dialogActive
+          ? m.list.helpPending
+          : zone === 'list'
+            ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
+              // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
+              // 含むヒントに切り替える。
+              target?.status === 'needs_login'
+              ? m.auth.listHint(targetAgentLabel)
+              : target && isResumable(target.status)
+                ? m.resume.listHint
+                : m.list.helpList
+            : m.list.helpComposer;
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -1016,6 +1042,9 @@ export const SessionList: FC<{
           この案内自体が高さ0に潰れて消える（入力欄の枠も巻き込まれる）。縮む役は
           flexGrow のセッション一覧（内部スクロールで収まる）に任せる。 */}
       <Box flexDirection="column" flexShrink={0}>
+        {/* どのエージェントも導入されていないと新規セッションを作れないので、
+            導入方法を常時案内する（起動時の検出が「全て未導入」で確定したときだけ）。 */}
+        {noAgents ? <Text color={statusColor.needsLogin}>{m.agent.noneInstalled}</Text> : null}
         {target?.status === 'needs_login' ? (
           <Text color={statusColor.needsLogin}>{m.auth.hint(targetAgentLabel)}</Text>
         ) : targetResumable ? (
@@ -1086,6 +1115,21 @@ export const SessionList: FC<{
             setModelSelect(false);
           }}
           onCancel={() => setModelSelect(false)}
+        />
+      ) : agentSelect ? (
+        <AgentSelect
+          mode="default"
+          current={manager.getDefaultAgentId()}
+          agents={agentChoices}
+          onSelect={(agent) => {
+            setAgentSelect(false);
+            if (manager.setDefaultAgent(agent)) {
+              const name = manager.listAgents().find((a) => a.id === agent)?.displayName ?? '';
+              // 既定変更はエラーではないので、成功通知の緑チャンネル（recovery.notice）に出す。
+              recovery.setNotice(m.agent.defaultSet(name));
+            }
+          }}
+          onCancel={() => setAgentSelect(false)}
         />
       ) : promptEdit ? (
         <RepoPromptEditor

@@ -189,8 +189,24 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
 provider に依存しない**ので、Claude で始めた作業を途中から Codex に引き継げる。一方**モデル側の
 文脈は provider をまたげない**（各 CLI が自分のトランスクリプトを持つ）ため、切替は
 「今のターンを終える → 別 provider の**新しいセッション**を同じ worktree で開く」という形になる。
-UI の入口は詳細ビューの `/agent`（`ui/agent-select.tsx` → `SessionManager.setSessionAgent(id, agentId)`）で、
-選択肢は `listAgents()`（= 合成レイヤが登録したアダプタ）だけを出す。
+`/agent`（`ui/agent-select.tsx`）は `/model` と同じ**二層構造**で、選択肢はどちらも
+`listAgents()`（= 合成レイヤが登録したアダプタ）だけを出す:
+
+- **一覧ビュー** = 新規セッションの**既定**を選ぶ（`mode:'default'`）。選ぶと
+  `SessionManager.setDefaultAgent(id)` が既定を差し替え、`onDefaultAgentChange` →
+  `config.agent` に**自動保存**する（手編集不要 = 「設定いらずで切り替えられる」）。
+- **詳細ビュー** = そのセッションを途中で切り替える（`mode:'session'` →
+  `SessionManager.setSessionAgent(id, agentId)`）。
+
+**どのエージェントが使えるかは検出して見せる。** 各アダプタの optional な
+`checkAvailability()`（実 I/O は `utils/claude.ts` / `utils/codex.ts`。keychain は読まず、
+Claude のログインは env / 資格情報ファイルで分かるときだけ true・それ以外は `'unknown'`）を
+`SessionManager.checkAgents()` が集約（多重起動を 1 本に畳みキャッシュ）し、`/agent` の各行に
+`使用できます` / `未ログイン` / `未導入` を出す。設定 `agent` が無ければ起動時検出で**導入済みの
+ものを既定に自動で寄せ**（`core/agent-availability.ts` の `resolveDefaultAgentId`、永続はしない）、
+どれも未導入なら一覧にセットアップ案内を出す（`noAgentInstalled`）。この検出のおかげで
+**`claude` も `codex` も入っていなくても codiva は起動できる**（起動時のプローブはすべて失敗を
+握り潰す）。
 
 **切替の実体は「今の run の入力キューを閉じて、新しいキューに差し替える」こと。**
 `this.run = undefined` は参照を捨てるだけで、consume ループはその `AgentRun` を掴んだまま回り続け、
@@ -243,12 +259,16 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
 `NO_CAPABILITIES`（全部 false）から始めて実装できたものだけ true にする。
 文言側も `i18n.ts` の `AgentLabel`（表示名 + ログインコマンド）を差し込む形にしてあり、
 `auth.hint` / `auth.listHint` / `notify.needsLogin` / `action.resumeAllPrompt` は
-`(agent: AgentLabel) => string`（既定は `DEFAULT_AGENT_LABEL` = Claude）。エージェント名は固有名詞
-なので翻訳しない（モデル名と同じ i18n の例外）。
+`(agent: AgentLabel) => string`。**差し込む値はセッションの provider から引く**
+（`agentLabelOf` + `SessionManager.getSessionAgentLabel`。`DEFAULT_AGENT_LABEL` = Claude は
+アダプタが分からないときのフォールバックに縮小）。Codex のセッションが認証切れになったとき
+「`claude` でログインし直して」と言わないための配線で、一覧・詳細・デスクトップ通知の 3 経路で効く。
+エージェント名は固有名詞なので翻訳しない（モデル名と同じ i18n の例外）。
 
 > 縮退の配線は Phase D で段階的に入れている。現状効いているのは `/model`（`setModel` /
-> `modelCatalog`）と `Ctrl+C`（`interrupt`）だけで、使用状況ゲージ・コスト・許可ダイアログ・
-> トランスクリプト復元はまだ capability を見ていない（[TASKS.md](./TASKS.md) の Phase D）。
+> `modelCatalog`）・`Ctrl+C`（`interrupt`）・認証文言（`AgentLabel`）で、使用状況ゲージ・
+> コスト・許可ダイアログ・トランスクリプト復元はまだ capability を見ていない（現状は
+> 実害が出ていないだけ。[TASKS.md](./TASKS.md) の Phase D）。
 
 ### 6. Codex アダプタ: 1 ターン = 1 プロセス
 

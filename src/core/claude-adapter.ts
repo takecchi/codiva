@@ -6,7 +6,13 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEvent } from './agent-events';
-import type { AgentAdapter, AgentCapabilities, AgentRun, AgentRunRequest } from './agent-ports';
+import type {
+  AgentAdapter,
+  AgentAvailability,
+  AgentCapabilities,
+  AgentRun,
+  AgentRunRequest,
+} from './agent-ports';
 import { classifyClaudeError } from './claude-errors';
 import { parseClaudeMessage } from './claude-parse';
 import type { QuestionSpec } from './types';
@@ -66,6 +72,8 @@ async function* toSdkPrompt(prompt: AsyncIterable<string>): AsyncIterable<SDKUse
 export function createClaudeAdapter(deps: {
   queryFn: QueryFn;
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
+  /** 導入・ログイン検出（I/O は `utils/claude.ts` の `detectClaudeAvailability`）。 */
+  checkAvailability?: () => Promise<AgentAvailability>;
 }): AgentAdapter {
   return {
     id: 'claude',
@@ -74,6 +82,7 @@ export function createClaudeAdapter(deps: {
     capabilities: CLAUDE_CAPABILITIES,
     classifyError: classifyClaudeError,
     generateTitle: deps.generateTitle,
+    checkAvailability: deps.checkAvailability,
 
     open(request: AgentRunRequest): AgentRun {
       const canUseTool = async (

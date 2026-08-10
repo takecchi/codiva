@@ -42,6 +42,7 @@ import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
   useAbsolutePosition,
+  useAgentAvailability,
   useBoxHeight,
   useCommandRunner,
   useLifecycleAction,
@@ -176,7 +177,14 @@ export const SessionDetail: FC<{
   const agent = manager.getSessionAgent(id);
   const caps = agent?.capabilities;
   // `/agent` の選択肢。登録されているアダプタだけなので、未対応の provider は出ない。
-  const agentChoices = manager.listAgents().map((a) => ({ id: a.id, displayName: a.displayName }));
+  // `/agent` を開いている間だけ導入・ログイン状態を検出する（開くまで叩かない）。
+  const agentAvailability = useAgentAvailability(manager, agentSelect);
+  const agentChoices = manager.listAgents().map((a) => ({
+    id: a.id,
+    displayName: a.displayName,
+    command: a.loginCommand,
+    availability: agentAvailability.get(a.id),
+  }));
   // 進行中のターンがあるか（= Ctrl+C で中断できるか）。許可/質問待ちも対象
   // （ターンは生きていて回答待ちで止まっているだけ）。中断を持たない provider では
   // そもそも出さない。
@@ -769,6 +777,7 @@ export const SessionDetail: FC<{
 
         {agentSelect ? (
           <AgentSelect
+            mode="session"
             current={session.agent}
             agents={agentChoices}
             onSelect={(next) => {

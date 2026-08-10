@@ -2701,3 +2701,96 @@ describe('App detail view (/agent)', () => {
     expect(frame).toContain('Claude はこの操作に対応していません');
   });
 });
+
+/**
+ * `/agent`（一覧）= 新規セッションの既定を選ぶ + 導入状態の表示 + 未導入時のセットアップ
+ * 案内。実 CLI を起こさないフェイクアダプタで配線だけ検証する。
+ */
+describe('App list view (/agent default + availability)', () => {
+  function fakeAdapter(
+    id: AgentId,
+    displayName: string,
+    availability?: { installed: boolean; loggedIn: boolean | 'unknown' },
+  ): AgentAdapter {
+    return {
+      id,
+      displayName,
+      loginCommand: id,
+      capabilities: NO_CAPABILITIES,
+      open: () => ({
+        async *[Symbol.asyncIterator]() {
+          // フェイクはイベントを流さない（配線だけを見る）。
+        },
+      }),
+      checkAvailability: availability ? async () => availability : undefined,
+    };
+  }
+
+  function renderList(
+    agents: Partial<Record<AgentId, AgentAdapter>>,
+    extra: {
+      defaultAgentId?: AgentId;
+      onDefaultAgentChange?: (a: AgentId) => void;
+    } = {},
+  ) {
+    const manager = new SessionManager({
+      worktrees,
+      agents,
+      agent: agents.claude ?? Object.values(agents)[0],
+      now: () => 0,
+      ...extra,
+    });
+    return { manager, ...render(<App manager={manager} />) };
+  }
+
+  it('/agent picks the default for new sessions and persists it', async () => {
+    const persisted: AgentId[] = [];
+    const { manager, stdin, lastFrame } = renderList(
+      {
+        claude: fakeAdapter('claude', 'Claude', { installed: true, loggedIn: true }),
+        codex: fakeAdapter('codex', 'Codex', { installed: true, loggedIn: false }),
+      },
+      { onDefaultAgentChange: (a) => persisted.push(a) },
+    );
+    await flush();
+    expect(manager.getDefaultAgentId()).toBe('claude');
+
+    stdin.write('/agent');
+    await flush();
+    stdin.write('\r'); // run → picker opens (default mode)
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toContain('エージェントを選択');
+    // 導入・ログイン状態の行が出る。
+    expect(frame).toContain('使用できます'); // claude: logged in
+    expect(frame).toContain('未ログイン'); // codex: installed, not logged in
+    expect(frame).toContain('以降の新規セッションに適用');
+
+    stdin.write('\x1b[B'); // ↓ → Codex
+    await flush();
+    stdin.write('\r'); // confirm
+    await flush();
+    // 既定が変わり、config へ永続化される（手編集不要）。
+    expect(manager.getDefaultAgentId()).toBe('codex');
+    expect(persisted).toEqual(['codex']);
+  });
+
+  it('shows a setup hint when no agent is installed', async () => {
+    const { lastFrame } = renderList({
+      claude: fakeAdapter('claude', 'Claude', { installed: false, loggedIn: false }),
+      codex: fakeAdapter('codex', 'Codex', { installed: false, loggedIn: false }),
+    });
+    // 一覧はマウント時に検出を回す。全件「未導入」で確定したらセットアップ案内が出る。
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).toContain('コーディングエージェントが見つかりません');
+  });
+
+  it('does not show the setup hint when an agent is installed', async () => {
+    const { lastFrame } = renderList({
+      claude: fakeAdapter('claude', 'Claude', { installed: true, loggedIn: true }),
+      codex: fakeAdapter('codex', 'Codex', { installed: false, loggedIn: false }),
+    });
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain('コーディングエージェントが見つかりません');
+  });
+});

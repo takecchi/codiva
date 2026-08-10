@@ -16,6 +16,8 @@ import {
 import {
   createPr,
   createTitleGenerator,
+  detectClaudeAvailability,
+  detectCodexAvailability,
   lookupPr,
   lookupPrs,
   markPrReady,
@@ -87,13 +89,33 @@ export function buildAgents(
   // 短文生成のためだけに `codex exec` をもう 1 本起こすのは高くつくため。
   const generateTitle = createTitleGenerator(query, { cwd: deps.repoRoot });
   return {
-    claude: createClaudeAdapter({ queryFn: query, generateTitle }),
+    claude: createClaudeAdapter({
+      queryFn: query,
+      generateTitle,
+      // 導入・ログイン検出（`/agent` とセットアップ案内）。keychain は読まない。
+      checkAvailability: () => detectClaudeAvailability(),
+    }),
     codex: createCodexAdapter({
       spawn: spawnCodex,
       sandbox: config.codexSandbox,
       networkAccess: config.codexNetworkAccess,
       generateTitle,
+      checkAvailability: () => detectCodexAvailability(),
     }),
+  };
+}
+
+/**
+ * `/model` と同じく、`/agent`（一覧）で既定エージェントを変えたら
+ * `~/.codiva/config.json` にマージ保存する（読み込みは起動時 1 回なので、他フィールドを
+ * 保ったまま `agent` だけ差し替える）。
+ */
+function createDefaultAgentPersister(config: CodivaConfig): (agent: AgentId) => void {
+  let current = config;
+  return (agent) => {
+    const next: CodivaConfig = { ...current, agent };
+    current = next;
+    void saveConfig(next).catch(() => undefined);
   };
 }
 
@@ -131,8 +153,12 @@ export function buildManager(opts: {
   return new SessionManager({
     worktrees,
     agents,
-    // 新規セッションの既定 provider（`"agent": "codex"` で切り替え）。未設定は Claude。
+    // 新規セッションの既定 provider の**フォールバック**（`defaultAgentId` を引けないとき）。
     agent: agents[config.agent ?? 'claude'] ?? agents.claude,
+    // 既定 provider の id。設定 `agent` 由来で、`/agent`（一覧）で差し替え → 下で永続化。
+    // 設定が無いときは起動時に「導入済みのもの」へ自動で寄せる（`main.tsx`）。
+    defaultAgentId: config.agent,
+    onDefaultAgentChange: createDefaultAgentPersister(config),
     queryFn: query,
     generateTitle: createTitleGenerator(query, { cwd: repoRoot }),
     options: sessionOptionsFrom(config, appendSystemPrompt),

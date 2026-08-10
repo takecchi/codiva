@@ -1,4 +1,5 @@
 export * from './account';
+export * from './agent-availability';
 export * from './agent-events';
 export * from './agent-ports';
 export * from './ansi';

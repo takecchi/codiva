@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { type AgentAdapter, NO_CAPABILITIES } from '@/core/agent-ports';
+import { type AgentAdapter, type AgentAvailability, NO_CAPABILITIES } from '@/core/agent-ports';
 import { messages } from '@/core/i18n';
 import type { RateLimitInfoJson } from '@/core/rate-limit';
 import { SessionManager } from '@/core/session-manager';
@@ -1821,6 +1821,118 @@ describe('SessionManager', () => {
 
     it('returns false for an unknown session id', () => {
       expect(managerWithAgents().setSessionAgent('nope', 'codex')).toBe(false);
+    });
+  });
+
+  describe('default agent (list /agent + auto-pick)', () => {
+    function fakeAdapter(
+      id: AgentId,
+      availability?: AgentAvailability,
+    ): AgentAdapter & { checks: number } {
+      const adapter = {
+        id,
+        displayName: id,
+        loginCommand: id,
+        capabilities: NO_CAPABILITIES,
+        checks: 0,
+        open: () => ({
+          async *[Symbol.asyncIterator]() {
+            // フェイクはイベントを流さない（状態遷移の配線だけを見る）。
+          },
+        }),
+        checkAvailability: availability
+          ? async () => {
+              adapter.checks += 1;
+              return availability;
+            }
+          : undefined,
+      };
+      return adapter;
+    }
+
+    const YES: AgentAvailability = { installed: true, loggedIn: true };
+    const MISSING: AgentAvailability = { installed: false, loggedIn: false };
+
+    function managerWith(
+      agents: Partial<Record<AgentId, AgentAdapter>>,
+      extra: {
+        defaultAgentId?: AgentId;
+        onDefaultAgentChange?: (agent: AgentId) => void;
+      } = {},
+    ) {
+      // 新規セッションがどのアダプタで作られたかを記録するフェイク。
+      const created: { id: AgentId }[] = [];
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        agents,
+        agent: agents.claude ?? Object.values(agents)[0],
+        now: () => 1,
+        createSession: ({ input, onChange, restored }) => {
+          const s = new FakeSession(input, onChange, restored);
+          // 記録は defaultAgentId 経由の解決結果を反映する（buildSession の分岐）。
+          created.push({ id: manager.getDefaultAgentId() ?? 'claude' });
+          return s;
+        },
+        ...extra,
+      });
+      return { manager, created };
+    }
+
+    it('reports the configured default agent id', () => {
+      const { manager } = managerWith(
+        { claude: fakeAdapter('claude'), codex: fakeAdapter('codex') },
+        { defaultAgentId: 'codex' },
+      );
+      expect(manager.getDefaultAgentId()).toBe('codex');
+    });
+
+    it('persists a new default via onDefaultAgentChange and applies it to new sessions', () => {
+      const onDefaultAgentChange = vi.fn();
+      const { manager } = managerWith(
+        { claude: fakeAdapter('claude'), codex: fakeAdapter('codex') },
+        { onDefaultAgentChange },
+      );
+      expect(manager.setDefaultAgent('codex')).toBe(true);
+      expect(onDefaultAgentChange).toHaveBeenCalledWith('codex');
+      expect(manager.getDefaultAgentId()).toBe('codex');
+    });
+
+    it('does not persist an auto-pick (persist: false)', () => {
+      const onDefaultAgentChange = vi.fn();
+      const { manager } = managerWith(
+        { claude: fakeAdapter('claude'), codex: fakeAdapter('codex') },
+        { onDefaultAgentChange },
+      );
+      expect(manager.setDefaultAgent('codex', { persist: false })).toBe(true);
+      expect(onDefaultAgentChange).not.toHaveBeenCalled();
+      expect(manager.getDefaultAgentId()).toBe('codex');
+    });
+
+    it('refuses an unregistered agent and a no-op change', () => {
+      const { manager } = managerWith({ claude: fakeAdapter('claude') });
+      expect(manager.setDefaultAgent('codex')).toBe(false); // 未登録
+      expect(manager.setDefaultAgent('claude')).toBe(false); // 既に既定
+    });
+
+    it('detects availability once and caches it (concurrent calls share one probe)', async () => {
+      const claude = fakeAdapter('claude', YES);
+      const codex = fakeAdapter('codex', MISSING);
+      const { manager } = managerWith({ claude, codex });
+      const [a, b] = await Promise.all([manager.checkAgents(), manager.checkAgents()]);
+      expect(a).toBe(b); // 同じ probe にまとまる
+      expect(claude.checks).toBe(1);
+      expect(codex.checks).toBe(1);
+      expect(manager.getAgentAvailability().get('claude')).toEqual(YES);
+      expect(manager.getAgentAvailability().get('codex')).toEqual(MISSING);
+    });
+
+    it('treats an adapter without checkAvailability as installed/unknown', async () => {
+      const { manager } = managerWith({ claude: fakeAdapter('claude') });
+      await manager.checkAgents();
+      expect(manager.getAgentAvailability().get('claude')).toEqual({
+        installed: true,
+        loggedIn: 'unknown',
+      });
     });
   });
 });
