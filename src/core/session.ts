@@ -222,6 +222,9 @@ export class Session {
     this.restartAfterSwitch = this.consuming;
     this.run = undefined;
     this.adapter = adapter;
+    // provider ごとにモデル名の名前空間は別なので、切替前の既定/override を渡さない。
+    // `/model` で明示的に選び直すまでは切替先 CLI の既定を使う。
+    this.modelOverride = { overridden: true, model: undefined };
     // ここから先のログ行には発言者を刻む（どこからが別エージェントか分かるように）。
     this.attribution = adapter.id;
     this.dispatch({ kind: 'agent_switched', agent: adapter.id, at: this.now() });
@@ -458,6 +461,12 @@ export class Session {
       const opts = this.deps.options;
       // A per-session /model override wins over the configured default.
       const model = this.modelOverride.overridden ? this.modelOverride.model : opts?.model;
+      // Codex の JSONL は Claude の system/init と違って解決済みモデルを通知しない。
+      // 明示指定がある場合は実際に adapter へ渡す値を先に表示し、provider が後から
+      // 解決済みモデルを報告する場合は通常の AgentEvent が上書きする。
+      if (model !== undefined && this.state.model !== model) {
+        this.dispatch({ kind: 'model', model, at: this.now() });
+      }
       // Resume the prior SDK conversation when we have one: `deps.resume` for a
       // restored session, or the live `sdkSessionId` when restarting after a
       // connection interruption. Absent on a fresh session's first start.

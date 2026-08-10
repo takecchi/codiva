@@ -634,6 +634,10 @@ export class SessionManager {
       return false;
     }
     this.defaultAgentId = agentId;
+    // `model` は provider 共通の設定欄だが、値の名前空間は共通ではない。
+    // Claude のモデルを残したまま Codex（または逆）へ切り替えると、新規セッションが
+    // 切替前 provider の `--model` を受け取って即失敗するため、CLI 既定へ戻す。
+    this.setModel(undefined);
     if (opts?.persist !== false) {
       this.deps.onDefaultAgentChange?.(agentId);
     }

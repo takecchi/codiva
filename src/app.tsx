@@ -163,6 +163,7 @@ export const App: FC<{
             branch={branch}
             model={model}
             models={models}
+            codexModels={codexModels}
             version={version}
             updateInfo={updateInfo}
             updater={updater}

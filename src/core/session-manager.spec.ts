@@ -1853,6 +1853,22 @@ describe('SessionManager', () => {
     const YES: AgentAvailability = { installed: true, loggedIn: true };
     const MISSING: AgentAvailability = { installed: false, loggedIn: false };
 
+    it('clears a provider-specific model when the default agent changes', () => {
+      const onModelChange = vi.fn();
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        agents: { claude: fakeAdapter('claude'), codex: fakeAdapter('codex') },
+        agent: fakeAdapter('claude'),
+        options: { model: 'claude-opus-4-8' },
+        onModelChange,
+        now: () => 1,
+      });
+
+      expect(manager.setDefaultAgent('codex')).toBe(true);
+      expect(manager.getModel()).toBeUndefined();
+      expect(onModelChange).toHaveBeenCalledWith(undefined);
+    });
+
     function managerWith(
       agents: Partial<Record<AgentId, AgentAdapter>>,
       extra: {
