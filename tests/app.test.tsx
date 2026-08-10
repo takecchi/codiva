@@ -16,6 +16,7 @@ import {
   makeManager,
   noopSession,
   renderFullscreen,
+  settle,
   stripAnsi,
   fakeWorktrees as worktrees,
 } from './helpers';
@@ -1244,6 +1245,10 @@ describe('App detail view (in-app connection)', () => {
    * (`log-00`, `log-01`, …), rendered at a fixed terminal size. `textFor` lets a
    * test emit multi-line Markdown per entry instead of a single line; `onCopy`
    * captures what a mouse selection puts on the clipboard.
+   *
+   * 各ステップは固定 `flush()` ではなく `settle()`（描画が止まるまで待つ）で待つ。
+   * ここから返ったフレームの行・桁がそのままクリック座標になるので、まだ描き変わる
+   * 余地があるうちに触ると当たり判定が別の行に落ちる（helpers.ts の `settle` の注記）。
    */
   async function detailWithLog(
     count: number,
@@ -1260,9 +1265,9 @@ describe('App detail view (in-app connection)', () => {
       columns,
     );
     stdin.write('start');
-    await flush();
+    await settle(lastFrame);
     stdin.write('\r');
-    await flush();
+    await settle(lastFrame);
     out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-scroll' }));
     for (let i = 0; i < count; i++) {
       out.push(
@@ -1272,11 +1277,11 @@ describe('App detail view (in-app connection)', () => {
         }),
       );
     }
-    await flush();
+    await settle(lastFrame);
     stdin.write('\t'); // focus the list
-    await flush();
+    await settle(lastFrame);
     stdin.write('\r'); // open the detail view
-    await flush();
+    await settle(lastFrame);
     /** Log line numbers currently visible, in render order. */
     const visible = () => [...lastFrame().matchAll(/log-(\d+)/g)].map((match) => Number(match[1]));
     return { app, stdin, lastFrame, visible, out };
@@ -1324,68 +1329,68 @@ describe('App detail view (in-app connection)', () => {
 
   it('詳細ログの URL をクリックするとブラウザで開く', async () => {
     const url = 'https://example.com/pr/1';
-    const { app, stdin, opened, row, col } = await detailWithUrl(url);
+    const { app, stdin, lastFrame, opened, row, col } = await detailWithUrl(url);
 
     // URL の上で press → 動かさずに release = 単なるクリック。
     stdin.write(press(col + 2, row));
-    await flush();
+    await settle(lastFrame);
     stdin.write(release(col + 2, row));
-    await flush();
+    await settle(lastFrame);
     expect(opened).toEqual([url]);
     app.unmount();
   }, 30000);
 
   it('URL の外・行末より右のクリックでは開かない', async () => {
     const url = 'https://example.com/pr/1';
-    const { app, stdin, opened, row, col, urlLen } = await detailWithUrl(url);
+    const { app, stdin, lastFrame, opened, row, col, urlLen } = await detailWithUrl(url);
 
     // URL の手前（'open ' の上）
     stdin.write(press(col - 2, row));
-    await flush();
+    await settle(lastFrame);
     stdin.write(release(col - 2, row));
-    await flush();
+    await settle(lastFrame);
     // 行末よりずっと右の余白
     stdin.write(press(col + urlLen + 30, row));
-    await flush();
+    await settle(lastFrame);
     stdin.write(release(col + urlLen + 30, row));
-    await flush();
+    await settle(lastFrame);
     expect(opened).toEqual([]);
     app.unmount();
   }, 30000);
 
   it('右クリック・中クリックでは開かない（副作用は左ボタンだけ）', async () => {
     const url = 'https://example.com/pr/1';
-    const { app, stdin, opened, row, col } = await detailWithUrl(url);
+    const { app, stdin, lastFrame, opened, row, col } = await detailWithUrl(url);
 
     for (const button of [1, 2]) {
       // 中(1)/右(2) ボタンの press → release。座標は URL の上。
       stdin.write(`\x1b[<${button};${col + 3};${row + 1}M`);
-      await flush();
+      await settle(lastFrame);
       stdin.write(`\x1b[<${button};${col + 3};${row + 1}m`);
-      await flush();
+      await settle(lastFrame);
     }
     expect(opened).toEqual([]);
 
     // 左ボタンなら開く（同じ座標なので、当たり判定ではなくボタンで弾いている証拠）。
     stdin.write(press(col + 3, row));
-    await flush();
+    await settle(lastFrame);
     stdin.write(release(col + 3, row));
-    await flush();
+    await settle(lastFrame);
     expect(opened).toEqual([url]);
     app.unmount();
   }, 30000);
 
   it('ドラッグして範囲選択したときは開かない（選択とクリックを混同しない）', async () => {
     const url = 'https://example.com/pr/1';
-    const { app, stdin, opened, row, col } = await detailWithUrl(url);
+    const { app, stdin, lastFrame, opened, row, col } = await detailWithUrl(url);
 
     // URL の上から押して、動かしてから離す = 範囲選択。開いてはいけない。
     stdin.write(press(col + 2, row));
-    await flush();
+    await settle(lastFrame);
     stdin.write(dragTo(col + 8, row));
-    await flush();
+    await settle(lastFrame);
     stdin.write(release(col + 8, row));
-    await flush();
+    await settle(lastFrame);
     expect(opened).toEqual([]);
     app.unmount();
   }, 30000);
@@ -1535,14 +1540,16 @@ describe('App detail view (in-app connection)', () => {
 
     // 'log-30' の先頭 → 'log-32' の行末（行末より右でも行末に丸める）→ 離す。
     stdin.write(press(colOf(from, 'log-30'), from));
-    await flush();
+    await settle(lastFrame);
     stdin.write(dragTo(colOf(to, 'log-32') + 'log-32'.length + 3, to));
-    await flush();
+    await settle(lastFrame);
     expect(copied).toEqual([]); // ドラッグ中はコピーしない（再描画ごとに送らない）
     stdin.write(release(colOf(to, 'log-32') + 'log-32'.length + 3, to));
-    await flush();
+    await settle(lastFrame);
 
-    expect(copied).toEqual(['log-30\nlog-31\nlog-32']);
+    // 失敗メッセージにフレームを載せる: `[]` だけでは「押した座標がどの行に当たったのか」が
+    // 分からず、CI でしか出ない揺れを追えない（実際に 1 度そうなった）。
+    expect(copied, `frame:\n${stripAnsi(lastFrame())}`).toEqual(['log-30\nlog-31\nlog-32']);
     // ログのクリックはコンポーザへ文字を入れない（レポートを先取りして飲んでいる）。
     expect(lastFrame()).toContain('追加の指示を入力');
     app.unmount();
@@ -1564,11 +1571,11 @@ describe('App detail view (in-app connection)', () => {
     const col = (rowsOf()[last] ?? '').indexOf('log-02');
 
     stdin.write(press(col, 1)); // ログ領域の上端（行より上の余白）
-    await flush();
+    await settle(lastFrame);
     stdin.write(dragTo(col + 'log-02'.length, last));
-    await flush();
+    await settle(lastFrame);
     stdin.write(release(col + 'log-02'.length, last));
-    await flush();
+    await settle(lastFrame);
 
     // 文書の先頭行は投入した指示（`> start`）なので、そこから全部入る。
     expect(copied).toEqual(['> start\nlog-00\nlog-01\nlog-02']);
@@ -1584,9 +1591,9 @@ describe('App detail view (in-app connection)', () => {
       .split('\n')
       .findIndex((l) => l.includes('log-35'));
     stdin.write(press(3, row));
-    await flush();
+    await settle(lastFrame);
     stdin.write(release(3, row));
-    await flush();
+    await settle(lastFrame);
     expect(copied).toEqual([]);
     app.unmount();
   }, 30000);
@@ -1609,7 +1616,7 @@ describe('App detail view (in-app connection)', () => {
 
     // 末尾の行の行末をアンカーにして、フレームの先頭行（ログ可視域より上）へドラッグ。
     stdin.write(press(col + 'log-39'.length, lastRow));
-    await flush();
+    await settle(lastFrame);
     stdin.write(dragTo(col, 0));
     // ドラッグレポートは 1 回だけ。以降はタイマーがスクロールを続ける。
     await flush(250);

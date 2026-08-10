@@ -9,6 +9,50 @@ import type { CreateSessionInput, SessionState } from '@/core/types';
 /** Resolve after `ms` so background provisioning/state updates settle between steps. */
 export const flush = (ms = 150): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * ストアの購読がまとめられる窓（`useSessions` の ~100ms）。`settle` の「静かだった」
+ * 判定はこれより長くないと、まだ続きが来る途中の隙間を「落ち着いた」と誤読する。
+ */
+const STORE_COALESCE_MS = 100;
+
+/**
+ * 描画が**変わらなくなるまで**待つ（最後のフレームが `quietMs` 以上変化しない or
+ * `timeoutMs` 経過）。
+ *
+ * 固定の `flush(150)` は「150ms あれば全部落ち着く」という賭けで、遅い CI で負ける。
+ * 実際に 1 度だけ、詳細ログのドラッグ選択がコピーを 1 件も出さずに落ちた
+ * （`copied` が `[]`。ローカルでは再現せず、同じコミットの PR / tag のジョブは緑）。
+ * この種のテストは**フレームから座標を割り出して**クリックを合成するので、押した
+ * 時点のアプリの幾何（`logView`）がそのフレームと同じでなければ当たり判定が別の行に
+ * 落ちる — つまり「まだ描き変わる余地があるうちに触る」ことが失敗の条件になる。
+ *
+ * ここでは待ち時間を固定値の賭けにせず、**静止するまで待つ**ようにする（遅い環境では
+ * 自然に長く待ち、速い環境では従来と同じくらいで返る）。静止の窓は
+ * {@link STORE_COALESCE_MS} より長くとる: ストア更新はまとめられて届くので、
+ * 60ms 程度の静けさは「まだ続きがある」ことと区別できない。
+ */
+export async function settle(
+  lastFrame: () => string,
+  { quietMs = STORE_COALESCE_MS + 60, tickMs = 25, timeoutMs = 5_000 } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let previous = lastFrame();
+  let quiet = 0;
+  while (Date.now() < deadline) {
+    await flush(tickMs);
+    const current = lastFrame();
+    if (current === previous) {
+      quiet += tickMs;
+      if (quiet >= quietMs) {
+        return;
+      }
+      continue;
+    }
+    previous = current;
+    quiet = 0;
+  }
+}
+
 // 制御文字を正規表現リテラルに直接書くと Biome の noControlCharactersInRegex に触れるので組み立てる。
 const ESC = String.fromCharCode(27);
 const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'g');
