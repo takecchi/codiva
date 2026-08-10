@@ -610,9 +610,15 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   `composer`（起動時既定。タイピング + 矢印キャレット移動）/ `dialog`（選択セッションの
   `PermissionDialog` がキーを持つ）/ `list`（↑↓選択・Enter/→ = 詳細を開く・m/d/x = マージ/破棄/削除）の
   3ゾーン（`ListFocus`）で、Tab は composer → dialog（選択行が許可/質問待ちのときだけ）→ list → composer と
-  回す。ダイアログは composer 以外のゾーンで常に見えているが、キーを取るのは `dialog` ゾーンだけ
-  （`useInput` の `isActive`）。**分けているのは ↑↓ の行き先を一意にするため** — 以前は list フォーカスに
-  相乗りさせていたので、質問が出ている行を選んでいる間はセッションを切り替えられなかった。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で行選択・キャレット移動。
+  回す。ダイアログは composer 以外のゾーンで常に見えているが、キーを取るのは `dialog` ゾーンだけ。
+  **分けているのは ↑↓ の行き先を一意にするため** — 以前は list フォーカスに
+  相乗りさせていたので、質問が出ている行を選んでいる間はセッションを切り替えられなかった。
+  そのうえで**選んだ行が許可/質問待ちなら `dialog` を既定ゾーンにする**（`zoneForRow`。↑↓ の移動・
+  ホイール・行のクリック・空 Enter すべて共通）。回答は待たせている用事なので Tab を余分に踏ませず、
+  一覧へ戻る出口は Tab に一本化してある。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で
+  行選択・キャレット移動。**ダイアログの中のクリックも受ける**（`PermissionDialog` の `onActivate` で
+  ゾーンを `dialog` へ寄せ、選択肢の上ならカーソルもそこへ置く）ので、一覧のクリックは
+  ダイアログが出ている間も飲まない（飲むと「アクティブなダイアログから別セッションへマウスで移れない」）。
   コンポーザ上のドラッグで範囲選択し、離すとクリップボードへコピー（OSC 52 = `utils/clipboard.ts`。
   純粋ロジックは `core/text-selection.ts`、状態は共有フック `useDragSelection`）。詳細ビューの
   フォローアップ入力欄・ログも同様（ログは行単位の `useLogDragSelection`）。**ヘッダ（`Banner`）も同じ仕組みで選択・コピーできる**（`useDragSelection` を

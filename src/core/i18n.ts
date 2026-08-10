@@ -462,13 +462,13 @@ const ja: Messages = {
     deny: '拒否',
     questionTitle: (index, total, header) => `質問 (${index}/${total}) ${header}`,
     questionHelp: (multiSelect) =>
-      `↑↓: 選択 ・ ${multiSelect ? 'Space: トグル ・ ' : ''}Enter: 決定`,
+      `↑↓/クリック: 選択 ・ ${multiSelect ? 'Space: トグル ・ ' : ''}Enter: 決定`,
     typeSomething: '自分で入力する',
     typePlaceholder: '回答を入力…',
     typingHelp: 'Enter: 送信 ・ Shift+Enter: 改行 ・ 空欄で Backspace: 選択に戻る',
     chatAboutThis: 'これについて相談する',
     chatMessage: 'ユーザーは選択肢を選ばず、この件について会話で相談することを選びました。',
-    inactiveHelp: '↑↓: セッション切替 ・ Tab: 入力へ（もう 1 回で回答へ）',
+    inactiveHelp: '↑↓: セッション切替 ・ クリックで回答へ ・ Tab: 入力へ',
   },
   // モデル名・説明文はここに持たない。Claude Code のカタログ（英語）をそのまま
   // 出すのが唯一の出所という設計判断（core/models.ts 参照）。翻訳するとモデル追加
@@ -697,13 +697,13 @@ const en: Messages = {
     deny: 'deny',
     questionTitle: (index, total, header) => `Question (${index}/${total}) ${header}`,
     questionHelp: (multiSelect) =>
-      `↑↓: select · ${multiSelect ? 'Space: toggle · ' : ''}Enter: confirm`,
+      `↑↓/click: select · ${multiSelect ? 'Space: toggle · ' : ''}Enter: confirm`,
     typeSomething: 'Type something.',
     typePlaceholder: 'Type your answer…',
     typingHelp: 'Enter: submit · Shift+Enter: newline · Backspace on empty: back to choices',
     chatAboutThis: 'Chat about this',
     chatMessage: 'The user chose to chat about this instead of picking an option.',
-    inactiveHelp: '↑↓: switch sessions · Tab: input (again to answer)',
+    inactiveHelp: '↑↓: switch sessions · click to answer · Tab: input',
   },
   model: {
     title: 'Select model',
