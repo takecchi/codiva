@@ -607,9 +607,12 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   （`useBoxHeight`）が行数より小さい間はヘッダの当たり判定をやめる。一方**マスコットの Box だけは
   `flexShrink={0}`**（横方向の縮小でアスキーアートが折り返して崩れるのを防ぐ。縦の譲り合いには効かない）。
 - `SessionList`: 一覧画面。`Banner` + 一覧 + 下部 `PromptInput`/`StatusFooter`。フォーカスは
-  `composer`（起動時既定。タイピング + 矢印キャレット移動）と `list`（↑↓選択・Enter/→ = 詳細を開く・
-  m/d/x = マージ/破棄/削除）の2ゾーンで Tab 切替。選択セッションの `PermissionDialog` は list フォーカス時のみ
-  アクティブ。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で行選択・キャレット移動。
+  `composer`（起動時既定。タイピング + 矢印キャレット移動）/ `dialog`（選択セッションの
+  `PermissionDialog` がキーを持つ）/ `list`（↑↓選択・Enter/→ = 詳細を開く・m/d/x = マージ/破棄/削除）の
+  3ゾーン（`ListFocus`）で、Tab は composer → dialog（選択行が許可/質問待ちのときだけ）→ list → composer と
+  回す。ダイアログは composer 以外のゾーンで常に見えているが、キーを取るのは `dialog` ゾーンだけ
+  （`useInput` の `isActive`）。**分けているのは ↑↓ の行き先を一意にするため** — 以前は list フォーカスに
+  相乗りさせていたので、質問が出ている行を選んでいる間はセッションを切り替えられなかった。マウスクリック（`core/mouse.ts` + `useAbsolutePosition`）で行選択・キャレット移動。
   コンポーザ上のドラッグで範囲選択し、離すとクリップボードへコピー（OSC 52 = `utils/clipboard.ts`。
   純粋ロジックは `core/text-selection.ts`、状態は共有フック `useDragSelection`）。詳細ビューの
   フォローアップ入力欄・ログも同様（ログは行単位の `useLogDragSelection`）。**ヘッダ（`Banner`）も同じ仕組みで選択・コピーできる**（`useDragSelection` を

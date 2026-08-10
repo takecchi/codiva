@@ -42,7 +42,7 @@ export interface Messages {
     helpComposer: string;
     /** セッション一覧フォーカス時のフッタヒント */
     helpList: string;
-    /** 選択中セッションの許可/質問ダイアログがキーを持つ間のヒント */
+    /** 選択中セッションの許可/質問ダイアログがキーを持つ間（dialog ゾーン）のヒント */
     helpPending: string;
     /** 一覧スクロール時、上に隠れている件数のインジケータ */
     moreAbove: (n: number) => string;
@@ -131,6 +131,12 @@ export interface Messages {
     chatAboutThis: string;
     /** 「相談する」を選んだときにツールへ返す拒否理由（モデルに伝わる） */
     chatMessage: string;
+    /**
+     * 一覧の list ゾーンで、ダイアログが「表示だけされていて操作を受け付けない」ときの案内。
+     * そこでは ↑↓ がセッション切替なので、回答へ戻るには Tab の輪
+     * （composer → dialog → list）をもう一周させる。
+     */
+    inactiveHelp: string;
   };
   /** モデル選択ダイアログ（model-select.tsx。/model コマンドで開く） */
   model: {
@@ -396,7 +402,7 @@ const ja: Messages = {
       'Enter: 投入 ・ Shift+Enter: 改行 ・ Tab: 一覧へ ・ /exit: 終了 ・ Ctrl+U: 全消し ・ ↑↓: 履歴',
     helpList:
       '↑↓: 選択 ・ Enter/→: 詳細を開く ・ p: PR ・ m: マージ ・ d: 破棄 ・ x: 削除 ・ Tab/Esc: 入力へ',
-    helpPending: 'ダイアログで回答 ・ PgUp/PgDn: 選択移動 ・ Tab: 入力へ',
+    helpPending: 'ダイアログで回答 ・ Tab: 一覧へ（↑↓ でセッション切替） ・ Esc: 入力へ',
     moreAbove: (n) => `↑ 他 ${n} 件`,
     moreBelow: (n) => `↓ 他 ${n} 件`,
   },
@@ -462,6 +468,7 @@ const ja: Messages = {
     typingHelp: 'Enter: 送信 ・ Shift+Enter: 改行 ・ 空欄で Backspace: 選択に戻る',
     chatAboutThis: 'これについて相談する',
     chatMessage: 'ユーザーは選択肢を選ばず、この件について会話で相談することを選びました。',
+    inactiveHelp: '↑↓: セッション切替 ・ Tab: 入力へ（もう 1 回で回答へ）',
   },
   // モデル名・説明文はここに持たない。Claude Code のカタログ（英語）をそのまま
   // 出すのが唯一の出所という設計判断（core/models.ts 参照）。翻訳するとモデル追加
@@ -630,7 +637,7 @@ const en: Messages = {
       'Enter: submit · Shift+Enter: newline · Tab: list · /exit: quit · Ctrl+U: clear · ↑↓: history',
     helpList:
       '↑↓: select · Enter/→: open detail · p: PR · m: merge · d: discard · x: remove · Tab/Esc: input',
-    helpPending: 'Answer in the dialog · PgUp/PgDn: move selection · Tab: input',
+    helpPending: 'Answer in the dialog · Tab: list (↑↓ switches sessions) · Esc: input',
     moreAbove: (n) => `↑ ${n} more`,
     moreBelow: (n) => `↓ ${n} more`,
   },
@@ -696,6 +703,7 @@ const en: Messages = {
     typingHelp: 'Enter: submit · Shift+Enter: newline · Backspace on empty: back to choices',
     chatAboutThis: 'Chat about this',
     chatMessage: 'The user chose to chat about this instead of picking an option.',
+    inactiveHelp: '↑↓: switch sessions · Tab: input (again to answer)',
   },
   model: {
     title: 'Select model',

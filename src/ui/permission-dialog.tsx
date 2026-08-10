@@ -12,7 +12,11 @@ import { statusColor, theme } from './theme';
  * response. Two shapes:
  *  - kind 'question' (AskUserQuestion): pick an option per question → onAnswer
  *  - kind 'tool': allow / deny a tool call → onAllow / onDeny
- * This owns the active key handler while a decision is pending.
+ * This owns the active key handler while a decision is pending **and** `active`
+ * （既定 true）。一覧ビューは選択行の切替（↑↓）と両立させるため、`list` ゾーンでは
+ * `active={false}` で「表示だけ」にする。`useInput` の `isActive` で無効化するのが要点で、
+ * マウントしたままハンドラだけ止めるので、Tab で戻ってきたときに回答の途中経過
+ * （質問の何問目か・複数選択のチェック・自由記述の内容）が失われない。
  */
 export const PermissionDialog: FC<{
   request: PermissionRequest;
@@ -21,36 +25,50 @@ export const PermissionDialog: FC<{
   onDeny: (message: string) => void;
   /** 自由記述欄のマウス範囲選択をクリップボードへ（OSC 52）。合成ルートから注入。 */
   onCopy?: (text: string) => void;
-}> = ({ request, onAnswer, onAllow, onDeny, onCopy }) => {
+  /** false ならキーを受け取らない（表示のみ）。省略時は true。 */
+  active?: boolean;
+}> = ({ request, onAnswer, onAllow, onDeny, onCopy, active = true }) => {
   if (request.kind === 'question') {
-    return <QuestionDialog request={request} onAnswer={onAnswer} onDeny={onDeny} onCopy={onCopy} />;
+    return (
+      <QuestionDialog
+        request={request}
+        onAnswer={onAnswer}
+        onDeny={onDeny}
+        onCopy={onCopy}
+        active={active}
+      />
+    );
   }
-  return <ToolDialog request={request} onAllow={onAllow} onDeny={onDeny} />;
+  return <ToolDialog request={request} onAllow={onAllow} onDeny={onDeny} active={active} />;
 };
 
 const ToolDialog: FC<{
   request: PermissionRequest;
   onAllow: () => void;
   onDeny: (message: string) => void;
-}> = ({ request, onAllow, onDeny }) => {
+  active: boolean;
+}> = ({ request, onAllow, onDeny, active }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
-  useInput((rawInput, rawKey) => {
-    // マウスレポートを先に握り潰す。モーダルは自分の useInput を持つので背後の view の
-    // 先取り解釈では守られず、クリック/ホイールの列が y/n 判定へ流れ込む（下の
-    // QuestionDialog と同じ理由。`repo-prompt-editor` も同じ防御を持つ）。
-    if (parseSgrMouse(rawInput)) {
-      return;
-    }
-    // 一覧/詳細ビューと同じく chord を復号する。modifyOtherKeys / CSI-u を送る端末
-    // （Ghostty など）では y/n も生のエスケープ列で届き、素の比較が外れるため。
-    const { input } = normalizeChord(rawInput, rawKey);
-    if (input === 'y' || input === 'Y') {
-      onAllow();
-    } else if (input === 'n' || input === 'N') {
-      onDeny(m.permission.denied);
-    }
-  });
+  useInput(
+    (rawInput, rawKey) => {
+      // マウスレポートを先に握り潰す。モーダルは自分の useInput を持つので背後の view の
+      // 先取り解釈では守られず、クリック/ホイールの列が y/n 判定へ流れ込む（下の
+      // QuestionDialog と同じ理由。`repo-prompt-editor` も同じ防御を持つ）。
+      if (parseSgrMouse(rawInput)) {
+        return;
+      }
+      // 一覧/詳細ビューと同じく chord を復号する。modifyOtherKeys / CSI-u を送る端末
+      // （Ghostty など）では y/n も生のエスケープ列で届き、素の比較が外れるため。
+      const { input } = normalizeChord(rawInput, rawKey);
+      if (input === 'y' || input === 'Y') {
+        onAllow();
+      } else if (input === 'n' || input === 'N') {
+        onDeny(m.permission.denied);
+      }
+    },
+    { isActive: active },
+  );
 
   // ツール入力の要約。何を許可するのか（実行されるコマンド等）は判断材料なので、
   // 1 行に切り詰めず本文幅で折返して出す（先頭 200 文字までなので数行で収まる）。
@@ -59,7 +77,8 @@ const ToolDialog: FC<{
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor={statusColor.awaitingPermission}
+      // 操作を受け付けない間は枠を落として「今キーが効くのはここではない」ことを示す。
+      borderColor={active ? statusColor.awaitingPermission : theme.dim}
       paddingX={1}
       flexShrink={0}
     >
@@ -73,10 +92,14 @@ const ToolDialog: FC<{
           {line.text}
         </Text>
       ))}
-      <Text>
-        <Text color={theme.yes}>y</Text>: {m.permission.allow} ・ <Text color={theme.no}>n</Text>:{' '}
-        {m.permission.deny}
-      </Text>
+      {active ? (
+        <Text>
+          <Text color={theme.yes}>y</Text>: {m.permission.allow} ・ <Text color={theme.no}>n</Text>:{' '}
+          {m.permission.deny}
+        </Text>
+      ) : (
+        <Text dimColor>{m.permission.inactiveHelp}</Text>
+      )}
     </Box>
   );
 };
@@ -99,7 +122,8 @@ const QuestionDialog: FC<{
   onAnswer: (answers: Record<string, string>) => void;
   onDeny: (message: string) => void;
   onCopy?: (text: string) => void;
-}> = ({ request, onAnswer, onDeny, onCopy }) => {
+  active: boolean;
+}> = ({ request, onAnswer, onDeny, onCopy, active }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
   const questions = request.questions ?? [];
@@ -137,88 +161,91 @@ const QuestionDialog: FC<{
     }
   };
 
-  useInput((rawInput, rawKey) => {
-    if (!current) {
-      return;
-    }
-    // マウスレポートは文字入力として扱わない。自由記述モード（`typing`）はテキスト編集に
-    // 流すので、これが無いとログをクリック/ドラッグした瞬間に `[<0;10;5M` のような
-    // レポート列が回答へ挿入される（詳細ビューがマウス捕捉を保つようになったため実際に
-    // 起きる。モーダルは背後の view のガードでは守られない）。
-    // 自由記述中は他のコンポーザと同じく press/drag/release を範囲選択・キャレット移動に
-    // 使う（扱えなかったレポートもここで捨てる = 生テキストとして漏らさない）。
-    const mouse = parseSgrMouse(rawInput);
-    if (mouse) {
+  useInput(
+    (rawInput, rawKey) => {
+      if (!current) {
+        return;
+      }
+      // マウスレポートは文字入力として扱わない。自由記述モード（`typing`）はテキスト編集に
+      // 流すので、これが無いとログをクリック/ドラッグした瞬間に `[<0;10;5M` のような
+      // レポート列が回答へ挿入される（詳細ビューがマウス捕捉を保つようになったため実際に
+      // 起きる。モーダルは背後の view のガードでは守られない）。
+      // 自由記述中は他のコンポーザと同じく press/drag/release を範囲選択・キャレット移動に
+      // 使う（扱えなかったレポートもここで捨てる = 生テキストとして漏らさない）。
+      const mouse = parseSgrMouse(rawInput);
+      if (mouse) {
+        if (mode === 'typing') {
+          composer.handleMouse(mouse);
+        }
+        return;
+      }
+      // modifyOtherKeys / CSI-u を送る端末（Ghostty/xterm 等）では Space や Enter が
+      // 生のエスケープ列（`[27;1;32~` / `[32u`）で届く。Ink はこれを素の ' ' に
+      // 解釈しないため、一覧/詳細ビューと同じく chord を復号してから扱う。復号しないと
+      // `input === ' '` が外れて複数選択のトグルができない。
+      const { input, key } = normalizeChord(rawInput, rawKey);
+      // 自由記述モード: テキスト編集に専念（Enter で送信、Shift+Enter で改行）。判定は
+      // 共通の `useComposer` に委譲するので、一覧・詳細のコンポーザと挙動が揃う。
+      // 「選択へ戻る」は空バッファでの Backspace で行う。Esc は背後の view
+      // （一覧/詳細）が先取りして戻る/フォーカス移動に使うため、ここでは使わない。
       if (mode === 'typing') {
-        composer.handleMouse(mouse);
-      }
-      return;
-    }
-    // modifyOtherKeys / CSI-u を送る端末（Ghostty/xterm 等）では Space や Enter が
-    // 生のエスケープ列（`[27;1;32~` / `[32u`）で届く。Ink はこれを素の ' ' に
-    // 解釈しないため、一覧/詳細ビューと同じく chord を復号してから扱う。復号しないと
-    // `input === ' '` が外れて複数選択のトグルができない。
-    const { input, key } = normalizeChord(rawInput, rawKey);
-    // 自由記述モード: テキスト編集に専念（Enter で送信、Shift+Enter で改行）。判定は
-    // 共通の `useComposer` に委譲するので、一覧・詳細のコンポーザと挙動が揃う。
-    // 「選択へ戻る」は空バッファでの Backspace で行う。Esc は背後の view
-    // （一覧/詳細）が先取りして戻る/フォーカス移動に使うため、ここでは使わない。
-    if (mode === 'typing') {
-      composer.clearSelection();
-      if ((key.backspace || key.delete) && bufferRef.current.value.length === 0) {
-        setMode('select');
+        composer.clearSelection();
+        if ((key.backspace || key.delete) && bufferRef.current.value.length === 0) {
+          setMode('select');
+          return;
+        }
+        const result = composer.handleKey(input, key);
+        if (result.kind === 'submit' && result.text.length > 0) {
+          submit(result.text);
+        }
         return;
       }
-      const result = composer.handleKey(input, key);
-      if (result.kind === 'submit' && result.text.length > 0) {
-        submit(result.text);
-      }
-      return;
-    }
 
-    // 選択モード
-    if (key.upArrow) {
-      setCursor((c) => Math.max(0, c - 1));
-      return;
-    }
-    if (key.downArrow) {
-      setCursor((c) => Math.min(chatIndex, c + 1));
-      return;
-    }
-    // Space は複数選択の実選択肢に対してのみトグル（特別項目には効かない）。
-    if (input === ' ' && current.multiSelect && cursor < optionCount) {
-      const label = current.options[cursor]?.label;
-      if (label) {
-        setMulti((prev) => {
-          const nextSet = new Set(prev);
-          if (nextSet.has(label)) {
-            nextSet.delete(label);
-          } else {
-            nextSet.add(label);
-          }
-          return nextSet;
-        });
-      }
-      return;
-    }
-    if (key.return) {
-      // 「これについて相談する」: 質問をスキップしてツールを拒否 → 会話へ戻す。
-      if (cursor === chatIndex) {
-        onDeny(m.permission.chatMessage);
+      // 選択モード
+      if (key.upArrow) {
+        setCursor((c) => Math.max(0, c - 1));
         return;
       }
-      // 「自分で入力する」: 自由記述モードへ切り替える。
-      if (cursor === typeIndex) {
-        composer.reset();
-        setMode('typing');
+      if (key.downArrow) {
+        setCursor((c) => Math.min(chatIndex, c + 1));
         return;
       }
-      const chosen = current.multiSelect
-        ? [...multi].join(', ')
-        : (current.options[cursor]?.label ?? '');
-      submit(chosen);
-    }
-  });
+      // Space は複数選択の実選択肢に対してのみトグル（特別項目には効かない）。
+      if (input === ' ' && current.multiSelect && cursor < optionCount) {
+        const label = current.options[cursor]?.label;
+        if (label) {
+          setMulti((prev) => {
+            const nextSet = new Set(prev);
+            if (nextSet.has(label)) {
+              nextSet.delete(label);
+            } else {
+              nextSet.add(label);
+            }
+            return nextSet;
+          });
+        }
+        return;
+      }
+      if (key.return) {
+        // 「これについて相談する」: 質問をスキップしてツールを拒否 → 会話へ戻す。
+        if (cursor === chatIndex) {
+          onDeny(m.permission.chatMessage);
+          return;
+        }
+        // 「自分で入力する」: 自由記述モードへ切り替える。
+        if (cursor === typeIndex) {
+          composer.reset();
+          setMode('typing');
+          return;
+        }
+        const chosen = current.multiSelect
+          ? [...multi].join(', ')
+          : (current.options[cursor]?.label ?? '');
+        submit(chosen);
+      }
+    },
+    { isActive: active },
+  );
 
   if (!current) {
     return null;
@@ -241,7 +268,8 @@ const QuestionDialog: FC<{
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor={statusColor.awaitingInput}
+      // ToolDialog と同じ: 操作を受け付けない間は枠を落とす。
+      borderColor={active ? statusColor.awaitingInput : theme.dim}
       paddingX={1}
       flexShrink={0}
     >
@@ -276,7 +304,13 @@ const QuestionDialog: FC<{
 
       {mode === 'typing' ? (
         <Box marginTop={1} flexDirection="column">
-          <Composer composer={composer} focused placeholder={m.permission.typePlaceholder} />
+          {/* focused は端末カーソル（IME の未確定文字列の描画位置）も決める。操作を
+              受け付けない間はキャレットを出さない（1画面 1 useCursor を守る）。 */}
+          <Composer
+            composer={composer}
+            focused={active}
+            placeholder={m.permission.typePlaceholder}
+          />
         </Box>
       ) : null}
 
@@ -293,9 +327,11 @@ const QuestionDialog: FC<{
 
       <Box marginTop={1}>
         <Text dimColor>
-          {mode === 'typing'
-            ? m.permission.typingHelp
-            : m.permission.questionHelp(current.multiSelect ?? false)}
+          {!active
+            ? m.permission.inactiveHelp
+            : mode === 'typing'
+              ? m.permission.typingHelp
+              : m.permission.questionHelp(current.multiSelect ?? false)}
         </Text>
       </Box>
     </Box>

@@ -704,6 +704,80 @@ describe('App end-to-end (real Session, driven query)', () => {
     void decision;
   });
 
+  // 質問（AskUserQuestion）が出ている行を選んでいても、一覧のセッション切替ができること。
+  // かつてダイアログは list フォーカスに相乗りしていたため、↑↓ が選択肢移動に食われて
+  // **他のセッションへ移れなかった**（逃げ道は PgUp/PgDn だけ）。
+  it('Tab cycles 入力欄 → Ask ダイアログ → 一覧 so ↑↓ still switches sessions', async () => {
+    const outs: AsyncQueue<SDKMessage>[] = [];
+    const captured: Options[] = [];
+    const queryFn = ((params: { options: Options }) => {
+      captured.push(params.options);
+      const out = new AsyncQueue<SDKMessage>();
+      outs.push(out);
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+
+    // 2 セッション。選択はマウント時のまま先頭（1件目）に留まる。
+    for (const [i, prompt] of ['first task', 'second task'].entries()) {
+      stdin.write(prompt);
+      await flush();
+      stdin.write('\r');
+      await flush();
+      outs[i]?.push(asMsg({ type: 'system', subtype: 'init', session_id: `sdk-q${i}` }));
+      await flush();
+    }
+
+    // 選択中（1件目）のセッションが質問してくる。canUseTool の第3引数は Session 側で
+    // 使わないので最小のキャストで足りる。
+    const ctx = { signal: new AbortController().signal } as unknown as Parameters<
+      NonNullable<Options['canUseTool']>
+    >[2];
+    const decision = captured[0]?.canUseTool?.(
+      'AskUserQuestion',
+      {
+        questions: [
+          {
+            question: 'どちらの方針で進めますか?',
+            header: '方針',
+            options: [
+              { label: '案A', description: 'A で進める' },
+              { label: '案B', description: 'B で進める' },
+            ],
+          },
+        ],
+      },
+      ctx,
+    );
+    await flush();
+
+    // Tab 1回目: 入力欄 → ダイアログ（従来どおり 1 手で回答できる）。
+    stdin.write('\t');
+    await flush();
+    expect(lastFrame()).toContain('どちらの方針で進めますか?');
+    // ダイアログがキーを持っている（自分の操作ヒントを出している）。
+    expect(lastFrame()).toContain(messages.ja.permission.questionHelp(false));
+
+    // Tab 2回目: 一覧ゾーン。ダイアログは見えたままだがキーは受け取らない。
+    stdin.write('\t');
+    await flush();
+    expect(lastFrame()).toContain(messages.ja.permission.inactiveHelp);
+
+    // ↓ は質問の選択肢ではなくセッション選択を動かす → 選択が 2 件目に移り、
+    // （2 件目は質問していないので）ダイアログが引っ込んで入力欄が戻る。
+    stdin.write('\x1b[B');
+    await flush();
+    expect(lastFrame()).not.toContain('どちらの方針で進めますか?');
+    expect(lastFrame()).toContain(messages.ja.list.promptPlaceholder);
+    void decision;
+  });
+
   it('merges a completed session from the list (Tab → m → y) and archives it', async () => {
     const out = new AsyncQueue<SDKMessage>();
     const queryFn = (() => {
