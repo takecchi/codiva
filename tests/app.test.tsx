@@ -778,6 +778,161 @@ describe('App end-to-end (real Session, driven query)', () => {
     void decision;
   });
 
+  /**
+   * 質問が出ている行を選んだら Ask ダイアログは**自動でアクティブ**になる（回答は
+   * 待たせている用事なので Tab を余分に踏ませない）。かつては list ゾーンで「表示だけ」に
+   * なり、そこから回答へ戻る導線が Tab の輪をもう一周するしかなかった。
+   * 選択肢は**クリックでも選べる**（決定は Enter。一覧の行クリックと同じ関係）。
+   */
+  it('質問の行に移ると Ask が自動アクティブ化し、選択肢のクリックで回答できる', async () => {
+    const outs: AsyncQueue<SDKMessage>[] = [];
+    const captured: Options[] = [];
+    const queryFn = ((params: { options: Options }) => {
+      captured.push(params.options);
+      const out = new AsyncQueue<SDKMessage>();
+      outs.push(out);
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    // 質問ダイアログは縦に長い（選択肢 + 自由記述 + 相談する）ので高めの端末で描く。
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 40, 120);
+
+    for (const [i, prompt] of ['first task', 'second task'].entries()) {
+      stdin.write(prompt);
+      await flush();
+      stdin.write('\r');
+      await flush();
+      outs[i]?.push(asMsg({ type: 'system', subtype: 'init', session_id: `sdk-a${i}` }));
+      await flush();
+    }
+
+    // 2 件目（マウント時の選択は 1 件目のまま）が質問してくる。
+    const ctx = { signal: new AbortController().signal } as unknown as Parameters<
+      NonNullable<Options['canUseTool']>
+    >[2];
+    const decision = captured[1]?.canUseTool?.(
+      'AskUserQuestion',
+      {
+        questions: [
+          {
+            question: 'どちらの方針で進めますか?',
+            header: '方針',
+            options: [
+              { label: '案A', description: 'A で進める' },
+              { label: '案B', description: 'B で進める' },
+            ],
+          },
+        ],
+      },
+      ctx,
+    );
+    await flush();
+
+    // 入力欄 → Tab で一覧（選択中の 1 件目は質問していないので list ゾーン）。
+    stdin.write('\t');
+    await flush();
+    expect(stripAnsi(lastFrame())).not.toContain('どちらの方針で進めますか?');
+    // ↓ で 2 件目へ。質問が出ている行なので**ダイアログがそのままキーを持つ**。
+    stdin.write('\x1b[B');
+    await flush();
+    expect(stripAnsi(lastFrame())).toContain('どちらの方針で進めますか?');
+    expect(stripAnsi(lastFrame())).toContain(messages.ja.permission.questionHelp(false));
+
+    // Tab は一覧へ戻る出口（そこでは ↑↓ がセッション切替）。
+    stdin.write('\t');
+    await flush();
+    expect(stripAnsi(lastFrame())).toContain(messages.ja.permission.inactiveHelp);
+
+    // 「表示だけ」の状態から選択肢を直接クリック → ダイアログへフォーカスが戻り、
+    // カーソルがその選択肢に乗る（クリックは選ぶまで。決定は Enter）。
+    const row = stripAnsi(lastFrame())
+      .split('\n')
+      .findIndex((l) => l.includes('案B'));
+    expect(row).toBeGreaterThan(0);
+    stdin.write(`\x1b[<0;10;${row + 1}M`);
+    await flush();
+    expect(stripAnsi(lastFrame())).toContain(`${glyph.caret} 案B`);
+    expect(stripAnsi(lastFrame())).toContain(messages.ja.permission.questionHelp(false));
+
+    stdin.write('\r');
+    await flush();
+    await expect(decision).resolves.toMatchObject({
+      behavior: 'allow',
+      updatedInput: { answers: { 'どちらの方針で進めますか?': '案B' } },
+    });
+    app.unmount();
+  });
+
+  /**
+   * 質問が出ている行を**クリック**したときも同じ（マウスだけで回答まで辿り着ける）。
+   * ダイアログが出ているあいだも一覧のクリックは効き続ける — ここを飲むと
+   * 「アクティブなダイアログから別セッションへマウスで移れない」ことになる。
+   */
+  it('質問が出ている行のクリックでも Ask がアクティブ化する', async () => {
+    const outs: AsyncQueue<SDKMessage>[] = [];
+    const captured: Options[] = [];
+    const queryFn = ((params: { options: Options }) => {
+      captured.push(params.options);
+      const out = new AsyncQueue<SDKMessage>();
+      outs.push(out);
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 40, 120);
+    for (const [i, prompt] of ['first task', 'second task'].entries()) {
+      stdin.write(prompt);
+      await flush();
+      stdin.write('\r');
+      await flush();
+      outs[i]?.push(asMsg({ type: 'system', subtype: 'init', session_id: `sdk-b${i}` }));
+      await flush();
+    }
+    const ctx = { signal: new AbortController().signal } as unknown as Parameters<
+      NonNullable<Options['canUseTool']>
+    >[2];
+    const decision = captured[1]?.canUseTool?.(
+      'AskUserQuestion',
+      {
+        questions: [
+          {
+            question: '進めますか?',
+            header: '確認',
+            options: [{ label: 'はい' }, { label: 'いえ' }],
+          },
+        ],
+      },
+      ctx,
+    );
+    await flush();
+
+    // 一覧の行（2 件目 = 'second task'）をクリック → 選択が移り、質問待ちなので
+    // ダイアログがそのままキーを持つ（Tab を踏まずに Enter で回答できる）。
+    const listRow = stripAnsi(lastFrame())
+      .split('\n')
+      .findIndex((l) => l.includes('second task'));
+    expect(listRow).toBeGreaterThan(0);
+    stdin.write(`\x1b[<0;5;${listRow + 1}M`);
+    await flush();
+    expect(stripAnsi(lastFrame())).toContain('進めますか?');
+    expect(stripAnsi(lastFrame())).toContain(messages.ja.permission.questionHelp(false));
+    stdin.write('\r');
+    await flush();
+    await expect(decision).resolves.toMatchObject({
+      updatedInput: { answers: { '進めますか?': 'はい' } },
+    });
+    app.unmount();
+  });
+
   it('merges a completed session from the list (Tab → m → y) and archives it', async () => {
     const out = new AsyncQueue<SDKMessage>();
     const queryFn = (() => {

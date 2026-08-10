@@ -1,8 +1,17 @@
-import { Box, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useState } from 'react';
-import { choiceLines, dialogContentWidth, type PermissionRequest, parseSgrMouse } from '@/core';
+import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
+import { type FC, useRef, useState } from 'react';
+import {
+  type ChoiceRowItem,
+  choiceIndexAtRow,
+  choiceLines,
+  choiceRowHeights,
+  dialogContentWidth,
+  type PermissionRequest,
+  parseSgrMouse,
+} from '@/core';
 import { ChoiceRow } from './choice-row';
 import { Composer, useComposer } from './composer';
+import { useAbsolutePosition, useBoxHeight } from './hooks';
 import { useMessages } from './i18n-context';
 import { normalizeChord } from './input';
 import { statusColor, theme } from './theme';
@@ -14,9 +23,13 @@ import { statusColor, theme } from './theme';
  *  - kind 'tool': allow / deny a tool call → onAllow / onDeny
  * This owns the active key handler while a decision is pending **and** `active`
  * （既定 true）。一覧ビューは選択行の切替（↑↓）と両立させるため、`list` ゾーンでは
- * `active={false}` で「表示だけ」にする。`useInput` の `isActive` で無効化するのが要点で、
- * マウントしたままハンドラだけ止めるので、Tab で戻ってきたときに回答の途中経過
- * （質問の何問目か・複数選択のチェック・自由記述の内容）が失われない。
+ * `active={false}` で「表示だけ」にする。無効化してもハンドラは**マウントしたまま**なので、
+ * Tab で戻ってきたときに回答の途中経過（質問の何問目か・複数選択のチェック・自由記述の
+ * 内容）が失われない。
+ *
+ * **`active={false}` でもマウスは受け取る**（キーだけを止める）。ダイアログのクリックは
+ * 「ここへフォーカスを移す」操作（`onActivate`）なので、キーを持っていない状態でこそ
+ * 必要になる — 一覧の行をクリックすると選択が移るのと同じ関係（ink-components.md）。
  */
 export const PermissionDialog: FC<{
   request: PermissionRequest;
@@ -27,7 +40,12 @@ export const PermissionDialog: FC<{
   onCopy?: (text: string) => void;
   /** false ならキーを受け取らない（表示のみ）。省略時は true。 */
   active?: boolean;
-}> = ({ request, onAnswer, onAllow, onDeny, onCopy, active = true }) => {
+  /**
+   * ダイアログの中がクリックされた（= ここを操作したい）。一覧ビューは
+   * フォーカスゾーンを `dialog` へ移す。詳細ビューは常に active なので渡さない。
+   */
+  onActivate?: () => void;
+}> = ({ request, onAnswer, onAllow, onDeny, onCopy, active = true, onActivate }) => {
   if (request.kind === 'question') {
     return (
       <QuestionDialog
@@ -36,10 +54,19 @@ export const PermissionDialog: FC<{
         onDeny={onDeny}
         onCopy={onCopy}
         active={active}
+        onActivate={onActivate}
       />
     );
   }
-  return <ToolDialog request={request} onAllow={onAllow} onDeny={onDeny} active={active} />;
+  return (
+    <ToolDialog
+      request={request}
+      onAllow={onAllow}
+      onDeny={onDeny}
+      active={active}
+      onActivate={onActivate}
+    />
+  );
 };
 
 const ToolDialog: FC<{
@@ -47,34 +74,50 @@ const ToolDialog: FC<{
   onAllow: () => void;
   onDeny: (message: string) => void;
   active: boolean;
-}> = ({ request, onAllow, onDeny, active }) => {
+  onActivate?: () => void;
+}> = ({ request, onAllow, onDeny, active, onActivate }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
-  useInput(
-    (rawInput, rawKey) => {
-      // マウスレポートを先に握り潰す。モーダルは自分の useInput を持つので背後の view の
-      // 先取り解釈では守られず、クリック/ホイールの列が y/n 判定へ流れ込む（下の
-      // QuestionDialog と同じ理由。`repo-prompt-editor` も同じ防御を持つ）。
-      if (parseSgrMouse(rawInput)) {
-        return;
+  // 枠の位置と高さを実測する（クリックがこのダイアログの中かを判定するため）。
+  const boxRef = useRef<DOMElement>(null);
+  const box = useAbsolutePosition(boxRef);
+  const height = useBoxHeight(boxRef);
+
+  useInput((rawInput, rawKey) => {
+    // マウスレポートを先に解釈する。モーダルは自分の useInput を持つので背後の view の
+    // 先取り解釈では守られず、クリック/ホイールの列が y/n 判定へ流れ込む（下の
+    // QuestionDialog と同じ理由。`repo-prompt-editor` も同じ防御を持つ）。
+    const mouse = parseSgrMouse(rawInput);
+    if (mouse) {
+      // 枠の中を押したら「ここを操作したい」= フォーカスを寄せる（y/n は押さない —
+      // クリックで許可/拒否が確定するのは危険なので、決定は必ずキーで取る）。
+      if (mouse.kind === 'press' && box && height !== undefined) {
+        if (mouse.y >= box.top && mouse.y < box.top + height) {
+          onActivate?.();
+        }
       }
-      // 一覧/詳細ビューと同じく chord を復号する。modifyOtherKeys / CSI-u を送る端末
-      // （Ghostty など）では y/n も生のエスケープ列で届き、素の比較が外れるため。
-      const { input } = normalizeChord(rawInput, rawKey);
-      if (input === 'y' || input === 'Y') {
-        onAllow();
-      } else if (input === 'n' || input === 'N') {
-        onDeny(m.permission.denied);
-      }
-    },
-    { isActive: active },
-  );
+      return;
+    }
+    // キーを持っていないときは表示だけ（背後の view が一覧の操作に使う）。
+    if (!active) {
+      return;
+    }
+    // 一覧/詳細ビューと同じく chord を復号する。modifyOtherKeys / CSI-u を送る端末
+    // （Ghostty など）では y/n も生のエスケープ列で届き、素の比較が外れるため。
+    const { input } = normalizeChord(rawInput, rawKey);
+    if (input === 'y' || input === 'Y') {
+      onAllow();
+    } else if (input === 'n' || input === 'N') {
+      onDeny(m.permission.denied);
+    }
+  });
 
   // ツール入力の要約。何を許可するのか（実行されるコマンド等）は判断材料なので、
   // 1 行に切り詰めず本文幅で折返して出す（先頭 200 文字までなので数行で収まる）。
   const summary = JSON.stringify(request.input).slice(0, 200);
   return (
     <Box
+      ref={boxRef}
       flexDirection="column"
       borderStyle="round"
       // 操作を受け付けない間は枠を落として「今キーが効くのはここではない」ことを示す。
@@ -116,6 +159,10 @@ const ToolDialog: FC<{
  * 同じ仕様**になる（Shift+Enter で改行、↑↓ で表示行のキャレット移動、ドラッグで範囲選択
  * → コピー、クリックでキャレット移動）。ここだけ「Enter が必ず送信」だったのが以前の
  * 食い違いで、複数行の回答が書けなかった。
+ *
+ * 選択肢は**クリックでも選べる**（一覧の行クリックと同じ「選ぶだけ」で、決定は Enter）。
+ * 当たり判定は実測した選択肢ブロックの上端 + 描画と同じ `choiceRowHeights` で逆算する
+ * （1 件 = 1 行ではない: ラベルの折返しと説明の行があるため）。
  */
 const QuestionDialog: FC<{
   request: PermissionRequest;
@@ -123,7 +170,8 @@ const QuestionDialog: FC<{
   onDeny: (message: string) => void;
   onCopy?: (text: string) => void;
   active: boolean;
-}> = ({ request, onAnswer, onDeny, onCopy, active }) => {
+  onActivate?: () => void;
+}> = ({ request, onAnswer, onDeny, onCopy, active, onActivate }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
   const questions = request.questions ?? [];
@@ -135,6 +183,19 @@ const QuestionDialog: FC<{
   const [mode, setMode] = useState<'select' | 'typing'>('select');
   const composer = useComposer({ onCopy });
   const bufferRef = composer.bufferRef;
+  // 枠全体（クリックが「このダイアログの中」かの判定 = フォーカスを寄せる範囲）と、
+  // 選択肢ブロック（実選択肢 + 「自分で入力する」）、区切り線の下の「相談する」。
+  // クリックの当たり判定は**描画に使ったのと同じ幾何**（実測した上端 + 同じ折返し幅）で
+  // 行う。位置を端末幅から見積もると枠・パディング・折返しのぶんズレる。
+  const boxRef = useRef<DOMElement>(null);
+  const box = useAbsolutePosition(boxRef);
+  const boxHeight = useBoxHeight(boxRef);
+  const mainRef = useRef<DOMElement>(null);
+  const mainBox = useAbsolutePosition(mainRef);
+  const mainHeight = useBoxHeight(mainRef);
+  const chatRef = useRef<DOMElement>(null);
+  const chatBox = useAbsolutePosition(chatRef);
+  const chatHeight = useBoxHeight(chatRef);
 
   const current = questions[qIndex];
   // 実選択肢の後ろに「自分で入力する」(typeIndex) と「これについて相談する」(chatIndex)
@@ -142,6 +203,62 @@ const QuestionDialog: FC<{
   const optionCount = current?.options.length ?? 0;
   const typeIndex = optionCount;
   const chatIndex = optionCount + 1;
+
+  // カーソル記号（typing 中はカーソル表示を出さない）。複数選択でもチェックボックスとは
+  // 別にこのポインタを出す（`❯ [x] ラベル`）。ポインタが無いとカーソル位置が色でしか
+  // 分からず、どの行にいるのか見えない＝「トグルできない」ように見えるため。
+  const marker = (i: number) => (mode === 'select' && cursor === i ? '❯' : ' ');
+  // 複数選択時はチェックボックス幅（"[x] "）ぶん、特別項目（自分で入力する/相談する）を
+  // 字下げして実選択肢と桁を揃える。
+  const pad = current?.multiSelect ? '    ' : '';
+  // ラベル・説明の折返し幅（枠とパディングを引いた本文幅）。ラベルと説明を横に並べず
+  // ここで折返すことで、長い文言でも切り捨てずに全文を出す。
+  const width = dialogContentWidth(columns);
+
+  // 描画とクリック当たり判定で回す**同じ配列**。prefix は表示幅ぶん折返し幅を食うので、
+  // 行数（= 当たり判定）にも効く。
+  const mainItems: ChoiceRowItem[] = [
+    ...(current?.options ?? []).map((opt, i) => ({
+      choice: { label: opt.label, description: opt.description },
+      prefix: `${marker(i)} ${
+        current?.multiSelect ? (multi.has(opt.label) ? '[x] ' : '[ ] ') : ''
+      }`,
+    })),
+    { choice: { label: m.permission.typeSomething }, prefix: `${marker(typeIndex)} ${pad}` },
+  ];
+  const chatItem: ChoiceRowItem = {
+    choice: { label: m.permission.chatAboutThis },
+    prefix: `${marker(chatIndex)} ${pad}`,
+  };
+  const mainHeights = choiceRowHeights(mainItems, width);
+  const chatHeights = choiceRowHeights([chatItem], width);
+
+  /**
+   * クリックした行の選択肢 index（`chatIndex` を含む）。ブロックの外・未実測・縦に潰れて
+   * いるときは undefined = 判定しない（黙って別の選択肢を選ぶより効かないほうがよい。
+   * ヘッダ・コンポーザと同じ方針）。
+   */
+  const choiceAtRow = (y: number): number | undefined => {
+    const mainRows = mainHeights.reduce((sum, rows) => sum + rows, 0);
+    if (mainBox && !(mainHeight !== undefined && mainHeight < mainRows)) {
+      const hit = choiceIndexAtRow(mainHeights, y - mainBox.top);
+      if (hit !== undefined) {
+        return hit;
+      }
+    }
+    // 「相談する」のブロックは 1 行目が区切り線なので、その 1 行ぶんずらして数える。
+    const chatRows = (chatHeights[0] ?? 0) + 1;
+    if (chatBox && !(chatHeight !== undefined && chatHeight < chatRows)) {
+      if (choiceIndexAtRow(chatHeights, y - chatBox.top - 1) !== undefined) {
+        return chatIndex;
+      }
+    }
+    return undefined;
+  };
+
+  /** クリックがこのダイアログの枠の中か（= キーをここへ寄せてよいか）。 */
+  const insideDialog = (y: number): boolean =>
+    box !== undefined && boxHeight !== undefined && y >= box.top && y < box.top + boxHeight;
 
   // 質問への回答を確定し、次の質問へ進む（最後なら全回答を返す）。選択肢・自由記述で共通。
   const submit = (chosen: string) => {
@@ -174,9 +291,31 @@ const QuestionDialog: FC<{
       // 使う（扱えなかったレポートもここで捨てる = 生テキストとして漏らさない）。
       const mouse = parseSgrMouse(rawInput);
       if (mouse) {
-        if (mode === 'typing') {
-          composer.handleMouse(mouse);
+        // 枠の中を押した = 「ここを操作したい」。**キーを持っていない（`active === false`）
+        // ときも効く**のがここの要点で、一覧の行をクリックすると選択が移るのと同じ関係。
+        if (mouse.kind === 'press' && insideDialog(mouse.y)) {
+          onActivate?.();
         }
+        if (mode === 'typing' && composer.handleMouse(mouse)) {
+          return;
+        }
+        // 選択肢のクリックは「カーソルを置く」まで（決定は Enter）。一覧の行を
+        // クリックしても詳細が開かないのと同じ関係にしてある。
+        if (mouse.kind === 'press') {
+          const hit = choiceAtRow(mouse.y);
+          if (hit !== undefined) {
+            // 押した位置を保留したままモード（= 入力欄の有無）が変わると、次の release で
+            // 古い index にキャレットが戻る。ここで必ず捨てる。
+            composer.clearSelection();
+            setCursor(hit);
+            setMode('select');
+          }
+        }
+        return;
+      }
+      // キーを持っていないとき（一覧の list ゾーン）は表示だけ。マウスは上で扱うので、
+      // ここから先だけを `active` で閉じる。
+      if (!active) {
         return;
       }
       // modifyOtherKeys / CSI-u を送る端末（Ghostty/xterm 等）では Space や Enter が
@@ -232,9 +371,11 @@ const QuestionDialog: FC<{
           onDeny(m.permission.chatMessage);
           return;
         }
-        // 「自分で入力する」: 自由記述モードへ切り替える。
+        // 「自分で入力する」: 自由記述モードへ切り替える。**書きかけは消さない** —
+        // 選択肢をクリックすると select モードへ戻るので、ここで reset すると
+        // 「触ってしまって書き直し」になる（質問が進むときは submit 側で空にしている）。
         if (cursor === typeIndex) {
-          composer.reset();
+          composer.clearSelection();
           setMode('typing');
           return;
         }
@@ -244,28 +385,21 @@ const QuestionDialog: FC<{
         submit(chosen);
       }
     },
-    { isActive: active },
+    // **`isActive` で止めない**（マウスだけは受け取る）。キーの無効化はハンドラの中で
+    // `active` を見て行う — クリックでこのダイアログへフォーカスを移す導線
+    // （`onActivate`）は、キーを持っていない状態でこそ必要になる。
   );
 
   if (!current) {
     return null;
   }
 
-  // カーソル記号（typing 中はカーソル表示を出さない）。複数選択でもチェックボックスとは
-  // 別にこのポインタを出す（`❯ [x] ラベル`）。ポインタが無いとカーソル位置が色でしか
-  // 分からず、どの行にいるのか見えない＝「トグルできない」ように見えるため。
-  const marker = (i: number) => (mode === 'select' && cursor === i ? '❯' : ' ');
-  // 複数選択時はチェックボックス幅（"[x] "）ぶん、特別項目（自分で入力する/相談する）を
-  // 字下げして実選択肢と桁を揃える。
-  const pad = current.multiSelect ? '    ' : '';
-  // ラベル・説明の折返し幅（枠とパディングを引いた本文幅）。ラベルと説明を横に並べず
-  // ここで折返すことで、長い文言でも切り捨てずに全文を出す。
-  const width = dialogContentWidth(columns);
   // 区切り線幅（枠内に収まる範囲でほどほどに）。
   const dividerWidth = Math.min(40, width);
 
   return (
     <Box
+      ref={boxRef}
       flexDirection="column"
       borderStyle="round"
       // ToolDialog と同じ: 操作を受け付けない間は枠を落とす。
@@ -277,29 +411,20 @@ const QuestionDialog: FC<{
         {m.permission.questionTitle(qIndex + 1, questions.length, current.header)}
       </Text>
       <Text>{current.question}</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {current.options.map((opt, i) => {
-          const checked = current.multiSelect && multi.has(opt.label);
-          // 複数選択: `❯ [x] ラベル`（ポインタ＋チェックボックス）。単一選択: `❯ ラベル`。
-          const box = current.multiSelect ? `${checked ? '[x]' : '[ ]'} ` : '';
-          return (
-            <ChoiceRow
-              key={opt.label}
-              prefix={`${marker(i)} ${box}`}
-              label={opt.label}
-              description={opt.description}
-              active={cursor === i}
-              width={width}
-            />
-          );
-        })}
-        {/* 「自分で入力する」— 実選択肢の直後（メインブロックの一部）。 */}
-        <ChoiceRow
-          prefix={`${marker(typeIndex)} ${pad}`}
-          label={m.permission.typeSomething}
-          active={cursor === typeIndex}
-          width={width}
-        />
+      {/* 実選択肢 + 「自分で入力する」。**当たり判定と同じ `mainItems` から描く** —
+          別々に組み立てると prefix（= 折返し幅）が食い違い、クリックが別の行に当たる。
+          `ref` はクリック位置の逆算用（この Box の上端が選択肢の 1 行目）。 */}
+      <Box ref={mainRef} flexDirection="column" marginTop={1}>
+        {mainItems.map((item, i) => (
+          <ChoiceRow
+            key={item.choice.label}
+            prefix={item.prefix}
+            label={item.choice.label}
+            description={item.choice.description}
+            active={cursor === i}
+            width={width}
+          />
+        ))}
       </Box>
 
       {mode === 'typing' ? (
@@ -314,12 +439,13 @@ const QuestionDialog: FC<{
         </Box>
       ) : null}
 
-      {/* 区切り線 + 「これについて相談する」— 質問をスキップして会話へ戻る導線。 */}
-      <Box flexDirection="column" marginTop={1}>
+      {/* 区切り線 + 「これについて相談する」— 質問をスキップして会話へ戻る導線。
+          当たり判定はこの Box の上端 + 1 行（区切り線）から数える。 */}
+      <Box ref={chatRef} flexDirection="column" marginTop={1}>
         <Text dimColor>{'─'.repeat(dividerWidth)}</Text>
         <ChoiceRow
-          prefix={`${marker(chatIndex)} ${pad}`}
-          label={m.permission.chatAboutThis}
+          prefix={chatItem.prefix}
+          label={chatItem.choice.label}
           active={cursor === chatIndex}
           width={width}
         />

@@ -65,3 +65,43 @@ export function choiceLines(choice: Choice, width: number, prefix: string): Choi
   }
   return out;
 }
+
+/**
+ * 選択リスト 1 件ぶんの描画指定。**描画（`ChoiceRow`）と当たり判定（{@link choiceRowHeights}）で
+ * 同じ配列を回す**ための型で、これが 1 件 = 何行かを決める唯一の入力になる。
+ */
+export interface ChoiceRowItem {
+  choice: Choice;
+  /** 1 行目の行頭（`❯ `, `❯ [x] ` 等）。表示幅ぶん折返し幅が減るので高さに影響する。 */
+  prefix: string;
+}
+
+/**
+ * 各件が占める物理行数（ラベルの折返し + 説明の行）。1 件 = 1 行**ではない**ので、
+ * クリック位置から選択肢を逆算するにはこの配列が必要になる。
+ *
+ * 描画に渡すのと同じ `items` / `width` を通すこと。折返し幅が食い違うと行数が変わり、
+ * 押した行と当たった選択肢がズレる（一覧の PR セルで幅を揃えているのと同じ理由）。
+ */
+export function choiceRowHeights(items: readonly ChoiceRowItem[], width: number): number[] {
+  return items.map((item) => choiceLines(item.choice, width, item.prefix).length);
+}
+
+/**
+ * 表示行オフセット（リストの先頭行を 0 とする）→ 選択肢 index。範囲外なら undefined。
+ * 説明の行もその選択肢の一部として扱う（見えている塊のどこを押しても選べる）。
+ */
+export function choiceIndexAtRow(heights: readonly number[], row: number): number | undefined {
+  if (row < 0) {
+    return undefined;
+  }
+  let top = 0;
+  for (let i = 0; i < heights.length; i += 1) {
+    const rows = heights[i] ?? 0;
+    if (row < top + rows) {
+      return i;
+    }
+    top += rows;
+  }
+  return undefined;
+}

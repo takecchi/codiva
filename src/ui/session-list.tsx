@@ -85,6 +85,11 @@ export type OpenPr = (url: string) => void;
  * 成立する第3のゾーンで、そこでだけ `PermissionDialog` がキーを持つ。
  * これを `list` と分けているのは、混ぜると **一覧の ↑↓ がダイアログの選択肢移動に
  * 食われてセッションを切り替えられなくなる**ため（かつては PgUp/PgDn だけが逃げ道だった）。
+ *
+ * ただし**選ぶ / クリックした行が許可・質問を待っていれば `dialog` を既定にする**
+ * （`zoneForRow`）。回答は待たせている用事なので、そこに辿り着くのに Tab を余分に
+ * 踏ませない。一覧へ戻る（= ↑↓ でセッションを切り替える）出口は Tab で、ゾーンが
+ * 分かれているおかげで「↑↓ が今どちらを指すか」は常に一意に決まる。
  */
 export type ListFocus = 'composer' | 'dialog' | 'list';
 
@@ -107,6 +112,10 @@ export type ListViewState = {
  * Tab cycles composer → dialog（許可/質問を待っている行のときだけ）→ list → composer。
  * ダイアログは composer 以外のゾーンで**常に見えている**が、キーを受け取るのは
  * 'dialog' ゾーンのときだけなので、一覧を眺めながら質問文を読める。
+ *
+ * 行の選択（↑↓ / ホイール / 行のクリック）が許可・質問待ちの行に移ったときは
+ * 'dialog' に入る（`zoneForRow`）。ダイアログの中を直接クリックしても同じ
+ * （`PermissionDialog` の `onActivate`）で、そこから一覧へ戻るのは Tab。
  */
 export const SessionList: FC<{
   manager: SessionManager;
@@ -420,8 +429,38 @@ export const SessionList: FC<{
     : Math.max(1, sessions.length);
   const view = listView(sessions.length, selected, listCap);
 
+  /**
+   * その行を選んだときのフォーカスゾーン。**許可/質問を待っている行はダイアログを
+   * 即アクティブにする**（回答が最優先の用事なので、Tab を 1 手余分に踏ませない）。
+   * かつては常に `list` へ入れていたため、質問が出ているのに「表示だけ」の状態で止まり
+   * 回答に辿り着けなかった。一覧へ戻る出口は Tab（`dialogActive` の分岐）。
+   * `update` 中は許可ダイアログを出さない（モーダル相互排他）ので `list` に倒す。
+   */
+  const zoneForRow = (idx: number): ListFocus =>
+    !update && sessions[idx]?.pendingPermission ? 'dialog' : 'list';
+
+  // 最新の選択行（同一 tick に複数のマウスレポート/キーが届いても stale にならない）。
+  // ホイールは 1 ノッチで複数レポートを送るので、購読値から数えると 1 行しか動かない。
+  const selRef = useRef(selected);
+  useEffect(() => {
+    selRef.current = selected;
+  }, [selected]);
+
+  /** 行を選ぶ（クリック・↑↓・ホイール共通）。フォーカスはその行の内容で決まる。 */
+  const selectRow = (idx: number) => {
+    const next = Math.min(Math.max(0, idx), Math.max(0, sessions.length - 1));
+    selRef.current = next;
+    setSel(next);
+    setFocus(zoneForRow(next));
+  };
+
   const moveSel = (delta: number) => {
-    setSel((s) => Math.min(Math.max(0, s + delta), Math.max(0, sessions.length - 1)));
+    const next = Math.min(Math.max(0, selRef.current + delta), Math.max(0, sessions.length - 1));
+    // 端で動かなかったときはフォーカスも触らない（一覧を眺めているだけの ↑↓ で
+    // ダイアログが立ち上がらないように、アクティブ化は「移動した」ときだけにする）。
+    if (next !== selRef.current) {
+      selectRow(next);
+    }
   };
 
   const openDetail = () => {
@@ -557,8 +596,8 @@ export const SessionList: FC<{
       const rowLine = rowLineAtPoint(y, rowsBox.top, view.showAbove, view.end - view.start);
       if (rowLine !== undefined) {
         const idx = view.start + rowLine;
-        setSel(idx);
-        setFocus('list');
+        // 許可/質問を待っている行を選んだらダイアログをアクティブにする（`zoneForRow`）。
+        selectRow(idx);
         // A click inside the trailing `#<n>` cell of a row with a PR opens it in the
         // browser (the cell is right-anchored — see isPrCellHit).
         const s = sessions[idx];
@@ -593,24 +632,22 @@ export const SessionList: FC<{
     // SGR マウスレポートはキー入力より先に解釈する（バッファへ混入させない）。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
-      // モーダル表示中はマウスも飲む。クリックを通すと `setFocus('list')` で背後の
-      // 許可ダイアログが立ち上がり（`pending` の条件が focus 依存）、モーダルの
-      // 相互排他が崩れる。ホイールでの選択移動も同じ経路なので一律で無視する。
-      // `/prompt` のエディタと質問ダイアログの自由記述欄は自前でドラッグ範囲選択を持つので、
-      // ここで飲まないと同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで
-      // 動いてしまう。
+      // 画面を占有するモーダル（`/update` / `/model` / `/prompt`）の表示中はマウスも飲む。
+      // クリックを通すと `setFocus('list')` で背後の許可ダイアログが立ち上がり
+      // （`pending` の条件が focus 依存）、モーダルの相互排他が崩れる。ホイールでの選択移動も
+      // 同じ経路なので一律で無視する。`/prompt` のエディタは自前でドラッグ範囲選択を持つので、
+      // ここで飲まないと同じレポートが兄弟の useInput にも届き、ヘッダや一覧の選択まで動く。
       if (update || modelSelect || promptEdit) {
         return;
       }
-      // 許可/質問ダイアログが**キーを持っている間**は press/drag/release だけを飲む。
-      // ダイアログ側の自由記述欄が自前でドラッグ範囲選択を持つので、通すと 1 回の
-      // ドラッグでヘッダや一覧の選択まで動く。**ホイールは通す** — 一覧は選択行が
-      // スクロール位置なので、ここで飲むと「ダイアログが出ているあいだ一覧を眺め
-      // られない」ことになる。list ゾーンのダイアログは表示だけ（`isActive: false`）
-      // なので飲まない = 行のクリックがそのまま効く。
-      if (dialogActive && mouse.kind !== 'wheel') {
-        return;
-      }
+      // **許可/質問ダイアログが出ていてもマウスは飲まない。** ダイアログは画面の下段
+      // （入力欄の位置）にあって一覧の行と重ならないので、同じレポートを両方のハンドラが
+      // 見ても取り合いにならない: 行の上ならここが選択を動かし、枠の中ならダイアログ側が
+      // カーソルを置いてフォーカスを取る（`onActivate`）。ここで飲むと「ダイアログが
+      // アクティブなあいだクリックで別のセッションへ移れない」ことになり、キーの Tab に
+      // 相当する出口がマウスから消える（ホイールを通しているのと同じ理由）。
+      // ダイアログ内のドラッグでヘッダや一覧の選択が動く心配は無い — ヘッダは
+      // `y >= rowsBox.top` で降り、行の当たり判定も描いた行数の外は undefined を返す。
       if (mouse.kind === 'wheel') {
         // 一覧はスクロール窓を選択行から導く（別途スクロール位置を持たない）ので、
         // ホイールは選択を 1 行ずつ動かして窓をスクロールさせる（矢印キーと同義）。
@@ -842,8 +879,9 @@ export const SessionList: FC<{
       return;
     }
     if (result.text === '') {
-      // 空 Enter は一覧へフォーカス（誤爆で詳細ビューを開かない）。
-      setFocus('list');
+      // 空 Enter は一覧へフォーカス（誤爆で詳細ビューを開かない）。選択行が許可/質問を
+      // 待っているならそのままダイアログをアクティブにする（Tab と同じ扱い）。
+      setFocus(zoneForRow(selected));
       return;
     }
     // 送信したものは（コマンドも含めて）履歴へ積む。コマンドも積むのは shell と
@@ -1064,6 +1102,10 @@ export const SessionList: FC<{
           key={target.id}
           request={pending}
           active={dialogActive}
+          // ダイアログの中をクリックしたらそこへフォーカスを移す（一覧の行をクリック
+          // すると選択が移るのと同じ関係）。list ゾーンで「表示だけ」の状態からでも、
+          // 選択肢を 1 クリックで回答へ復帰できる。
+          onActivate={() => setFocus('dialog')}
           onAnswer={(answers) => manager.answer(target.id, answers)}
           onAllow={() => manager.allow(target.id)}
           onDeny={(message) => manager.deny(target.id, message)}

@@ -1,5 +1,6 @@
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
+import { messages } from '@/core/i18n';
 import type { PermissionRequest } from '@/core/types';
 import { PermissionDialog } from '@/ui/permission-dialog';
 
@@ -309,11 +310,13 @@ describe('PermissionDialog — question', () => {
     await flush();
     stdin.write('ok');
     await flush();
-    stdin.write('\x1b[<0;10;5M'); // press / drag / wheel はどれも文字ではない
+    // 選択肢の行ではない場所（見出し = 枠の中の 2 行目）を押す。選択肢の上を押すと
+    // 「その選択肢を選ぶ」操作になるので、ここでは混入だけを見るために外す。
+    stdin.write('\x1b[<0;10;2M'); // press / drag / wheel はどれも文字ではない
     await flush();
-    stdin.write('\x1b[<64;10;5M');
+    stdin.write('\x1b[<64;10;2M');
     await flush();
-    stdin.write('\x1b[<0;10;5m');
+    stdin.write('\x1b[<0;10;2m');
     await flush();
     stdin.write('\r'); // submit
     await flush();
@@ -428,6 +431,132 @@ describe('PermissionDialog — question', () => {
     await flush();
     expect(lastFrame()).toContain('❯ [x] English');
   });
+
+  /**
+   * クリックで選択肢を選べる（決定は Enter）。一覧の行をクリックすると選択が移り、
+   * 開くのは Enter という関係と同じにしてある。行はフレームから実測して押すので、
+   * レイアウト（枠・見出し・折返し）が変わってもテストが追従する。
+   */
+  const rowOf = (frame: string, text: string) =>
+    frame.split('\n').findIndex((l) => l.includes(text));
+
+  it('クリックした選択肢へカーソルが移り、Enter でそれが回答になる', async () => {
+    const onAnswer = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+    );
+    await flush();
+    const row = rowOf(lastFrame() ?? '', 'Japanese');
+    expect(row).toBeGreaterThan(0);
+    stdin.write(`\x1b[<0;5;${row + 1}M`); // SGR press（行は 1 始まり）
+    await flush();
+    expect(lastFrame()).toContain('❯ Japanese');
+    stdin.write('\r');
+    await flush();
+    expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'Japanese' });
+  });
+
+  it('説明の行をクリックしてもその選択肢が選ばれる', async () => {
+    const onAnswer = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+    );
+    await flush();
+    // 'ja' は Japanese の説明行（ラベルの下）。1 件は複数行なので塊のどこでも選べる。
+    const row = rowOf(lastFrame() ?? '', 'ja');
+    stdin.write(`\x1b[<0;5;${row + 1}M`);
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(onAnswer).toHaveBeenCalledWith({ 'Which language?': 'Japanese' });
+  });
+
+  it('区切り線の下の「これについて相談する」もクリックで選べる', async () => {
+    const onDeny = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question()} onAnswer={noop} onAllow={noop} onDeny={onDeny} />,
+    );
+    await flush();
+    const row = rowOf(lastFrame() ?? '', messages.ja.permission.chatAboutThis);
+    expect(row).toBeGreaterThan(0);
+    stdin.write(`\x1b[<0;5;${row + 1}M`);
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(onDeny).toHaveBeenCalledWith(messages.ja.permission.chatMessage);
+  });
+
+  /**
+   * `active={false}`（一覧の list ゾーン）でも**マウスは受け取る**。クリックは
+   * 「このダイアログを操作したい」という宣言なので、キーを持っていない状態でこそ必要
+   * （一覧の行をクリックすると選択が移るのと同じ関係）。
+   */
+  it('active=false でもクリックで onActivate が呼ばれ、カーソルも動く', async () => {
+    const onActivate = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog
+        request={question()}
+        onAnswer={noop}
+        onAllow={noop}
+        onDeny={noop}
+        active={false}
+        onActivate={onActivate}
+      />,
+    );
+    await flush();
+    const row = rowOf(lastFrame() ?? '', 'Japanese');
+    stdin.write(`\x1b[<0;5;${row + 1}M`);
+    await flush();
+    expect(onActivate).toHaveBeenCalled();
+    expect(lastFrame()).toContain('❯ Japanese');
+  });
+
+  it('枠の外のクリックでは onActivate を呼ばない', async () => {
+    const onActivate = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog
+        request={question()}
+        onAnswer={noop}
+        onAllow={noop}
+        onDeny={noop}
+        active={false}
+        onActivate={onActivate}
+      />,
+    );
+    await flush();
+    const below = (lastFrame() ?? '').split('\n').length + 2; // 枠より下（1 始まり）
+    stdin.write(`\x1b[<0;5;${below}M`);
+    await flush();
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it('クリックしても自由記述の書きかけは消えない（選択へ戻って入力へ戻せる）', async () => {
+    const onAnswer = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question()} onAnswer={onAnswer} onAllow={noop} onDeny={noop} />,
+    );
+    await flush();
+    // 「自分で入力する」へ移って書き始める。
+    const typeRow = rowOf(lastFrame() ?? '', messages.ja.permission.typeSomething);
+    stdin.write(`\x1b[<0;5;${typeRow + 1}M`);
+    await flush();
+    stdin.write('\r');
+    await flush();
+    stdin.write('書きかけ');
+    await flush();
+    // 選択肢をクリック → 選択モードへ戻る（書きかけは保持）。
+    const row = rowOf(lastFrame() ?? '', 'English');
+    stdin.write(`\x1b[<0;5;${row + 1}M`);
+    await flush();
+    expect(lastFrame()).toContain('❯ English');
+    // もう一度「自分で入力する」へ戻ると、書きかけがそのまま残っている。
+    const typeRow2 = rowOf(lastFrame() ?? '', messages.ja.permission.typeSomething);
+    stdin.write(`\x1b[<0;5;${typeRow2 + 1}M`);
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain('書きかけ');
+  });
 });
 
 describe('PermissionDialog — tool', () => {
@@ -456,5 +585,32 @@ describe('PermissionDialog — tool', () => {
     stdin.write('n');
     await flush();
     expect(onDeny).toHaveBeenCalledWith(expect.stringContaining('拒否'));
+  });
+
+  /**
+   * 枠の中のクリックはフォーカスを寄せるだけ（`onActivate`）。**許可/拒否は確定しない** —
+   * クリック 1 回で `rm -rf` を許可してしまうのは危険なので、決定は必ずキーで取る。
+   */
+  it('枠の中のクリックは onActivate だけを呼び、許可も拒否もしない', async () => {
+    const onActivate = vi.fn();
+    const onAllow = vi.fn();
+    const onDeny = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog
+        request={toolReq}
+        onAnswer={noop}
+        onAllow={onAllow}
+        onDeny={onDeny}
+        active={false}
+        onActivate={onActivate}
+      />,
+    );
+    await flush();
+    const row = (lastFrame() ?? '').split('\n').findIndex((l) => l.includes('Bash'));
+    stdin.write(`\x1b[<0;5;${row + 1}M`);
+    await flush();
+    expect(onActivate).toHaveBeenCalled();
+    expect(onAllow).not.toHaveBeenCalled();
+    expect(onDeny).not.toHaveBeenCalled();
   });
 });
