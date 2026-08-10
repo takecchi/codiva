@@ -392,6 +392,33 @@ describe('PermissionDialog — question', () => {
     expect(lastFrame()).toContain('❯ [x] English');
   });
 
+  /**
+   * `active={false}`（一覧の list ゾーン）では表示だけ。ここでキーを取ると、一覧の
+   * ↑↓ が選択肢移動に食われて**セッションを切り替えられない**（元の不具合）。
+   */
+  it('active=false では表示だけでキーを受け取らない', async () => {
+    const onAnswer = vi.fn();
+    const { stdin, lastFrame } = render(
+      <PermissionDialog
+        request={question()}
+        onAnswer={onAnswer}
+        onAllow={noop}
+        onDeny={noop}
+        active={false}
+      />,
+    );
+    await flush();
+    // 質問文と選択肢は読める（一覧を眺めながら内容を確認できる）。
+    expect(lastFrame()).toContain('Which language?');
+    // ↑↓ でカーソルは動かず、Enter でも回答しない。
+    stdin.write('\x1B[B');
+    await flush();
+    expect(lastFrame()).toContain('❯ English');
+    stdin.write('\r');
+    await flush();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
   it('toggles with a CSI-u-encoded space', async () => {
     const { stdin, lastFrame } = render(
       <PermissionDialog request={question(true)} onAnswer={noop} onAllow={noop} onDeny={noop} />,

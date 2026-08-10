@@ -81,23 +81,32 @@ import { UpdateDialog } from './update-dialog';
 export type OpenPr = (url: string) => void;
 
 /**
+ * フォーカスゾーン。`dialog` は「選択中セッションが許可/質問を待っている」ときだけ
+ * 成立する第3のゾーンで、そこでだけ `PermissionDialog` がキーを持つ。
+ * これを `list` と分けているのは、混ぜると **一覧の ↑↓ がダイアログの選択肢移動に
+ * 食われてセッションを切り替えられなくなる**ため（かつては PgUp/PgDn だけが逃げ道だった）。
+ */
+export type ListFocus = 'composer' | 'dialog' | 'list';
+
+/**
  * 復元・報告する一覧の表示状態（選択行 = スクロール状態 + フォーカスゾーン + 入力履歴）。
  * 履歴を含めるのは、詳細ビューへ入って戻ってくるだけで ↑ の履歴が消えないようにするため
  * （一覧はビュー切替でアンマウントされる）。
  */
 export type ListViewState = {
   selected: number;
-  focus: 'composer' | 'list';
+  focus: ListFocus;
   history: InputHistory;
 };
 
 /**
- * The single screen: composer (new-session prompt) + session rows. Two focus
- * zones — 'composer' (default: typing + full caret movement) and 'list'
+ * The single screen: composer (new-session prompt) + session rows. Three focus
+ * zones — 'composer' (default: typing + full caret movement), 'dialog' (the
+ * selected session's permission/question dialog owns the keys) and 'list'
  * (↑↓ selection, Enter/→ → open the in-app detail view, m/d → merge/discard).
- * Tab toggles. When the selected session is blocked on a permission/question,
- * the dialog takes the composer's place and owns the keys while the list is
- * focused.
+ * Tab cycles composer → dialog（許可/質問を待っている行のときだけ）→ list → composer。
+ * ダイアログは composer 以外のゾーンで**常に見えている**が、キーを受け取るのは
+ * 'dialog' ゾーンのときだけなので、一覧を眺めながら質問文を読める。
  */
 export const SessionList: FC<{
   manager: SessionManager;
@@ -183,7 +192,7 @@ export const SessionList: FC<{
   // ヘッダ（バナー）のマウス範囲選択。cwd の絶対パスをコピーしたいケースが主目的。
   // コンポーザとは別インスタンスにする（caret index の基準テキストが違う）。
   const headerSel = useDragSelection(onCopy);
-  const [focus, setFocus] = useState<'composer' | 'list'>(initialViewState?.focus ?? 'composer');
+  const [focus, setFocus] = useState<ListFocus>(initialViewState?.focus ?? 'composer');
   // 初回は末尾（最新）を選択して一番下までスクロールした状態で開く。戻ってきた
   // ときは前回の選択行を復元する（選択行から listView がスクロール窓を導くため、
   // 選択を戻せばスクロール状態も戻る）。
@@ -358,20 +367,37 @@ export const SessionList: FC<{
     setActionError,
     m.command.unknown,
   );
-  // 表示状態（クランプ後の選択行 + フォーカス + 入力履歴）を親へ報告し、ビュー切替で
-  // アンマウントされても復元できるようにする。ref 書き込みなので再描画は起きない。
-  useEffect(() => {
-    onViewStateChange?.({ selected, focus, history: history.history });
-  }, [selected, focus, history.history, onViewStateChange]);
-  // The dialog owns the keys only while the list side has focus, so the
-  // composer is never hijacked mid-typing by a session that starts asking.
+  // 選択中セッションが待っている決定（ツール許可 / 質問）。
   //
   // `!update` は必須のガード: `PermissionDialog` は**自前の `useInput`** を持ち、Ink は
   // 1 つの入力チャンクを**マウント中の全ハンドラへ配る**。アップデートダイアログと
   // 同時にマウントされると、更新確認の `y` が未読のツール実行の許可も兼ねてしまう
   // （このビューがキーを飲んでも、相手のハンドラは独立に反応する）。モーダルは
   // 相互排他にしておく（規約: ink-components.md）。
-  const pending = focus === 'list' && !update ? target?.pendingPermission : undefined;
+  const request = update ? undefined : target?.pendingPermission;
+  // 回答し終えた / 選択が別セッションへ移った直後の 1 フレームは focus が 'dialog' の
+  // まま request が消えうるので、描画では composer へ丸める（下の useEffect が state も
+  // 揃える）。宙に浮いた 'dialog' を残すと、同じセッションが次に質問したときに
+  // **入力中のキーを奪う**（かつてダイアログを list フォーカスに混ぜていたのと同じ罠）。
+  const zone: ListFocus = focus === 'dialog' && !request ? 'composer' : focus;
+  // ダイアログは composer 以外のゾーンで（入力欄の代わりに）常に描く。
+  const pending = zone === 'composer' ? undefined : request;
+  // キーを持つのは 'dialog' ゾーンのときだけ。'list' では表示のみ（↑↓ はセッション切替）。
+  const dialogActive = zone === 'dialog' && pending !== undefined;
+
+  // 表示状態（クランプ後の選択行 + フォーカス + 入力履歴）を親へ報告し、ビュー切替で
+  // アンマウントされても復元できるようにする。ref 書き込みなので再描画は起きない。
+  useEffect(() => {
+    onViewStateChange?.({ selected, focus: zone, history: history.history });
+  }, [selected, zone, history.history, onViewStateChange]);
+  // 決着が付いた（回答した / セッションが先へ進んだ）ら dialog ゾーンを畳む。
+  // 次の質問が来たときに自動でキーを奪わせないため、戻り先は入力欄にする
+  // （もう一度 Tab 1 回で回答できる）。
+  useEffect(() => {
+    if (focus === 'dialog' && !request) {
+      setFocus('composer');
+    }
+  }, [focus, request]);
 
   // 一覧の内部スクロール: rows ボックスは flexGrow で残り高さを占めるので、その
   // 実測高さぶんだけ項目を描画し、選択が常に見えるようウィンドウを動かす。全画面
@@ -576,12 +602,13 @@ export const SessionList: FC<{
       if (update || modelSelect || promptEdit) {
         return;
       }
-      // 許可/質問ダイアログ中は press/drag/release だけを飲む。ダイアログ側の自由記述欄が
-      // 自前でドラッグ範囲選択を持つので、通すと 1 回のドラッグでヘッダや一覧の選択まで
-      // 動く。**ホイールは通す** — 一覧は選択行がスクロール位置なので、ここで飲むと
-      // 「ダイアログが出ているあいだ一覧を眺められない」ことになる（キーの側は同じ理由で
-      // PgUp/PgDn を通してある。下の `pending` ガードを参照）。
-      if (pending && mouse.kind !== 'wheel') {
+      // 許可/質問ダイアログが**キーを持っている間**は press/drag/release だけを飲む。
+      // ダイアログ側の自由記述欄が自前でドラッグ範囲選択を持つので、通すと 1 回の
+      // ドラッグでヘッダや一覧の選択まで動く。**ホイールは通す** — 一覧は選択行が
+      // スクロール位置なので、ここで飲むと「ダイアログが出ているあいだ一覧を眺め
+      // られない」ことになる。list ゾーンのダイアログは表示だけ（`isActive: false`）
+      // なので飲まない = 行のクリックがそのまま効く。
+      if (dialogActive && mouse.kind !== 'wheel') {
         return;
       }
       if (mouse.kind === 'wheel') {
@@ -663,18 +690,16 @@ export const SessionList: FC<{
     if (busy) {
       return;
     }
-    if (pending) {
-      // PermissionDialog owns the keys. Selection still moves via PgUp/PgDn
-      // (and ↑↓ for y/n tool prompts, which don't use arrows themselves).
-      if (key.pageUp || (pending.kind === 'tool' && key.upArrow)) {
-        moveSel(-1);
+    if (dialogActive) {
+      // PermissionDialog owns the keys（自前の useInput）。ここでは出口だけを持つ:
+      // Tab で一覧ゾーンへ（そこでは ↑↓ がセッション切替）、Esc で入力欄へ。
+      // 選択移動をここに残さない — 一覧ゾーンという行き先ができたので、↑↓ が
+      // 「ダイアログの選択肢」と「一覧の行」のどちらを指すのかを曖昧にしない。
+      if (key.tab) {
+        setFocus('list');
         return;
       }
-      if (key.pageDown || (pending.kind === 'tool' && key.downArrow)) {
-        moveSel(1);
-        return;
-      }
-      if (key.tab || key.escape) {
+      if (key.escape) {
         setFocus('composer');
       }
       return;
@@ -728,11 +753,14 @@ export const SessionList: FC<{
       return;
     }
     if (key.tab) {
-      setFocus((f) => (f === 'composer' ? 'list' : 'composer'));
+      // composer → dialog（許可/質問を待っている行のときだけ）→ list → composer。
+      // 入力欄から Tab 1 回で回答できる順序を保ちつつ、もう 1 回で一覧の ↑↓ に届く。
+      // dialog ゾーンからの Tab は上の `dialogActive` ブロックが処理する。
+      setFocus((f) => (f === 'composer' ? (request ? 'dialog' : 'list') : 'composer'));
       return;
     }
 
-    if (focus === 'list') {
+    if (zone === 'list') {
       if (key.upArrow) {
         moveSel(-1);
         return;
@@ -838,9 +866,11 @@ export const SessionList: FC<{
     ? m.model.help
     : promptEdit
       ? m.prompt.help
-      : pending
+      : // ダイアログがキーを持っている間だけダイアログ用のヒント。list ゾーンでは
+        // ダイアログが見えていても操作対象は一覧なので、通常の一覧ヒントを出す。
+        dialogActive
         ? m.list.helpPending
-        : focus === 'list'
+        : zone === 'list'
           ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
             // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
             // 含むヒントに切り替える。
@@ -877,7 +907,7 @@ export const SessionList: FC<{
               const isSel = idx === selected;
               return (
                 <Box key={s.id}>
-                  <Text color={focus === 'list' ? theme.accent : theme.dim}>
+                  <Text color={zone === 'list' ? theme.accent : theme.dim}>
                     {isSel ? `${glyph.caret} ` : '  '}
                   </Text>
                   <Box width={2}>
@@ -1027,8 +1057,13 @@ export const SessionList: FC<{
           onCopy={onCopy}
         />
       ) : pending && target ? (
+        // `key` にセッション id を入れる: ダイアログは回答の途中経過（何問目か・複数選択の
+        // チェック・自由記述）を内部 state に持つので、選択行が別セッションへ移ったら
+        // 作り直す（残すと隣のセッションの答えを引き継いだまま送ってしまう）。
         <PermissionDialog
+          key={target.id}
           request={pending}
+          active={dialogActive}
           onAnswer={(answers) => manager.answer(target.id, answers)}
           onAllow={() => manager.allow(target.id)}
           onDeny={(message) => manager.deny(target.id, message)}
@@ -1040,7 +1075,7 @@ export const SessionList: FC<{
               スラッシュ無しの `exit` が無言で終了しないよう、確定前に何が起きるかを見せる。
               **入力欄の計測 Box の外**に置く: 中に入れると実測した上端がパレットの分だけ
               ずれ、クリックが別の文字に当たる。 */}
-          {focus === 'composer' && commandPreview !== null ? (
+          {zone === 'composer' && commandPreview !== null ? (
             <CommandPalette
               title={m.command.paletteTitle}
               commands={matchCommands(commandPreview)}
@@ -1048,7 +1083,7 @@ export const SessionList: FC<{
           ) : null}
           <Composer
             composer={composer}
-            focused={focus === 'composer'}
+            focused={zone === 'composer'}
             placeholder={m.list.promptPlaceholder}
           />
         </Box>
