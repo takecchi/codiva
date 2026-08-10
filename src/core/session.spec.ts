@@ -301,6 +301,9 @@ describe('Session', () => {
     });
     session.start();
     await tick();
+    // Codex のように開始イベントへモデル名を載せない provider でも、実際に渡した
+    // 明示モデルは一覧へ表示できる。
+    expect(session.getState().model).toBe('claude-opus-4-8');
     session.setModel(undefined);
     expect(fake.modelCalls).toEqual([undefined]);
     expect(session.getState().model).toBeUndefined();

@@ -42,6 +42,11 @@ const MODEL_CATALOG = [
   { value: 'claude-fable-5[1m]', resolvedModel: 'claude-fable-5', displayName: 'Fable' },
 ];
 
+const CODEX_MODEL_CATALOG = [
+  { value: 'default', resolvedModel: 'gpt-5.6-codex', displayName: 'Default' },
+  { value: 'gpt-5.6-codex', resolvedModel: 'gpt-5.6-codex', displayName: 'GPT-5.6-Codex' },
+];
+
 describe('App fullscreen layout', () => {
   it('renders a frame exactly as tall as the terminal, footer pinned to the bottom', () => {
     const { app, lastFrame } = renderFullscreen(<App manager={makeManager()} />, 20);
@@ -2928,6 +2933,35 @@ describe('App list view (/agent default + availability)', () => {
     // 既定が変わり、config へ永続化される（手編集不要）。
     expect(manager.getDefaultAgentId()).toBe('codex');
     expect(persisted).toEqual(['codex']);
+  });
+
+  it('/model uses the selected default agent catalog', async () => {
+    const app = render(
+      <App
+        manager={
+          new SessionManager({
+            worktrees,
+            agents: {
+              claude: fakeAdapter('claude', 'Claude'),
+              codex: fakeAdapter('codex', 'Codex'),
+            },
+            agent: fakeAdapter('codex', 'Codex'),
+            defaultAgentId: 'codex',
+            now: () => 0,
+          })
+        }
+        modelCatalog={Promise.resolve(MODEL_CATALOG)}
+        codexModelCatalog={Promise.resolve(CODEX_MODEL_CATALOG)}
+      />,
+    );
+    await flush();
+    app.stdin.write('/model');
+    await flush();
+    app.stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toContain('GPT-5.6-Codex');
+    expect(frame).not.toContain('Fable');
   });
 
   it('shows a setup hint when no agent is installed', async () => {
