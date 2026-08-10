@@ -2,7 +2,7 @@ import { type AccountSummary, sameAccountSummary } from './account';
 import type { AgentAdapter } from './agent-ports';
 import type { QueryFn } from './claude-adapter';
 import { errorMessage } from './errors';
-import type { Messages } from './i18n';
+import { type AgentLabel, agentLabelOf, type Messages } from './i18n';
 import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
 import { PrCoordinator } from './pr-coordinator';
 import {
@@ -37,7 +37,7 @@ import { SessionStore } from './session-store';
 import { makeSlug, makeTitle, uniqueSlug } from './slug';
 import { isInterruptible, isResumable, isTerminalStatus } from './status-meta';
 import { accrueActive, initialState, reduce } from './status-reducer';
-import type { CreateSessionInput, LogEntry, SessionState } from './types';
+import type { AgentId, CreateSessionInput, LogEntry, SessionState } from './types';
 import { mergeUsageWindow, type UsageSnapshot } from './usage';
 import type { DiffStat, SyncBaseResult, Worktree } from './worktree';
 
@@ -48,6 +48,15 @@ export interface SessionManagerDeps {
    * 組み立てる。ここを差し替えるだけで provider が変わる（`core/agent-ports.ts`）。
    */
   agent?: AgentAdapter;
+  /**
+   * 使えるエージェントの一覧（`/agent` の選択肢・復元時の解決に使う）。`agent` が
+   * 「新規セッションの既定」なのに対し、こちらは **id → アダプタ の対応表**。
+   *
+   * 復元したセッションは自分がどの provider で走っていたかを覚えている
+   * （`SessionState.agent`）ので、ここから引き直さないと再起動のたびに既定の
+   * エージェントへ勝手に乗り換えてしまう。
+   */
+  agents?: Partial<Record<AgentId, AgentAdapter>>;
   /** Claude Agent SDK の `query`。`agent` を渡す場合は不要。 */
   queryFn?: QueryFn;
   /** Optional Claude-backed title generator; forwarded to each fresh session. */
@@ -366,7 +375,9 @@ export class SessionManager {
       return this.deps.createSession({ input, onChange, onRateLimit, ...extra });
     }
     return new Session({
-      agent: this.deps.agent,
+      // 復元したセッションは自分が走っていた provider を覚えているので、それを
+      // 優先する（覚えていない = 切替対応より前のスナップショットなら既定へ）。
+      agent: this.agentFor(extra?.restored?.agent) ?? this.deps.agent,
       queryFn: this.deps.queryFn,
       input,
       options: this.options,
@@ -553,6 +564,67 @@ export class SessionManager {
    */
   setSessionModel(id: string, model: string | undefined): void {
     this.sessions.get(id)?.setModel(model);
+  }
+
+  // ── エージェント（provider）の切替 ────────────────────────────────
+  /** 登録済みのアダプタを id で引く（未登録なら undefined）。 */
+  private agentFor(id: AgentId | undefined): AgentAdapter | undefined {
+    return id === undefined ? undefined : this.deps.agents?.[id];
+  }
+
+  /**
+   * 切り替えられるエージェントの一覧（`/agent` の選択肢）。登録されているものだけを
+   * 返すので、未対応の provider は UI に出ない。
+   */
+  listAgents(): readonly AgentAdapter[] {
+    const registry = this.deps.agents;
+    if (!registry) {
+      return this.deps.agent ? [this.deps.agent] : [];
+    }
+    return Object.values(registry).filter((a): a is AgentAdapter => a !== undefined);
+  }
+
+  /**
+   * そのセッションを今駆動しているアダプタ。UI はここから capability を引いて、
+   * 持たない機能のキー操作・ヒントを隠す（`AgentCapabilities`）。
+   */
+  getSessionAgent(id: string): AgentAdapter | undefined {
+    const live = this.sessions.get(id)?.getAgent?.();
+    if (live) {
+      return live;
+    }
+    // まだ Session を作っていない（provision 中）ときは状態に載っている id から引く。
+    return this.agentFor(this.store.get(id)?.agent);
+  }
+
+  /**
+   * 文言に差し込むエージェント表示情報（表示名 + ログインコマンド）。認証切れの
+   * 案内は provider ごとに違うので、UI と通知はここから引く（Codex のセッションに
+   * 「`claude` でログインし直して」と言わないため）。
+   */
+  getSessionAgentLabel(id: string): AgentLabel {
+    return agentLabelOf(this.getSessionAgent(id));
+  }
+
+  /**
+   * セッションの駆動エージェントを切り替える（`/agent`）。走っているターンは畳まれ、
+   * 次の指示から新しい provider が動く。**モデル側の文脈は provider をまたげない**
+   * ので、切替先が過去にこのセッションで会話していればその id で resume し、
+   * 初めてなら新しい会話として始まる（`agent_switched` の reducer）。
+   *
+   * 未登録の provider・同じ provider・セッション不在では false を返す。
+   */
+  setSessionAgent(id: string, agentId: AgentId): boolean {
+    const session = this.sessions.get(id);
+    const adapter = this.agentFor(agentId);
+    if (!session || !adapter || !session.setAgent) {
+      return false;
+    }
+    if (session.getAgent?.().id === agentId) {
+      return false;
+    }
+    session.setAgent(adapter);
+    return true;
   }
 
   // ── Lifecycle (merge / discard) ────────────────────────────────────

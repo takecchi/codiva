@@ -44,6 +44,17 @@ export interface ModelOption {
  * 既定行の `displayName` は表示に使われない（UI がカタログの `model.defaultRow` を
  * 引くため）。ここに置いてあるのは型を満たすためだけの不活性な値。
  */
+/**
+ * 「CLI 既定」だけのフォールバック。カタログを取れなかったときに**モデル名を
+ * 推測で並べたくない** provider（Codex）向け。Claude の
+ * {@link FALLBACK_MODEL_OPTIONS} と違ってファミリーエイリアスすら置かないのは、
+ * Codex の slug（`gpt-5.6-sol` 等）が世代ごとに変わる実 ID で、エイリアスに
+ * 相当するものが無いため（外せば必ず陳腐化する）。
+ */
+export const DEFAULT_ONLY_MODEL_OPTIONS: readonly ModelOption[] = [
+  { value: DEFAULT_MODEL_VALUE, displayName: 'Default' },
+];
+
 export const FALLBACK_MODEL_OPTIONS: readonly ModelOption[] = [
   { value: DEFAULT_MODEL_VALUE, displayName: 'Default' },
   { value: 'opus', displayName: 'Opus' },

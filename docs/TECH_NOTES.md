@@ -832,3 +832,149 @@ Claude セッション自身の `gh` と分け合うので、これだけで枯�
 | HEAD にある PR | cwd=この worktree, branch=`codiva/github` | `found` #78 mergeable / passing |
 | PR 無し | cwd=main チェックアウト, branch=存在しないブランチ | **`absent`**（`unavailable` ではない） |
 | マージ済み | branch=`codiva/task-11` | `found` #77 **merged**（以後ポーリングしない） |
+
+## Codex CLI（`codex exec --json`）の実測（codex-cli 0.144.5, 2026-08-10）
+
+codiva の 2 つ目の provider。**`@openai/codex-sdk` を npm 依存に足さず、ユーザーがインストールした
+`codex` を起動する**（`gh` / `git` と同じ扱い。SDK を入れると Codex を使わないユーザーにも
+プラットフォーム別バイナリが降る）。実装は `core/codex-*.ts` + `utils/codex.ts`、設計の理由は
+[ARCHITECTURE.md](./ARCHITECTURE.md)「エージェント抽象」6 節。
+
+### codiva が組み立てる起動コマンド
+
+`utils/codex.ts` の `codexArgs()`。**シェルは使わず引数配列**（`git` / `gh` と同じ規約）。
+
+```
+codex exec --json --skip-git-repo-check
+           --sandbox <read-only|workspace-write|danger-full-access>
+           -c approval_policy="never"
+           [-c sandbox_workspace_write.network_access=<bool>]   # workspace-write のときだけ
+           [--model <slug>] [-c model_reasoning_effort="<effort>"]
+           [resume <thread_id>]
+           -- <prompt>
+```
+
+- **`--json` と `--experimental-json` は同じフラグ**（clap の alias。`--help` に出るのは `--json`）。
+- **指示文の前に `--` を必ず置く**。ユーザーの入力は任意の文字列なので、`-` で始まると
+  clap がオプションとして解釈して起動そのものが落ちる（実測: `codex exec --json "--fix the thing"`
+  → `error: unexpected argument '--fix the thing' found`）。`--` 以降は必ず値として扱われ、
+  `resume <id> -- <prompt>` の形でも同じに効く（実測で確認済み）。
+- `resume` はサブコマンド（`codex exec [OPTIONS] resume <id> <prompt>`）だが、オプションは global
+  なので前に置ける。プロンプトは**必ず最後の位置引数**。
+- **stdin は `'ignore'` で開く**。プロンプトを引数で渡していても、パイプされた stdin があると
+  codex は追加入力として読もうとして `Reading additional input from stdin...` と出したままブロックする。
+- **stdout = JSONL、stderr = ログ**（`2026-…Z ERROR codex_login::auth::manager: …` のような tracing 行）。
+  失敗の診断は stderr の末尾（codiva は 4000 文字まで保持）。
+- 終了コードは実質 **0 か 1 だけ**（正常終了 / 失敗）。細かい理由はコードから区別できないので、
+  分類は文言（`turn.failed` の message か stderr）で行う。
+
+### JSONL のイベント union
+
+出所は Codex の `codex-rs/exec/src/exec_events.rs`。codiva の型は `core/codex-events.ts`。
+
+| `type` | 運ぶもの | codiva での扱い |
+|---|---|---|
+| `thread.started` | `thread_id` | resume の鍵。**resume した回も同じ id が再度届く**（`session_started` は no-op） |
+| `turn.started` | なし | `assistant_message`（running へ戻す区切り） |
+| `item.started` | `item` | tool_use 相当（コマンド・パッチ・MCP・web 検索・TODO） |
+| `item.updated` | `item` | **実測では `todo_list` にしか来ない** |
+| `item.completed` | `item` | assistant テキスト / tool_result 相当 |
+| `turn.completed` | `usage?` | **ターン完了の唯一の信号**。トークン数のみで **USD は無い** |
+| `turn.failed` | `error.message` | **ターン失敗の唯一の信号** |
+| `error` | `message` | **終了ではない**（下記）。system 行 1 行にとどめる |
+
+`item` の `type` と状態:
+
+| `item.type` | フィールド | `status` の enum |
+|---|---|---|
+| `agent_message` | `text` | （なし） |
+| `reasoning` | `text`（推論の要約） | （なし） |
+| `command_execution` | `command` / `aggregated_output` / `exit_code`（実行中は**明示的に `null`**） | `in_progress` / `completed` / `failed` / `declined` |
+| `file_change` | `changes[] = {path, kind: add\|delete\|update}` | `in_progress` / `completed` / `failed` |
+| `mcp_tool_call` | `server` / `tool` | `in_progress` / `completed` / `failed` |
+| `web_search` | `query` | （なし） |
+| `todo_list` | `items[] = {text, completed}`（**真偽値だけ**。`in_progress` が無い） | （なし） |
+| `error` | `message` | （なし） |
+
+- `item.id` は CLI が振る通し番号（`item_0`, `item_1` …）で、モデル側の id ではない。
+  started ↔ completed の突き合わせに使う。
+- コマンド実行は **started → completed の 2 段**で、途中経過（`item.updated`）は来ない。
+  進行中の出力は覗けず、`aggregated_output` は completed でまとめて届く。
+  そのため `item.updated` を読む価値があるのは `todo_list`（チェックが 1 つずつ埋まる）だけ。
+- `todo_list` は `item.completed` でも**直前の `item.updated` と同じリスト**を繰り返す
+  （codiva はログ行を増やさない）。
+- `CodexUsage.cache_write_input_tokens` は実測で省略されることがある（CLI 側に `serde(default)`）。
+
+### `{"type":"error"}` は終了ではない（再試行の実況）
+
+接続が切れると、次のような行が **stdout の JSONL として**流れ続ける（`__fixtures__/codex-failure.jsonl`）:
+
+```json
+{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: …)"}
+…
+{"type":"error","message":"Reconnecting... 5/5 (stream disconnected before completion: …)"}
+{"type":"error","message":"stream disconnected before completion: …"}
+{"type":"turn.failed","error":{"message":"stream disconnected before completion: …"}}
+```
+
+- 5 回まで自動で粘り、**成功すればそのままターンが続く**。`error` を素直に失敗扱いにすると
+  自力で回復するセッションが赤くなる。ターンの終わりを決めてよいのは `turn.failed`（と、
+  終端イベント無しの非ゼロ終了）だけ。
+- 諦めたときは同じ文言が `error` と `turn.failed` の 2 回届く。codiva は `error` を
+  `coalesceKey: 'Reconnecting'` の system 行に畳んで 1 行にまとめ、分類は `turn.failed` で行う。
+- 認証切れも同じ形（`error` → `turn.failed` が同文言）で来る（`__fixtures__/codex-auth-error.jsonl`）:
+  `Your access token could not be refreshed because your refresh token was already used.
+  Please log out and sign in again.` → `classifyCodexError` が `auth` に分類する。
+
+### 承認要求は JSON モードでは上げられない
+
+`codex exec` の JSON モードは、コマンド実行 / パッチ適用 / MCP のいずれの承認要求も
+**CLI 内部で自動 reject** し、JSONL には何も出さない（`codex-rs/exec/src/lib.rs` の
+`handle_server_request`）。したがって codiva 側に許可要求を UI へ上げる経路は原理的に無く、
+`CODEX_CAPABILITIES.permissions = false`。安全弁はサンドボックス（`--sandbox` = 設定
+`codexSandbox`）だけになる。`workspace-write` の既定はネットワーク遮断なので、
+`-c sandbox_workspace_write.network_access=true`（設定 `codexNetworkAccess`、既定 true）を
+明示しないと `npm install` / `gh` が失敗して大半の作業が完了しない。
+
+### `codex debug models` — モデル一覧のローカル取得
+
+- ローカルのモデルカタログを JSON で吐くだけで**推論は走らない**（トークンもコストもゼロ）。
+  Claude 側の `Query.supportedModels()` と同じ「モデル名を直書きしない」ための出所。
+- 出力は **`base_instructions`（モデルごとのシステムプロンプト全文）を含むため実測 ~280KB**。
+  `execFile` の既定 `maxBuffer` では足りないので明示的に広げる（`utils/codex.ts` は 8MB）。
+- 読むのは `models[].slug` / `display_name` / `description` / `visibility` だけ。
+  **`visibility !== 'list'`（`hide` 等）は内部用**なので選択肢に出さない。
+- Codex の slug は `gpt-5.6-sol` のような**実 ID**で、Claude の `sonnet` / `opus` に相当する
+  エイリアスが無い。したがって取得に失敗したときのフォールバックは**「デフォルト」1 行だけ**
+  （`DEFAULT_ONLY_MODEL_OPTIONS`）。ここに推測でモデル名を並べると必ず陳腐化する。
+
+### フィクスチャの採取: モック Responses API を立てて実バイナリを走らせる
+
+Codex の JSONL には上流に採取済みのフィクスチャが無く、実アカウントで走らせると
+（a）課金・レート制限を食う（b）モデルの気分で出るイベントが変わり `command_execution` の
+失敗や `turn.failed` を**狙って**出せない。そこで **`codex` バイナリはそのまま、モデル側だけを
+差し替える**方法で採取した。`src/core/__fixtures__/codex-*.jsonl` はこれで採った実出力。
+
+1. ローカルに **Responses API 互換のモックサーバ**を立てる（`POST /v1/responses` に SSE で
+   決め打ちの応答を返すだけの小さな HTTP サーバ）。モデルの出力を固定できるので、
+   シェル実行・パッチ適用・TODO 更新・コマンド失敗・ストリーム切断を**狙って**再現できる
+   （切断は応答の途中でソケットを閉じるだけでよい）。
+2. `codex` をそのプロバイダに向ける。`-c` は `~/.codex/config.toml` の値を上書きするので、
+   設定ファイルを汚さずに 1 回の実行だけ差し替えられる:
+
+   ```bash
+   codex exec --json --skip-git-repo-check --sandbox workspace-write \
+     -c model_provider="mockprov" \
+     -c 'model_providers.mockprov={name="mock",base_url="http://127.0.0.1:<port>/v1",wire_api="responses",requires_openai_auth=false}' \
+     -c approval_policy='"never"' \
+     "<prompt>"
+   ```
+
+   `-c <key>=<value>` の value は **TOML として**解釈される（パースできなければ生文字列）。
+   だから文字列は `-c approval_policy='"never"'` のようにクォートを 2 重にする。
+3. stdout をそのまま `.jsonl` として保存し、絶対パス等をサニタイズしてから
+   `src/core/__fixtures__/` へ昇格させる（Claude 側の spike と同じ運用。
+   [testing.md](../.claude/rules/testing.md)）。
+
+> この手法は「CLI の出力形式に依存したパーサを、CLI 本体を差し替えずにテストしたい」場面で
+> そのまま再利用できる。上流にフィクスチャが無い provider を足すときの既定手段にする。

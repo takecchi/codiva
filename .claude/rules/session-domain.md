@@ -135,6 +135,14 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
   ストリームが同じ worktree を触らないように現在の run を捨て、保留中の許可も deny で解決する
   （未応答の `tool_use` で終わるトランスクリプトは後の resume を壊す）。新しいエージェントが
   立ち上がるのは次の `send()`。
+  - **「run を捨てる」の実体は入力キューを閉じること**（`this.run = undefined` ではない）。
+    参照を捨てても consume ループはそのオブジェクトを掴んだまま回り続け、アダプタ側は
+    共有キューを await して止まっているので、閉じない限り**切替後に送った指示を古い
+    エージェントが受け取る**（切り替えたのに何も起きないように見える。実際に起きた不具合で、
+    番人は `session.spec.ts` の「routes the next instruction to the new agent」）。
+    `setAgent()` は現在のキューを `close()` して新しい `AsyncQueue` を用意し、畳んだループが
+    終わった時点で積み残しがあれば（`AsyncQueue.pending`）新しいエージェントで再開する。
+    セッション全体の `abortController` は使わない — あれを abort するとセッションごと終わる。
 - 1 エージェントセッション 1 ライター。codiva 以外（外部 `claude --resume` 等）から同じ
   セッションに繋がない。**同時に 2 つの provider を 1 つの worktree で走らせない**。
 

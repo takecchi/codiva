@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"019feb2e-febe-7171-bb20-91910d47ebe5"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Planning the answer**\n\nI will just reply with a short greeting."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Done thinking."}}
+{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens":128,"output_tokens":77,"reasoning_output_tokens":22}}

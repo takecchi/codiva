@@ -2,7 +2,8 @@
 
 コーディングエージェントとの境界と、`@anthropic-ai/claude-agent-sdk` を触るときの不変条件。
 **`core/agent-ports.ts` / `core/agent-events.ts` / `core/claude-adapter.ts` / `core/claude-parse.ts` /
-`core/claude-errors.ts` / `core/session.ts` / `utils/model-catalog.ts` / `utils/title.ts` を触る前に読む。**
+`core/claude-errors.ts` / `core/codex-adapter.ts` / `core/codex-parse.ts` / `core/codex-errors.ts` /
+`core/session.ts` / `utils/model-catalog.ts` / `utils/codex.ts` / `utils/title.ts` を触る前に読む。**
 実測データと詳細は [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)、設計の理由は
 [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md)「エージェント抽象」。
 
@@ -27,8 +28,42 @@
   provider 形への写像はアダプタが行う（Claude は `claude-adapter.ts` の `canUseTool`）。
 - その provider に無い機能は `AgentCapabilities` で表明する（`permissions` / `interrupt` /
   `setModel` / `resume` / `modelCatalog` / `usage` / `cost` / `transcript`）。UI は capability を
-  見て縮退する（表は入っているが実際の縮退の配線は Phase D）。`AgentRun.interrupt` / `setModel` は
+  見て縮退する（今つながっているのは `/model` と `Ctrl+C`。残りは Phase D）。
+  `AgentRun.interrupt` / `setModel` は
   optional。新しいアダプタは `NO_CAPABILITIES` から始めて、実装できたものだけ true にする。
+
+## 他 provider のアダプタ（Claude 以外を足すとき）
+
+- **3 点セットは provider ごとに対で書く**。Claude が `claude-adapter.ts` / `claude-parse.ts` /
+  `claude-errors.ts` なら、Codex は `codex-adapter.ts` / `codex-parse.ts` / `codex-errors.ts`
+  （+ JSONL の型と受理ガードだけを持つ `codex-events.ts`、実 I/O の `utils/codex.ts`）。
+  **その CLI / SDK の形の知識をこの外へ漏らさない。**
+- **CLI は同梱せず、ユーザーがインストールしたものを起動する**（`git` / `gh` と同じ扱い）。
+  provider の SDK パッケージを依存に足すと、その provider を使わないユーザーにまで
+  プラットフォーム別バイナリを配ることになる。認証もその CLI のログインに委ねる
+  （codiva は資格情報を書かない）。
+- **「1 ターン = 1 プロセス」もアダプタの形として認める**。`codex exec` は 1 ターンで終了し、
+  続きは `codex exec resume <thread_id> <prompt>` として起動し直す。`AgentAdapter.open` が
+  プロンプトキューを回してターンごとにプロセスを起こし、resume id を引き回すことで、
+  外からは Claude の長寿命ストリームと同じ 1 本に見せられる（`AgentRun` の契約は
+  「`AgentEvent` を流す非同期イテレータ」だけなので、プロセスの寿命は自由）。
+  終端イベントが来ないままプロセスが終わる経路（中断・CLI 未導入）を必ず終了コードで補うこと。
+- **許可要求を上げられない provider は `permissions: false` を宣言する。ダイアログを偽装しない。**
+  `codex exec` の JSON モードは承認要求を CLI 内部で自動 reject してストリームに何も出さないので、
+  codiva が UI へ上げる経路が原理的に無い。ここで「それらしい許可ダイアログ」を出すと、
+  ユーザーが許可したのに実際は拒否されているという嘘になる。**capability を false にして
+  黙って出さない**方を選び、安全弁は provider 側の仕組み（Codex ならサンドボックス設定
+  `codexSandbox`）に寄せる。同じ理由で、質問（`QuestionSpec`）を表現できない provider も
+  `permissions: false` のままにする。
+- **「エラー行」と「ターンの終わり」を混同しない**。Codex は再試行の実況
+  （`Reconnecting... 1/5 (...)`）を `{"type":"error"}` として流し、諦めたときだけ `turn.failed`
+  を出す。エラー型を素直に失敗へ写すと**自力で回復するセッションが赤くなる**ので、
+  終端の判定に使ってよいイベントを実データで確かめてから書く（連発する実況は
+  `AgentEvent.notice` の `coalesceKey` で 1 行に畳む）。
+- **フィクスチャは実バイナリから採る**。上流に採取済みのものが無ければ、モデル側だけを
+  差し替えて（Codex なら `-c model_provider=...` でローカルのモック Responses API へ向ける）
+  実 CLI を走らせ、出力をサニタイズして `src/core/__fixtures__/` へ昇格させる
+  （手順は [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)「Codex CLI」節）。
 
 ## 形の知識は 2 段に割る（アダプタの parse → 共通の fold）
 
@@ -52,7 +87,9 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
 
 - `@anthropic-ai/claude-agent-sdk` を import してよいのは **`core/claude-adapter.ts` /
   `core/claude-parse.ts` / `core/claude-errors.ts`**（と `utils/` の Claude 実装）だけ。
-  他の `core/` モジュールから型・定数を引かない。
+  他の `core/` モジュールから型・定数を引かない。同じ規律を他 provider にも適用する
+  （`codex` CLI の引数・JSONL の形を知ってよいのは `core/codex-*.ts` と `utils/codex.ts` だけ。
+  `core/` はサブプロセスを起こさないので、`spawn` は必ず `utils/` 側に置く）。
 - そのため、SDK の union と値が同じでも自前で持つものがある: `core/config.ts` の
   `EffortLevel` / `PermissionMode`（配列が唯一の出所で、型も実行時検証もそこから導出）。
   **型で気付けないので、SDK 更新時に目視で追従させる**。

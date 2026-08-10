@@ -11,7 +11,6 @@ import {
   bufferOf,
   COMMANDS,
   canSelfUpdate,
-  DEFAULT_AGENT_LABEL,
   errorMessage,
   formatDuration,
   formatModel,
@@ -235,6 +234,10 @@ export const SessionList: FC<{
   // 一覧は常に作成順（上が古い・下が新しい）。archived になっても位置は動かさない。
   const selected = Math.min(sel, Math.max(0, sessions.length - 1));
   const target = sessions[selected];
+  // 認証切れの案内に差し込むエージェント（表示名 + ログインコマンド）。**選択行の
+  // provider から引く** — Codex のセッションに「`claude` でログインし直して」と
+  // 言ってしまわないため。
+  const targetAgentLabel = manager.getSessionAgentLabel(target?.id ?? '');
   // 確認/実行中/エラー + マージ・破棄の実行は共有フックへ（選択セッションが対象）。
   const { confirm, setConfirm, busy, actionError, setActionError, run } = useLifecycleAction(
     manager,
@@ -913,7 +916,7 @@ export const SessionList: FC<{
             // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
             // 含むヒントに切り替える。
             target?.status === 'needs_login'
-            ? m.auth.listHint(DEFAULT_AGENT_LABEL)
+            ? m.auth.listHint(targetAgentLabel)
             : target && isResumable(target.status)
               ? m.resume.listHint
               : m.list.helpList
@@ -1014,7 +1017,7 @@ export const SessionList: FC<{
           flexGrow のセッション一覧（内部スクロールで収まる）に任せる。 */}
       <Box flexDirection="column" flexShrink={0}>
         {target?.status === 'needs_login' ? (
-          <Text color={statusColor.needsLogin}>{m.auth.hint(DEFAULT_AGENT_LABEL)}</Text>
+          <Text color={statusColor.needsLogin}>{m.auth.hint(targetAgentLabel)}</Text>
         ) : targetResumable ? (
           <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
         ) : null}

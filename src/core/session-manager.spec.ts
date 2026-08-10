@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { type AgentAdapter, NO_CAPABILITIES } from '@/core/agent-ports';
 import { messages } from '@/core/i18n';
 import type { RateLimitInfoJson } from '@/core/rate-limit';
 import { SessionManager } from '@/core/session-manager';
 import type { PrAutomation, SessionHandle, WorktreeService } from '@/core/session-ports';
 import { initialState, reduce } from '@/core/status-reducer';
 import type {
+  AgentId,
   CreateSessionInput,
   PrInfo,
   PrLookupResult,
@@ -1736,6 +1738,89 @@ describe('SessionManager', () => {
       manager.create('second');
       await flush();
       expect(prompts).toEqual([undefined, 'Open a PR when done']);
+    });
+  });
+
+  describe('agent registry (/agent)', () => {
+    /** 状態だけを動かすフェイク + エージェントの差し替え口（optional な 2 メソッド）。 */
+    class AgentFakeSession extends FakeSession {
+      current: AgentAdapter = claude;
+      getAgent() {
+        return this.current;
+      }
+      setAgent(next: AgentAdapter) {
+        this.current = next;
+      }
+    }
+
+    function fakeAdapter(id: AgentId, displayName: string): AgentAdapter {
+      return {
+        id,
+        displayName,
+        loginCommand: id,
+        capabilities: NO_CAPABILITIES,
+        open: () => ({
+          async *[Symbol.asyncIterator]() {
+            // 状態遷移のテストなのでイベントは流さない。
+          },
+        }),
+      };
+    }
+
+    const claude = fakeAdapter('claude', 'Claude');
+    const codex = fakeAdapter('codex', 'Codex');
+
+    function managerWithAgents() {
+      return new SessionManager({
+        worktrees: fakeWorktrees(),
+        agents: { claude, codex },
+        agent: claude,
+        now: () => 1,
+        createSession: ({ input, onChange }) => new AgentFakeSession(input, onChange),
+      });
+    }
+
+    it('lists the registered adapters as /agent choices', () => {
+      expect(managerWithAgents().listAgents()).toEqual([claude, codex]);
+    });
+
+    it('falls back to the single default adapter when no registry is wired', () => {
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        agent: claude,
+        now: () => 1,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      expect(manager.listAgents()).toEqual([claude]);
+    });
+
+    it('switches a session to another registered agent', async () => {
+      const manager = managerWithAgents();
+      const id = manager.create('do the thing');
+      await flush();
+      expect(manager.getSessionAgent(id)).toBe(claude);
+      expect(manager.setSessionAgent(id, 'codex')).toBe(true);
+      expect(manager.getSessionAgent(id)).toBe(codex);
+    });
+
+    it('is a no-op when the session already runs on that agent', async () => {
+      const manager = managerWithAgents();
+      const id = manager.create('do the thing');
+      await flush();
+      expect(manager.setSessionAgent(id, 'claude')).toBe(false);
+    });
+
+    it('refuses an agent that has no registered adapter', async () => {
+      const manager = managerWithAgents();
+      const id = manager.create('do the thing');
+      await flush();
+      // `grok` は型にはあるがアダプタ未登録 — UI へは出ないし切り替わらない。
+      expect(manager.setSessionAgent(id, 'grok')).toBe(false);
+      expect(manager.getSessionAgent(id)).toBe(claude);
+    });
+
+    it('returns false for an unknown session id', () => {
+      expect(managerWithAgents().setSessionAgent('nope', 'codex')).toBe(false);
     });
   });
 });

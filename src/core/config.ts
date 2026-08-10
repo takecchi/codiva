@@ -1,4 +1,5 @@
 import type { Lang } from './i18n';
+import type { AgentId } from './types';
 import type { IgnoredFilesMode } from './worktree';
 
 /**
@@ -130,6 +131,25 @@ export interface CodivaConfig {
    */
   crashLog?: boolean;
   /**
+   * 新しいセッションを既定でどのエージェントで動かすか。未設定は `'claude'`。
+   * セッションごとの切替は `/agent`（切替先が過去に会話を持っていれば resume される）。
+   */
+  agent?: AgentId;
+  /**
+   * Codex セッションのサンドボックス。未設定は `'workspace-write'`
+   * （書き込みは worktree 内に限定しつつ、読み取りは全体に許す）。
+   *
+   * Codex の exec モードは**ツール許可をユーザーに上げられない**（承認要求は CLI が
+   * 自動 reject する）ため、ここが Codex セッションに対する唯一の安全弁になる。
+   */
+  codexSandbox?: CodexSandbox;
+  /**
+   * `codexSandbox: 'workspace-write'` のときネットワークアクセスを許可するか。
+   * 未設定は有効（true）。Codex CLI の既定は遮断だが、それでは `npm install` や
+   * `gh` が失敗して大半の作業が完了しないため codiva 側では開けておく。
+   */
+  codexNetworkAccess?: boolean;
+  /**
    * @deprecated `ignoredFiles` を使う。後方互換のためだけに残す:
    * `true`→`'copy'` 相当、`false`→`'none'` 相当として解釈される（`resolveIgnoredFilesMode`）。
    */
@@ -137,6 +157,18 @@ export interface CodivaConfig {
 }
 
 const IGNORED_FILES_MODES: readonly IgnoredFilesMode[] = ['symlink', 'copy', 'none'];
+
+/**
+ * 設定で選べるエージェント。**この配列が唯一の出所**で、実行時検証もここから導出する
+ * （型は `AgentId`）。実装済みのアダプタだけを並べる — Grok は未対応なので入れない。
+ */
+const CONFIGURABLE_AGENTS: readonly AgentId[] = ['claude', 'codex'];
+
+/** Codex のサンドボックスモード。値の集合は Codex CLI の `--sandbox` と同じ。 */
+const CODEX_SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'] as const;
+
+/** 設定で指定できる Codex のサンドボックス。`CODEX_SANDBOXES` から導出。 */
+export type CodexSandbox = (typeof CODEX_SANDBOXES)[number];
 
 /** 設定ファイルの生 JSON 形（各フィールドは unknown として受ける）。 */
 interface CodivaConfigJson {
@@ -156,7 +188,18 @@ interface CodivaConfigJson {
   ignoredFiles?: unknown;
   ignoredFilesExclude?: unknown;
   crashLog?: unknown;
+  agent?: unknown;
+  codexSandbox?: unknown;
+  codexNetworkAccess?: unknown;
   copyIgnored?: unknown;
+}
+
+function toAgent(value: unknown): AgentId | undefined {
+  return CONFIGURABLE_AGENTS.includes(value as AgentId) ? (value as AgentId) : undefined;
+}
+
+function toCodexSandbox(value: unknown): CodexSandbox | undefined {
+  return CODEX_SANDBOXES.includes(value as CodexSandbox) ? (value as CodexSandbox) : undefined;
 }
 
 function toLangSetting(value: unknown): Lang | 'auto' | undefined {
@@ -293,6 +336,18 @@ export function toConfig(json: unknown): CodivaConfig {
   const crashLog = toBoolean(raw.crashLog);
   if (crashLog !== undefined) {
     config.crashLog = crashLog;
+  }
+  const agent = toAgent(raw.agent);
+  if (agent !== undefined) {
+    config.agent = agent;
+  }
+  const codexSandbox = toCodexSandbox(raw.codexSandbox);
+  if (codexSandbox !== undefined) {
+    config.codexSandbox = codexSandbox;
+  }
+  const codexNetworkAccess = toBoolean(raw.codexNetworkAccess);
+  if (codexNetworkAccess !== undefined) {
+    config.codexNetworkAccess = codexNetworkAccess;
   }
   const copyIgnored = toBoolean(raw.copyIgnored);
   if (copyIgnored !== undefined) {

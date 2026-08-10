@@ -1,11 +1,13 @@
 import type { Options, PermissionResult, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it, vi } from 'vitest';
+import type { AgentAdapter, AgentRunRequest } from '@/core/agent-ports';
+import { NO_CAPABILITIES } from '@/core/agent-ports';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/claude-adapter';
 import { type PermissionPolicy, Session } from '@/core/session';
 import { initialState } from '@/core/status-reducer';
 import { SHARED_IGNORED_FILES_NOTICE } from '@/core/system-prompt';
-import type { CreateSessionInput } from '@/core/types';
+import type { AgentId, CreateSessionInput } from '@/core/types';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -792,5 +794,89 @@ describe('Session', () => {
     await tick();
     expect(generateTitle).not.toHaveBeenCalled();
     expect(session.getState().title).toBe('t');
+  });
+});
+
+/**
+ * エージェントの途中切替（`/agent`）。worktree は provider に依存しないので、
+ * Claude で始めた作業を Codex へ引き継げる — ただし**次の指示が本当に新しい
+ * エージェントへ流れる**ことが前提。
+ */
+describe('Session.setAgent', () => {
+  /** 受け取った指示文と open 回数を記録するだけのフェイクアダプタ。 */
+  function recorder(id: AgentId) {
+    const seen: string[] = [];
+    const resumes: (string | undefined)[] = [];
+    const adapter: AgentAdapter = {
+      id,
+      displayName: id,
+      loginCommand: id,
+      capabilities: NO_CAPABILITIES,
+      open(request: AgentRunRequest) {
+        resumes.push(request.resume);
+        return {
+          async *[Symbol.asyncIterator]() {
+            for await (const text of request.prompt) {
+              seen.push(text);
+              // provider が会話 id を発行したことにする（切替の往復で resume される）。
+              yield { kind: 'session_started', sessionId: `${id}-thread` } as const;
+            }
+          },
+        };
+      },
+    };
+    return { adapter, seen, resumes };
+  }
+
+  it('routes the next instruction to the new agent, not the old one', async () => {
+    const a = recorder('claude');
+    const b = recorder('codex');
+    const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+    expect(a.seen).toEqual(['do the thing']);
+
+    session.setAgent(b.adapter);
+    session.send('now you');
+    await tick();
+
+    // 切替前のストリームは畳まれているので、古いエージェントには届かない。
+    expect(b.seen).toEqual(['now you']);
+    expect(a.seen).toEqual(['do the thing']);
+    expect(session.getState().agent).toBe('codex');
+  });
+
+  it('resumes the previous conversation when switching back', async () => {
+    const a = recorder('claude');
+    const b = recorder('codex');
+    const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+
+    session.setAgent(b.adapter);
+    session.send('to codex');
+    await tick();
+    session.setAgent(a.adapter);
+    session.send('back to claude');
+    await tick();
+
+    // 2 回目の Claude は自分が発行した id で resume する（別 provider の id は渡さない）。
+    expect(a.resumes).toEqual([undefined, 'claude-thread']);
+    expect(b.resumes).toEqual([undefined]);
+    expect(a.seen).toEqual(['do the thing', 'back to claude']);
+  });
+
+  it('is a no-op when the agent is unchanged (keeps the running stream)', async () => {
+    const a = recorder('claude');
+    const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+
+    session.setAgent(a.adapter);
+    session.send('more');
+    await tick();
+
+    expect(a.resumes).toEqual([undefined]); // ストリームは張り替わっていない
+    expect(a.seen).toEqual(['do the thing', 'more']);
   });
 });

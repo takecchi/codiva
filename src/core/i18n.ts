@@ -24,8 +24,24 @@ export interface AgentLabel {
   loginCommand: string;
 }
 
-/** 既定のエージェント表示情報（現状は Claude のみ）。 */
+/** 既定のエージェント表示情報（アダプタが分からないときのフォールバック）。 */
 export const DEFAULT_AGENT_LABEL: AgentLabel = { name: 'Claude', loginCommand: 'claude' };
+
+/**
+ * アダプタから差し込み用のラベルを作る。**認証切れの案内は provider ごとに違う**
+ * （Codex のセッションに「`claude` でログインし直して」と言ってはいけない）ので、
+ * 文言を出す側は必ずセッションのエージェントからこれを引く。
+ *
+ * 引数は `AgentAdapter` の構造部分だけを受ける（`core/i18n.ts` を `agent-ports.ts`
+ * から独立させたままにするため）。
+ */
+export function agentLabelOf(
+  agent: { displayName: string; loginCommand: string } | undefined,
+): AgentLabel {
+  return agent
+    ? { name: agent.displayName, loginCommand: agent.loginCommand }
+    : DEFAULT_AGENT_LABEL;
+}
 
 /**
  * 全 UI 文字列の型。ja/en 両カタログはこの型を満たすため、キー欠落は型エラーで検知できる
@@ -153,6 +169,26 @@ export interface Messages {
     defaultRow: string;
     /** 選択確定後のフッタ通知（name は選んだモデルの表示名） */
     saved: (name: string) => string;
+  };
+  /** エージェント選択ダイアログ（agent-select.tsx。/agent コマンドで開く） */
+  agent: {
+    /** ダイアログ見出し */
+    title: string;
+    /** ダイアログ下部の操作ヒント */
+    help: string;
+    /**
+     * 切替の注意書き。モデル側の文脈は provider をまたげない（各 CLI が自分の
+     * トランスクリプトを持つ）ので、引き継がれるのは worktree と codiva のログだけ。
+     */
+    warning: string;
+    /** 今このセッションを駆動している行に付ける印 */
+    current: string;
+    /** 切替後のフッタ通知（name はエージェントの表示名） */
+    switched: (name: string) => string;
+    /** 切替できなかったとき（未対応・既に同じ・セッション未起動） */
+    unavailable: string;
+    /** そのエージェントが持たない機能を使おうとしたとき（name は表示名） */
+    unsupported: (name: string) => string;
   };
   /** リポジトリ追加指示エディタ（repo-prompt-editor.tsx。/prompt コマンドで開く） */
   prompt: {
@@ -357,6 +393,8 @@ export interface Messages {
     exitDetail: string;
     /** /model の説明 */
     model: string;
+    /** /agent の説明 */
+    agent: string;
     /** /diff の説明 */
     diff: string;
     /** /prompt の説明 */
@@ -479,6 +517,15 @@ const ja: Messages = {
     loading: 'モデル一覧を取得中…',
     defaultRow: 'デフォルト（推奨）',
     saved: (name) => `モデルを ${name} に変更しました（以降の新規セッションに適用）`,
+  },
+  agent: {
+    title: 'エージェントを選択',
+    help: '↑↓: 選択 ・ Enter: 決定 ・ Esc: キャンセル',
+    warning: '会話の文脈は引き継がれません（worktree の変更とログはそのまま）',
+    current: '使用中',
+    switched: (name) => `${name} に切り替えました（次の指示から適用）`,
+    unavailable: 'エージェントを切り替えられませんでした',
+    unsupported: (name) => `${name} はこの操作に対応していません`,
   },
   prompt: {
     title: 'リポジトリの追加指示（.codiva/prompt.md）',
@@ -609,6 +656,7 @@ const ja: Messages = {
     exit: 'codiva を終了',
     exitDetail: '詳細を閉じて一覧へ戻る',
     model: 'モデルを切り替え',
+    agent: 'このセッションのエージェントを切り替え',
     diff: '変更差分サマリの表示を切り替え',
     prompt: 'リポジトリの追加指示を編集',
     remove: '選択中のセッションを削除（worktree とブランチも消す）',
@@ -711,6 +759,15 @@ const en: Messages = {
     loading: 'Loading models…',
     defaultRow: 'Default (recommended)',
     saved: (name) => `Model set to ${name} (applies to new sessions)`,
+  },
+  agent: {
+    title: 'Select agent',
+    help: '↑↓: select · Enter: confirm · Esc: cancel',
+    warning: 'The conversation context does not carry over (worktree changes and log stay)',
+    current: 'in use',
+    switched: (name) => `Switched to ${name} (applies to the next instruction)`,
+    unavailable: 'Could not switch the agent',
+    unsupported: (name) => `${name} does not support this`,
   },
   prompt: {
     title: 'Repository instructions (.codiva/prompt.md)',
@@ -838,6 +895,7 @@ const en: Messages = {
     exit: 'Quit codiva',
     exitDetail: 'Close the session view (back to the list)',
     model: 'Switch the model',
+    agent: 'Switch the agent driving this session',
     diff: 'Toggle the changes summary',
     prompt: 'Edit the repository instructions',
     remove: 'Remove the selected session (worktree and branch deleted too)',

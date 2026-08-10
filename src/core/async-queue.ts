@@ -8,6 +8,15 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
   private readonly waiters: ((r: IteratorResult<T>) => void)[] = [];
   private closed = false;
 
+  /**
+   * まだ誰にも取り出されていない要素数。`Session` がエージェント切替でストリームを
+   * 畳んだあと、「積んだままの指示が残っているか」を同期的に知るために使う
+   * （残っていれば新しいエージェントで消費し直す）。
+   */
+  get pending(): number {
+    return this.buffer.length;
+  }
+
   push(item: T): void {
     if (this.closed) {
       return;

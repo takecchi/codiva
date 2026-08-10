@@ -2,9 +2,9 @@ import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ARROW_SCROLL_LINES,
+  agentLabelOf,
   COMMANDS,
   composerRowCount,
-  DEFAULT_AGENT_LABEL,
   type DiffStat,
   type DisplayLine,
   isFullscreenViewport,
@@ -35,6 +35,7 @@ import {
   streamTail,
   WHEEL_SCROLL_LINES,
 } from '@/core';
+import { AgentSelect } from './agent-select';
 import { CommandPalette } from './command-palette';
 import { Composer, useComposer } from './composer';
 import { ConfirmPrompt } from './confirm-prompt';
@@ -73,6 +74,11 @@ export const SessionDetail: FC<{
   /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
   models?: readonly ModelOption[];
   /**
+   * Codex セッションの `/model` の選択肢（`codex debug models`）。Claude とは
+   * まったく別のモデル群なので、駆動中のエージェントで出し分ける。
+   */
+  codexModels?: readonly ModelOption[];
+  /**
    * 一覧へ戻る。Esc と `/exit` の両方がここへ来る（詳細ビューの `/exit` は
    * アプリ終了ではなく「このセッションを閉じる」。終了は一覧の `/exit`）。
    */
@@ -88,7 +94,7 @@ export const SessionDetail: FC<{
    * （OSC 8 は対応端末向けの上乗せ。`ui/log-line.tsx`）。
    */
   onOpenUrl?: (url: string) => void;
-}> = ({ manager, id, models, onBack, onCopy, onOpenUrl }) => {
+}> = ({ manager, id, models, codexModels, onBack, onCopy, onOpenUrl }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -132,6 +138,8 @@ export const SessionDetail: FC<{
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
+  // Open when the user runs `/agent`; the AgentSelect dialog then owns the keys.
+  const [agentSelect, setAgentSelect] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [diff, setDiff] = useState<DiffStat | undefined>(undefined);
   // 変更差分サマリは既定で畳んでおき（ログの縦幅を優先）、`/diff` でトグルする。
@@ -162,9 +170,18 @@ export const SessionDetail: FC<{
   const pending = session?.pendingPermission;
   const status = session?.status;
   const isTerminal = status !== undefined && isTerminalStatus(status);
+  // このセッションを駆動しているエージェントと、その capability。UI は「持たない機能の
+  // キー操作・ヒントを出さない」ために見る（`core/agent-ports.ts`）。`session.agent` は
+  // 状態に載っていて `agent_switched` で更新されるので、切替の直後から正しく縮退する。
+  const agent = manager.getSessionAgent(id);
+  const caps = agent?.capabilities;
+  // `/agent` の選択肢。登録されているアダプタだけなので、未対応の provider は出ない。
+  const agentChoices = manager.listAgents().map((a) => ({ id: a.id, displayName: a.displayName }));
   // 進行中のターンがあるか（= Ctrl+C で中断できるか）。許可/質問待ちも対象
-  // （ターンは生きていて回答待ちで止まっているだけ）。
-  const interruptible = status !== undefined && isInterruptible(status);
+  // （ターンは生きていて回答待ちで止まっているだけ）。中断を持たない provider では
+  // そもそも出さない。
+  const interruptible =
+    status !== undefined && isInterruptible(status) && caps?.interrupt !== false;
   // A session cut off by a dropped connection (a rate limit, an expired login)
   // can be resumed: sending a follow-up restarts the SDK query with `resume`.
   // Surfaced as an explicit action so the user can continue without typing.
@@ -227,7 +244,16 @@ export const SessionDetail: FC<{
       exit: onBack,
       help: () => setShowHelp(true),
       // `/model` opens the picker; the pick applies to THIS session only.
-      model: () => setModelSelect(true),
+      // モデル切替を持たない provider では開かずに理由を出す（黙って無反応にしない）。
+      model: () => {
+        if (caps && !caps.setModel) {
+          setActionError(m.agent.unsupported(agent?.displayName ?? ''));
+          return;
+        }
+        setModelSelect(true);
+      },
+      // `/agent` はこのセッションを駆動する provider を切り替える。
+      agent: () => setAgentSelect(true),
       // `/diff` toggles the changes summary (hidden by default for log room).
       diff: () => setShowChanges((v) => !v),
       // `/sync` merges the base branch into THIS session's worktree; a conflict is
@@ -415,7 +441,7 @@ export const SessionDetail: FC<{
       // `parseSgrMouse` で弾くのは自分のハンドラを守るだけで、同じ生入力は兄弟の
       // useInput にも届く。飲まないとダイアログ上の 1 クリックで背後のログの選択が
       // 動き、URL の上ならブラウザまで開いてしまう（許可待ちの最中に）。
-      if (modelSelect || pending) {
+      if (modelSelect || agentSelect || pending) {
         return;
       }
       if (mouse.kind === 'wheel') {
@@ -482,7 +508,7 @@ export const SessionDetail: FC<{
     recovery.setNotice(undefined);
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
     // everything here so nothing leaks through to the composer underneath.
-    if (modelSelect) {
+    if (modelSelect || agentSelect) {
       return;
     }
     // The /help overlay is dismissed by any key (swallowed so it doesn't also
@@ -610,11 +636,13 @@ export const SessionDetail: FC<{
 
   const footerHint = modelSelect
     ? m.model.help
-    : pending
-      ? m.detail.helpPending
-      : panel === 'actions'
-        ? m.detail.helpActions
-        : m.detail.helpInput;
+    : agentSelect
+      ? m.agent.help
+      : pending
+        ? m.detail.helpPending
+        : panel === 'actions'
+          ? m.detail.helpActions
+          : m.detail.helpInput;
   // コマンドとして解決される入力か（`/` 付き、または詳細で使える名前と完全一致）。
   const commandPreview = commands.preview(buffer.value);
 
@@ -710,7 +738,7 @@ export const SessionDetail: FC<{
             ここはターンが終わるたびに出入りするので、条件付きにするとログが 1 行跳ねる。 */}
         <Box flexShrink={0}>
           {status === 'needs_login' ? (
-            <Text color={statusColor.needsLogin}>{m.auth.hint(DEFAULT_AGENT_LABEL)}</Text>
+            <Text color={statusColor.needsLogin}>{m.auth.hint(agentLabelOf(agent))}</Text>
           ) : resumable ? (
             <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
           ) : interruptible ? (
@@ -739,11 +767,27 @@ export const SessionDetail: FC<{
           />
         ) : null}
 
-        {modelSelect ? (
+        {agentSelect ? (
+          <AgentSelect
+            current={session.agent}
+            agents={agentChoices}
+            onSelect={(next) => {
+              setAgentSelect(false);
+              if (manager.setSessionAgent(session.id, next)) {
+                const name = manager.getSessionAgent(session.id)?.displayName ?? '';
+                recovery.setNotice(m.agent.switched(name));
+              } else {
+                setActionError(m.agent.unavailable);
+              }
+              applyAnchor('bottom');
+            }}
+            onCancel={() => setAgentSelect(false)}
+          />
+        ) : modelSelect ? (
           <ModelSelect
             // The session's live (resolved) model — pre-selects the current row.
             current={session.model}
-            models={models}
+            models={session.agent === 'codex' ? codexModels : models}
             onSelect={(model) => {
               manager.setSessionModel(session.id, model);
               setModelSelect(false);

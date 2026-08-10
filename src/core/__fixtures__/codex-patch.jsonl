@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"019feb2e-ee39-7912-9042-da65e1b411dc"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"file_change","changes":[{"path":"/private/tmp/codex-capture/hello.md","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"file_change","changes":[{"path":"/private/tmp/codex-capture/hello.md","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Created hello.md."}}
+{"type":"turn.completed","usage":{"input_tokens":2468,"cached_input_tokens":256,"output_tokens":154,"reasoning_output_tokens":44}}

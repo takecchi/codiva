@@ -34,4 +34,25 @@ describe('AsyncQueue', () => {
     q.push(2);
     expect(await collect(q)).toEqual([1]);
   });
+
+  it('reports how many items are still buffered', async () => {
+    const q = new AsyncQueue<string>();
+    expect(q.pending).toBe(0);
+    q.push('a');
+    q.push('b');
+    // 誰も取り出していないので 2 件残っている（切替後に拾い直す判断に使う）。
+    expect(q.pending).toBe(2);
+    const it0 = q[Symbol.asyncIterator]();
+    await it0.next();
+    expect(q.pending).toBe(1);
+  });
+
+  it('does not count an item handed straight to a waiting consumer', async () => {
+    const q = new AsyncQueue<string>();
+    const iter = q[Symbol.asyncIterator]();
+    const next = iter.next();
+    q.push('a'); // 待っている消費者へ直接渡るのでバッファには積まれない
+    expect(q.pending).toBe(0);
+    expect((await next).value).toBe('a');
+  });
 });

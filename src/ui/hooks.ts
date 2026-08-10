@@ -346,33 +346,34 @@ export function useUpdateCheck(initial?: Promise<UpdateCheck>): {
  */
 export function useModelCatalog(
   catalog?: Promise<readonly ModelOption[]>,
+  fallback: readonly ModelOption[] = FALLBACK_MODEL_OPTIONS,
 ): readonly ModelOption[] | undefined {
   const [models, setModels] = useState<readonly ModelOption[] | undefined>(
     // No fetch injected (tests, and any host that opts out) → use the fallback
     // immediately instead of parking on a loading line forever.
-    catalog ? undefined : FALLBACK_MODEL_OPTIONS,
+    catalog ? undefined : fallback,
   );
   useEffect(() => {
     if (!catalog) {
-      setModels(FALLBACK_MODEL_OPTIONS);
+      setModels(fallback);
       return;
     }
     let live = true;
     catalog
       .then((options) => {
         if (live) {
-          setModels(options.length > 0 ? options : FALLBACK_MODEL_OPTIONS);
+          setModels(options.length > 0 ? options : fallback);
         }
       })
       .catch(() => {
         if (live) {
-          setModels(FALLBACK_MODEL_OPTIONS);
+          setModels(fallback);
         }
       });
     return () => {
       live = false;
     };
-  }, [catalog]);
+  }, [catalog, fallback]);
   return models;
 }
 

@@ -59,8 +59,9 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | やりたいこと | 主なファイル |
 |---|---|
 | セッションの状態・遷移 | `core/types.ts`（union）/ `core/status-meta.ts`（性質の表）/ `core/status-reducer.ts`（純粋 reducer） |
-| 別のエージェント（Codex / Grok）に対応させる | `core/agent-ports.ts`（`AgentAdapter` / `AgentCapabilities` / `PermissionDecision` = DI 境界）/ `core/agent-events.ts`（`AgentEvent` の語彙 + 全 provider 共通の畳み込み `applyAgentEvent`）/ `core/claude-adapter.ts`・`core/claude-parse.ts`・`core/claude-errors.ts`（Claude 実装の 3 点セット） |
-| SDK メッセージの解釈 | `core/claude-parse.ts` **のみ**（`parseClaudeMessage`: SDKMessage → `AgentEvent[]`）+ `core/__fixtures__/*.jsonl` |
+| 別のエージェント（Codex / Grok）に対応させる | `core/agent-ports.ts`（`AgentAdapter` / `AgentCapabilities` / `PermissionDecision` = DI 境界）/ `core/agent-events.ts`（`AgentEvent` の語彙 + 全 provider 共通の畳み込み `applyAgentEvent`）/ `core/claude-adapter.ts`・`core/claude-parse.ts`・`core/claude-errors.ts`（Claude 実装の 3 点セット）/ `core/codex-adapter.ts`・`core/codex-parse.ts`・`core/codex-errors.ts` + `core/codex-events.ts`（JSONL の型）・`core/codex-models.ts`・`utils/codex.ts`（`codex exec` の起動 = 唯一の I/O）/ アダプタの登録は `bootstrap/build-manager.ts` の `buildAgents` |
+| SDK メッセージの解釈 | `core/claude-parse.ts` **のみ**（`parseClaudeMessage`: SDKMessage → `AgentEvent[]`）+ `core/__fixtures__/*.jsonl`。Codex は `core/codex-parse.ts`（`parseCodexEvent`: `codex exec --json` の JSONL → `AgentEvent[]`）+ `core/__fixtures__/codex-*.jsonl` |
+| エージェントの切替（`/agent`）| `core/session-manager.ts`（`listAgents` / `getSessionAgent` / `setSessionAgent`）/ `ui/agent-select.tsx`（詳細ビューのモーダル）/ `core/status-reducer.ts` の `agent_switched` |
 | セッションへ渡す systemPrompt | `core/system-prompt.ts`（worktree の共有 symlink 注意書き + `.codiva/prompt.md` の合成） |
 | セッションのライフサイクル | `core/session.ts`（1 エージェントストリーム。`setAgent()` で途中切替）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
 | worktree・マージ・破棄 | `utils/worktree-manager.ts`（I/O）/ `core/worktree.ts`（型・純関数）/ `core/session-actions.ts` |
@@ -82,7 +83,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 永続・復元 | `core/persistence.ts` / `utils/state-store.ts`（`.codiva/state.json`）/ `core/transcript.ts` + `utils/transcript.ts`（CLI トランスクリプト） |
 | 通知 | `core/notify.ts`（判定・純粋）/ `utils/notify.ts`（OS I/O） |
 | 学習データ利用の警告 | `core/privacy.ts`（判定・純粋）/ `utils/privacy.ts`（キャッシュ+非公開 API）/ `ui/banner.tsx` |
-| モデル選択 | `core/models.ts` / `utils/model-catalog.ts` / `ui/model-select.tsx` |
+| モデル選択 | `core/models.ts` / `utils/model-catalog.ts`（Claude）/ `core/codex-models.ts` + `utils/codex.ts` の `fetchCodexModelCatalog`（Codex）/ `ui/model-select.tsx` |
 | 選択肢リストの表示（質問・モデル） | `core/choice-lines.ts`（折返し + クリック逆算 `choiceRowHeights`/`choiceIndexAtRow`・純粋）/ `ui/choice-row.tsx`（1件の描画） |
 | アップデート通知・`/update` | `core/update.ts`（比較・判定・DI 境界）/ `utils/update.ts`（registry fetch・経路判定・`npm install`）/ `ui/update-dialog.tsx` |
 | 起動・副作用の配線 | `src/index.tsx`（**起動シム**。NODE_ENV を立てて `./main` を動的 import するだけ。static import を足さない）/ `src/main.tsx`（直列の main）/ `src/bootstrap/*`（build-manager / restore-sessions / persist-controller / crash-handler / runtime / perf-timeline） |
@@ -99,7 +100,9 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
    エージェント起点の `AgentEvent`）。`SessionStore` に status を手書きしない。状態の性質は `STATUS_META` が唯一の表。
 3. **エージェント固有の知識はアダプタに閉じる**。`core/` の中立モジュールは
    `@anthropic-ai/claude-agent-sdk` を import しない — 触ってよいのは `claude-adapter.ts` /
-   `claude-parse.ts` / `claude-errors.ts` だけ。provider のストリームは
+   `claude-parse.ts` / `claude-errors.ts` だけ（Codex 側の対は `codex-adapter.ts` /
+   `codex-parse.ts` / `codex-errors.ts` で、`codex` CLI の形の知識はそこにしか置かない）。
+   provider のストリームは
    `AgentEvent`（`core/agent-events.ts`）へ写してから畳み込む（`applyAgentEvent` が唯一の畳み込み）。
    形は想定で書かず、spike の実データでテストする。
 4. **UI 文字列はカタログのみ**（`core/i18n.ts` に ja / en 対で追加。例外は SDK 由来のモデル名と

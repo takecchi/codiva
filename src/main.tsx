@@ -18,6 +18,7 @@ import {
   defaultStatePath,
   detectInstallKind,
   enableFatalErrorReports,
+  fetchCodexModelCatalog,
   fetchModelCatalog,
   fetchTrainingOptIn,
   fetchUsageSnapshot,
@@ -162,6 +163,12 @@ async function main(): Promise<void> {
     cwd: repoRoot,
     signal: probeAbort.signal,
   });
+  // Codex 側の選択肢（`codex debug models`）。ローカルのカタログを読むだけで推論は
+  // 走らず、`codex` が入っていなければ空配列になる（`/model` は「デフォルト」のみ）。
+  const codexModelCatalog = fetchCodexModelCatalog({
+    cwd: repoRoot,
+    signal: probeAbort.signal,
+  });
 
   // プラン（Pro / Max / Team …）と使用リミット枠をステータスバーに出すための取得。
   // `rate_limit_event` はセッションがターンを回している間しか届かないので、待機中も
@@ -219,6 +226,7 @@ async function main(): Promise<void> {
       version={appVersion}
       messages={t}
       modelCatalog={modelCatalog}
+      codexModelCatalog={codexModelCatalog}
       trainingOptIn={trainingOptIn}
       updater={updater}
       loadBranch={() => worktrees.currentBranch()}

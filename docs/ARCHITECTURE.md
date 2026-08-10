@@ -123,12 +123,12 @@ codiva は当初 Claude Code（`@anthropic-ai/claude-agent-sdk`）専用で、`S
 `SessionState` へ畳み込んでいた（旧 `core/sdk-parse.ts` の `applySdkMessage`）。そのため
 「SDK メッセージの形の知識」と「状態をどう変えるか」が 1 か所に混ざり、別のエージェント
 （Codex / Grok）を足すには畳み込みごと書き直すしかなかった。Phase A ではこれを 2 段に割り、
-provider を差し替えられる境界を入れた（アダプタ実装そのものは Phase B 以降）。
+provider を差し替えられる境界を入れ、Phase B で 2 つ目の provider（Codex）を載せた。
 
 ```
 provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] ──[applyAgentEvent]──▶ SessionState
    SDKMessage                claude-parse.ts       agent-events.ts       core/types.ts
-   （Codex/Grok の形）        （各アダプタ）         （全 provider 共通）
+   codex の JSONL            codex-parse.ts        （全 provider 共通）
 ```
 
 ### 1. 境界は `SessionHandle` / `AgentAdapter`（`QueryFn` ではない）
@@ -189,6 +189,16 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
 provider に依存しない**ので、Claude で始めた作業を途中から Codex に引き継げる。一方**モデル側の
 文脈は provider をまたげない**（各 CLI が自分のトランスクリプトを持つ）ため、切替は
 「今のターンを終える → 別 provider の**新しいセッション**を同じ worktree で開く」という形になる。
+UI の入口は詳細ビューの `/agent`（`ui/agent-select.tsx` → `SessionManager.setSessionAgent(id, agentId)`）で、
+選択肢は `listAgents()`（= 合成レイヤが登録したアダプタ）だけを出す。
+
+**切替の実体は「今の run の入力キューを閉じて、新しいキューに差し替える」こと。**
+`this.run = undefined` は参照を捨てるだけで、consume ループはその `AgentRun` を掴んだまま回り続け、
+アダプタ側は共有キューを `await` して止まっている — つまり閉じない限り**切替後に送った指示は
+古いエージェントが受け取る**（切り替えたのに何も起きないように見える。Phase A の積み残しで、
+`/agent` を入れて初めて踏める経路だった）。セッション全体の `abortController` を abort する手は
+使えない（あれはセッションごと終わらせるため）。畳んだループが終わった時点でキューに積み残しが
+あれば（`AsyncQueue.pending`）、新しいエージェントで消費し直す。
 
 | 引き継がれるもの | 引き継がれないもの |
 |---|---|
@@ -219,13 +229,16 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
 
 `AgentCapabilities`（`permissions` / `interrupt` / `setModel` / `resume` / `modelCatalog` /
 `usage` / `cost` / `transcript`）で「そのエージェントが何をできるか」を表明する。UI はこれを見て
-段階的に縮退する（持たない機能のキー操作・表示を出さない）— **表と `getAgent()` は Phase A で入れ、
-実際の縮退の配線は Phase D**。参照するときは**固定値として持たず** `SessionHandle.getAgent()` から
-引く（セッション途中で切り替えると変わりうるため）。
+段階的に縮退する（持たない機能のキー操作・表示を出さない）。参照するときは**固定値として持たず**
+`SessionManager.getSessionAgent(id)`（= `SessionHandle.getAgent()`）から引く（セッション途中で
+切り替えると変わりうるため）。
 
-現状 Claude だけが持つ（＝他 provider では縮退させる想定の）機能は、使用状況ゲージ（`usage`）・
-モデルカタログと `/model`（`modelCatalog` / `setModel`）・CLI トランスクリプトからのログ復元
-（`transcript`）・学習データ利用の警告（Claude Code の認証情報を読む `utils/privacy.ts`）。
+現状 Claude だけが持つ（＝他 provider では縮退させる）機能は、使用状況ゲージ（`usage`）・
+コスト表示（`cost`）・CLI トランスクリプトからのログ復元（`transcript`）・許可/質問ダイアログ
+（`permissions`）・学習データ利用の警告（Claude Code の認証情報を読む `utils/privacy.ts`）。
+モデルカタログと `/model`（`modelCatalog` / `setModel`）は Codex も持つが**選べるモデルが
+まったく別**なので、UI は駆動中のエージェントで選択肢を出し分ける（取得に失敗しても
+互いのモデル名を出さない = `DEFAULT_ONLY_MODEL_OPTIONS`）。
 `AgentRun.interrupt` / `setModel` はメソッド自体が optional で、新しいアダプタは
 `NO_CAPABILITIES`（全部 false）から始めて実装できたものだけ true にする。
 文言側も `i18n.ts` の `AgentLabel`（表示名 + ログインコマンド）を差し込む形にしてあり、
@@ -233,9 +246,81 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
 `(agent: AgentLabel) => string`（既定は `DEFAULT_AGENT_LABEL` = Claude）。エージェント名は固有名詞
 なので翻訳しない（モデル名と同じ i18n の例外）。
 
-> capability による UI の縮退・`/agent` コマンド・引き継ぎプロンプトは **Phase D** で入れる。
-> Phase A で入れたのは境界と語彙だけで、実際のアダプタ（Codex / Grok）は未実装
-> （[TASKS.md](./TASKS.md) の Phase A〜D）。
+> 縮退の配線は Phase D で段階的に入れている。現状効いているのは `/model`（`setModel` /
+> `modelCatalog`）と `Ctrl+C`（`interrupt`）だけで、使用状況ゲージ・コスト・許可ダイアログ・
+> トランスクリプト復元はまだ capability を見ていない（[TASKS.md](./TASKS.md) の Phase D）。
+
+### 6. Codex アダプタ: 1 ターン = 1 プロセス
+
+Codex（`codex` CLI）は Phase B で入れた 2 つ目の provider で、実装は `core/codex-events.ts`
+（JSONL の型と受理ガード）/ `core/codex-parse.ts`（`AgentEvent[]` への写像）/
+`core/codex-errors.ts`（文言 → `AgentStopCause`）/ `core/codex-adapter.ts`（制御）の 4 点と、
+唯一の I/O `utils/codex.ts`。Claude 側の 3 点セットと**対称**に置いてある。
+
+**`@openai/codex-sdk` を npm 依存に足さず、ユーザーがインストールした `codex` CLI を起動する**
+（`gh` / `git` と同じ扱い）。SDK を依存にすると Codex を使わないユーザーにもプラットフォーム別の
+大きなバイナリが降ってくるため。認証もユーザーの `codex login` に委ね、codiva は資格情報を触らない。
+
+Claude と決定的に違うのが**プロセスの粒度**。Claude Agent SDK は 1 本の streaming-input セッションが
+何ターンでも続くが、`codex exec` は**1 ターン走って終了する**プロセスで、続きは
+`codex exec resume <thread_id> <prompt>` として起動し直す。アダプタはこの差を内側に閉じ込める:
+
+```
+prompt キュー ──▶ codex exec --json <p1>        ──▶ thread.started(th) … turn.completed
+             └─▶ codex exec resume th <p2>      ──▶ thread.started(th) … turn.completed
+```
+
+- `AgentRun` の非同期イテレータが `request.prompt` を回し、指示 1 件につき 1 プロセスを起こす。
+  `thread.started` の `thread_id` を控えて次のターンへ引き回す（resume した回も**同じ id** が
+  再度届くので、`session_started` は no-op になる）。
+- **`--system-prompt` 相当が無い**ので、`composeSystemPrompt()` の結果は**最初のターンの指示文に
+  前置**する（2 ターン目以降は同じスレッドの resume なのでモデルは既に読んでいる）。
+  `AGENTS.md` を書く方法は取らない — 対象リポジトリのファイルを codiva が勝手に触らないため。
+- `setModel` は「次のターンから」効く（走っているプロセスには反映されない）。ターンごとに
+  起動し直す形なので、これが自然な契約になる。
+- 終端イベント（`turn.completed` / `turn.failed`）が来ないままプロセスが終わることがある
+  （中断・`codex` 未導入での起動失敗）ので、そのときだけ**終了コードと stderr で補う**。
+
+#### Codex の capability と、`permissions: false` の帰結
+
+| capability | Codex | 理由 |
+|---|---|---|
+| `permissions` | **false** | exec の JSON モードは承認要求を上げられない（下記） |
+| `interrupt` | true | プロセスを殺せばターンが止まる |
+| `setModel` | true | 次のターンの `--model` として効く |
+| `resume` | true | `codex exec resume <thread_id>` |
+| `modelCatalog` | true | `codex debug models` がローカルのカタログを JSON で吐く（推論もコストも無い） |
+| `usage` | **false** | アカウント全体の使用状況を運ぶイベントが無い |
+| `cost` | **false** | `turn.completed` はトークン数だけで **USD を運ばない** |
+| `transcript` | **false** | rollout（`~/.codex/sessions`）は Claude CLI の JSONL と別形式 |
+
+`permissions: false` が一番重い制約。`codex exec` の JSON モードは、コマンド実行・パッチ適用・
+MCP のいずれの承認要求も **CLI 内部で自動 reject** し、JSONL には何も出さない
+（Codex の `codex-rs/exec/src/lib.rs` の `handle_server_request`）。つまり
+**codiva が許可要求を UI に上げる経路が原理的に無い**。ここで「それらしいダイアログ」を出すと、
+ユーザーが `y` を押しても実際には拒否されているという最悪の嘘になるので、**capability を false に
+して黙って出さない**方を選んだ（`AgentAdapter.requestPermission` は Codex では呼ばれない）。
+
+その結果、Codex セッションに対する安全弁は**サンドボックスだけ**になる。だから設定
+`codexSandbox`（既定 `workspace-write` = 書き込みは worktree 内に限定・読み取りは全体）を
+足し、`approval_policy="never"` を明示して「聞かれて止まる」経路を潰してある。
+`codexNetworkAccess` の既定を `true` にしているのは、Codex 自身の `workspace-write` 既定が
+ネットワーク遮断で、そのままだと `npm install` / `gh` が失敗して大半の作業が完了しないため
+（安全側に倒したいときは `false` にできる）。
+
+#### `error` 行は終了ではない（`turn.failed` だけが終わり）
+
+Codex は接続が切れると `{"type":"error","message":"Reconnecting... 1/5 (stream disconnected …)"}`
+を **stdout の JSONL として**流しながら再試行し、諦めたときだけ `turn.failed` を出す（実測。
+`__fixtures__/codex-failure.jsonl`）。`error` を素直に終了扱いにすると、**放っておけば自力で
+回復するセッションが赤くなる**。そこで:
+
+- `error` は `notice`（system 行）1 行に落とすだけで状態を動かさない。再試行の実況は
+  `coalesceKey`（`'Reconnecting'`）で直前の同種行を書き換え、5 連発でログを埋めない
+  （Claude の API リトライ表示と同じ仕組み）。
+- ターンが本当に落ちた信号は `turn.failed` と、終端イベント無しの非ゼロ終了コードだけ。
+  そこから `classifyCodexError` が `auth` / `rate_limit` / `connection` / `failed` へ分類する
+  （判定順は Claude 側と同じく**認証切れが最優先**）。
 
 ## セッション状態機械
 

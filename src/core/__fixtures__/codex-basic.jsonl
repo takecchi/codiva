@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"019feb2e-babc-7e50-8980-233d0f282207"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Hello from the mock model."}}
+{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens":128,"output_tokens":77,"reasoning_output_tokens":22}}

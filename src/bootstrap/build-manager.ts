@@ -1,6 +1,11 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
+  type AgentAdapter,
+  type AgentId,
+  agentLabelOf,
   type CodivaConfig,
+  createClaudeAdapter,
+  createCodexAdapter,
   type Messages,
   notificationFor,
   resolveIgnoredFilesMode,
@@ -17,6 +22,7 @@ import {
   notify,
   saveConfig,
   saveRepoPrompt,
+  spawnCodex,
   type WorktreeManager,
 } from '@/utils';
 
@@ -66,6 +72,32 @@ export function sessionOptionsFrom(
 }
 
 /**
+ * 使えるエージェントの対応表を組み立てる。**ここが provider の実 I/O を注入する
+ * 唯一の場所**（`core/` は SDK もサブプロセスも知らない）。
+ *
+ * Codex はユーザーがインストールした `codex` CLI を起動する（`gh` と同じ方針で
+ * npm 依存を増やさない）。未インストールでも登録自体は害がない — 実際に選ばれた
+ * ときに起動が失敗し、`needs_login` / `failed` として普通に扱われる。
+ */
+export function buildAgents(
+  config: CodivaConfig,
+  deps: { repoRoot: string },
+): Partial<Record<AgentId, AgentAdapter>> {
+  // タイトル生成は Claude の haiku を使い回す（Codex にも同じものを渡す）。Codex 側の
+  // 短文生成のためだけに `codex exec` をもう 1 本起こすのは高くつくため。
+  const generateTitle = createTitleGenerator(query, { cwd: deps.repoRoot });
+  return {
+    claude: createClaudeAdapter({ queryFn: query, generateTitle }),
+    codex: createCodexAdapter({
+      spawn: spawnCodex,
+      sandbox: config.codexSandbox,
+      networkAccess: config.codexNetworkAccess,
+      generateTitle,
+    }),
+  };
+}
+
+/**
  * Assemble the SessionManager and its injected I/O seams (SDK query, title
  * generation, desktop notifications, PR automation). `onPersist` is supplied by
  * the caller (the persist controller); everything else is wired from config here.
@@ -81,12 +113,16 @@ export function buildManager(opts: {
 }): SessionManager {
   const { repoRoot, config, messages: t, worktrees, onPersist, appendSystemPrompt } = opts;
 
+  const agents = buildAgents(config, { repoRoot });
+
   // Notifications default on; disable with `"notifications": false` in config.
   const onTransition =
     config.notifications === false
       ? undefined
       : (prev: SessionState, next: SessionState) => {
-          const spec = notificationFor(prev, next, t);
+          // 認証切れの通知は provider ごとに文言が変わる（`codex` へログインし直せ、
+          // という通知を Claude の名前で出さない）。
+          const spec = notificationFor(prev, next, t, agentLabelOf(agents[next.agent ?? 'claude']));
           if (spec) {
             notify(spec);
           }
@@ -94,6 +130,9 @@ export function buildManager(opts: {
 
   return new SessionManager({
     worktrees,
+    agents,
+    // 新規セッションの既定 provider（`"agent": "codex"` で切り替え）。未設定は Claude。
+    agent: agents[config.agent ?? 'claude'] ?? agents.claude,
     queryFn: query,
     generateTitle: createTitleGenerator(query, { cwd: repoRoot }),
     options: sessionOptionsFrom(config, appendSystemPrompt),

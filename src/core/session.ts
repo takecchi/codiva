@@ -99,7 +99,13 @@ export interface SessionDeps {
  */
 export class Session {
   private state: SessionState;
-  private readonly inputQueue = new AsyncQueue<string>();
+  /**
+   * 現在の run へ指示文を流すキュー。**エージェント切替のたびに作り直す**（`setAgent`）
+   * — 走っている run は自分が受け取ったキューを掴んだままなので、閉じることで
+   * 「そのストリームだけ」を終わらせられる（セッション全体の abortController を
+   * 使うとセッションごと止まってしまう）。
+   */
+  private inputQueue = new AsyncQueue<string>();
   private readonly abortController = new AbortController();
   private readonly now: () => number;
   private readonly policy: PermissionPolicy;
@@ -125,6 +131,16 @@ export class Session {
    * never run two consume loops at once.
    */
   private consuming = false;
+  /**
+   * エージェント切替でストリームを畳んだので、それが終わり次第もう一度
+   * `ensureConsuming()` を回す必要がある、という印。
+   *
+   * 必要な理由: `setAgent()` は現在の run のキューを閉じるだけで、その run の
+   * ループが実際に終わるのは次の tick 以降になる。ユーザーが切替直後に指示を
+   * 送ると `ensureConsuming()` は「まだ consuming 中」と見て何もしないので、
+   * 新しいエージェントが永久に起動しない（＝切り替えたのに何も起きない）。
+   */
+  private restartAfterSwitch = false;
   /**
    * Per-session model override set via setModel() (the detail view's /model).
    * `deps.options` is readonly, so we track the chosen model here and prefer it
@@ -183,6 +199,14 @@ export class Session {
       this.pending.resolve({ behavior: 'deny', message: 'agent switched' });
       this.pending = undefined;
     }
+    // 走っている run のプロンプト源を閉じる。**これが「ストリームを畳む」実体** —
+    // `run = undefined` は参照を捨てるだけで、consume ループはそのオブジェクトを
+    // 掴んだまま回り続けるし、アダプタ側は共有キューを await して止まっている。
+    // 閉じないと、切替後に送った指示を**古いエージェントが受け取る**（切り替えたのに
+    // 何も起きないように見える）。次の run には新しいキューを渡す。
+    this.inputQueue.close();
+    this.inputQueue = new AsyncQueue<string>();
+    this.restartAfterSwitch = this.consuming;
     this.run = undefined;
     this.adapter = adapter;
     // ここから先のログ行には発言者を刻む（どこからが別エージェントか分かるように）。
@@ -499,6 +523,15 @@ export class Session {
       // The loop has exited (stream end, abort, or throw). Release the guard so a
       // later send() can restart it — an interrupted session resumes this way.
       this.consuming = false;
+      // 切替のために畳んだループだった場合、その間に送られた指示がキューへ積まれた
+      // ままになっている（`ensureConsuming` は consuming 中だったので何もしていない）。
+      // ここで新しいエージェントを起こして拾い直す。
+      if (this.restartAfterSwitch) {
+        this.restartAfterSwitch = false;
+        if (this.inputQueue.pending > 0) {
+          this.ensureConsuming();
+        }
+      }
     }
   }
 

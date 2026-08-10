@@ -2,6 +2,7 @@ import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { render } from 'ink-testing-library';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '@/app';
+import { type AgentAdapter, NO_CAPABILITIES } from '@/core/agent-ports';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/claude-adapter';
 import { DEFAULT_AGENT_LABEL, messages } from '@/core/i18n';
@@ -9,7 +10,7 @@ import { PR_POLL_STABLE_MS } from '@/core/pr-refresh';
 import { SessionManager } from '@/core/session-manager';
 import type { PrLookup, WorktreeService } from '@/core/session-ports';
 import { reduce } from '@/core/status-reducer';
-import type { PrInfo, PrLookupResult, SessionState } from '@/core/types';
+import type { AgentId, PrInfo, PrLookupResult, SessionState } from '@/core/types';
 import { glyph } from '@/ui/theme';
 import {
   flush,
@@ -2592,5 +2593,111 @@ describe('PR の立て直し（/sync · /fix-ci · Ctrl+F）', () => {
 
     await runCommand(stdin, '/sync');
     expect(ctx.syncs).toEqual(['task-0']);
+  });
+});
+
+/**
+ * `/agent`（Phase D）: セッションを駆動する provider の切替。Codex アダプタは実
+ * `codex` プロセスを起こすので、ここではフェイクのアダプタ 2 本を登録して
+ * 「一覧に出る → 選ぶと切り替わる」配線だけを検証する（実 I/O は
+ * `core/codex-adapter.spec.ts` が担保）。
+ */
+describe('App detail view (/agent)', () => {
+  function fakeAdapter(
+    id: AgentId,
+    displayName: string,
+    capabilities = NO_CAPABILITIES,
+  ): AgentAdapter {
+    return {
+      id,
+      displayName,
+      loginCommand: id,
+      capabilities,
+      open: () => ({
+        async *[Symbol.asyncIterator]() {
+          // 切替の配線のテストなのでイベントは流さない。
+        },
+      }),
+    };
+  }
+
+  /** 詳細ビューを開いた状態まで進める。 */
+  async function openDetail(agents: Partial<Record<AgentId, AgentAdapter>>) {
+    const manager = new SessionManager({
+      worktrees,
+      agents,
+      agent: agents.claude,
+      now: () => 0,
+    });
+    const view = render(<App manager={manager} />);
+    view.stdin.write('switch me');
+    await flush();
+    view.stdin.write('\r');
+    await flush();
+    view.stdin.write('\t'); // focus the list
+    await flush();
+    view.stdin.write('\r'); // open the detail view
+    await flush();
+    return { manager, ...view };
+  }
+
+  it('/agent lists the registered agents and switches on Enter', async () => {
+    const claude = fakeAdapter('claude', 'Claude');
+    const codex = fakeAdapter('codex', 'Codex', { ...NO_CAPABILITIES, setModel: true });
+    const { manager, stdin, lastFrame } = await openDetail({ claude, codex });
+    const id = manager.getSnapshot()[0]?.id ?? '';
+    expect(manager.getSessionAgent(id)).toBe(claude);
+
+    stdin.write('/agent');
+    await flush();
+    stdin.write('\r'); // run the command → the picker opens
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toContain('エージェントを選択');
+    expect(frame).toContain('Claude');
+    expect(frame).toContain('Codex');
+    // 文脈が引き継がれないことを必ず伝える（切替の唯一の副作用）。
+    expect(frame).toContain('会話の文脈は引き継がれません');
+
+    stdin.write('\x1b[B'); // ↓ → Codex
+    await flush();
+    stdin.write('\r'); // confirm
+    await flush();
+    expect(manager.getSessionAgent(id)).toBe(codex);
+    // 切替後は状態にも載る（永続・復元がこれを読む）。
+    expect(manager.getSnapshot()[0]?.agent).toBe('codex');
+  });
+
+  it('Esc closes the picker without switching', async () => {
+    const claude = fakeAdapter('claude', 'Claude');
+    const codex = fakeAdapter('codex', 'Codex');
+    const { manager, stdin, lastFrame } = await openDetail({ claude, codex });
+    const id = manager.getSnapshot()[0]?.id ?? '';
+
+    stdin.write('/agent');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    stdin.write('\x1b'); // Esc
+    await flush();
+    expect(stripAnsi(lastFrame() ?? '')).not.toContain('エージェントを選択');
+    expect(manager.getSessionAgent(id)).toBe(claude);
+  });
+
+  /**
+   * capability による縮退。Codex はモデル切替を持つが、持たない provider では
+   * `/model` を黙って開かず理由を出す（無反応にすると壊れて見える）。
+   */
+  it('/model on an agent without setModel reports it instead of opening', async () => {
+    const claude = fakeAdapter('claude', 'Claude', { ...NO_CAPABILITIES, setModel: false });
+    const { stdin, lastFrame } = await openDetail({ claude });
+
+    stdin.write('/model');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).not.toContain('モデルを選択');
+    expect(frame).toContain('Claude はこの操作に対応していません');
   });
 });

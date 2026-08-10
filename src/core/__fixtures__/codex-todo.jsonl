@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"019feb2f-f129-7503-8d6d-f4d656c9b6b3"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"todo_list","items":[{"text":"Read the repo","completed":false},{"text":"Write the answer","completed":false}]}}
+{"type":"item.updated","item":{"id":"item_0","type":"todo_list","items":[{"text":"Read the repo","completed":true},{"text":"Write the answer","completed":false}]}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Plan finished."}}
+{"type":"item.completed","item":{"id":"item_0","type":"todo_list","items":[{"text":"Read the repo","completed":true},{"text":"Write the answer","completed":false}]}}
+{"type":"turn.completed","usage":{"input_tokens":3702,"cached_input_tokens":384,"output_tokens":231,"reasoning_output_tokens":66}}
