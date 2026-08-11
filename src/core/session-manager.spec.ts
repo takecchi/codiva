@@ -1177,8 +1177,8 @@ describe('SessionManager', () => {
       manager.create('feature');
       await flush();
       await manager.refreshPrs();
-      // Readied by PR number (the PR need not live on the session's branch).
-      expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', '5');
+      // Readied by PR URL (the PR need not live on the session's branch, or its repo).
+      expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', 'u');
       expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 5, url: 'u' });
       expect(manager.getSnapshot()[0]?.prStatus).toEqual({
         mergeStatus: 'unknown',

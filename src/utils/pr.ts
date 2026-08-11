@@ -282,8 +282,9 @@ async function currentBranch(cwd: string, exec: ExecLike): Promise<string | unde
 
 /**
  * One `gh pr view` for a single ref, classified into a lookup result. `ref` is a
- * branch name or a PR number — `gh pr view` accepts both, which is what lets us
- * ask about a PR whose head branch this worktree doesn't have checked out.
+ * branch name or a PR **URL** — `gh pr view` accepts both, which is what lets us ask
+ * about a PR whose head branch this worktree doesn't have checked out (and, with a
+ * URL, one that isn't even in this repository).
  */
 async function viewPr(cwd: string, ref: string, exec: ExecLike): Promise<PrLookupResult> {
   let stdout: string;
@@ -308,14 +309,19 @@ async function viewPr(cwd: string, ref: string, exec: ExecLike): Promise<PrLooku
 /**
  * Resolve the PR to track for a session's worktree via the GitHub CLI. Tries the
  * worktree's *current* HEAD branch first (where the work and its PR actually live),
- * then the recorded `branch`, then `opts.knownPr` — the number of a PR we already
- * associate with this session.
+ * then the recorded `branch`, then `opts.knownPr` — a PR we already associate with
+ * this session, asked for **by URL**.
  *
- * The number is the only way to reach a PR the session opened *itself* on a branch
- * that isn't checked out here (`gh pr create` on a throwaway `feat/…` branch, then
- * back to the session branch): no branch name resolves it, so its state stayed
- * unknown forever and the list showed a bare `#<n>` with no glyph. It is tried
- * *last* so a newer PR on the session's own branch still wins.
+ * That last candidate is the only way to reach a PR the session opened *itself* on a
+ * branch that isn't checked out here (`gh pr create` on a throwaway `feat/…` branch,
+ * then back to the session branch): no branch name resolves it, so its state stayed
+ * unknown forever and the list showed a bare `#<n>` with no glyph. It is tried *last*
+ * so a newer PR on the session's own branch still wins.
+ *
+ * By URL and not by number, because a session can open a PR in **another repository**
+ * (`gh pr create -R owner/other`) and PR numbers are per-repo: `gh pr view 42` run in
+ * the worktree would answer with the *current* repo's #42 — a completely unrelated PR
+ * to adopt, show a glyph for, and (if draft + green) flip to ready.
  *
  * Never throws. Distinguishes "no PR for this session" (`absent`) from "`gh`
  * couldn't tell us" (`unavailable`) — callers must keep the previously known PR in
@@ -331,8 +337,8 @@ export async function lookupPr(
   const head = await currentBranch(cwd, exec);
   // De-dup: only fall through to the recorded branch when HEAD differs from it.
   const candidates = head && head !== branch ? [head, branch] : [branch];
-  if (opts.knownPr !== undefined) {
-    candidates.push(String(opts.knownPr));
+  if (opts.knownPr) {
+    candidates.push(opts.knownPr.url);
   }
   let lastFailure: PrLookupResult | undefined;
   for (const candidate of candidates) {
@@ -449,11 +455,12 @@ export async function lookupPrs(
     const match = (head ? byBranch.get(head) : undefined) ?? byBranch.get(target.branch);
     if (match) {
       results.set(target.id, { kind: 'found', pr: match.pr });
-    } else if (target.knownPr !== undefined) {
+    } else if (target.knownPr) {
       // We know this session has a PR, and no branch in the page matched it: the page
-      // may have been cut short, or the PR's head branch may not be one we can see
-      // from here (the session opened it on a branch it no longer has checked out).
-      // Ask about that PR by number instead of reporting the badge gone.
+      // may have been cut short, the PR's head branch may not be one we can see from
+      // here (the session opened it on a branch it no longer has checked out), or the
+      // PR may not even be in this repo. Ask about that PR itself (by URL, so a
+      // same-numbered PR here can't stand in for it) instead of reporting it gone.
       results.set(
         target.id,
         await lookupPr(target.cwd, target.branch, { knownPr: target.knownPr }, exec),
@@ -487,8 +494,9 @@ export async function createPr(
 
 /**
  * Mark a draft PR ready for review (`gh pr ready`). Throws on failure.
- * `ref` is a branch name or a PR number — the caller passes the number of the PR it
- * actually looked up, which may live on a branch this worktree doesn't have.
+ * `ref` is a branch name or a PR URL — the caller passes the **URL** of the PR it
+ * actually looked up, which may live on a branch this worktree doesn't have (or in
+ * another repo entirely, where a bare number would resolve to the wrong PR).
  */
 export async function markPrReady(
   cwd: string,

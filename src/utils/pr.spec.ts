@@ -15,6 +15,10 @@ function ghError(stderr: string): Error & { stderr: string; code?: string | numb
 
 const NO_PR = 'no pull requests found for branch "codiva/x"';
 
+/** A PR already known for the session (what the poll passes as `knownPr`). */
+const PR_42 = { number: 42, url: 'https://github.com/o/r/pull/42' };
+const PR_7 = { number: 7, url: 'https://github.com/o/r/pull/7' };
+
 describe('lookupPr', () => {
   it('runs one `gh pr view` with every field and parses it', async () => {
     const exec = vi.fn<ExecLike>(async (file) =>
@@ -273,33 +277,51 @@ describe('lookupPr', () => {
   });
 
   // The session opened its own PR from a throwaway branch it no longer has checked
-  // out: no branch name resolves it, so the number is the only handle on its state.
-  it('falls back to the known PR number when no branch has a PR', async () => {
+  // out: no branch name resolves it, so the known ref is the only handle on its state.
+  it('falls back to the known PR (by URL) when no branch has a PR', async () => {
     const exec = vi.fn<ExecLike>(async (file, args) => {
       if (file === 'git') return { stdout: 'codiva/x\n' };
-      if (args[2] === '42') return { stdout: ghPr(42) };
+      if (args[2] === PR_42.url) return { stdout: ghPr(42) };
       throw ghError(NO_PR);
     });
-    const result = await lookupPr('/wt', 'codiva/x', { knownPr: 42 }, exec);
+    const result = await lookupPr('/wt', 'codiva/x', { knownPr: PR_42 }, exec);
     expect(result.kind === 'found' && result.pr.number).toBe(42);
-    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', '42', '--json', FIELDS], { cwd: '/wt' });
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', PR_42.url, '--json', FIELDS], {
+      cwd: '/wt',
+    });
   });
 
-  it('prefers a branch PR over the known number (a newer PR on the branch wins)', async () => {
+  // PR numbers are per-repo, so a bare `gh pr view 42` in the worktree would answer
+  // with *this* repo's #42: an unrelated PR to adopt, glyph and possibly ready.
+  it('never asks by bare number (a same-numbered PR in this repo must not stand in)', async () => {
+    const otherRepo = { number: 42, url: 'https://github.com/acme/other/pull/42' };
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/x\n' };
+      if (args[2] === otherRepo.url) {
+        return { stdout: JSON.stringify({ number: 42, url: otherRepo.url, state: 'OPEN' }) };
+      }
+      throw ghError(NO_PR); // this repo's own #42 / branches must never be consulted
+    });
+    const result = await lookupPr('/wt', 'codiva/x', { knownPr: otherRepo }, exec);
+    expect(result.kind === 'found' && result.pr.url).toBe(otherRepo.url);
+    expect(exec.mock.calls.some(([, a]) => a[2] === '42')).toBe(false);
+  });
+
+  it('prefers a branch PR over the known PR (a newer PR on the branch wins)', async () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'codiva/x\n' } : { stdout: ghPr(9) },
     );
-    const result = await lookupPr('/wt', 'codiva/x', { knownPr: 42 }, exec);
+    const result = await lookupPr('/wt', 'codiva/x', { knownPr: PR_42 }, exec);
     expect(result.kind === 'found' && result.pr.number).toBe(9);
     expect(exec.mock.calls.filter(([file]) => file === 'gh')).toHaveLength(1);
   });
 
-  it('reports `absent` when even the known PR number is gone', async () => {
+  it('reports `absent` when even the known PR is gone', async () => {
     const exec = vi.fn<ExecLike>(async (file) => {
       if (file === 'git') return { stdout: 'codiva/x\n' };
       throw ghError(NO_PR);
     });
-    await expect(lookupPr('/wt', 'codiva/x', { knownPr: 42 }, exec)).resolves.toEqual({
+    await expect(lookupPr('/wt', 'codiva/x', { knownPr: PR_42 }, exec)).resolves.toEqual({
       kind: 'absent',
     });
   });
@@ -514,7 +536,7 @@ describe('lookupPrs (batched)', () => {
       return { stdout: JSON.stringify({ number: 7, url: 'u', state: 'OPEN' }) };
     });
     const results = await lookupPrs(
-      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: 7 }],
+      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: PR_7 }],
       exec,
     );
     const result = results.get('a');
@@ -522,27 +544,52 @@ describe('lookupPrs (batched)', () => {
     expect(exec.mock.calls.filter(([, a]) => a[1] === 'view')).toHaveLength(1);
   });
 
-  // A PR the session opened itself lives on a branch this worktree doesn't have, so
-  // no row in the page can match it however short the page is. Reporting `absent`
-  // here is what used to strand such a PR without any state at all.
-  it('verifies a known PR by number when no branch in the page matches it', async () => {
+  // A PR the session opened itself lives on a branch this worktree doesn't have (or in
+  // another repo), so no row in the page can match it however short the page is.
+  // Reporting `absent` here is what used to strand such a PR without any state at all.
+  it('verifies a known PR by URL when no branch in the page matches it', async () => {
     const exec = vi.fn<ExecLike>(async (file, args) => {
       if (file === 'git') return { stdout: 'codiva/a\n' };
       if (args[1] === 'list') return { stdout: JSON.stringify([row('other/1', 100)]) };
-      if (args[2] === '7')
-        return { stdout: JSON.stringify({ number: 7, url: 'u', state: 'MERGED' }) };
+      if (args[2] === PR_7.url) {
+        return { stdout: JSON.stringify({ number: 7, url: PR_7.url, state: 'MERGED' }) };
+      }
       throw ghError(NO_PR); // the session's branch itself has no PR
     });
     const results = await lookupPrs(
-      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: 7 }],
+      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: PR_7 }],
       exec,
     );
     expect(results.get('a')).toEqual({
       kind: 'found',
-      pr: { number: 7, url: 'u', mergeStatus: 'merged', checks: 'none' },
+      pr: { number: 7, url: PR_7.url, mergeStatus: 'merged', checks: 'none' },
     });
-    // Asked about PR 7 itself once the branches came back empty.
-    expect(exec.mock.calls.some(([, a]) => a[1] === 'view' && a[2] === '7')).toBe(true);
+    // Asked about that PR itself — never by bare number, which is repo-relative.
+    expect(exec.mock.calls.some(([, a]) => a[1] === 'view' && a[2] === PR_7.url)).toBe(true);
+    expect(exec.mock.calls.some(([, a]) => a[2] === '7')).toBe(false);
+  });
+
+  // The batch runs `gh pr list` in *this* repo, so a cross-repo PR can never match a
+  // row: it must be verified by its own URL, not declared gone and not confused with a
+  // same-numbered PR here.
+  it("verifies a cross-repo PR without touching this repo's PR of the same number", async () => {
+    const otherRepo = { number: 42, url: 'https://github.com/acme/other/pull/42' };
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      // This repo *does* have a #42, on an unrelated branch.
+      if (args[1] === 'list') return { stdout: JSON.stringify([row('someone/else', 42)]) };
+      if (args[2] === otherRepo.url) {
+        return { stdout: JSON.stringify({ number: 42, url: otherRepo.url, state: 'OPEN' }) };
+      }
+      throw ghError(NO_PR);
+    });
+    const results = await lookupPrs(
+      [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: otherRepo }],
+      exec,
+    );
+    const result = results.get('a');
+    expect(result?.kind === 'found' && result.pr.url).toBe(otherRepo.url);
+    expect(exec.mock.calls.some(([, a]) => a[2] === '42')).toBe(false);
   });
 
   it('reports absent (no extra call) for a session with no PR to verify', async () => {

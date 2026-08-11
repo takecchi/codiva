@@ -16,7 +16,7 @@ import type {
   WorktreeMeta,
   WorktreeService,
 } from './session-ports';
-import type { PrLookupResult, PrUnavailableReason, SessionState } from './types';
+import type { PrLookupResult, PrRef, PrUnavailableReason, SessionState } from './types';
 
 export interface PrCoordinatorDeps {
   worktrees: WorktreeService;
@@ -61,19 +61,22 @@ export const PR_LOOKUP_BACKOFF_MS = 5 * 60_000;
 const BACKOFF_REASONS = new Set<PrUnavailableReason>(['rate_limit', 'cli', 'auth']);
 
 /**
- * The PR number to hand the lookup so it can ask about *this* PR directly.
+ * The PR to hand the lookup so it can ask about *this* PR directly.
  *
  * `primaryPr`, not `state.pr`: the PR shown for a session is often one the session
  * opened itself (`extraPrs`, detected from its `gh pr create`), and that PR's head
  * branch is usually a throwaway `feat/…` the worktree no longer has checked out. With
  * only branch names to ask by, such a PR could never be resolved — so its state (and
  * with it the merge/CI glyph) stayed unknown for the whole life of the session, while
- * the number sat there looking tracked. Passing the number promotes it to the
- * session's tracked PR on the next poll (the reducer folds it out of `extraPrs`).
+ * the number sat there looking tracked. Passing the ref promotes it to the session's
+ * tracked PR on the next poll (the reducer folds it out of `extraPrs`).
+ *
+ * The whole ref travels, URL included: the PR may be in another repository, and the
+ * lookup needs that to avoid resolving a same-numbered PR in the session's own repo.
  */
-function knownPrOf(state: SessionState): { knownPr?: number } {
+function knownPrOf(state: SessionState): { knownPr?: PrRef } {
   const pr = primaryPr(state);
-  return pr ? { knownPr: pr.number } : {};
+  return pr ? { knownPr: pr } : {};
 }
 
 /** A session picked for this refresh cycle, with everything needed to resolve it. */
@@ -309,11 +312,12 @@ export class PrCoordinator {
     try {
       // Auto-ready: once a draft PR's checks pass, flip it to ready-for-review.
       // `checks` came along with the PR payload, so this costs no extra lookup.
-      // Addressed by *number*, not by `state.branch`: the PR we just resolved may be
-      // one the session opened on another branch, and `gh pr ready <branch>` would
-      // then either fail or (worse) ready an unrelated PR on the session branch.
+      // Addressed by its *URL*, not by `state.branch` and not by number: the PR we
+      // just resolved may be one the session opened on another branch — or in another
+      // repo — so a branch would fail (or ready an unrelated PR on the session branch)
+      // and a bare number would resolve to whatever #<n> this repo happens to have.
       if (this.deps.autoPr && this.deps.prAutomation && pr?.isDraft && pr.checks === 'passing') {
-        await this.deps.prAutomation.markReady(meta.worktree.path, String(pr.number));
+        await this.deps.prAutomation.markReady(meta.worktree.path, pr.url);
         session.setPr({ ...pr, isDraft: false });
       }
     } catch {

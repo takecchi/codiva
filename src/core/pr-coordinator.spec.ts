@@ -179,28 +179,48 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(h.state().prLookup).toBeUndefined();
   });
 
-  // A PR the session opened itself (`gh pr create` on its own branch) is only
-  // reachable by number: nothing in the worktree points at its head branch. Without
-  // the number the lookup answered `absent` forever, so the row showed a bare `#<n>`
-  // with no state — and, having been "answered", not even a loading mark.
+  // A PR the session opened itself (`gh pr create` on its own branch) is only reachable
+  // through its own ref: nothing in the worktree points at its head branch. Without it
+  // the lookup answered `absent` forever, so the row showed a bare `#<n>` with no state
+  // — and, having been "answered", not even a loading mark.
   it('asks about a PR the session opened itself, and adopts it as the tracked PR', async () => {
+    const own = { number: 109, url: 'https://github.com/o/r/pull/109' };
     const lookup = vi.fn<PrLookup>(async (_cwd, _branch, opts) =>
-      opts?.knownPr === 109
-        ? found({ ...PR, number: 109, mergeStatus: 'merged' })
+      opts?.knownPr?.url === own.url
+        ? found({ ...own, mergeStatus: 'merged', checks: 'none' })
         : { kind: 'absent' },
     );
-    const h = harness(lookup, { state: { extraPrs: [{ number: 109, url: 'u109' }] } });
+    const h = harness(lookup, { state: { extraPrs: [own] } });
     await h.refresh();
-    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: 109 });
-    expect(h.state().pr).toEqual({ number: 109, url: 'u' });
+    // The whole ref, URL included — the PR may not even be in this repository.
+    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: own });
+    expect(h.state().pr).toEqual(own);
     expect(h.state().prStatus?.mergeStatus).toBe('merged');
   });
 
-  it('keeps asking by number once that PR is the tracked one', async () => {
-    const lookup = vi.fn<PrLookup>(async () => found({ ...PR, number: 109 }));
-    const h = harness(lookup, { state: { pr: { number: 109, url: 'u109' } } });
+  it('keeps passing the ref once that PR is the tracked one', async () => {
+    const own = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const lookup = vi.fn<PrLookup>(async () => found({ ...own, mergeStatus: 'mergeable' }));
+    const h = harness(lookup, { state: { pr: own } });
     await h.refresh();
-    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: 109 });
+    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: own });
+  });
+
+  // Numbers are per-repo, so readying by number could flip an unrelated PR that happens
+  // to share it in the session's own repo.
+  it('readies the PR it resolved by URL, even in another repository', async () => {
+    const cross = { number: 42, url: 'https://github.com/acme/other/pull/42' };
+    const markReady = vi.fn(async () => {});
+    const h = harness(
+      async () => found({ ...cross, mergeStatus: 'mergeable', checks: 'passing', isDraft: true }),
+      {
+        autoPr: true,
+        prAutomation: { createPr: async () => undefined, markReady },
+        state: { extraPrs: [cross] },
+      },
+    );
+    await h.refresh();
+    expect(markReady).toHaveBeenCalledWith('/wt/s1', cross.url);
   });
 
   // The number alone says nothing about mergeability or CI, so the row is still
@@ -352,8 +372,8 @@ describe('PrCoordinator.refreshPrs', () => {
       prAutomation: { createPr: async () => undefined, markReady },
     });
     await h.refresh();
-    // Addressed by number: the PR may not live on the session's own branch.
-    expect(markReady).toHaveBeenCalledWith('/wt/s1', '42');
+    // Addressed by URL: the PR need not live on the session's branch (or in its repo).
+    expect(markReady).toHaveBeenCalledWith('/wt/s1', 'u');
     expect(h.state().prStatus?.isDraft).toBe(false);
   });
 
@@ -479,11 +499,16 @@ describe('PrCoordinator batching (one `gh pr list` for many sessions)', () => {
     });
     await b.refresh();
     expect(b.seen[0]).toEqual(
-      ids.map((id) => ({ id, cwd: `/wt/${id}`, branch: `codiva/${id}`, knownPr: 42 })),
+      ids.map((id) => ({
+        id,
+        cwd: `/wt/${id}`,
+        branch: `codiva/${id}`,
+        knownPr: { number: 42, url: 'u' },
+      })),
     );
   });
 
-  it('passes the number of a PR the session opened itself', async () => {
+  it('passes the ref of a PR the session opened itself', async () => {
     const b = batchHarness((targets) => new Map(targets.map((t) => [t.id, { kind: 'absent' }])), {
       state: {
         extraPrs: [
@@ -494,7 +519,7 @@ describe('PrCoordinator batching (one `gh pr list` for many sessions)', () => {
     });
     await b.refresh();
     // The one the list shows as primary (the newest) is the one worth resolving.
-    expect(b.seen[0]?.[0]?.knownPr).toBe(9);
+    expect(b.seen[0]?.[0]?.knownPr).toEqual({ number: 9, url: 'u9' });
   });
 
   it('omits knownPr for sessions with no PR yet', async () => {
