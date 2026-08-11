@@ -211,12 +211,18 @@ export async function fetchCodexModelCatalog(opts?: {
  */
 const ROLLOUT_HEAD_BYTES = 512 * 1024;
 
-/** 何日ぶんの日付ディレクトリまで遡って探すか（当日に無ければ日付跨ぎを疑う程度）。 */
-const ROLLOUT_MAX_DAY_DIRS = 8;
-
 /** `turn_context` が書かれるまで待つリトライ（間隔 × 回数）。 */
 const ROLLOUT_RETRY_MS = 200;
 const ROLLOUT_RETRIES = 6;
+
+/**
+ * ファイル探索そのものを何回まで繰り返すか。
+ *
+ * リトライの主目的は「`turn_context` がまだ書かれていない」を待つことで、**ファイル自体は
+ * スレッド開始時に作られる**（`session_meta` が先に書かれる）。見つからないまま数回試して
+ * 駄目なら、待っても現れないので早めに諦める（全日付を舐める走査を無駄に繰り返さない）。
+ */
+const MAX_ROLLOUT_SEARCHES = 3;
 
 /** `$CODEX_HOME`（未設定なら `~/.codex`）。 */
 function codexHome(): string {
@@ -234,32 +240,33 @@ async function subdirsDesc(dir: string): Promise<string[]> {
     .reverse();
 }
 
-/** `sessions/` 以下の日付ディレクトリを新しい順に列挙する（上限付き）。 */
-async function rolloutDayDirs(sessionsDir: string, limit: number): Promise<string[]> {
-  const days: string[] = [];
+/**
+ * そのスレッドの rollout ファイルを探す（見つからなければ undefined）。
+ *
+ * **日数で打ち切らない。** `codex exec resume` はスレッド開始時に作られた同じ
+ * rollout へ追記し続けるので、ファイルは常に**スレッドを開始した日**のディレクトリに
+ * ある。一方 codiva のセッションは `.codiva/state.json` に無期限で残り、何日も経ってから
+ * 復元・resume される。日数（正確には「存在する日付ディレクトリ数」）で上限を置くと、
+ * その間に別セッションを作っただけで対象が探索範囲から外れ、モデル欄が二度と埋まらない。
+ *
+ * 代わりに**新しい日付から見て最初に当たった時点で止める**ことで実費を抑える
+ * （当日始まったスレッドなら readdir 数回で終わる）。全日付を舐めるのは「そのスレッドの
+ * rollout が本当に無い」ときだけで、その繰り返しは {@link MAX_ROLLOUT_SEARCHES} が抑える。
+ */
+async function findRollout(home: string, threadId: string): Promise<string | undefined> {
+  const sessionsDir = join(home, 'sessions');
   for (const year of await subdirsDesc(sessionsDir)) {
     const yearDir = join(sessionsDir, year);
     for (const month of await subdirsDesc(yearDir)) {
       const monthDir = join(yearDir, month);
       for (const day of await subdirsDesc(monthDir)) {
-        days.push(join(monthDir, day));
-        if (days.length >= limit) {
-          return days;
+        const dayDir = join(monthDir, day);
+        const names = await readdir(dayDir).catch(() => []);
+        const hit = names.find((name) => isCodexRolloutFile(name, threadId));
+        if (hit) {
+          return join(dayDir, hit);
         }
       }
-    }
-  }
-  return days;
-}
-
-/** そのスレッドの rollout ファイルを探す（新しい日付から。見つからなければ undefined）。 */
-async function findRollout(home: string, threadId: string): Promise<string | undefined> {
-  const sessionsDir = join(home, 'sessions');
-  for (const dayDir of await rolloutDayDirs(sessionsDir, ROLLOUT_MAX_DAY_DIRS)) {
-    const names = await readdir(dayDir).catch(() => []);
-    const hit = names.find((name) => isCodexRolloutFile(name, threadId));
-    if (hit) {
-      return join(dayDir, hit);
     }
   }
   return undefined;
@@ -303,12 +310,24 @@ export async function resolveCodexRolloutModel(
   const home = opts?.home ?? codexHome();
   const retries = opts?.retries ?? ROLLOUT_RETRIES;
   const retryMs = opts?.retryMs ?? ROLLOUT_RETRY_MS;
+  // 一度見つけたパスは使い回す。rollout はスレッド開始時に作られて以後追記されるだけ
+  // なので途中で変わらない ＝ リトライは**同じ 1 ファイルを読み直すだけ**でよく、
+  // 全日付を舐める走査を待ち時間のたびに繰り返さずに済む。
+  let path: string | undefined;
+  let searches = 0;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     if (attempt > 0) {
       await sleep(retryMs);
     }
     try {
-      const path = await findRollout(home, threadId);
+      if (path === undefined) {
+        if (searches >= MAX_ROLLOUT_SEARCHES) {
+          // ファイルが無い（rollout を残さない設定・別レイアウト）。待っても現れない。
+          return undefined;
+        }
+        searches += 1;
+        path = await findRollout(home, threadId);
+      }
       const text = path ? await readHead(path) : undefined;
       const model = text ? codexRolloutModelFromText(text) : undefined;
       if (model) {

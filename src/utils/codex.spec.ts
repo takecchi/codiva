@@ -246,6 +246,26 @@ describe('resolveCodexRolloutModel', () => {
     expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBe('gpt-5.4-mini');
   });
 
+  // `codex exec resume` は**スレッド開始時に作られた同じ rollout** へ追記し続けるので、
+  // 何日も経ってから復元・resume したセッションのファイルは古い日付ディレクトリにある。
+  // 日数で探索を打ち切ると、その間に別セッションを作っただけでモデル欄が二度と埋まらない。
+  it('finds a resumed thread whose rollout sits in a much older day directory', async () => {
+    await writeRollout(home, ['2026', '08', '01'], THREAD, [meta, turn('gpt-5.6-sol')]);
+    // 開始日以降に別スレッドのセッションが 9 日ぶん積まれている。
+    for (let day = 2; day <= 10; day += 1) {
+      const dd = String(day).padStart(2, '0');
+      await writeRollout(home, ['2026', '08', dd], `other-${dd}`, [meta, turn('gpt-5.4-mini')]);
+    }
+    expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBe('gpt-5.6-sol');
+  });
+
+  // 年・月をまたいでも同じ（新しい順に見て最初に当たった時点で止める）。
+  it('crosses year and month boundaries when looking for an old thread', async () => {
+    await writeRollout(home, ['2025', '12', '30'], THREAD, [meta, turn('gpt-5.6-sol')]);
+    await writeRollout(home, ['2026', '08', '11'], 'recent-thread', [meta, turn('gpt-5.4-mini')]);
+    expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBe('gpt-5.6-sol');
+  });
+
   it('gives up quietly when the thread has no rollout yet (model column stays empty)', async () => {
     await writeRollout(home, ['2026', '08', '11'], 'someone-else', [meta, turn('gpt-5.6-sol')]);
     expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBeUndefined();
