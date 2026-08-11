@@ -450,6 +450,43 @@ describe('pr event', () => {
   });
 });
 
+describe('pr_gone event', () => {
+  const gone = { number: 109, url: 'https://x/109' };
+  const other = { number: 110, url: 'https://x/110' };
+
+  // The reference can sit in either half, and `primaryPr` reads whichever is there —
+  // so both have to go, or the number stays on the row with no state to attach.
+  it('drops the reference from extraPrs, keeping the other PRs', () => {
+    const s0: SessionState = { ...initialState(BASE), extraPrs: [gone, other] };
+    const next = reduce(s0, { kind: 'pr_gone', pr: gone, at: 1 });
+    expect(next.extraPrs).toEqual([other]);
+  });
+
+  it('clears extraPrs entirely when it was the only one', () => {
+    const s0: SessionState = { ...initialState(BASE), extraPrs: [gone] };
+    expect(reduce(s0, { kind: 'pr_gone', pr: gone, at: 1 }).extraPrs).toBeUndefined();
+  });
+
+  it('clears the tracked PR (and its status) when that is the one that went', () => {
+    const s0: SessionState = {
+      ...initialState(BASE),
+      pr: gone,
+      prStatus: { mergeStatus: 'mergeable' },
+    };
+    const next = reduce(s0, { kind: 'pr_gone', pr: gone, at: 1 });
+    expect(next.pr).toBeUndefined();
+    expect(next.prStatus).toBeUndefined();
+  });
+
+  it('no-ops (same reference) for a PR this session does not hold', () => {
+    const s0: SessionState = { ...initialState(BASE), extraPrs: [other] };
+    expect(reduce(s0, { kind: 'pr_gone', pr: gone, at: 1 })).toBe(s0);
+    expect(
+      reduce(initialState(BASE), { kind: 'pr_gone', pr: gone, at: 1 }).extraPrs,
+    ).toBeUndefined();
+  });
+});
+
 describe('pr_lookup event', () => {
   it('stores the lookup state and no-ops when unchanged', () => {
     const s0 = initialState(BASE);

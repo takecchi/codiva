@@ -46,6 +46,8 @@ export interface SessionHandle {
   stop(): void;
   archive(): void;
   setPr(pr: PrInfo | undefined): void;
+  /** Forget a PR `gh` authoritatively reported as non-existent (see `Session.dropPr`). */
+  dropPr(pr: PrRef): void;
   setPrLookup(lookup: PrLookupState | undefined): void;
   markConflict(files: string[]): void;
 }

@@ -11,7 +11,7 @@ import type {
   WorktreeService,
 } from './session-ports';
 import { initialState } from './status-reducer';
-import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
+import type { PrInfo, PrLookupResult, PrLookupState, PrRef, SessionState } from './types';
 
 const worktrees: WorktreeService = {
   baseBranch: async () => 'main',
@@ -50,6 +50,16 @@ function fakeSession(state: SessionState) {
           ? { mergeStatus: pr.mergeStatus, isDraft: pr.isDraft, checks: pr.checks }
           : undefined,
         prLookup: undefined,
+      };
+    },
+    dropPr(ref: PrRef) {
+      calls.push(`dropPr:#${ref.number}`);
+      // Mirror the reducer: the ref can live in either half.
+      const extraPrs = state.extraPrs?.filter((p) => p.url !== ref.url);
+      state = {
+        ...state,
+        extraPrs: extraPrs && extraPrs.length > 0 ? extraPrs : undefined,
+        ...(state.pr?.url === ref.url ? { pr: undefined, prStatus: undefined } : {}),
       };
     },
     setPrLookup(lookup: PrLookupState | undefined) {
@@ -206,6 +216,35 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: own });
   });
 
+  // `absent` means every candidate answered, the known URL among them — so that PR
+  // really doesn't exist (a misread `gh pr create` URL, a repo that went away). Keeping
+  // the reference would strand the row on a bare `#<n>` that no poll can ever fill in:
+  // `setPr(undefined)` clears `pr`, but nothing else prunes `extraPrs`.
+  it('forgets a self-opened PR once its own URL comes back absent', async () => {
+    const gone = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const h = harness(async () => ({ kind: 'absent' }), { state: { extraPrs: [gone] } });
+    await h.refresh();
+    expect(h.calls()).toEqual(['prLookup:loading', 'dropPr:#109', 'setPr:none']);
+    expect(h.state().extraPrs).toBeUndefined();
+    expect(h.state().pr).toBeUndefined();
+  });
+
+  it('keeps a self-opened PR when the lookup only failed', async () => {
+    const gone = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const h = harness(async () => ({ kind: 'unavailable', reason: 'rate_limit' }), {
+      state: { extraPrs: [gone] },
+    });
+    await h.refresh();
+    expect(h.calls()).not.toContain('dropPr:#109');
+    expect(h.state().extraPrs).toEqual([gone]);
+  });
+
+  it('never drops anything when there was no known PR to confirm', async () => {
+    const h = harness(async () => ({ kind: 'absent' }));
+    await h.refresh();
+    expect(h.calls()).toEqual(['prLookup:loading', 'setPr:none']);
+  });
+
   // Numbers are per-repo, so readying by number could flip an unrelated PR that happens
   // to share it in the session's own repo.
   it('readies the PR it resolved by URL, even in another repository', async () => {
@@ -239,8 +278,9 @@ describe('PrCoordinator.refreshPrs', () => {
       },
     });
     await h.refresh();
-    // A PR was already known, so no loading mark — and `absent` is authoritative.
-    expect(h.calls()).toEqual(['setPr:none']);
+    // A PR was already known, so no loading mark — and `absent` is authoritative: the
+    // known PR was one of the answered candidates, so the reference goes too.
+    expect(h.calls()).toEqual(['dropPr:#42', 'setPr:none']);
     expect(h.state().pr).toBeUndefined();
   });
 

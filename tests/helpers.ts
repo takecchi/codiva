@@ -128,6 +128,7 @@ export function noopSession(input: CreateSessionInput): SessionHandle & { state:
     stop() {},
     archive() {},
     setPr() {},
+    dropPr() {},
     setPrLookup() {},
     markConflict() {},
   };

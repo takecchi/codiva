@@ -2348,6 +2348,10 @@ describe('PR セル（GitHub ステータスの表示）', () => {
           session.state = reduce(session.state, { kind: 'pr_lookup', lookup, at: clock.value });
           onChange(session.state);
         };
+        session.dropPr = (pr) => {
+          session.state = reduce(session.state, { kind: 'pr_gone', pr, at: clock.value });
+          onChange(session.state);
+        };
         return session;
       },
     });
@@ -2526,6 +2530,24 @@ describe('PR セル（GitHub ステータスの表示）', () => {
     expect(detail).toContain('#42');
     expect(detail).toContain('#43');
     expect(detail).toContain('#44');
+    app.unmount();
+  });
+
+  // 自作 PR（`extraPrs`）は `gh` が「そんな PR は無い」と答えても誰も消さなかったので、
+  // グリフも `⋯`/`?` も付かない裸の番号が永久に残っていた（PR の状況が出ない症状そのもの）。
+  it('`gh` が存在しないと答えた自作 PR は一覧から消える', async () => {
+    const manager = prManager(async () => ({ kind: 'absent' }), {
+      extraPrs: [{ number: 109, url: 'https://x/pull/109' }],
+    });
+    manager.create('task');
+    await flush();
+    const { app, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 100);
+    expect(stripAnsi(await settledFrame(lastFrame, (f) => f.includes('#109')))).toContain('#109');
+
+    await manager.refreshPrs();
+    const gone = await settledFrame(lastFrame, (f) => !f.includes('#109'));
+    expect(gone).not.toContain('#109');
+    expect(manager.getSnapshot()[0]?.extraPrs).toBeUndefined();
     app.unmount();
   });
 

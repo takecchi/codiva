@@ -354,6 +354,12 @@ export type CodivaEvent =
   // band via `gh`. Carries the info; the reducer only swaps it into state. Only
   // dispatched when `gh` actually answered, so it also clears `prLookup`.
   | { kind: 'pr'; pr: PrInfo | undefined; at: number }
+  // `gh` was asked about this exact PR (by URL) and answered that it does not
+  // exist. Drops the reference so a phantom — a `gh pr create` URL we misread, or
+  // a PR in a repo that has since gone away — stops being displayed as this
+  // session's PR. Only for an *authoritative* answer: a lookup that couldn't tell
+  // us (rate limit / offline) must keep the reference (`pr_lookup: 'error'`).
+  | { kind: 'pr_gone'; pr: PrRef; at: number }
   // The PR lookup started / failed, without an authoritative answer about the PR
   // itself. Drives the list's "looking…" / "couldn't check" cell.
   | { kind: 'pr_lookup'; lookup: PrLookupState | undefined; at: number }

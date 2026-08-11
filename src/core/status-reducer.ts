@@ -330,6 +330,24 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       };
     }
 
+    case 'pr_gone': {
+      // Forget a PR `gh` says doesn't exist. Both halves have to go: the reference
+      // can sit in `extraPrs` (detected from the session's own `gh pr create`) or in
+      // `pr` (the poll adopted it), and `primaryPr` reads whichever is there — so
+      // dropping only one of them would leave the number on screen with no state,
+      // which is exactly the dead end this event exists to clear.
+      const extraPrs = withoutPrRef(state.extraPrs, event.pr);
+      const tracked = state.pr?.url === event.pr.url;
+      if (extraPrs === state.extraPrs && !tracked) {
+        return state;
+      }
+      return {
+        ...state,
+        extraPrs,
+        ...(tracked ? { pr: undefined, prStatus: undefined } : {}),
+      };
+    }
+
     case 'pr_lookup': {
       if (state.prLookup === event.lookup) {
         return state;

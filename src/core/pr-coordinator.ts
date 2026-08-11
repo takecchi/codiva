@@ -294,7 +294,7 @@ export class PrCoordinator {
    * so the caller can decide whether to back the whole poll off.
    */
   private async applyResult(
-    { id, meta, session }: RefreshTarget,
+    { id, state, meta, session }: RefreshTarget,
     result: PrLookupResult,
   ): Promise<PrUnavailableReason | undefined> {
     if (result.kind === 'unavailable') {
@@ -308,6 +308,15 @@ export class PrCoordinator {
     const pr = result.kind === 'found' ? result.pr : undefined;
     this.answered.add(id);
     this.lastFetched.set(id, this.now());
+    const known = knownPrOf(state).knownPr;
+    if (!pr && known) {
+      // `absent` only comes back when *every* candidate answered, and `known` was one
+      // of them (asked by URL) — so this is GitHub saying that exact PR doesn't exist.
+      // Drop the reference: `setPr(undefined)` alone would leave a phantom sitting in
+      // `extraPrs`, which `primaryPr` keeps rendering as a bare `#<n>` that no future
+      // poll can ever attach a state to. Nothing else prunes `extraPrs`.
+      session.dropPr(known);
+    }
     session.setPr(pr);
     try {
       // Auto-ready: once a draft PR's checks pass, flip it to ready-for-review.

@@ -11,6 +11,7 @@ import type {
   PrInfo,
   PrLookupResult,
   PrLookupState,
+  PrRef,
   SessionState,
 } from '@/core/types';
 import { MergeConflictError } from '@/core/worktree';
@@ -94,6 +95,11 @@ class FakeSession implements SessionHandle {
     // Real reducer: it splits `pr` into the persisted ref + volatile status and keeps
     // each half's reference when unchanged, which is what the persist check reads.
     this.state = reduce(this.state, { kind: 'pr', pr, at: 0 });
+    this.onChange(this.state);
+  }
+  dropPr(pr: PrRef) {
+    this.calls.push(`dropPr:#${pr.number}`);
+    this.state = reduce(this.state, { kind: 'pr_gone', pr, at: 0 });
     this.onChange(this.state);
   }
   setPrLookup(lookup: PrLookupState | undefined) {

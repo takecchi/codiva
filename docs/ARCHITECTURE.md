@@ -906,6 +906,10 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   セッションが別リポジトリ（`gh pr create -R owner/other`）に作った PR を番号で聞くと worktree 側の
   同番号 PR が返り、無関係な PR の状態を出したり ready にしたりする。ready 化も同じ理由で URL 指定
   （`state.branch` で `gh pr ready` すると別の PR を触りうる）。
+  逆に、その URL まで `absent`（= GitHub が「そんな PR は無い」と答えた）なら参照を捨てる
+  （`pr_gone` イベント → `pr` と `extraPrs` の両方から除去）。`setPr(undefined)` は `extraPrs` を
+  触らないので、これが無いと**誤検知した URL が裸の番号として永久に残る**（状態も `⋯`/`?` も
+  付かないまま = 直したはずの症状に戻る）。確認できなかった（`unavailable`）ときは流さない。
 - **PR は「識別（`pr: PrRef`）」と「状態（`prStatus: PrStatus`）」に分ける**。番号・URL は
   ブランチに対して不変なので `state.json` に載せ、**復元直後からグリフ無しの `#<n>` を表示**する。
   状態（マージ可否・チェック・draft）は永続せず、復元後の最初のポーリング（`prPollIntervalMs`
