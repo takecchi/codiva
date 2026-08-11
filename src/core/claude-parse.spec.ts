@@ -757,6 +757,12 @@ describe('applyClaudeMessage gates completion on in-flight sub-agent tasks', () 
     status,
   });
   const success = (result = 'all done') => ({ type: 'result', subtype: 'success', result });
+  const taskUpdated = (task_id: string, status: string) => ({
+    type: 'system',
+    subtype: 'task_updated',
+    task_id,
+    patch: { status, end_time: 1 },
+  });
 
   it('does NOT complete while a backgrounded task is still running; defers the result', () => {
     // A backgrounded Task returns its tool_result immediately, so the top-level
@@ -818,6 +824,36 @@ describe('applyClaudeMessage gates completion on in-flight sub-agent tasks', () 
     expect(state.status).toBe('failed');
     state = sdk(state, taskNotification('t1'), 3);
     expect(state.status).toBe('failed');
+  });
+
+  it('settles the gate on a terminal task_updated, without waiting for a notification', () => {
+    // 決着の信号を task_notification だけに頼ると、通知が来ないまま終わるタスク
+    // （止められた・落ちた）でゲートが解けず、セッションが永久に `running` になる。
+    // 実測では `task_updated` の patch が先に決着を伝える。
+    let state = sdk(running, taskStarted('t1'), 1);
+    state = sdk(state, success('done'), 2);
+    expect(state.status).toBe('running');
+    state = sdk(state, taskUpdated('t1', 'completed'), 3);
+    expect(state.status).toBe('completed');
+  });
+
+  it.each(['cancelled', 'failed', 'timed_out'])(
+    'treats an unknown-but-terminal task status (%s) as settled',
+    (status) => {
+      // 知らない言い回しは決着側に倒す（取りこぼすと張り付く）。
+      let state = sdk(running, taskStarted('t1'), 1);
+      state = sdk(state, success('done'), 2);
+      state = sdk(state, taskUpdated('t1', status), 3);
+      expect(state.status).toBe('completed');
+    },
+  );
+
+  it('keeps gating while task_updated only reports progress', () => {
+    let state = sdk(running, taskStarted('t1'), 1);
+    state = sdk(state, success('done'), 2);
+    state = sdk(state, taskUpdated('t1', 'in_progress'), 3);
+    expect(state.status).toBe('running');
+    expect(state.activeTaskIds).toEqual(['t1']);
   });
 
   it('deduplicates repeated task_started for the same id', () => {

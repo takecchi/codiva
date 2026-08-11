@@ -367,7 +367,8 @@ provider 非依存。
  running ──(result 受信 & 質問で終了)────────▶ awaiting_input
  running ──(result 受信 & 正常終了 & サブエージェント未稼働)──▶ completed
  running ──(result 受信 & サブエージェント稼働中)──▶ running    # 結果を deferredResult に保留し running 継続
- running ──(最後の task_notification で全タスク完了 & 保留結果あり)──▶ completed
+ running ──(最後の task 決着で全タスク完了 & 保留結果あり)──▶ completed # task_notification / 終端の task_updated
+ awaiting_* ──(裏でゲートが空になっていた状態でユーザー応答)──▶ completed # 保留していた結果を permission_resolved が確定
  running ──(result subtype がエラー系)───────▶ failed
  running ──(レート制限に到達)─────────────────▶ rate_limited # rate_limit_event(rejected) / error='rate_limit' / usage-limit result・throw
  running ──(認証切れ)───────────────────────▶ needs_login  # assistant error='authentication_failed' / is_error 付き result / auth 文言の errors[]・throw
@@ -385,14 +386,19 @@ provider 非依存。
  needs_login ──(アプリ終了 → 保存)───────────▶ interrupted # 次回起動時には再ログイン済みかもしれない
  interrupted ──(追加指示送信 / 再開アクションで resume)───────▶ running # 生存中セッションもその場で再開（consume ループ再起動）
  running/awaiting_* ──(ユーザーが Ctrl+C)─────▶ interrupted # 詳細ビューの中断。resumable（後述）
+ running/awaiting_* ──(ストリームが終端イベント無しで終わった)──▶ interrupted # 最後の砦（後述）
+ running/awaiting_* ──(エージェント切替でターンを畳んだ)──▶ interrupted # 積み残しがあれば直後に running へ戻る
 ```
 
-`interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は4つ:
+`interrupted` は「クリーンに完了していないが resume で続行できる」セッションを表す。発生元は6つ:
 (1) **通信断**（`Session.consume` の for-await が throw、または接続断を示すエラー `result`。判定は
 アダプタの `classifyError`（Claude は `core/claude-errors.ts` の `isConnectionError`）で、resume 元となる
 `sdkSessionId` がある場合のみ。無い＝init 前の早期失敗は `failed`）。(2) **応答途中の API エラー**（後述）。(3) **アプリ終了時の丸め**（`restorableStatus` が実行中/
 入力待ちを保存時に `interrupted` にする。`stop()` はメモリ上の状態を変えない）。(4) **ユーザーによる中断**
-（詳細ビューの `Ctrl+C`。後述）。いずれも `completed` と同じく idle で resumable。追加指示または
+（詳細ビューの `Ctrl+C`。後述）。(5) **ストリームの想定外終了**（後述の「最後の砦」）。
+(6) **エージェント切替**（`setAgent()` が進行中のターンを畳んだとき。`agent_switched` 自体は status を
+動かさないので、ここで止めないと積み残しが無い切替が `running` のまま張り付く）。
+いずれも `completed` と同じく idle で resumable。追加指示または
 **再開アクション（一覧/詳細の `r`）** で resume できる — 送信すると `SessionManager.send` → `Session.send`
 が（通信断で終了した）consume ループを `resume: sdkSessionId` 付きで**再起動**し、同じ SDK 会話を続行する
 （生存中セッションでもその場で再開でき、アプリ再起動を待たなくてよい）。通信断遷移時はデスクトップ通知
@@ -490,11 +496,37 @@ incomplete.`）→ それを集約する `result`（`subtype: 'success'` + `is_e
 いれば `completed` にせず結果を `deferredResult` に保留して `running` を維持する。最後のタスクが
 `task_notification` で settle し集合が空になった時点で保留結果を使って `completed` を確定する。
 形の解釈（`system/task_started` → `task_started` イベント）は `claude-parse.ts`、**ゲートそのものは
-`agent-events.ts` の `applyAgentEvent`**（`task_started` / `task_settled` / `completeWith`）にあり
+`agent-events.ts` の `applyAgentEvent`**（`task_started` / `task_settled` / `completeTurn`）にあり
 **全 provider 共通**なので、他のエージェントは「タスクが始まった/片付いた」を報告するだけでよい。
 `skip_transcript` の雑務タスクは
 ゲート対象外。`activeTaskIds` / `deferredResult` は transient で永続しない。実データは
 `__fixtures__/session-subagent.jsonl`（スパイクの `subagent` シナリオで採取）。
+
+**ゲートは「解けなくなる」方が「早すぎる完了」より危険**。ゲートが埋まったままだとセッションは
+`running` から永久に出られず（片付いたタスクへの決着通知はもう来ない）、バッジも動作時間も嘘になる。
+そのため次の 4 点で**必ず解ける**ようにしてある（どれも「ずっと Running」の実バグ）:
+
+1. **決着の信号は 2 系統見る** — `system/task_notification` に加えて、終端状態の `system/task_updated`
+   （`patch.status` が `pending` / `queued` / `created` / `in_progress` / `running` の**いずれでもない**）も
+   `task_settled` に写す。通知が来ないまま終わるタスク（止められた・落ちた）を取りこぼさないため、
+   判定は「まだ走っている状態の否定」で書く。
+2. **帰属できない決着通知はゲートを空にする**（`task_settled` の `taskId` が無い場合）。「どれか
+   分からないので何もしない」は 1 通で永久に張り付く。
+3. **保留した完了は許可/質問待ちの窓を越えて生き残る**。ゲートが空になった瞬間が `awaiting_*`
+   （バックグラウンドの Task が質問を上げている等）だと、その場では完了できず、ゲートは空なので
+   `task_settled` も二度と来ない。回答して `running` に戻る `permission_resolved` が
+   `settleDeferred` で拾って確定する。
+4. **ターンが終わる遷移では必ずゲートを捨てる**（`clearTurnState`。`interrupted` / `needs_login` /
+   `rate_limited` / `failed` / `completed`、および `agent_switched`）。残すと**次の**ターンの
+   `turn_completed` まで保留され続ける。
+
+**最後の砦（`Session.consume` の finally）**: エージェントのストリームが終端イベント
+（`turn_completed` / `turn_stopped`）を出さずに終わったら、`interrupted` に落とす。streaming input mode
+ではプロンプト源を閉じるまでストリームは終わらないのが正常なので、ここに来るのは想定外の終了
+（CLI サブプロセスが黙って落ちた・transport が EOF になった等）。状態機械には何も届かないため、
+放置すると**セッションが永久に `running`**（または応答不能な許可待ち）のまま張り付き、動作時間だけが
+増え続ける。`stop()` / `abort()` は `abortController` を abort するのでここには来ない（quiet 停止の
+意味は保たれる）。
 
 `rate_limited` は「使用量／レート制限に達して止まった」セッションを表す。`completed`/`failed` と同じく
 idle だが、エラー扱い（`failed`）にはせず「制限が解けるのを待って再開できる」状態として区別する。

@@ -6,7 +6,14 @@ import type { EffortLevel, PermissionMode } from './config';
 import { errorMessage } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
 import { isInterruptible } from './status-meta';
-import { accrueActive, initialState, reduce, USER_INTERRUPT_DETAIL } from './status-reducer';
+import {
+  AGENT_SWITCH_DETAIL,
+  accrueActive,
+  initialState,
+  reduce,
+  STREAM_ENDED_DETAIL,
+  USER_INTERRUPT_DETAIL,
+} from './status-reducer';
 import { composeSystemPrompt } from './system-prompt';
 import type {
   AgentId,
@@ -221,6 +228,13 @@ export class Session {
     }
     this.restartAfterSwitch = this.consuming;
     this.run = undefined;
+    // 畳んだのが**進行中のターン**なら、状態も「止まった」ことにする。`agent_switched`
+    // は status を動かさないので、これが無いと積み残しが無いときに `running`（や応答
+    // できない許可待ち）のまま張り付く — ストリームはもう無いので誰も先へ進めない。
+    // 積み残しがあれば直後に新しいエージェントが起動して `running` へ戻る。
+    if (isInterruptible(this.state.status)) {
+      this.dispatch({ kind: 'interrupted', error: AGENT_SWITCH_DETAIL, at: this.now() });
+    }
     this.adapter = adapter;
     // provider ごとにモデル名の名前空間は別なので、切替前の既定/override を渡さない。
     // `/model` で明示的に選び直すまでは切替先 CLI の既定を使う。
@@ -548,11 +562,20 @@ export class Session {
       // 切替のために畳んだループだった場合、その間に送られた指示がキューへ積まれた
       // ままになっている（`ensureConsuming` は consuming 中だったので何もしていない）。
       // ここで新しいエージェントを起こして拾い直す。
-      if (this.restartAfterSwitch) {
-        this.restartAfterSwitch = false;
-        if (this.inputQueue.pending > 0) {
-          this.ensureConsuming();
-        }
+      const switched = this.restartAfterSwitch;
+      this.restartAfterSwitch = false;
+      if (switched && this.inputQueue.pending > 0) {
+        this.ensureConsuming();
+      } else if (!this.abortController.signal.aborted && isInterruptible(this.state.status)) {
+        // **最後の砦**: ストリームが終端イベント（`turn_completed` / `turn_stopped`）を
+        // 出さずに終わった。streaming input mode ではプロンプト源を閉じるまで終わらない
+        // のが正常なので、ここに来るのは想定外の終了（CLI が黙って落ちた等）。状態機械
+        // には何も届いていないため、放っておくと**セッションが永久に `running`**（または
+        // 応答できない許可待ち）のまま張り付き、動作時間だけが増え続ける。
+        // 失敗ではなく resumable な `interrupted` に落として、追加指示 / `Ctrl+R` で
+        // 続けられるようにする（`stop()` / `abort()` は controller を abort するので
+        // ここには来ない = quiet 停止の意味は保たれる）。
+        this.dispatch({ kind: 'interrupted', error: STREAM_ENDED_DETAIL, at: this.now() });
       }
     }
   }

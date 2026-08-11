@@ -5,7 +5,7 @@ import { NO_CAPABILITIES } from '@/core/agent-ports';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/claude-adapter';
 import { type PermissionPolicy, Session } from '@/core/session';
-import { initialState } from '@/core/status-reducer';
+import { AGENT_SWITCH_DETAIL, initialState, STREAM_ENDED_DETAIL } from '@/core/status-reducer';
 import { SHARED_IGNORED_FILES_NOTICE } from '@/core/system-prompt';
 import type { AgentId, CreateSessionInput } from '@/core/types';
 
@@ -453,6 +453,10 @@ describe('Session', () => {
     // (ended) consume loop with resume=sdkSessionId, continuing the SDK session.
     const optionsSeen: Options[] = [];
     let call = 0;
+    // The resumed query must stay OPEN with no further output (streaming input
+    // mode): a stream that just ends is an unexpected shutdown and `consume()`
+    // deliberately lands such a session back in `interrupted`.
+    const open = new AsyncQueue<SDKMessage>();
     const queryFn = (({ options }: { options: Options }) => {
       optionsSeen.push(options);
       const n = call++;
@@ -461,7 +465,7 @@ describe('Session', () => {
           yield { type: 'system', subtype: 'init', session_id: 'sdk-9' } as unknown as SDKMessage;
           throw new Error('terminated');
         }
-        // The resumed query stays open (streaming input) with no further output.
+        yield* open;
       })() as unknown as Query & { interrupt: () => Promise<void> };
       gen.interrupt = async () => {};
       return gen;
@@ -480,6 +484,64 @@ describe('Session', () => {
     // The restarted query resumed the prior SDK conversation.
     expect(optionsSeen[1]?.resume).toBe('sdk-9');
     expect(session.getState().messages.at(-1)?.text).toBe('continue');
+  });
+
+  it('marks the session interrupted when the stream ends without finishing the turn', async () => {
+    // 「ずっと Running」の再現: ストリームが終端イベント（result / error）を出さずに
+    // 終わると、状態機械には何も届かないのでセッションが永久に `running` のまま
+    // 張り付く（動作時間だけ増え続ける）。失敗ではないので resumable な
+    // `interrupted` に落とし、追加指示で続けられるようにする。
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    expect(session.getState().status).toBe('running');
+
+    fake.end(); // ターンの結果を出さずにストリームが終わる
+    await tick();
+    expect(session.getState().status).toBe('interrupted');
+    // 失敗ではない（`error` は立てず、ログに理由だけ残す）。
+    expect(session.getState().error).toBeUndefined();
+    expect(session.getState().messages.at(-1)?.text).toBe(STREAM_ENDED_DETAIL);
+  });
+
+  it('rescues a session stuck awaiting a permission the dead stream can never answer', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      policy: () => 'ask',
+      now: () => 1,
+    });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    const decision = fake.call('Bash', { command: 'ls' });
+    await tick();
+    expect(session.getState().status).toBe('awaiting_permission');
+
+    fake.end();
+    await tick();
+    expect(session.getState().status).toBe('interrupted');
+    expect(session.getState().pendingPermission).toBeUndefined();
+    // 未応答の tool_use で終わる transcript は後の resume を壊すので deny で閉じる。
+    expect(await decision).toMatchObject({ behavior: 'deny' });
+  });
+
+  it('stop() keeps the status untouched even though the stream then ends', async () => {
+    // quiet 停止（アプリ終了）は状態を変えない契約なので、最後の砦は発火しない
+    // — 保存時に `restoreAs` が running → interrupted へ丸める。
+    const fake = makeFakeQuery();
+    const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+
+    session.stop();
+    fake.end();
+    await tick();
+    expect(session.getState().status).toBe('running');
   });
 
   it('an expired login marks the session needs_login, even before init', async () => {
@@ -714,9 +776,14 @@ describe('Session', () => {
 
   it('a restored session stays idle until send(), then resumes with the SDK session id', async () => {
     let seen: Options | undefined;
+    // Stays open with no output (streaming input mode) — an immediately ending
+    // stream would be an unexpected shutdown and land in `interrupted`.
+    const open = new AsyncQueue<SDKMessage>();
     const queryFn = (({ options }: { options: Options }) => {
       seen = options;
-      const gen = (async function* () {})() as unknown as Query & {
+      const gen = (async function* () {
+        yield* open;
+      })() as unknown as Query & {
         interrupt: () => Promise<void>;
       };
       gen.interrupt = async () => {};
@@ -916,6 +983,29 @@ describe('Session.setAgent', () => {
     expect(interrupts).toBe(1);
     expect(b.seen).toEqual(['follow up']);
     expect(seenByA).toEqual(['do the thing']);
+  });
+
+  it('folds an in-flight turn into interrupted instead of leaving it "Running"', async () => {
+    // 切替はストリームを畳むが `agent_switched` は status を動かさない。積み残しが
+    // 無いと新しいエージェントは起動しないので、これが無いと誰も先へ進めないまま
+    // `running` の表示だけが残る。
+    const a = recorder('claude');
+    const b = recorder('codex');
+    const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+    expect(session.getState().status).toBe('running');
+
+    session.setAgent(b.adapter);
+    await tick();
+    expect(session.getState().status).toBe('interrupted');
+    expect(session.getState().messages.at(-1)?.text).toBe(AGENT_SWITCH_DETAIL);
+
+    // 再開（追加指示）は新しいエージェントで走る。
+    session.send('now you');
+    await tick();
+    expect(b.seen).toEqual(['now you']);
+    expect(session.getState().status).toBe('running');
   });
 
   it('is a no-op when the agent is unchanged (keeps the running stream)', async () => {

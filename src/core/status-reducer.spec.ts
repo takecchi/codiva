@@ -76,6 +76,45 @@ describe('control events', () => {
     expect(state.pendingPermission).toBeUndefined();
   });
 
+  it('permission_resolved confirms a completion that was held during the prompt', () => {
+    // 「ずっと Running」の再現: サブエージェントの完了ゲートが空になったのが
+    // 許可/質問待ちの最中だと、その場では完了できない（`applyAgentEvent` は
+    // `running` のときだけ確定する）。ゲートは空なので `task_settled` も
+    // もう来ない — 回答して `running` に戻るここで拾わないと完了が永久に失われる。
+    const req: PermissionRequest = { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' };
+    let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
+    state = { ...state, activeTaskIds: [], deferredResult: { at: 2100, resultText: 'done' } };
+    state = reduce(state, { kind: 'permission_resolved', at: 2200 });
+    expect(state.status).toBe('completed');
+    expect(state.finishedAt).toBe(2200);
+    expect(state.deferredResult).toBeUndefined();
+    expect(state.messages.at(-1)?.text).toBe('done');
+  });
+
+  it('permission_resolved stays running while sub-agent tasks are still in flight', () => {
+    const req: PermissionRequest = { id: 'p1', toolName: 'Bash', input: {}, kind: 'tool' };
+    let state = reduce(initialState(BASE), { kind: 'permission_request', request: req, at: 2000 });
+    state = { ...state, activeTaskIds: ['t1'], deferredResult: { at: 2100, resultText: 'done' } };
+    state = reduce(state, { kind: 'permission_resolved', at: 2200 });
+    expect(state.status).toBe('running');
+    expect(state.deferredResult?.resultText).toBe('done');
+  });
+
+  it('agent_switched drops the sub-agent completion gate (it is per-turn, per-provider)', () => {
+    const state = reduce(
+      {
+        ...initialState(BASE),
+        status: 'interrupted',
+        activeTaskIds: ['t1'],
+        deferredResult: { at: 1, resultText: 'x' },
+      },
+      { kind: 'agent_switched', agent: 'codex', at: 2 },
+    );
+    expect(state.agent).toBe('codex');
+    expect(state.activeTaskIds).toBeUndefined();
+    expect(state.deferredResult).toBeUndefined();
+  });
+
   it('user_input resumes a completed session and clears finishedAt', () => {
     let state: SessionState = { ...initialState(BASE), status: 'completed', finishedAt: 5000 };
     state = reduce(state, { kind: 'user_input', text: 'do more', at: 6000 });
