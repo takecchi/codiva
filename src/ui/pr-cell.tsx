@@ -37,6 +37,36 @@ export function prStatusBadge(status: PrStatus): { char: string; color: string }
 }
 
 /**
+ * Stand-in for the status glyph while the status itself isn't known: `⋯` for a lookup
+ * in flight, `?` for one that couldn't answer (rate limit / offline / not logged in).
+ *
+ * Shown next to a known `#<n>` too, not just in place of one. A number with nothing
+ * beside it reads as "this PR has no state worth showing", so a PR whose state we
+ * never manage to fetch looked identical to a quiet, healthy one — with no hint that
+ * anything was still pending.
+ */
+const LookupMark: FC<{ lookup?: PrLookupState; pad?: boolean }> = ({ lookup, pad }) => {
+  const tail = pad ? ' ' : '';
+  if (lookup === 'loading') {
+    return (
+      <Text dimColor>
+        {glyph.prLoading}
+        {tail}
+      </Text>
+    );
+  }
+  if (lookup === 'error') {
+    return (
+      <Text color={theme.warn}>
+        {glyph.prUnknown}
+        {tail}
+      </Text>
+    );
+  }
+  return null;
+};
+
+/**
  * The list row's trailing PR cell, drawn from whatever is known so far — the two
  * halves arrive (and expire) independently:
  *
@@ -67,7 +97,11 @@ export const PrCell: FC<{
       // = 1 行が前提）以降の行のクリックが全部ズレる。狭い端末で列が縮んだときは
       // 番号が切れるほうがまし（他の列も同じ方針）。
       <Text wrap="truncate-end">
-        {badge ? <Text color={badge.color}>{badge.char} </Text> : null}
+        {badge ? (
+          <Text color={badge.color}>{badge.char} </Text>
+        ) : (
+          <LookupMark lookup={lookup} pad />
+        )}
         <Text color={status?.isDraft ? theme.dim : theme.accent} underline>
           #{pr.number}
         </Text>
@@ -75,13 +109,7 @@ export const PrCell: FC<{
       </Text>
     );
   }
-  if (lookup === 'loading') {
-    return <Text dimColor>{glyph.prLoading}</Text>;
-  }
-  if (lookup === 'error') {
-    return <Text color={theme.warn}>{glyph.prUnknown}</Text>;
-  }
-  return null;
+  return <LookupMark lookup={lookup} />;
 };
 
 /** 詳細ビューの 1 行に収める PR の区切り（数字が続くので中黒ではなく点で分ける）。 */

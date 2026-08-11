@@ -5,6 +5,7 @@ import {
   type PrCheckRun,
   type PrChecksState,
   type PrInfo,
+  type PrLookupOptions,
   type PrLookupResult,
   type PrLookupTarget,
   type PrMergeStatus,
@@ -279,11 +280,15 @@ async function currentBranch(cwd: string, exec: ExecLike): Promise<string | unde
   }
 }
 
-/** One `gh pr view` for a single branch, classified into a lookup result. */
-async function viewPr(cwd: string, branch: string, exec: ExecLike): Promise<PrLookupResult> {
+/**
+ * One `gh pr view` for a single ref, classified into a lookup result. `ref` is a
+ * branch name or a PR number — `gh pr view` accepts both, which is what lets us
+ * ask about a PR whose head branch this worktree doesn't have checked out.
+ */
+async function viewPr(cwd: string, ref: string, exec: ExecLike): Promise<PrLookupResult> {
   let stdout: string;
   try {
-    ({ stdout } = await exec('gh', ['pr', 'view', branch, '--json', PR_VIEW_FIELDS], { cwd }));
+    ({ stdout } = await exec('gh', ['pr', 'view', ref, '--json', PR_VIEW_FIELDS], { cwd }));
   } catch (err) {
     const text = errorText(err);
     return meansNoPr(text)
@@ -301,12 +306,18 @@ async function viewPr(cwd: string, branch: string, exec: ExecLike): Promise<PrLo
 }
 
 /**
- * Resolve the open PR for a session's worktree via the GitHub CLI. Tries the
- * worktree's *current* HEAD branch first (where the work and its PR actually live)
- * and falls back to the recorded `branch`, so the `#<n>` badge still shows when the
- * session opened its PR from a branch other than the original `codiva/<slug>` one.
+ * Resolve the PR to track for a session's worktree via the GitHub CLI. Tries the
+ * worktree's *current* HEAD branch first (where the work and its PR actually live),
+ * then the recorded `branch`, then `opts.knownPr` — the number of a PR we already
+ * associate with this session.
  *
- * Never throws. Distinguishes "this branch has no PR" (`absent`) from "`gh`
+ * The number is the only way to reach a PR the session opened *itself* on a branch
+ * that isn't checked out here (`gh pr create` on a throwaway `feat/…` branch, then
+ * back to the session branch): no branch name resolves it, so its state stayed
+ * unknown forever and the list showed a bare `#<n>` with no glyph. It is tried
+ * *last* so a newer PR on the session's own branch still wins.
+ *
+ * Never throws. Distinguishes "no PR for this session" (`absent`) from "`gh`
  * couldn't tell us" (`unavailable`) — callers must keep the previously known PR in
  * the latter case, otherwise a rate limit or a dropped connection silently erases
  * the badge until the next successful poll.
@@ -314,11 +325,15 @@ async function viewPr(cwd: string, branch: string, exec: ExecLike): Promise<PrLo
 export async function lookupPr(
   cwd: string,
   branch: string,
+  opts: PrLookupOptions = {},
   exec: ExecLike = execFileAsync,
 ): Promise<PrLookupResult> {
   const head = await currentBranch(cwd, exec);
   // De-dup: only fall through to the recorded branch when HEAD differs from it.
   const candidates = head && head !== branch ? [head, branch] : [branch];
+  if (opts.knownPr !== undefined) {
+    candidates.push(String(opts.knownPr));
+  }
   let lastFailure: PrLookupResult | undefined;
   for (const candidate of candidates) {
     const result = await viewPr(cwd, candidate, exec);
@@ -385,9 +400,11 @@ function indexByBranch(entries: readonly PrListEntry[]): Map<string, PrListEntry
  * GitHub repo, so any session's worktree can host the one list call.
  *
  * Failure handling matches {@link lookupPr}: a failed list marks *every* target
- * `unavailable` (never `absent`), so no badge is cleared by a rate limit. If the
- * list came back truncated and a target whose PR we already knew isn't in it, we
- * verify that one session with a targeted view rather than declaring it gone.
+ * `unavailable` (never `absent`), so no badge is cleared by a rate limit. A target
+ * whose PR we already knew but that no branch in the page matches is verified with a
+ * targeted view rather than declared gone — the page may have been truncated before
+ * reaching it, or its head branch may be one this worktree doesn't have (a PR the
+ * session opened itself), and neither means the PR disappeared.
  */
 export async function lookupPrs(
   targets: readonly PrLookupTarget[],
@@ -414,14 +431,10 @@ export async function lookupPrs(
     return results;
   }
   let entries: PrListEntry[];
-  let truncated: boolean;
   try {
     const json: unknown = JSON.parse(stdout);
     const rows = Array.isArray(json) ? json : [];
     entries = rows.map(toListEntry).filter((e): e is PrListEntry => e !== undefined);
-    // A full page means older PRs were cut off; only then can a known PR be missing
-    // for a reason other than "it's gone".
-    truncated = rows.length >= limit;
   } catch {
     for (const target of targets) {
       results.set(target.id, { kind: 'unavailable', reason: 'unknown' });
@@ -436,8 +449,15 @@ export async function lookupPrs(
     const match = (head ? byBranch.get(head) : undefined) ?? byBranch.get(target.branch);
     if (match) {
       results.set(target.id, { kind: 'found', pr: match.pr });
-    } else if (target.knownPr !== undefined && truncated) {
-      results.set(target.id, await lookupPr(target.cwd, target.branch, exec));
+    } else if (target.knownPr !== undefined) {
+      // We know this session has a PR, and no branch in the page matched it: the page
+      // may have been cut short, or the PR's head branch may not be one we can see
+      // from here (the session opened it on a branch it no longer has checked out).
+      // Ask about that PR by number instead of reporting the badge gone.
+      results.set(
+        target.id,
+        await lookupPr(target.cwd, target.branch, { knownPr: target.knownPr }, exec),
+      );
     } else {
       results.set(target.id, { kind: 'absent' });
     }
@@ -461,15 +481,19 @@ export async function createPr(
   } catch {
     // PR may already exist, or `gh` is unavailable — fall through to lookup.
   }
-  const result = await lookupPr(cwd, branch, exec);
+  const result = await lookupPr(cwd, branch, {}, exec);
   return result.kind === 'found' ? result.pr : undefined;
 }
 
-/** Mark a draft PR ready for review (`gh pr ready`). Throws on failure. */
+/**
+ * Mark a draft PR ready for review (`gh pr ready`). Throws on failure.
+ * `ref` is a branch name or a PR number — the caller passes the number of the PR it
+ * actually looked up, which may live on a branch this worktree doesn't have.
+ */
 export async function markPrReady(
   cwd: string,
-  branch: string,
+  ref: string,
   exec: ExecLike = execFileAsync,
 ): Promise<void> {
-  await exec('gh', ['pr', 'ready', branch], { cwd });
+  await exec('gh', ['pr', 'ready', ref], { cwd });
 }

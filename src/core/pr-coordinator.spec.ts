@@ -4,6 +4,7 @@ import { MAX_AUTO_RECOVERY_ATTEMPTS, type RecoveryKind } from './pr-recovery';
 import { PR_BATCH_MIN_SESSIONS, PR_POLL_SOON_MS, PR_POLL_STABLE_MS } from './pr-refresh';
 import type {
   PrAutomation,
+  PrLookup,
   PrLookupTarget,
   SessionHandle,
   WorktreeMeta,
@@ -100,7 +101,7 @@ interface Harness {
  * result unless the fake decides per-branch.
  */
 function harness(
-  lookup: (cwd: string, branch: string) => Promise<PrLookupResult>,
+  lookup: PrLookup,
   over: {
     ids?: string[];
     state?: Partial<SessionState>;
@@ -176,6 +177,38 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(h.calls()).toEqual(['prLookup:loading', 'setPr:#42']);
     expect(h.state().pr).toEqual({ number: 42, url: 'u' });
     expect(h.state().prLookup).toBeUndefined();
+  });
+
+  // A PR the session opened itself (`gh pr create` on its own branch) is only
+  // reachable by number: nothing in the worktree points at its head branch. Without
+  // the number the lookup answered `absent` forever, so the row showed a bare `#<n>`
+  // with no state — and, having been "answered", not even a loading mark.
+  it('asks about a PR the session opened itself, and adopts it as the tracked PR', async () => {
+    const lookup = vi.fn<PrLookup>(async (_cwd, _branch, opts) =>
+      opts?.knownPr === 109
+        ? found({ ...PR, number: 109, mergeStatus: 'merged' })
+        : { kind: 'absent' },
+    );
+    const h = harness(lookup, { state: { extraPrs: [{ number: 109, url: 'u109' }] } });
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: 109 });
+    expect(h.state().pr).toEqual({ number: 109, url: 'u' });
+    expect(h.state().prStatus?.mergeStatus).toBe('merged');
+  });
+
+  it('keeps asking by number once that PR is the tracked one', async () => {
+    const lookup = vi.fn<PrLookup>(async () => found({ ...PR, number: 109 }));
+    const h = harness(lookup, { state: { pr: { number: 109, url: 'u109' } } });
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: 109 });
+  });
+
+  // The number alone says nothing about mergeability or CI, so the row is still
+  // waiting on an answer — restored sessions start exactly here.
+  it('marks the cell loading when the number is known but its status is not', async () => {
+    const h = harness(async () => found(PR), { state: { pr: { number: 42, url: 'u' } } });
+    await h.refresh();
+    expect(h.calls()).toEqual(['prLookup:loading', 'setPr:#42']);
   });
 
   it('records `absent` as "no PR" (clearing a stale badge)', async () => {
@@ -319,7 +352,8 @@ describe('PrCoordinator.refreshPrs', () => {
       prAutomation: { createPr: async () => undefined, markReady },
     });
     await h.refresh();
-    expect(markReady).toHaveBeenCalledWith('/wt/s1', 'codiva/s1');
+    // Addressed by number: the PR may not live on the session's own branch.
+    expect(markReady).toHaveBeenCalledWith('/wt/s1', '42');
     expect(h.state().prStatus?.isDraft).toBe(false);
   });
 
@@ -447,6 +481,20 @@ describe('PrCoordinator batching (one `gh pr list` for many sessions)', () => {
     expect(b.seen[0]).toEqual(
       ids.map((id) => ({ id, cwd: `/wt/${id}`, branch: `codiva/${id}`, knownPr: 42 })),
     );
+  });
+
+  it('passes the number of a PR the session opened itself', async () => {
+    const b = batchHarness((targets) => new Map(targets.map((t) => [t.id, { kind: 'absent' }])), {
+      state: {
+        extraPrs: [
+          { number: 7, url: 'u7' },
+          { number: 9, url: 'u9' },
+        ],
+      },
+    });
+    await b.refresh();
+    // The one the list shows as primary (the newest) is the one worth resolving.
+    expect(b.seen[0]?.[0]?.knownPr).toBe(9);
   });
 
   it('omits knownPr for sessions with no PR yet', async () => {

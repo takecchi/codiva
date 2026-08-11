@@ -1,3 +1,4 @@
+import { primaryPr } from './pr-detect';
 import {
   MAX_AUTO_RECOVERY_ATTEMPTS,
   prRecovered,
@@ -58,6 +59,22 @@ export const PR_LOOKUP_BACKOFF_MS = 5 * 60_000;
 
 /** Failures worth backing off from; the rest are transient enough to retry at once. */
 const BACKOFF_REASONS = new Set<PrUnavailableReason>(['rate_limit', 'cli', 'auth']);
+
+/**
+ * The PR number to hand the lookup so it can ask about *this* PR directly.
+ *
+ * `primaryPr`, not `state.pr`: the PR shown for a session is often one the session
+ * opened itself (`extraPrs`, detected from its `gh pr create`), and that PR's head
+ * branch is usually a throwaway `feat/…` the worktree no longer has checked out. With
+ * only branch names to ask by, such a PR could never be resolved — so its state (and
+ * with it the merge/CI glyph) stayed unknown for the whole life of the session, while
+ * the number sat there looking tracked. Passing the number promotes it to the
+ * session's tracked PR on the next poll (the reducer folds it out of `extraPrs`).
+ */
+function knownPrOf(state: SessionState): { knownPr?: number } {
+  const pr = primaryPr(state);
+  return pr ? { knownPr: pr.number } : {};
+}
 
 /** A session picked for this refresh cycle, with everything needed to resolve it. */
 interface RefreshTarget {
@@ -208,12 +225,14 @@ export class PrCoordinator {
   }
 
   /**
-   * Show "looking…" only while there's nothing else to show, and only until the
-   * first answered lookup: re-marking it on later ticks would flicker the cell
-   * (⋯ → empty for a branch with no PR, ⋯ → ? after a failure).
+   * Show "looking…" while the cell has nothing definite to show — no PR at all, or a
+   * number (restored from disk / just created) whose state we haven't fetched yet.
+   * Only until the first answered lookup: re-marking it on later ticks would flicker
+   * the cell (⋯ → empty for a branch with no PR, ⋯ → ? after a failure).
    */
   private markLooking({ id, state, session }: RefreshTarget): void {
-    if (!state.pr && state.prLookup === undefined && !this.answered.has(id)) {
+    const unknown = !state.pr || !state.prStatus;
+    if (unknown && state.prLookup === undefined && !this.answered.has(id)) {
       session.setPrLookup('loading');
     }
   }
@@ -230,7 +249,7 @@ export class PrCoordinator {
           id,
           cwd: meta.worktree.path,
           branch: state.branch,
-          ...(state.pr ? { knownPr: state.pr.number } : {}),
+          ...knownPrOf(state),
         })),
       );
     } catch {
@@ -254,7 +273,11 @@ export class PrCoordinator {
   ): Promise<PrUnavailableReason | undefined> {
     let result: PrLookupResult;
     try {
-      result = await lookup(target.meta.worktree.path, target.state.branch);
+      result = await lookup(
+        target.meta.worktree.path,
+        target.state.branch,
+        knownPrOf(target.state),
+      );
     } catch {
       // A lookup port that rejects rather than classifying: same handling as
       // `unavailable` — keep whatever we knew and flag the cell.
@@ -268,7 +291,7 @@ export class PrCoordinator {
    * so the caller can decide whether to back the whole poll off.
    */
   private async applyResult(
-    { id, state, meta, session }: RefreshTarget,
+    { id, meta, session }: RefreshTarget,
     result: PrLookupResult,
   ): Promise<PrUnavailableReason | undefined> {
     if (result.kind === 'unavailable') {
@@ -286,8 +309,11 @@ export class PrCoordinator {
     try {
       // Auto-ready: once a draft PR's checks pass, flip it to ready-for-review.
       // `checks` came along with the PR payload, so this costs no extra lookup.
+      // Addressed by *number*, not by `state.branch`: the PR we just resolved may be
+      // one the session opened on another branch, and `gh pr ready <branch>` would
+      // then either fail or (worse) ready an unrelated PR on the session branch.
       if (this.deps.autoPr && this.deps.prAutomation && pr?.isDraft && pr.checks === 'passing') {
-        await this.deps.prAutomation.markReady(meta.worktree.path, state.branch);
+        await this.deps.prAutomation.markReady(meta.worktree.path, String(pr.number));
         session.setPr({ ...pr, isDraft: false });
       }
     } catch {

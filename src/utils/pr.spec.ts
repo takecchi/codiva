@@ -30,7 +30,7 @@ describe('lookupPr', () => {
             }),
           },
     );
-    await expect(lookupPr('/wt/a', 'codiva/feature', exec)).resolves.toEqual({
+    await expect(lookupPr('/wt/a', 'codiva/feature', {}, exec)).resolves.toEqual({
       kind: 'found',
       pr: {
         number: 7,
@@ -58,7 +58,7 @@ describe('lookupPr', () => {
             }),
           },
     );
-    await expect(lookupPr('/wt/a', 'codiva/feature', exec)).resolves.toEqual({
+    await expect(lookupPr('/wt/a', 'codiva/feature', {}, exec)).resolves.toEqual({
       kind: 'found',
       pr: {
         number: 7,
@@ -90,7 +90,7 @@ describe('lookupPr', () => {
             }),
           },
     );
-    const result = await lookupPr('/wt', 'codiva/x', exec);
+    const result = await lookupPr('/wt', 'codiva/x', {}, exec);
     expect(result.kind === 'found' && result.pr.mergeStatus).toBe(c.expected);
   });
 
@@ -127,7 +127,7 @@ describe('lookupPr', () => {
         ? { stdout: 'codiva/x\n' }
         : { stdout: JSON.stringify({ number: 1, url: 'u', statusCheckRollup: c.rollup }) },
     );
-    const result = await lookupPr('/wt', 'codiva/x', exec);
+    const result = await lookupPr('/wt', 'codiva/x', {}, exec);
     expect(result.kind === 'found' && result.pr.checks).toBe(c.expected);
   });
 
@@ -139,7 +139,7 @@ describe('lookupPr', () => {
           ? { stdout: 'codiva/x\n' }
           : { stdout: JSON.stringify({ number: 1, url: 'u', statusCheckRollup: rollup }) },
       );
-      const result = await lookupPr('/wt', 'codiva/x', exec);
+      const result = await lookupPr('/wt', 'codiva/x', {}, exec);
       return result.kind === 'found' ? result.pr : undefined;
     }
 
@@ -209,7 +209,7 @@ describe('lookupPr', () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'feat/new-thing\n' } : { stdout: ghPr(7) },
     );
-    const result = await lookupPr('/wt/a', 'codiva/feature', exec);
+    const result = await lookupPr('/wt/a', 'codiva/feature', {}, exec);
     expect(result.kind === 'found' && result.pr.number).toBe(7);
     expect(exec).toHaveBeenCalledWith('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: '/wt/a',
@@ -225,7 +225,7 @@ describe('lookupPr', () => {
       if (args[2] === 'feat/new-thing') throw ghError(NO_PR);
       return { stdout: ghPr(5) };
     });
-    const result = await lookupPr('/wt', 'codiva/feature', exec);
+    const result = await lookupPr('/wt', 'codiva/feature', {}, exec);
     expect(result.kind === 'found' && result.pr.number).toBe(5);
     expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/feature', '--json', FIELDS], {
       cwd: '/wt',
@@ -236,7 +236,7 @@ describe('lookupPr', () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'codiva/feature\n' } : { stdout: ghPr(3) },
     );
-    const result = await lookupPr('/wt', 'codiva/feature', exec);
+    const result = await lookupPr('/wt', 'codiva/feature', {}, exec);
     expect(result.kind === 'found' && result.pr.number).toBe(3);
     expect(exec.mock.calls.filter(([file]) => file === 'gh')).toHaveLength(1);
   });
@@ -246,7 +246,7 @@ describe('lookupPr', () => {
       if (file === 'git') throw new Error('fatal: not a git repository');
       return { stdout: ghPr(7) };
     });
-    const result = await lookupPr('/wt/a', 'codiva/feature', exec);
+    const result = await lookupPr('/wt/a', 'codiva/feature', {}, exec);
     expect(result.kind === 'found' && result.pr.number).toBe(7);
     expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/feature', '--json', FIELDS], {
       cwd: '/wt/a',
@@ -257,7 +257,7 @@ describe('lookupPr', () => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'HEAD\n' } : { stdout: ghPr(9) },
     );
-    const result = await lookupPr('/wt', 'codiva/x', exec);
+    const result = await lookupPr('/wt', 'codiva/x', {}, exec);
     expect(result.kind === 'found' && result.pr.number).toBe(9);
     expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', 'codiva/x', '--json', FIELDS], {
       cwd: '/wt',
@@ -269,7 +269,39 @@ describe('lookupPr', () => {
       if (file === 'git') return { stdout: 'feat/x\n' };
       throw ghError(NO_PR);
     });
-    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({ kind: 'absent' });
+    await expect(lookupPr('/wt', 'codiva/x', {}, exec)).resolves.toEqual({ kind: 'absent' });
+  });
+
+  // The session opened its own PR from a throwaway branch it no longer has checked
+  // out: no branch name resolves it, so the number is the only handle on its state.
+  it('falls back to the known PR number when no branch has a PR', async () => {
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/x\n' };
+      if (args[2] === '42') return { stdout: ghPr(42) };
+      throw ghError(NO_PR);
+    });
+    const result = await lookupPr('/wt', 'codiva/x', { knownPr: 42 }, exec);
+    expect(result.kind === 'found' && result.pr.number).toBe(42);
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'view', '42', '--json', FIELDS], { cwd: '/wt' });
+  });
+
+  it('prefers a branch PR over the known number (a newer PR on the branch wins)', async () => {
+    const exec = vi.fn<ExecLike>(async (file) =>
+      file === 'git' ? { stdout: 'codiva/x\n' } : { stdout: ghPr(9) },
+    );
+    const result = await lookupPr('/wt', 'codiva/x', { knownPr: 42 }, exec);
+    expect(result.kind === 'found' && result.pr.number).toBe(9);
+    expect(exec.mock.calls.filter(([file]) => file === 'gh')).toHaveLength(1);
+  });
+
+  it('reports `absent` when even the known PR number is gone', async () => {
+    const exec = vi.fn<ExecLike>(async (file) => {
+      if (file === 'git') return { stdout: 'codiva/x\n' };
+      throw ghError(NO_PR);
+    });
+    await expect(lookupPr('/wt', 'codiva/x', { knownPr: 42 }, exec)).resolves.toEqual({
+      kind: 'absent',
+    });
   });
 
   // The whole point of the three-way result: a failure must never masquerade as
@@ -303,7 +335,7 @@ describe('lookupPr', () => {
       if (file === 'git') return { stdout: 'codiva/x\n' };
       throw ghError(c.stderr);
     });
-    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({
+    await expect(lookupPr('/wt', 'codiva/x', {}, exec)).resolves.toEqual({
       kind: 'unavailable',
       reason: c.reason satisfies PrUnavailableReason,
     });
@@ -314,7 +346,7 @@ describe('lookupPr', () => {
       if (file === 'git') return { stdout: 'codiva/x\n' };
       throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
     });
-    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({
+    await expect(lookupPr('/wt', 'codiva/x', {}, exec)).resolves.toEqual({
       kind: 'unavailable',
       reason: 'cli',
     });
@@ -328,7 +360,7 @@ describe('lookupPr', () => {
       if (args[2] === 'feat/x') throw ghError('API rate limit exceeded');
       throw ghError(NO_PR);
     });
-    await expect(lookupPr('/wt', 'codiva/x', exec)).resolves.toEqual({
+    await expect(lookupPr('/wt', 'codiva/x', {}, exec)).resolves.toEqual({
       kind: 'unavailable',
       reason: 'rate_limit',
     });
@@ -338,7 +370,7 @@ describe('lookupPr', () => {
     const bad = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'codiva/x\n' } : { stdout: '{ not json' },
     );
-    await expect(lookupPr('/wt', 'codiva/x', bad)).resolves.toEqual({
+    await expect(lookupPr('/wt', 'codiva/x', {}, bad)).resolves.toEqual({
       kind: 'unavailable',
       reason: 'unknown',
     });
@@ -346,7 +378,7 @@ describe('lookupPr', () => {
     const partial = vi.fn<ExecLike>(async (file) =>
       file === 'git' ? { stdout: 'codiva/x\n' } : { stdout: JSON.stringify({ number: 3 }) },
     );
-    await expect(lookupPr('/wt', 'codiva/x', partial)).resolves.toEqual({
+    await expect(lookupPr('/wt', 'codiva/x', {}, partial)).resolves.toEqual({
       kind: 'unavailable',
       reason: 'unknown',
     });
@@ -490,12 +522,32 @@ describe('lookupPrs (batched)', () => {
     expect(exec.mock.calls.filter(([, a]) => a[1] === 'view')).toHaveLength(1);
   });
 
-  it('reports absent (no extra call) when the page was not truncated', async () => {
-    const exec = listExec([row('other/1', 100)]);
+  // A PR the session opened itself lives on a branch this worktree doesn't have, so
+  // no row in the page can match it however short the page is. Reporting `absent`
+  // here is what used to strand such a PR without any state at all.
+  it('verifies a known PR by number when no branch in the page matches it', async () => {
+    const exec = vi.fn<ExecLike>(async (file, args) => {
+      if (file === 'git') return { stdout: 'codiva/a\n' };
+      if (args[1] === 'list') return { stdout: JSON.stringify([row('other/1', 100)]) };
+      if (args[2] === '7')
+        return { stdout: JSON.stringify({ number: 7, url: 'u', state: 'MERGED' }) };
+      throw ghError(NO_PR); // the session's branch itself has no PR
+    });
     const results = await lookupPrs(
       [{ id: 'a', cwd: '/wt/a', branch: 'codiva/a', knownPr: 7 }],
       exec,
     );
+    expect(results.get('a')).toEqual({
+      kind: 'found',
+      pr: { number: 7, url: 'u', mergeStatus: 'merged', checks: 'none' },
+    });
+    // Asked about PR 7 itself once the branches came back empty.
+    expect(exec.mock.calls.some(([, a]) => a[1] === 'view' && a[2] === '7')).toBe(true);
+  });
+
+  it('reports absent (no extra call) for a session with no PR to verify', async () => {
+    const exec = listExec([row('other/1', 100)]);
+    const results = await lookupPrs([{ id: 'a', cwd: '/wt/a', branch: 'codiva/a' }], exec);
     expect(results.get('a')).toEqual({ kind: 'absent' });
     expect(exec.mock.calls.filter(([, a]) => a[1] === 'view')).toHaveLength(0);
   });
@@ -554,9 +606,9 @@ describe('createPr', () => {
 });
 
 describe('markPrReady', () => {
-  it('runs `gh pr ready <branch>`', async () => {
+  it.each(['codiva/feature', '42'])('runs `gh pr ready %s`', async (ref) => {
     const exec = vi.fn<ExecLike>(async () => ({ stdout: '' }));
-    await markPrReady('/wt', 'codiva/feature', exec);
-    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'ready', 'codiva/feature'], { cwd: '/wt' });
+    await markPrReady('/wt', ref, exec);
+    expect(exec).toHaveBeenCalledWith('gh', ['pr', 'ready', ref], { cwd: '/wt' });
   });
 });

@@ -1056,7 +1056,8 @@ describe('SessionManager', () => {
       manager.create('feature');
       await flush();
       await manager.refreshPrs();
-      expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
+      // No PR known yet, so nothing to ask about by number.
+      expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature', {});
       expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 42, url: 'https://x/pr/42' });
       expect(manager.getSnapshot()[0]?.prStatus).toEqual({ mergeStatus: 'mergeable' });
       expect(created[0]?.calls).toContain('setPr:#42');
@@ -1176,7 +1177,8 @@ describe('SessionManager', () => {
       manager.create('feature');
       await flush();
       await manager.refreshPrs();
-      expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
+      // Readied by PR number (the PR need not live on the session's branch).
+      expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', '5');
       expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 5, url: 'u' });
       expect(manager.getSnapshot()[0]?.prStatus).toEqual({
         mergeStatus: 'unknown',

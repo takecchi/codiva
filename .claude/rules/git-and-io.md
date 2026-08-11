@@ -75,9 +75,9 @@
 ## PR 自動化（`utils/pr.ts`、best-effort）
 
 - 使う `gh` は次だけ。増やすときもここに閉じる:
-  `pr view <branch> --json number,url,state,mergeable,isDraft,statusCheckRollup` /
+  `pr view <branch|番号> --json number,url,state,mergeable,isDraft,statusCheckRollup` /
   `pr list --state all --limit <n> --json headRefName,<同じ項目>` /
-  `pr create --draft --fill --head <branch>` / `pr ready <branch>`。
+  `pr create --draft --fill --head <branch>` / `pr ready <branch|番号>`。
   **チェック状態は PR 情報と同じ 1 回の `pr view` で取る**（`--json mergeable` は GitHub の
   **GraphQL** クォータを消費し、ユーザーの他のツールと共有の 5000/h なので、毎ポーリングで
   2 回投げない）。
@@ -101,6 +101,14 @@
   機能自体が使えないだけなので印も出さない（全行に警告を出しても直せない）。
 - ポーリングは**多重実行しない**（`gh` が 20 秒より遅いとサイクルが重なる）。`merged` になった
   PR と `archived` セッションは以後問い合わせない（状態が確定しているのでクォータの無駄）。
+- **問い合わせはブランチ名だけに頼らない**。セッション自身が `gh pr create` で作った PR
+  （`extraPrs`）の head は worktree に checkout されていない使い捨てブランチのことが多く、
+  ブランチ名では一生解決できない = 状態（グリフ）が付かないまま番号だけが並ぶ。既知の
+  PR 番号（`primaryPr`）を `PrLookupOptions.knownPr` で渡し、ブランチ候補が全滅したら
+  **番号で聞く**（`gh pr view <番号>`。バッチ側も突き合わせに失敗した既知 PR は番号で確認する）。
+  番号は**最後**に試す — セッションブランチに新しく出た PR を古い番号で上書きしないため。
+- **ready 化は番号で行う**（`gh pr ready <番号>`）。解決した PR がセッションブランチの
+  ものとは限らないので、`state.branch` で ready にすると失敗するか別の PR を触る。
 
 ## 生成・参照するファイル
 

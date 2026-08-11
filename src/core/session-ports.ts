@@ -57,16 +57,30 @@ export interface SessionHandle {
 export interface PrAutomation {
   /** Open a draft PR for a pushed branch (or return the existing one). */
   createPr(cwd: string, branch: string): Promise<PrInfo | undefined>;
-  /** Flip a draft PR to ready-for-review. */
-  markReady(cwd: string, branch: string): Promise<void>;
+  /** Flip a draft PR to ready-for-review. `ref` is a branch name or a PR number. */
+  markReady(cwd: string, ref: string): Promise<void>;
+}
+
+/** Extra hints for a PR lookup beyond the session's branch. */
+export interface PrLookupOptions {
+  /**
+   * Number of a PR already associated with this session. Tried after the branches,
+   * and it is the *only* way to reach a PR the session opened itself on a branch that
+   * isn't checked out in the worktree (see {@link PrLookupTarget.knownPr}).
+   */
+  knownPr?: number;
 }
 
 /**
- * Look up the PR for a branch (via `gh`). Returns a three-way result — found /
- * absent / unavailable — never a bare undefined, so a failed lookup can't be
- * mistaken for "this branch has no PR" (which would clear the badge).
+ * Look up the PR to track for a session (via `gh`). Returns a three-way result —
+ * found / absent / unavailable — never a bare undefined, so a failed lookup can't be
+ * mistaken for "this session has no PR" (which would clear the badge).
  */
-export type PrLookup = (cwd: string, branch: string) => Promise<PrLookupResult>;
+export type PrLookup = (
+  cwd: string,
+  branch: string,
+  opts?: PrLookupOptions,
+) => Promise<PrLookupResult>;
 
 /** One session to resolve a PR for in a batched lookup. */
 export interface PrLookupTarget {
@@ -77,8 +91,10 @@ export interface PrLookupTarget {
   /** The recorded `codiva/<slug>` branch (HEAD is preferred when it differs). */
   branch: string;
   /**
-   * PR number already known for this session, if any. Lets the implementation tell
-   * "this PR is gone" from "the listing was truncated before reaching it".
+   * PR number already known for this session, if any — including one the session
+   * opened itself (`extraPrs`). Lets the implementation tell "this PR is gone" from
+   * "the listing didn't reach it" (truncated, or its head branch isn't checked out
+   * here), and is what makes a session-opened PR's state trackable at all.
    */
   knownPr?: number;
 }

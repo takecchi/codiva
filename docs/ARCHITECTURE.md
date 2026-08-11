@@ -609,7 +609,7 @@ interface SessionState {
   pendingPermission?: PermissionRequest;      // awaiting_permission / awaiting_input 時のみ
   sdkSessionId?: string;      // system/init から取得。resume 用に保持
   model?: string;             // セッション個別のモデル上書き（/model）
-  pr?: PrRef;                 // 検知した PR の番号・URL（ブランチに対して不変。**永続する**）
+  pr?: PrRef;                 // codiva が追跡する PR の番号・URL（通常はブランチの PR。無ければ自作 PR を昇格。**永続する**）
   extraPrs?: readonly PrRef[];// セッション自身が別ブランチで作った PR（`gh pr create` の結果から検知。**永続する**）
   prCreateToolIds?: readonly string[]; // 結果待ちの `gh pr create` の tool_use id（対応付け用。transient）
   prStatus?: PrStatus;        // merge 可否 / checks / draft（揺れる。transient・期限付きキャッシュ）
@@ -879,7 +879,9 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
 - **PR ステータスの「分からない」を潰さない**（GitHub ステータスが時々消える不具合の修正）:
   `lookupPr` は `found` / `absent` / `unavailable`（+ 理由）の 3 値を返し、`PrCoordinator` は
   `unavailable` のとき**直前の PR を保持したまま** `prLookup: 'error'` を立てる。空セルは
-  「PR が無い」だけを意味し、確認中は `⋯`、確認できなかったときは `?` を出す。
+  「PR が無い」だけを意味し、確認中は `⋯`、確認できなかったときは `?` を出す。この印は
+  **番号が分かっているときもグリフの位置に出す**（`⋯ #12` / `? #12`）— 番号だけが裸で並ぶと
+  「状態が無い（健全）」と見分けが付かない。
   `rate_limit` / `auth` / `cli` は 5 分（`PR_LOOKUP_BACKOFF_MS`）ポーリングを止める。
   チェック状態は PR 情報と同じ `gh pr view` 1 回で取得する（`--json mergeable` は GraphQL
   クォータ消費なので、毎ポーリング 2 回投げていたのを 1 回に）。
@@ -891,9 +893,16 @@ UI 文字列は日本語/英語を設定で切り替えられる。規約は [.c
   報告するだけでよい）。ログ全体から URL を拾わないのは誤検出を避けるため —
   `gh pr list` の出力や `gh pr view` で覗いた他人の PR まで数えてしまう。
   表示は一覧が `#12 +2`（代表 + 件数。列幅は複数 PR の行があるときだけ広げる）、全件は詳細ビューの
-  1 行に出す。**代表はセッションブランチの PR**（`prStatus` = グリフを持つ唯一の PR で、クリックで
-  開く先でもある）。自分で作った PR は codiva が追跡・操作しないので番号のみ（状態を知らないのに
-  グリフを付けて嘘をつかない）。`gh` の追加呼び出しはゼロ。
+  1 行に出す。**代表はセッションブランチの PR**（クリックで開く先でもある）。それが無いときは
+  最後に見つかった自作 PR が代表になる。
+- **自作 PR の状態も追う（番号で問い合わせる）**: 自作 PR の head は使い捨ての `feat/…` で、
+  worktree に checkout されていないことが多い。ブランチ名でしか聞けなかった頃はそういう PR が
+  `absent` として答えられ続け、**番号だけが出てグリフも `⋯`/`?` も一生付かなかった**
+  （「PR の状況がいつまでも表示されない」）。いまは既知の番号（`primaryPr`）を
+  `PrLookupOptions.knownPr` で渡し、ブランチ候補が全滅したら `gh pr view <番号>` で聞く。
+  解決できた PR は `pr` に昇格し（reducer が `extraPrs` から畳む）、以降は普通にグリフが付く。
+  番号は**最後**に試す（セッションブランチに新しく出た PR を古い番号で上書きしない）。
+  ready 化も番号で行う — `state.branch` で `gh pr ready` すると別の PR を触りうる。
 - **PR は「識別（`pr: PrRef`）」と「状態（`prStatus: PrStatus`）」に分ける**。番号・URL は
   ブランチに対して不変なので `state.json` に載せ、**復元直後からグリフ無しの `#<n>` を表示**する。
   状態（マージ可否・チェック・draft）は永続せず、復元後の最初のポーリング（`prPollIntervalMs`

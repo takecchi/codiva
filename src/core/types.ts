@@ -230,11 +230,16 @@ export interface SessionState {
    */
   model?: string;
   /**
-   * Which PR belongs to this session's branch, if any (detected asynchronously via
-   * `gh`). Only an authoritative "this branch has no PR" clears it, so a failed
-   * lookup never hides the number. **Persisted** — a branch's PR number doesn't
-   * change, so the list can show `#<n>` immediately after a restart while the
-   * status below is still being fetched.
+   * The PR codiva **tracks** for this session, if any (detected asynchronously via
+   * `gh`) — normally the one on the session's branch. When the branch has none but
+   * the session opened its own PR (`extraPrs` below), the poll adopts that one here,
+   * which is what gives it a status glyph; the reducer folds it out of `extraPrs` so
+   * the same PR is never counted twice.
+   *
+   * Only an authoritative "no PR for this session" clears it, so a failed lookup never
+   * hides the number. **Persisted** — a PR's number doesn't change, so the list can
+   * show `#<n>` immediately after a restart while the status below is still being
+   * fetched.
    */
   pr?: PrRef;
   /**
@@ -243,9 +248,10 @@ export interface SessionState {
    * or land a prerequisite first. codiva can't find these by branch name — they're
    * read out of the `gh pr create` tool result (`core/pr-detect.ts`).
    *
-   * Identity only (number + URL), like `pr`: these PRs are not on the session branch,
-   * so codiva neither polls their status nor readies/merges them — showing them is
-   * what keeps a second PR from silently disappearing from the list.
+   * Identity only (number + URL), like `pr`: codiva neither readies nor merges these,
+   * and only the one it adopts as `pr` (when the branch has no PR of its own) gets a
+   * status glyph — showing the rest is what keeps a second PR from silently
+   * disappearing from the list.
    * **Persisted** (see `pr`); capped by `MAX_SESSION_PRS`.
    */
   extraPrs?: readonly PrRef[];
