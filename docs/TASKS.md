@@ -1183,7 +1183,20 @@ zsh: abort      codiva
       resume の引き回し・systemPrompt の前置・中断・終端イベント無しの終了）/ `utils/codex.spec.ts`
       （引数の組み立て）
 
+- [x] **解決済みモデルの表示**（一覧のモデル欄）: `codex exec --json` はモデル名を運ばないので、
+      `--model` を明示していないセッション（= CLI の既定）のモデル欄が空のままだった。
+      rollout（`$CODEX_HOME/sessions/<年>/<月>/<日>/rollout-<時刻>-<thread_id>.jsonl`）の
+      `turn_context.model` が唯一の出所なのでそこを読む（`core/codex-rollout.ts` = 純粋な抽出 /
+      `utils/codex.ts` の `resolveCodexRolloutModel` = 探索と読み出し）。報告は専用の
+      `model_resolved`（status を触らない中立イベント）
+
 > 実績メモ:
+> - **解決済みモデルは JSONL に無い**（実測 0.147.0）。`codex debug models` に既定の印は無く、
+>   `codex doctor --json` も `"<default>"` としか答えない。rollout の `turn_context` だけが
+>   実際の slug（`-m` 無しで `gpt-5.6-sol`）を持つ。**カタログ先頭を既定とみなす当て推量は
+>   採らない** — `~/.codex/config.toml` で既定を変えているユーザーに嘘のモデル名を出すため。
+>   問い合わせの答えは**ターンが終わったあとに届くことがある**ので、`session_started` /
+>   `assistant_message` に相乗りさせず（あれは `status` を `running` へ戻す）専用イベントにした。
 > - セルフレビューで塞いだ取りこぼし: 初回のターンが `thread.started` 前に落ちると
 >   systemPrompt を二度と渡せなくなる（latch をやめて `threadId` から導出）/ 捨てられた run が
 >   `codex exec` を孤児として残す（Rust は `SIGPIPE` を無視するので明示的に kill）/ `stderr` の

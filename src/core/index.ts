@@ -17,6 +17,7 @@ export * from './codex-errors';
 export * from './codex-events';
 export * from './codex-models';
 export * from './codex-parse';
+export * from './codex-rollout';
 export * from './commands';
 export * from './composer-layout';
 export * from './config';

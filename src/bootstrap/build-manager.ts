@@ -23,6 +23,7 @@ import {
   lookupPrs,
   markPrReady,
   notify,
+  resolveCodexRolloutModel,
   saveRepoPrompt,
   spawnCodex,
   spawnLogin,
@@ -89,6 +90,9 @@ export function buildAgents(
       networkAccess: config.codexNetworkAccess,
       generateTitle,
       checkAvailability: () => detectCodexAvailability(),
+      // `codex exec --json` は解決済みモデルを運ばない。既定モデルで動いている
+      // セッションのモデル名は rollout の `turn_context` からしか分からない。
+      resolveModel: (threadId) => resolveCodexRolloutModel(threadId),
       spawnLogin,
     }),
   };

@@ -51,6 +51,40 @@ describe('applyAgentEvent / session_started', () => {
   });
 });
 
+describe('applyAgentEvent / model_resolved', () => {
+  // Codex は解決済みモデルをストリームで運ばないので、別経路で調べた結果が
+  // **ターンが終わったあとに**届くことがある。だから status を触らせない。
+  it('fills in the model without touching the status of a finished session', () => {
+    const finished = running({ status: 'completed', finishedAt: 5 });
+    const s = applyAgentEvent(finished, { kind: 'model_resolved', model: 'gpt-5.6-sol' }, 9);
+    expect(s.model).toBe('gpt-5.6-sol');
+    expect(s.status).toBe('completed');
+    expect(s.finishedAt).toBe(5);
+  });
+
+  it.each(['running', 'awaiting_input', 'interrupted', 'failed'] as const)(
+    'leaves %s alone',
+    (status) => {
+      const s = applyAgentEvent(running({ status }), { kind: 'model_resolved', model: 'm' }, 1);
+      expect(s.status).toBe(status);
+      expect(s.model).toBe('m');
+    },
+  );
+
+  it('returns the same object when the model is already known (no needless repaint)', () => {
+    const known = running({ model: 'gpt-5.6-sol' });
+    expect(applyAgentEvent(known, { kind: 'model_resolved', model: 'gpt-5.6-sol' }, 1)).toBe(known);
+  });
+
+  it('lets a later explicit choice win (last write, not first)', () => {
+    const s = fold(running(), [
+      { kind: 'model_resolved', model: 'gpt-5.6-sol' },
+      { kind: 'assistant_message', model: 'gpt-5.4-mini' },
+    ]);
+    expect(s.model).toBe('gpt-5.4-mini');
+  });
+});
+
 describe('applyAgentEvent / log attribution', () => {
   it('stamps the agent on log lines only when one is supplied', () => {
     const withAgent = fold(running(), [{ kind: 'assistant_text', text: 'hi' }], 1, 'codex');

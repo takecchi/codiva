@@ -1,10 +1,15 @@
 import { execFile, spawn } from 'node:child_process';
+import { open, readdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import {
   type AgentAvailability,
   type CodexProcess,
   type CodexSpawnRequest,
+  codexRolloutModelFromText,
   createJsonlSplitter,
+  isCodexRolloutFile,
   type ModelOption,
   toCodexModelOptions,
 } from '@/core';
@@ -197,6 +202,123 @@ export async function fetchCodexModelCatalog(opts?: {
     // `codex` 未導入・タイムアウト・JSON 破損。どれも /model を壊さない。
     return [];
   }
+}
+
+/**
+ * rollout から読む先頭バイト数。`session_meta` が `base_instructions`（モデルの
+ * システムプロンプト全文）を 1 行で運ぶので実測で数十 KB あり、その次あたりに
+ * `turn_context` が来る。ファイル全体は平均 1MB 超なので**先頭だけ**読む。
+ */
+const ROLLOUT_HEAD_BYTES = 512 * 1024;
+
+/** 何日ぶんの日付ディレクトリまで遡って探すか（当日に無ければ日付跨ぎを疑う程度）。 */
+const ROLLOUT_MAX_DAY_DIRS = 8;
+
+/** `turn_context` が書かれるまで待つリトライ（間隔 × 回数）。 */
+const ROLLOUT_RETRY_MS = 200;
+const ROLLOUT_RETRIES = 6;
+
+/** `$CODEX_HOME`（未設定なら `~/.codex`）。 */
+function codexHome(): string {
+  const home = process.env.CODEX_HOME?.trim();
+  return home && home.length > 0 ? home : join(homedir(), '.codex');
+}
+
+/** 名前でソートした部分ディレクトリを新しい順に返す（`sessions/<年>/<月>/<日>`）。 */
+async function subdirsDesc(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort()
+    .reverse();
+}
+
+/** `sessions/` 以下の日付ディレクトリを新しい順に列挙する（上限付き）。 */
+async function rolloutDayDirs(sessionsDir: string, limit: number): Promise<string[]> {
+  const days: string[] = [];
+  for (const year of await subdirsDesc(sessionsDir)) {
+    const yearDir = join(sessionsDir, year);
+    for (const month of await subdirsDesc(yearDir)) {
+      const monthDir = join(yearDir, month);
+      for (const day of await subdirsDesc(monthDir)) {
+        days.push(join(monthDir, day));
+        if (days.length >= limit) {
+          return days;
+        }
+      }
+    }
+  }
+  return days;
+}
+
+/** そのスレッドの rollout ファイルを探す（新しい日付から。見つからなければ undefined）。 */
+async function findRollout(home: string, threadId: string): Promise<string | undefined> {
+  const sessionsDir = join(home, 'sessions');
+  for (const dayDir of await rolloutDayDirs(sessionsDir, ROLLOUT_MAX_DAY_DIRS)) {
+    const names = await readdir(dayDir).catch(() => []);
+    const hit = names.find((name) => isCodexRolloutFile(name, threadId));
+    if (hit) {
+      return join(dayDir, hit);
+    }
+  }
+  return undefined;
+}
+
+/** ファイルの先頭 `ROLLOUT_HEAD_BYTES` を読む（無ければ undefined）。 */
+async function readHead(path: string): Promise<string | undefined> {
+  const handle = await open(path, 'r').catch(() => undefined);
+  if (!handle) {
+    return undefined;
+  }
+  try {
+    const buffer = Buffer.allocUnsafe(ROLLOUT_HEAD_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, ROLLOUT_HEAD_BYTES, 0);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** リトライの待ち。**TUI の終了を引き止めない**ようタイマーは unref する。 */
+const sleep = (ms: number) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+
+/**
+ * そのスレッドが**実際に使っているモデル**を rollout から読む
+ * （`core/codex-rollout.ts` の理由書きを参照）。
+ *
+ * `turn_context` はターンが始まった時点で書かれるので、`thread.started` の直後だと
+ * まだ無いことがある。数回だけ間を置いて読み直し、それでも読めなければ諦める
+ * （**throw しない** — モデル欄が空のままになるだけで、セッションは壊さない）。
+ */
+export async function resolveCodexRolloutModel(
+  threadId: string,
+  opts?: { home?: string; retries?: number; retryMs?: number },
+): Promise<string | undefined> {
+  const home = opts?.home ?? codexHome();
+  const retries = opts?.retries ?? ROLLOUT_RETRIES;
+  const retryMs = opts?.retryMs ?? ROLLOUT_RETRY_MS;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(retryMs);
+    }
+    try {
+      const path = await findRollout(home, threadId);
+      const text = path ? await readHead(path) : undefined;
+      const model = text ? codexRolloutModelFromText(text) : undefined;
+      if (model) {
+        return model;
+      }
+    } catch {
+      // 権限・レイアウト変更など。次の試行へ（最後まで駄目なら undefined）。
+    }
+  }
+  return undefined;
 }
 
 /** 導入・ログイン確認の上限（サブプロセスが固まっても TUI を止めない）。 */

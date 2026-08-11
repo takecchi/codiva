@@ -1038,6 +1038,44 @@ codex exec --json --skip-git-repo-check
   エイリアスが無い。したがって取得に失敗したときのフォールバックは**「デフォルト」1 行だけ**
   （`DEFAULT_ONLY_MODEL_OPTIONS`）。ここに推測でモデル名を並べると必ず陳腐化する。
 
+### 解決済みモデルは JSONL に無い — rollout の `turn_context` が唯一の出所（実測 0.147.0）
+
+Claude の `system/init` に当たるもの（**実際に動いているモデル名**）が Codex には無い。
+実バイナリで確かめた結果は次のとおり:
+
+| 調べた先 | 結果 |
+|---|---|
+| `codex exec --json` の stdout | **モデル名を一切運ばない**（`thread.started` は `thread_id` だけ、`turn.started` は空、`turn.completed` は usage だけ） |
+| `codex debug models` | 既定を示す印が**無い**（`priority` はあるが「CLI の既定」とは別物） |
+| `codex doctor --json` | `config.load.details.model` は `"<default>"` としか答えない |
+| rollout の `session_meta` | `model_provider`（`"openai"`）だけで **slug は無い** |
+| rollout の **`turn_context`** | **`model: "gpt-5.6-sol"`** ← ここだけが解決済み slug を持つ |
+
+そのため `--model` を明示していないセッション（= CLI の既定に任せている）のモデル欄が
+一覧で空のままだった。`--model` を渡した場合は `Session.consume()` が渡した値をそのまま
+表示する（#109）ので、埋まらないのは**既定で動いているとき**だけ。
+
+対策は rollout を読むこと（`core/codex-rollout.ts` = 純粋な抽出 / `utils/codex.ts` の
+`resolveCodexRolloutModel` = 探索と読み出し）:
+
+- 置き場所は `$CODEX_HOME`（既定 `~/.codex`）の
+  `sessions/<年>/<月>/<日>/rollout-<時刻>-<thread_id>.jsonl`。ファイル名の**末尾が
+  `thread.started` の `thread_id`** なので、時刻部分（ローカル時刻）は当てにせず id で突き合わせる。
+- 1 ファイルは実測**平均 1MB 超**（`session_meta` が `base_instructions` 全文を 1 行で運ぶ）。
+  `turn_context` はその数行あとに来るので**先頭 512KB だけ**読む。
+- `turn_context` は**ターン開始時**に書かれるので、`thread.started` の直後にはまだ無いことが
+  ある。数回だけ間を置いて読み直す（実測では当日ディレクトリに当たって **4ms** で解決した）。
+- **カタログ先頭（priority 1）を既定とみなす手は採らない。** 実測では確かに
+  priority 1 = `gpt-5.6-sol` = 実際の既定だったが、`~/.codex/config.toml` で `model` を
+  設定しているユーザーには**嘘のモデル名**を出すことになる。
+- 読めなければ黙って諦める（モデル欄が空のままになるだけ）。`--ephemeral` 実行や
+  レイアウト変更で取れなくてもセッションは壊さない。
+
+報告は専用の中立イベント **`model_resolved`**（`core/agent-events.ts`）で行う。
+`session_started` / `assistant_message` にも `model` は載るが、あちらは「ターンが動いている」
+区切りでもあり `status` を `running` へ戻す。問い合わせの答えは**ターンが終わったあとに
+届くことがある**ので、あれに相乗りさせると完了したセッションが `running` に巻き戻る。
+
 ### フィクスチャの採取: モック Responses API を立てて実バイナリを走らせる
 
 Codex の JSONL には上流に採取済みのフィクスチャが無く、実アカウントで走らせると

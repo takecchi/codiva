@@ -94,6 +94,13 @@ export function createCodexAdapter(deps: {
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
   /** 導入・ログイン検出（I/O は `utils/codex.ts` の `detectCodexAvailability`）。 */
   checkAvailability?: () => Promise<AgentAvailability>;
+  /**
+   * そのスレッドが実際に使っているモデルを調べる（I/O は `utils/codex.ts` の
+   * `resolveCodexRolloutModel`）。`codex exec --json` はモデル名を運ばないので、
+   * `--model` を明示していないセッションはこれが唯一の出所になる。
+   * 省略可（渡さなければモデル欄は空のまま = 従来どおり）。
+   */
+  resolveModel?: (threadId: string) => Promise<string | undefined>;
   /** TUI 内ログインのプロセス起動（I/O は `utils/agent-login.ts` の `spawnLogin`）。 */
   spawnLogin?: (command: string, args: readonly string[]) => AgentLoginProcess;
 }): AgentAdapter {
@@ -122,6 +129,34 @@ export function createCodexAdapter(deps: {
       // `Ctrl+C` で殺したターンは失敗ではない（Session が先に `interrupted` を確定させる）。
       let interrupted = false;
       let current: CodexProcess | undefined;
+
+      // 解決済みモデルの遅延問い合わせ。`codex exec --json` はモデル名を運ばないので、
+      // `--model` を明示していないセッション（= CLI の既定に任せている）のモデル欄は
+      // これでしか埋まらない。**ストリームは止めない** — 問い合わせは走らせておいて、
+      // answered ぶんを後続イベントの合間に流す。
+      let modelProbe: Promise<void> | undefined;
+      let pendingModel: string | undefined;
+      let probedThread: string | undefined;
+
+      const probeModel = (id: string): void => {
+        const resolve = deps.resolveModel;
+        // 明示指定があるときは Session が先に表示済みなので問い合わせない。
+        if (!resolve || model !== undefined || probedThread === id || modelProbe) {
+          return;
+        }
+        probedThread = id;
+        modelProbe = resolve(id)
+          .then((found) => {
+            // 待っている間に `/model` で明示選択されたら、そちらが正しい。
+            if (found !== undefined && model === undefined) {
+              pendingModel = found;
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            modelProbe = undefined;
+          });
+      };
 
       const abort = () => {
         current?.kill();
@@ -167,8 +202,14 @@ export function createCodexAdapter(deps: {
                   }
                   if (event.type === 'thread.started') {
                     threadId = event.thread_id;
+                    probeModel(event.thread_id);
                   } else if (event.type === 'turn.completed' || event.type === 'turn.failed') {
                     sawTerminal = true;
+                  }
+                  // 解決済みモデルが届いていれば先に流す（長いターンでも一覧が早く埋まる）。
+                  if (pendingModel !== undefined) {
+                    yield { kind: 'model_resolved', model: pendingModel };
+                    pendingModel = undefined;
                   }
                   yield* parseCodexEvent(event);
                 }
@@ -181,16 +222,26 @@ export function createCodexAdapter(deps: {
                 proc.kill();
               }
 
-              if (interrupted || request.abortController.signal.aborted) {
-                // 中断は Session 側で既に `interrupted` を確定させてある。
-                continue;
-              }
-              if (!sawTerminal) {
+              // 中断は Session 側で既に `interrupted` を確定させてあるので何も出さない。
+              if (!interrupted && !request.abortController.signal.aborted && !sawTerminal) {
                 const { code, stderr } = proc.result();
                 const detail = stderr.trim() || `codex exited with code ${code ?? 'null'}`;
                 yield code === 0
                   ? { kind: 'turn_completed', text: '' }
                   : { kind: 'turn_stopped', cause: classifyCodexError(detail), detail };
+              }
+
+              // 問い合わせの回収は**終端イベントを流したあと**。`turn_context` は
+              // ターン開始時に書かれるので、短いターンだと解決がストリームの終わりに
+              // 間に合わない。ここで待たないと、1 ターンで終わって idle になった
+              // セッションのモデル欄が次の指示まで空のままになる。`model_resolved` は
+              // status を触らないので、完了イベントの後に流しても巻き戻さない。
+              if (modelProbe && !request.abortController.signal.aborted) {
+                await modelProbe;
+              }
+              if (pendingModel !== undefined) {
+                yield { kind: 'model_resolved', model: pendingModel };
+                pendingModel = undefined;
               }
             }
           } finally {
@@ -207,6 +258,11 @@ export function createCodexAdapter(deps: {
         // 走っているターンには反映されない（`setModel` の契約としては許容範囲）。
         setModel: (next) => {
           model = next;
+          // 「既定に戻す」を選んだら、その CLI 既定が何なのかを次のターンで引き直す
+          // （前回の解決結果は、明示指定していた別モデルのものかもしれない）。
+          if (next === undefined) {
+            probedThread = undefined;
+          }
         },
       };
     },
