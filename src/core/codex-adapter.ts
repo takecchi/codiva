@@ -27,6 +27,13 @@ import type { CodexSandbox, EffortLevel } from './config';
  * したがって `capabilities.permissions` は false で、`requestPermission` は呼ばれない。
  */
 
+/**
+ * 解決済みモデルの問い合わせを 1 セッションで何回まで試すか。空振り（rollout が
+ * まだ書かれていない）は次のターンで引き直すが、そもそも取れない環境
+ * （rollout を書かない設定・別レイアウト）で毎ターン探し回らないための上限。
+ */
+const MAX_MODEL_PROBES = 3;
+
 /** 1 ターンぶんの `codex exec` を起動するための入力（I/O 実装は `utils/codex.ts`）。 */
 export interface CodexSpawnRequest {
   /** セッションの worktree。 */
@@ -137,6 +144,7 @@ export function createCodexAdapter(deps: {
       let modelProbe: Promise<void> | undefined;
       let pendingModel: string | undefined;
       let probedThread: string | undefined;
+      let probeAttempts = 0;
 
       const probeModel = (id: string): void => {
         const resolve = deps.resolveModel;
@@ -144,18 +152,50 @@ export function createCodexAdapter(deps: {
         if (!resolve || model !== undefined || probedThread === id || modelProbe) {
           return;
         }
+        // 取れない環境（rollout を書かない設定・別レイアウト）で毎ターン探し回らない。
+        if (probeAttempts >= MAX_MODEL_PROBES) {
+          return;
+        }
+        probeAttempts += 1;
         probedThread = id;
+        // **空振りは記憶しない**。`turn_context` はターン開始時に書かれるので、初回が
+        // 早すぎて空振りすることがある。ここで id を latch したままにすると、次の
+        // ターンなら即座に読めるのに二度と引き直さないセッションになる。
+        const retryLater = () => {
+          probedThread = undefined;
+        };
         modelProbe = resolve(id)
           .then((found) => {
-            // 待っている間に `/model` で明示選択されたら、そちらが正しい。
-            if (found !== undefined && model === undefined) {
-              pendingModel = found;
+            if (found === undefined) {
+              retryLater();
+              return;
             }
+            pendingModel = found;
           })
-          .catch(() => undefined)
+          .catch(retryLater)
           .finally(() => {
             modelProbe = undefined;
           });
+      };
+
+      /**
+       * 解決済みモデルを 1 回だけ流す。**答えが古くなっていたら捨てる** — 問い合わせ中に
+       * `/model` で明示選択されたり（そちらが正しい）、中断・エージェント切替が起きたり
+       * （切替先は別 provider なので Codex の slug は嘘になる）した後に流すと、
+       * 一覧に間違ったモデル名が出たまま `state.json` にも焼き付く。
+       */
+      const takeResolvedModel = (): AgentEvent | undefined => {
+        const found = pendingModel;
+        pendingModel = undefined;
+        if (
+          found === undefined ||
+          model !== undefined ||
+          interrupted ||
+          request.abortController.signal.aborted
+        ) {
+          return undefined;
+        }
+        return { kind: 'model_resolved', model: found };
       };
 
       const abort = () => {
@@ -207,9 +247,9 @@ export function createCodexAdapter(deps: {
                     sawTerminal = true;
                   }
                   // 解決済みモデルが届いていれば先に流す（長いターンでも一覧が早く埋まる）。
-                  if (pendingModel !== undefined) {
-                    yield { kind: 'model_resolved', model: pendingModel };
-                    pendingModel = undefined;
+                  const resolvedMid = takeResolvedModel();
+                  if (resolvedMid) {
+                    yield resolvedMid;
                   }
                   yield* parseCodexEvent(event);
                 }
@@ -236,12 +276,16 @@ export function createCodexAdapter(deps: {
               // 間に合わない。ここで待たないと、1 ターンで終わって idle になった
               // セッションのモデル欄が次の指示まで空のままになる。`model_resolved` は
               // status を触らないので、完了イベントの後に流しても巻き戻さない。
-              if (modelProbe && !request.abortController.signal.aborted) {
+              //
+              // 中断・破棄のときは**待たない**（`Ctrl+C` の直後や終了処理を、表示用の
+              // 問い合わせで最大 1 秒引き止めない）。タイマーは unref してあるので、
+              // 置き去りにした問い合わせが TUI の終了を止めることもない。
+              if (modelProbe && !interrupted && !request.abortController.signal.aborted) {
                 await modelProbe;
               }
-              if (pendingModel !== undefined) {
-                yield { kind: 'model_resolved', model: pendingModel };
-                pendingModel = undefined;
+              const resolved = takeResolvedModel();
+              if (resolved) {
+                yield resolved;
               }
             }
           } finally {

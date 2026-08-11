@@ -58,12 +58,17 @@ export function codexRolloutModel(value: unknown): string | undefined {
 }
 
 /**
- * rollout の先頭部分（JSONL のテキスト）から解決済みモデルを拾う。
+ * 渡されたテキスト（rollout の一部）から解決済みモデルを拾う。
  *
- * **最後に見つかったものを採る**。`codex exec resume` は同じファイルへ追記していく
- * ので、途中でモデルを変えていれば後の `turn_context` のほうが今の状態に近い。
+ * **渡された範囲で最後に見つかったものを採る**。`codex exec resume` は同じファイルへ
+ * 追記していくので、後の `turn_context` のほうが新しい。
  *
- * 壊れた行・途中で切れた最終行は黙って捨てる（ここは best-effort の表示用で、
+ * ただし呼び出し側（`resolveCodexRolloutModel`）が渡すのは**ファイルの先頭だけ**なので、
+ * 「セッション全体で最後」ではなく「読んだ範囲で最後」であることに注意。これで足りるのは、
+ * 途中でモデルが変わるのは `/model` で明示選択したときだけで、**そのときはそもそも
+ * 問い合わせをしない**（明示指定の値を Session が直接表示する）ため。
+ *
+ * 壊れた行・読み込み上限で切れた最終行は黙って捨てる（ここは best-effort の表示用で、
  * 読めなければモデル欄が空のままになるだけ）。
  */
 export function codexRolloutModelFromText(text: string): string | undefined {

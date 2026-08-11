@@ -496,6 +496,125 @@ describe('createCodexAdapter resolveModel', () => {
     await done;
   });
 
+  // 問い合わせ中に `/model` で選び直されたら、届いた答えはもう古い。捨てないと
+  // 「次のターンは選んだモデルで動くのに、一覧には既定のモデル名が出たまま」になり、
+  // Codex は二度とモデルを報告しないので**永久にずれたまま** state.json にも焼き付く。
+  it('drops the answer when /model overtook it while the lookup was in flight', async () => {
+    const codex = makeFakeCodex();
+    let answer = (_model: string) => {};
+    const pending = new Promise<string>((resolve) => {
+      answer = resolve;
+    });
+    const adapter = createCodexAdapter({ spawn: codex.spawn, resolveModel: () => pending });
+    const { run, prompts, events, done } = drive(adapter);
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    // **答えが先に届き**（ここで保留される）、そのあとユーザーが明示選択する、という
+    // 順序でないと再現しない（この順序を崩すと問い合わせ側のガードだけで素通りする）。
+    answer('gpt-5.6-sol');
+    for (let i = 0; i < 5; i += 1) {
+      await tick();
+    }
+    await run.setModel?.('gpt-5.4-mini');
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the turn to end');
+
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    prompts.close();
+    await done;
+  });
+
+  // `/agent` で切り替えると `run.interrupt()` が呼ばれ、`agent_switched` が model を
+  // クリアする。遅れて届いた Codex の slug をそこへ流すと、Claude のセッションに
+  // Codex のモデル名が出たまま永続化される。
+  it('drops the answer when the run was interrupted (agent switch / Ctrl+C)', async () => {
+    const codex = makeFakeCodex();
+    let answer = (_model: string) => {};
+    const pending = new Promise<string>((resolve) => {
+      answer = resolve;
+    });
+    const adapter = createCodexAdapter({ spawn: codex.spawn, resolveModel: () => pending });
+    const { run, prompts, events, done } = drive(adapter);
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    await run.interrupt?.();
+    answer('gpt-5.6-sol');
+    codex.at(0).end();
+    await waitFor(() => codex.at(0).wasKilled(), 'the process to be killed');
+    prompts.close();
+    await done;
+
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+  });
+
+  // 空振り（`turn_context` がまだ書かれていない）を記憶してしまうと、次のターンなら
+  // すぐ読めるのに二度と引き直さないセッションになる。
+  it('retries on the next turn when the rollout was not readable yet', async () => {
+    const codex = makeFakeCodex();
+    const answers: (string | undefined)[] = [undefined, 'gpt-5.6-sol'];
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => answers[asked++],
+    });
+    const { prompts, events, done } = drive(adapter);
+
+    prompts.push('first');
+    await waitFor(() => codex.requests.length === 1, 'the first spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the first turn');
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    prompts.push('second');
+    await waitFor(() => codex.requests.length === 2, 'the second spawn');
+    codex.at(1).emit(threadStarted('th-1'));
+    codex.at(1).emit(turnCompleted);
+    codex.at(1).end();
+    await waitFor(() => events.some((e) => e.kind === 'model_resolved'), 'the retry to answer');
+    expect(asked).toBe(2);
+
+    prompts.close();
+    await done;
+  });
+
+  // ただし、そもそも取れない環境で毎ターン探し回らない。
+  it('stops asking after a few misses (never-readable rollout)', async () => {
+    const codex = makeFakeCodex();
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => {
+        asked += 1;
+        return undefined;
+      },
+    });
+    const { prompts, events, done } = drive(adapter);
+
+    for (let turn = 0; turn < 5; turn += 1) {
+      prompts.push(`turn ${turn}`);
+      await waitFor(() => codex.requests.length === turn + 1, `spawn ${turn}`);
+      codex.at(turn).emit(threadStarted('th-1'));
+      codex.at(turn).emit(turnCompleted);
+      codex.at(turn).end();
+      await waitFor(
+        () => events.filter((e) => e.kind === 'turn_completed').length === turn + 1,
+        `turn ${turn} to end`,
+      );
+    }
+    expect(asked).toBe(3);
+
+    prompts.close();
+    await done;
+  });
+
   it('survives a failed lookup (the model column just stays empty)', async () => {
     const codex = makeFakeCodex();
     const adapter = createCodexAdapter({
