@@ -1,10 +1,15 @@
 import { execFile, spawn } from 'node:child_process';
+import { open, readdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import {
   type AgentAvailability,
   type CodexProcess,
   type CodexSpawnRequest,
+  codexRolloutModelFromText,
   createJsonlSplitter,
+  isCodexRolloutFile,
   type ModelOption,
   toCodexModelOptions,
 } from '@/core';
@@ -197,6 +202,142 @@ export async function fetchCodexModelCatalog(opts?: {
     // `codex` 未導入・タイムアウト・JSON 破損。どれも /model を壊さない。
     return [];
   }
+}
+
+/**
+ * rollout から読む先頭バイト数。`session_meta` が `base_instructions`（モデルの
+ * システムプロンプト全文）を 1 行で運ぶので実測で数十 KB あり、その次あたりに
+ * `turn_context` が来る。ファイル全体は平均 1MB 超なので**先頭だけ**読む。
+ */
+const ROLLOUT_HEAD_BYTES = 512 * 1024;
+
+/** `turn_context` が書かれるまで待つリトライ（間隔 × 回数）。 */
+const ROLLOUT_RETRY_MS = 200;
+const ROLLOUT_RETRIES = 6;
+
+/**
+ * ファイル探索そのものを何回まで繰り返すか。
+ *
+ * リトライの主目的は「`turn_context` がまだ書かれていない」を待つことで、**ファイル自体は
+ * スレッド開始時に作られる**（`session_meta` が先に書かれる）。見つからないまま数回試して
+ * 駄目なら、待っても現れないので早めに諦める（全日付を舐める走査を無駄に繰り返さない）。
+ */
+const MAX_ROLLOUT_SEARCHES = 3;
+
+/** `$CODEX_HOME`（未設定なら `~/.codex`）。 */
+function codexHome(): string {
+  const home = process.env.CODEX_HOME?.trim();
+  return home && home.length > 0 ? home : join(homedir(), '.codex');
+}
+
+/** 名前でソートした部分ディレクトリを新しい順に返す（`sessions/<年>/<月>/<日>`）。 */
+async function subdirsDesc(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort()
+    .reverse();
+}
+
+/**
+ * そのスレッドの rollout ファイルを探す（見つからなければ undefined）。
+ *
+ * **日数で打ち切らない。** `codex exec resume` はスレッド開始時に作られた同じ
+ * rollout へ追記し続けるので、ファイルは常に**スレッドを開始した日**のディレクトリに
+ * ある。一方 codiva のセッションは `.codiva/state.json` に無期限で残り、何日も経ってから
+ * 復元・resume される。日数（正確には「存在する日付ディレクトリ数」）で上限を置くと、
+ * その間に別セッションを作っただけで対象が探索範囲から外れ、モデル欄が二度と埋まらない。
+ *
+ * 代わりに**新しい日付から見て最初に当たった時点で止める**ことで実費を抑える
+ * （当日始まったスレッドなら readdir 数回で終わる）。全日付を舐めるのは「そのスレッドの
+ * rollout が本当に無い」ときだけで、その繰り返しは {@link MAX_ROLLOUT_SEARCHES} が抑える。
+ */
+async function findRollout(home: string, threadId: string): Promise<string | undefined> {
+  const sessionsDir = join(home, 'sessions');
+  for (const year of await subdirsDesc(sessionsDir)) {
+    const yearDir = join(sessionsDir, year);
+    for (const month of await subdirsDesc(yearDir)) {
+      const monthDir = join(yearDir, month);
+      for (const day of await subdirsDesc(monthDir)) {
+        const dayDir = join(monthDir, day);
+        const names = await readdir(dayDir).catch(() => []);
+        const hit = names.find((name) => isCodexRolloutFile(name, threadId));
+        if (hit) {
+          return join(dayDir, hit);
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** ファイルの先頭 `ROLLOUT_HEAD_BYTES` を読む（無ければ undefined）。 */
+async function readHead(path: string): Promise<string | undefined> {
+  const handle = await open(path, 'r').catch(() => undefined);
+  if (!handle) {
+    return undefined;
+  }
+  try {
+    const buffer = Buffer.allocUnsafe(ROLLOUT_HEAD_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, ROLLOUT_HEAD_BYTES, 0);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** リトライの待ち。**TUI の終了を引き止めない**ようタイマーは unref する。 */
+const sleep = (ms: number) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+
+/**
+ * そのスレッドが**実際に使っているモデル**を rollout から読む
+ * （`core/codex-rollout.ts` の理由書きを参照）。
+ *
+ * `turn_context` はターンが始まった時点で書かれるので、`thread.started` の直後だと
+ * まだ無いことがある。数回だけ間を置いて読み直し、それでも読めなければ諦める
+ * （**throw しない** — モデル欄が空のままになるだけで、セッションは壊さない）。
+ */
+export async function resolveCodexRolloutModel(
+  threadId: string,
+  opts?: { home?: string; retries?: number; retryMs?: number },
+): Promise<string | undefined> {
+  const home = opts?.home ?? codexHome();
+  const retries = opts?.retries ?? ROLLOUT_RETRIES;
+  const retryMs = opts?.retryMs ?? ROLLOUT_RETRY_MS;
+  // 一度見つけたパスは使い回す。rollout はスレッド開始時に作られて以後追記されるだけ
+  // なので途中で変わらない ＝ リトライは**同じ 1 ファイルを読み直すだけ**でよく、
+  // 全日付を舐める走査を待ち時間のたびに繰り返さずに済む。
+  let path: string | undefined;
+  let searches = 0;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(retryMs);
+    }
+    try {
+      if (path === undefined) {
+        if (searches >= MAX_ROLLOUT_SEARCHES) {
+          // ファイルが無い（rollout を残さない設定・別レイアウト）。待っても現れない。
+          return undefined;
+        }
+        searches += 1;
+        path = await findRollout(home, threadId);
+      }
+      const text = path ? await readHead(path) : undefined;
+      const model = text ? codexRolloutModelFromText(text) : undefined;
+      if (model) {
+        return model;
+      }
+    } catch {
+      // 権限・レイアウト変更など。次の試行へ（最後まで駄目なら undefined）。
+    }
+  }
+  return undefined;
 }
 
 /** 導入・ログイン確認の上限（サブプロセスが固まっても TUI を止めない）。 */

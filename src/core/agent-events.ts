@@ -57,6 +57,16 @@ export type AgentEvent =
    * `assistant_text` / `tool_use` が運ぶ。
    */
   | { kind: 'assistant_message'; model?: string }
+  /**
+   * 解決済みモデルが**あとから**分かった。ストリームがモデル名を運ばない provider
+   * （Codex）が、別経路で調べた結果を報告するための専用イベント。
+   *
+   * `session_started` / `assistant_message` にも `model` は載るが、あちらは
+   * 「ターンが動いている」ことを表す区切りでもあるため `status` を `running` に
+   * 戻してしまう。到着順が読めない非同期の問い合わせ結果をあれに相乗りさせると、
+   * 完了したセッションが `running` に巻き戻る。こちらは**モデル欄だけ**を触る。
+   */
+  | { kind: 'model_resolved'; model: string }
   | { kind: 'assistant_text'; text: string; timestamp?: number }
   | {
       kind: 'tool_use';
@@ -269,6 +279,10 @@ export function applyAgentEvent(
         model,
       };
     }
+
+    // 状態は動かさない（順序に依存しないので、ターンが終わったあとに届いても安全）。
+    case 'model_resolved':
+      return state.model === event.model ? state : { ...state, model: event.model };
 
     case 'assistant_message': {
       const model = event.model ?? state.model;

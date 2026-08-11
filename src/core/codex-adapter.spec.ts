@@ -381,6 +381,314 @@ describe('createCodexAdapter setModel', () => {
   });
 });
 
+describe('createCodexAdapter resolveModel', () => {
+  // `codex exec --json` はモデル名をひとことも運ばない（実測 0.147.0）。`--model` を
+  // 明示していないセッションのモデル欄は、この問い合わせでしか埋まらない。
+  it('reports the resolved model for a session running on the CLI default', async () => {
+    const codex = makeFakeCodex();
+    const seen: string[] = [];
+    // `turn_context` はターン開始時に書かれるので、短いターンだと解決がストリームの
+    // 終わりに間に合わない。その**遅れて届く**経路をここで固定する（間に合わなければ
+    // 1 ターンで idle になったセッションのモデル欄が次の指示まで空のままになる）。
+    let answer = (_model: string) => {};
+    const pending = new Promise<string>((resolve) => {
+      answer = resolve;
+    });
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: (threadId) => {
+        seen.push(threadId);
+        return pending;
+      },
+    });
+    const { prompts, events, done } = drive(adapter);
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    // 明示していないので `--model` は渡らない（CLI の既定に任せる）。
+    expect(codex.requests[0]?.model).toBeUndefined();
+    codex.at(0).emit(threadStarted('th-1'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the turn to end');
+
+    answer('gpt-5.6-sol');
+    await waitFor(() => events.some((e) => e.kind === 'model_resolved'), 'the resolved model');
+    expect(seen).toEqual(['th-1']);
+    expect(events.find((e) => e.kind === 'model_resolved')).toEqual({
+      kind: 'model_resolved',
+      model: 'gpt-5.6-sol',
+    });
+    // 終端イベントの**あと**に流れる（`model_resolved` は status を触らないので、
+    // 完了したセッションを `running` に巻き戻さない）。
+    const kinds = events.map((e) => e.kind);
+    expect(kinds.indexOf('model_resolved')).toBeGreaterThan(kinds.indexOf('turn_completed'));
+
+    prompts.close();
+    await done;
+  });
+
+  it('does not ask when the model was chosen explicitly (Session already showed it)', async () => {
+    const codex = makeFakeCodex();
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => {
+        asked += 1;
+        return 'gpt-5.6-sol';
+      },
+    });
+    const { prompts, events, done } = drive(adapter, { options: { model: 'gpt-5.4-mini' } });
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the turn to end');
+
+    expect(asked).toBe(0);
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    prompts.close();
+    await done;
+  });
+
+  it('asks once per thread, and again after /model resets to the CLI default', async () => {
+    const codex = makeFakeCodex();
+    const asked: string[] = [];
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async (threadId) => {
+        asked.push(threadId);
+        return 'gpt-5.6-sol';
+      },
+    });
+    const { run, prompts, events, done } = drive(adapter);
+
+    prompts.push('first');
+    await waitFor(() => codex.requests.length === 1, 'the first spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'model_resolved'), 'the first answer');
+
+    // 同じスレッドを resume する 2 ターン目では問い合わせ直さない。
+    prompts.push('second');
+    await waitFor(() => codex.requests.length === 2, 'the second spawn');
+    codex.at(1).emit(threadStarted('th-1'));
+    codex.at(1).emit(turnCompleted);
+    codex.at(1).end();
+    await waitFor(() => events.filter((e) => e.kind === 'turn_completed').length === 2, 'turn 2');
+    expect(asked).toEqual(['th-1']);
+
+    // 明示指定 → 既定へ戻す、と往復したら引き直す（前の答えは別モデルのものかもしれない）。
+    await run.setModel?.('gpt-5.4-mini');
+    await run.setModel?.(undefined);
+    prompts.push('third');
+    await waitFor(() => codex.requests.length === 3, 'the third spawn');
+    codex.at(2).emit(threadStarted('th-1'));
+    codex.at(2).emit(turnCompleted);
+    codex.at(2).end();
+    await waitFor(() => asked.length === 2, 'the re-ask');
+
+    prompts.close();
+    await done;
+  });
+
+  // 問い合わせ中に `/model` で選び直されたら、届いた答えはもう古い。捨てないと
+  // 「次のターンは選んだモデルで動くのに、一覧には既定のモデル名が出たまま」になり、
+  // Codex は二度とモデルを報告しないので**永久にずれたまま** state.json にも焼き付く。
+  it('drops the answer when /model overtook it while the lookup was in flight', async () => {
+    const codex = makeFakeCodex();
+    let answer = (_model: string) => {};
+    const pending = new Promise<string>((resolve) => {
+      answer = resolve;
+    });
+    const adapter = createCodexAdapter({ spawn: codex.spawn, resolveModel: () => pending });
+    const { run, prompts, events, done } = drive(adapter);
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    // **答えが先に届き**（ここで保留される）、そのあとユーザーが明示選択する、という
+    // 順序でないと再現しない（この順序を崩すと問い合わせ側のガードだけで素通りする）。
+    answer('gpt-5.6-sol');
+    for (let i = 0; i < 5; i += 1) {
+      await tick();
+    }
+    await run.setModel?.('gpt-5.4-mini');
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the turn to end');
+
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    prompts.close();
+    await done;
+  });
+
+  // `/agent` で切り替えると `run.interrupt()` が呼ばれ、`agent_switched` が model を
+  // クリアする。遅れて届いた Codex の slug をそこへ流すと、Claude のセッションに
+  // Codex のモデル名が出たまま永続化される。
+  it('drops the answer when the run was interrupted (agent switch / Ctrl+C)', async () => {
+    const codex = makeFakeCodex();
+    let answer = (_model: string) => {};
+    const pending = new Promise<string>((resolve) => {
+      answer = resolve;
+    });
+    const adapter = createCodexAdapter({ spawn: codex.spawn, resolveModel: () => pending });
+    const { run, prompts, events, done } = drive(adapter);
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    await run.interrupt?.();
+    answer('gpt-5.6-sol');
+    codex.at(0).end();
+    await waitFor(() => codex.at(0).wasKilled(), 'the process to be killed');
+    prompts.close();
+    await done;
+
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+  });
+
+  // 空振り（`turn_context` がまだ書かれていない）を記憶してしまうと、次のターンなら
+  // すぐ読めるのに二度と引き直さないセッションになる。
+  it('retries on the next turn when the rollout was not readable yet', async () => {
+    const codex = makeFakeCodex();
+    const answers: (string | undefined)[] = [undefined, 'gpt-5.6-sol'];
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => answers[asked++],
+    });
+    const { prompts, events, done } = drive(adapter);
+
+    prompts.push('first');
+    await waitFor(() => codex.requests.length === 1, 'the first spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the first turn');
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    prompts.push('second');
+    await waitFor(() => codex.requests.length === 2, 'the second spawn');
+    codex.at(1).emit(threadStarted('th-1'));
+    codex.at(1).emit(turnCompleted);
+    codex.at(1).end();
+    await waitFor(() => events.some((e) => e.kind === 'model_resolved'), 'the retry to answer');
+    expect(asked).toBe(2);
+
+    prompts.close();
+    await done;
+  });
+
+  // ただし、そもそも取れない環境で毎ターン探し回らない。
+  it('stops asking after a few misses (never-readable rollout)', async () => {
+    const codex = makeFakeCodex();
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => {
+        asked += 1;
+        return undefined;
+      },
+    });
+    const { prompts, events, done } = drive(adapter);
+
+    for (let turn = 0; turn < 5; turn += 1) {
+      prompts.push(`turn ${turn}`);
+      await waitFor(() => codex.requests.length === turn + 1, `spawn ${turn}`);
+      codex.at(turn).emit(threadStarted('th-1'));
+      codex.at(turn).emit(turnCompleted);
+      codex.at(turn).end();
+      await waitFor(
+        () => events.filter((e) => e.kind === 'turn_completed').length === turn + 1,
+        `turn ${turn} to end`,
+      );
+    }
+    expect(asked).toBe(3);
+
+    prompts.close();
+    await done;
+  });
+
+  // 上限は「読めない環境で毎ターン探し回らない」ためのもので、ユーザーが明示的に
+  // 既定へ戻す操作まで縛るためのものではない。予算を戻さないと、序盤に空振りして
+  // 使い切ったセッションは「明示モデル → 既定へ戻す」としてもモデル欄が明示モデルの
+  // まま二度と更新されない。
+  it('restores the probe budget when /model goes back to the CLI default', async () => {
+    const codex = makeFakeCodex();
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => {
+        asked += 1;
+        // 最初の 3 回（= 上限ぶん）は空振り、そのあとは読める。
+        return asked > 3 ? 'gpt-5.6-sol' : undefined;
+      },
+    });
+    const { run, prompts, events, done } = drive(adapter);
+
+    const turn = async (index: number) => {
+      prompts.push(`turn ${index}`);
+      await waitFor(() => codex.requests.length === index + 1, `spawn ${index}`);
+      codex.at(index).emit(threadStarted('th-1'));
+      codex.at(index).emit(turnCompleted);
+      codex.at(index).end();
+      await waitFor(
+        () => events.filter((e) => e.kind === 'turn_completed').length === index + 1,
+        `turn ${index} to end`,
+      );
+    };
+
+    for (let i = 0; i < 3; i += 1) {
+      await turn(i);
+    }
+    expect(asked).toBe(3);
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    // 明示モデルを選び、また既定へ戻す。
+    await run.setModel?.('gpt-5.4-mini');
+    await run.setModel?.(undefined);
+    await turn(3);
+
+    expect(asked).toBe(4);
+    expect(events.find((e) => e.kind === 'model_resolved')).toEqual({
+      kind: 'model_resolved',
+      model: 'gpt-5.6-sol',
+    });
+
+    prompts.close();
+    await done;
+  });
+
+  it('survives a failed lookup (the model column just stays empty)', async () => {
+    const codex = makeFakeCodex();
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => {
+        throw new Error('no rollout directory');
+      },
+    });
+    const { prompts, events, done } = drive(adapter);
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the turn to end');
+
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    prompts.close();
+    await done;
+  });
+});
+
 describe('createCodexAdapter stream mapping', () => {
   it('drops junk lines and maps the rest through parseCodexEvent', async () => {
     const codex = makeFakeCodex();

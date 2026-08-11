@@ -36,8 +36,20 @@
 
 - **3 点セットは provider ごとに対で書く**。Claude が `claude-adapter.ts` / `claude-parse.ts` /
   `claude-errors.ts` なら、Codex は `codex-adapter.ts` / `codex-parse.ts` / `codex-errors.ts`
-  （+ JSONL の型と受理ガードだけを持つ `codex-events.ts`、実 I/O の `utils/codex.ts`）。
+  （+ JSONL の型と受理ガードだけを持つ `codex-events.ts`、rollout の形を知る
+  `codex-rollout.ts`、実 I/O の `utils/codex.ts`）。
   **その CLI / SDK の形の知識をこの外へ漏らさない。**
+- **その provider が「実際に動いているモデル」を報告しないなら、推測で埋めない。**
+  `codex exec --json` はモデル名を一切運ばない（実測 0.147.0）。`--model` を明示していない
+  セッションのモデル名は、CLI が書き残す rollout の `turn_context` からしか分からないので、
+  そこを読む（`core/codex-rollout.ts` = 純粋な抽出 / `utils/codex.ts` の
+  `resolveCodexRolloutModel` = 探索と読み出し。理由と実測は
+  [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)）。**カタログの先頭を既定とみなす類の
+  当て推量はしない** — 設定で既定を変えているユーザーに嘘のモデル名を出すことになる。
+  取れなければモデル欄は空のままでよい（`permissions: false` と同じで、無いものは無いと出す）。
+  報告は **`model_resolved`**（`core/agent-events.ts`）で行う。答えはターンが終わったあとに
+  届くことがあり、`session_started` / `assistant_message` に相乗りさせると `status` が
+  `running` に巻き戻るため、**モデル欄だけを触る専用イベント**を通す。
 - **CLI は同梱せず、ユーザーがインストールしたものを起動する**（`git` / `gh` と同じ扱い）。
   provider の SDK パッケージを依存に足すと、その provider を使わないユーザーにまで
   プラットフォーム別バイナリを配ることになる。認証もその CLI のログインに委ねる

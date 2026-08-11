@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CodexSpawnRequest } from '@/core';
-import { codexArgs, detectCodexAvailability, spawnCodex } from '@/utils/codex';
+import {
+  codexArgs,
+  detectCodexAvailability,
+  resolveCodexRolloutModel,
+  spawnCodex,
+} from '@/utils/codex';
 
 /**
  * `codex exec` の引数組み立てだけを見る純粋なテスト。**実プロセスは起動しない**
@@ -187,5 +195,91 @@ describe('detectCodexAvailability', () => {
   it('reports not-installed (and not-logged-in) when the binary is missing', async () => {
     const a = await detectCodexAvailability('/nonexistent/codex-binary-for-tests');
     expect(a).toEqual({ installed: false, loggedIn: false });
+  });
+});
+
+/**
+ * rollout からの解決済みモデル読み出し。実 `codex` は要らない（ファイル配置と
+ * 内容だけが問題）ので、`mkdtemp` で `$CODEX_HOME` を丸ごと組み立てて検証する。
+ * レイアウト・行の形は実測（codex-cli 0.147.0）に合わせてある。
+ */
+describe('resolveCodexRolloutModel', () => {
+  const THREAD = '019ff155-b5c3-7380-87f1-02c13d2a66d4';
+
+  /** `<home>/sessions/<年>/<月>/<日>/rollout-<時刻>-<id>.jsonl` を 1 本作る。 */
+  async function writeRollout(
+    home: string,
+    day: readonly [string, string, string],
+    threadId: string,
+    lines: readonly unknown[],
+  ): Promise<void> {
+    const dir = join(home, 'sessions', ...day);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, `rollout-${day.join('-')}T23-59-13-${threadId}.jsonl`),
+      `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`,
+      'utf8',
+    );
+  }
+
+  const meta = { type: 'session_meta', payload: { model_provider: 'openai' } };
+  const turn = (model: string) => ({ type: 'turn_context', payload: { model } });
+
+  let home: string;
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'codiva-codex-home-'));
+  });
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const fast = { retries: 1, retryMs: 1 };
+
+  it('reads the model the CLI actually resolved for that thread', async () => {
+    await writeRollout(home, ['2026', '08', '11'], THREAD, [meta, turn('gpt-5.6-sol')]);
+    expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBe('gpt-5.6-sol');
+  });
+
+  it('picks the rollout of the right thread, not just the newest one', async () => {
+    await writeRollout(home, ['2026', '08', '11'], THREAD, [meta, turn('gpt-5.4-mini')]);
+    await writeRollout(home, ['2026', '08', '12'], 'other-thread-id', [meta, turn('gpt-5.6-sol')]);
+    expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBe('gpt-5.4-mini');
+  });
+
+  // `codex exec resume` は**スレッド開始時に作られた同じ rollout** へ追記し続けるので、
+  // 何日も経ってから復元・resume したセッションのファイルは古い日付ディレクトリにある。
+  // 日数で探索を打ち切ると、その間に別セッションを作っただけでモデル欄が二度と埋まらない。
+  it('finds a resumed thread whose rollout sits in a much older day directory', async () => {
+    await writeRollout(home, ['2026', '08', '01'], THREAD, [meta, turn('gpt-5.6-sol')]);
+    // 開始日以降に別スレッドのセッションが 9 日ぶん積まれている。
+    for (let day = 2; day <= 10; day += 1) {
+      const dd = String(day).padStart(2, '0');
+      await writeRollout(home, ['2026', '08', dd], `other-${dd}`, [meta, turn('gpt-5.4-mini')]);
+    }
+    expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBe('gpt-5.6-sol');
+  });
+
+  // 年・月をまたいでも同じ（新しい順に見て最初に当たった時点で止める）。
+  it('crosses year and month boundaries when looking for an old thread', async () => {
+    await writeRollout(home, ['2025', '12', '30'], THREAD, [meta, turn('gpt-5.6-sol')]);
+    await writeRollout(home, ['2026', '08', '11'], 'recent-thread', [meta, turn('gpt-5.4-mini')]);
+    expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBe('gpt-5.6-sol');
+  });
+
+  it('gives up quietly when the thread has no rollout yet (model column stays empty)', async () => {
+    await writeRollout(home, ['2026', '08', '11'], 'someone-else', [meta, turn('gpt-5.6-sol')]);
+    expect(await resolveCodexRolloutModel(THREAD, { home, ...fast })).toBeUndefined();
+  });
+
+  it('gives up quietly when CODEX_HOME does not exist at all', async () => {
+    const missing = join(home, 'nope');
+    expect(await resolveCodexRolloutModel(THREAD, { home: missing, ...fast })).toBeUndefined();
+  });
+
+  it('retries until the turn_context has been written (it lands after thread.started)', async () => {
+    await writeRollout(home, ['2026', '08', '11'], THREAD, [meta]);
+    const pending = resolveCodexRolloutModel(THREAD, { home, retries: 40, retryMs: 5 });
+    await writeRollout(home, ['2026', '08', '11'], THREAD, [meta, turn('gpt-5.6-sol')]);
+    expect(await pending).toBe('gpt-5.6-sol');
   });
 });

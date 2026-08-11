@@ -27,6 +27,13 @@ import type { CodexSandbox, EffortLevel } from './config';
  * したがって `capabilities.permissions` は false で、`requestPermission` は呼ばれない。
  */
 
+/**
+ * 解決済みモデルの問い合わせを 1 セッションで何回まで試すか。空振り（rollout が
+ * まだ書かれていない）は次のターンで引き直すが、そもそも取れない環境
+ * （rollout を書かない設定・別レイアウト）で毎ターン探し回らないための上限。
+ */
+const MAX_MODEL_PROBES = 3;
+
 /** 1 ターンぶんの `codex exec` を起動するための入力（I/O 実装は `utils/codex.ts`）。 */
 export interface CodexSpawnRequest {
   /** セッションの worktree。 */
@@ -94,6 +101,13 @@ export function createCodexAdapter(deps: {
   generateTitle?: (prompt: string) => Promise<string | null | undefined>;
   /** 導入・ログイン検出（I/O は `utils/codex.ts` の `detectCodexAvailability`）。 */
   checkAvailability?: () => Promise<AgentAvailability>;
+  /**
+   * そのスレッドが実際に使っているモデルを調べる（I/O は `utils/codex.ts` の
+   * `resolveCodexRolloutModel`）。`codex exec --json` はモデル名を運ばないので、
+   * `--model` を明示していないセッションはこれが唯一の出所になる。
+   * 省略可（渡さなければモデル欄は空のまま = 従来どおり）。
+   */
+  resolveModel?: (threadId: string) => Promise<string | undefined>;
   /** TUI 内ログインのプロセス起動（I/O は `utils/agent-login.ts` の `spawnLogin`）。 */
   spawnLogin?: (command: string, args: readonly string[]) => AgentLoginProcess;
 }): AgentAdapter {
@@ -122,6 +136,67 @@ export function createCodexAdapter(deps: {
       // `Ctrl+C` で殺したターンは失敗ではない（Session が先に `interrupted` を確定させる）。
       let interrupted = false;
       let current: CodexProcess | undefined;
+
+      // 解決済みモデルの遅延問い合わせ。`codex exec --json` はモデル名を運ばないので、
+      // `--model` を明示していないセッション（= CLI の既定に任せている）のモデル欄は
+      // これでしか埋まらない。**ストリームは止めない** — 問い合わせは走らせておいて、
+      // answered ぶんを後続イベントの合間に流す。
+      let modelProbe: Promise<void> | undefined;
+      let pendingModel: string | undefined;
+      let probedThread: string | undefined;
+      let probeAttempts = 0;
+
+      const probeModel = (id: string): void => {
+        const resolve = deps.resolveModel;
+        // 明示指定があるときは Session が先に表示済みなので問い合わせない。
+        if (!resolve || model !== undefined || probedThread === id || modelProbe) {
+          return;
+        }
+        // 取れない環境（rollout を書かない設定・別レイアウト）で毎ターン探し回らない。
+        if (probeAttempts >= MAX_MODEL_PROBES) {
+          return;
+        }
+        probeAttempts += 1;
+        probedThread = id;
+        // **空振りは記憶しない**。`turn_context` はターン開始時に書かれるので、初回が
+        // 早すぎて空振りすることがある。ここで id を latch したままにすると、次の
+        // ターンなら即座に読めるのに二度と引き直さないセッションになる。
+        const retryLater = () => {
+          probedThread = undefined;
+        };
+        modelProbe = resolve(id)
+          .then((found) => {
+            if (found === undefined) {
+              retryLater();
+              return;
+            }
+            pendingModel = found;
+          })
+          .catch(retryLater)
+          .finally(() => {
+            modelProbe = undefined;
+          });
+      };
+
+      /**
+       * 解決済みモデルを 1 回だけ流す。**答えが古くなっていたら捨てる** — 問い合わせ中に
+       * `/model` で明示選択されたり（そちらが正しい）、中断・エージェント切替が起きたり
+       * （切替先は別 provider なので Codex の slug は嘘になる）した後に流すと、
+       * 一覧に間違ったモデル名が出たまま `state.json` にも焼き付く。
+       */
+      const takeResolvedModel = (): AgentEvent | undefined => {
+        const found = pendingModel;
+        pendingModel = undefined;
+        if (
+          found === undefined ||
+          model !== undefined ||
+          interrupted ||
+          request.abortController.signal.aborted
+        ) {
+          return undefined;
+        }
+        return { kind: 'model_resolved', model: found };
+      };
 
       const abort = () => {
         current?.kill();
@@ -167,8 +242,14 @@ export function createCodexAdapter(deps: {
                   }
                   if (event.type === 'thread.started') {
                     threadId = event.thread_id;
+                    probeModel(event.thread_id);
                   } else if (event.type === 'turn.completed' || event.type === 'turn.failed') {
                     sawTerminal = true;
+                  }
+                  // 解決済みモデルが届いていれば先に流す（長いターンでも一覧が早く埋まる）。
+                  const resolvedMid = takeResolvedModel();
+                  if (resolvedMid) {
+                    yield resolvedMid;
                   }
                   yield* parseCodexEvent(event);
                 }
@@ -181,16 +262,30 @@ export function createCodexAdapter(deps: {
                 proc.kill();
               }
 
-              if (interrupted || request.abortController.signal.aborted) {
-                // 中断は Session 側で既に `interrupted` を確定させてある。
-                continue;
-              }
-              if (!sawTerminal) {
+              // 中断は Session 側で既に `interrupted` を確定させてあるので何も出さない。
+              if (!interrupted && !request.abortController.signal.aborted && !sawTerminal) {
                 const { code, stderr } = proc.result();
                 const detail = stderr.trim() || `codex exited with code ${code ?? 'null'}`;
                 yield code === 0
                   ? { kind: 'turn_completed', text: '' }
                   : { kind: 'turn_stopped', cause: classifyCodexError(detail), detail };
+              }
+
+              // 問い合わせの回収は**終端イベントを流したあと**。`turn_context` は
+              // ターン開始時に書かれるので、短いターンだと解決がストリームの終わりに
+              // 間に合わない。ここで待たないと、1 ターンで終わって idle になった
+              // セッションのモデル欄が次の指示まで空のままになる。`model_resolved` は
+              // status を触らないので、完了イベントの後に流しても巻き戻さない。
+              //
+              // 中断・破棄のときは**待たない**（`Ctrl+C` の直後や終了処理を、表示用の
+              // 問い合わせで最大 1 秒引き止めない）。タイマーは unref してあるので、
+              // 置き去りにした問い合わせが TUI の終了を止めることもない。
+              if (modelProbe && !interrupted && !request.abortController.signal.aborted) {
+                await modelProbe;
+              }
+              const resolved = takeResolvedModel();
+              if (resolved) {
+                yield resolved;
               }
             }
           } finally {
@@ -207,6 +302,18 @@ export function createCodexAdapter(deps: {
         // 走っているターンには反映されない（`setModel` の契約としては許容範囲）。
         setModel: (next) => {
           model = next;
+          // 「既定に戻す」を選んだら、その CLI 既定が何なのかを次のターンで引き直す
+          // （前回の解決結果は、明示指定していた別モデルのものかもしれない）。
+          //
+          // **探索予算も戻す**。`MAX_MODEL_PROBES` は「そもそも rollout を読めない環境で
+          // 毎ターン探し回らない」ための上限で、ユーザーが明示的に既定へ戻す操作まで
+          // 縛るためのものではない。残したままだと、序盤に空振りして予算を使い切った
+          // セッションでは「明示モデルを選ぶ → 既定へ戻す」としてもモデル欄が明示モデルの
+          // 表示から二度と更新されない（予算はユーザーの操作回数で自然に頭打ちになる）。
+          if (next === undefined) {
+            probedThread = undefined;
+            probeAttempts = 0;
+          }
         },
       };
     },
