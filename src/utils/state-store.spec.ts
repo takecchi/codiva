@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -71,6 +71,35 @@ describe('saveState / loadState', () => {
     const state = sampleState('/tmp/wt/task');
     saveStateSync(state, path);
     expect(await loadState(path)).toEqual(state);
+  });
+
+  it('serializes concurrent writes so the last caller wins', async () => {
+    const path = defaultStatePath(dir);
+    const first = sampleState('/tmp/wt/first');
+    const last = sampleState('/tmp/wt/last');
+    // Both start before either finishes: the earlier (stale) write must not land last.
+    await Promise.all([saveState(first, path), saveState(last, path)]);
+    expect(await loadState(path)).toEqual(last);
+  });
+
+  it('leaves no temp files behind', async () => {
+    const path = defaultStatePath(dir);
+    await saveState(sampleState('/tmp/wt/a'), path);
+    saveStateSync(sampleState('/tmp/wt/b'), path);
+    expect(await readdir(join(dir, '.codiva'))).toEqual(['state.json']);
+  });
+
+  it('keeps the previous file intact when a write fails', async () => {
+    const path = defaultStatePath(dir);
+    const good = sampleState('/tmp/wt/good');
+    await saveState(good, path);
+    // A directory in the way makes the rename fail after the temp file is written.
+    await mkdir(join(dir, 'blocked', 'child'), { recursive: true });
+    const blocked = join(dir, 'blocked');
+    await expect(saveState(sampleState('/tmp/wt/bad'), blocked)).rejects.toThrow();
+    expect(() => saveStateSync(sampleState('/tmp/wt/bad'), blocked)).toThrow();
+    expect((await readdir(dir)).sort()).toEqual(['.codiva', 'blocked']);
+    expect(await loadState(path)).toEqual(good);
   });
 });
 
