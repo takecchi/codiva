@@ -615,6 +615,56 @@ describe('createCodexAdapter resolveModel', () => {
     await done;
   });
 
+  // 上限は「読めない環境で毎ターン探し回らない」ためのもので、ユーザーが明示的に
+  // 既定へ戻す操作まで縛るためのものではない。予算を戻さないと、序盤に空振りして
+  // 使い切ったセッションは「明示モデル → 既定へ戻す」としてもモデル欄が明示モデルの
+  // まま二度と更新されない。
+  it('restores the probe budget when /model goes back to the CLI default', async () => {
+    const codex = makeFakeCodex();
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => {
+        asked += 1;
+        // 最初の 3 回（= 上限ぶん）は空振り、そのあとは読める。
+        return asked > 3 ? 'gpt-5.6-sol' : undefined;
+      },
+    });
+    const { run, prompts, events, done } = drive(adapter);
+
+    const turn = async (index: number) => {
+      prompts.push(`turn ${index}`);
+      await waitFor(() => codex.requests.length === index + 1, `spawn ${index}`);
+      codex.at(index).emit(threadStarted('th-1'));
+      codex.at(index).emit(turnCompleted);
+      codex.at(index).end();
+      await waitFor(
+        () => events.filter((e) => e.kind === 'turn_completed').length === index + 1,
+        `turn ${index} to end`,
+      );
+    };
+
+    for (let i = 0; i < 3; i += 1) {
+      await turn(i);
+    }
+    expect(asked).toBe(3);
+    expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
+
+    // 明示モデルを選び、また既定へ戻す。
+    await run.setModel?.('gpt-5.4-mini');
+    await run.setModel?.(undefined);
+    await turn(3);
+
+    expect(asked).toBe(4);
+    expect(events.find((e) => e.kind === 'model_resolved')).toEqual({
+      kind: 'model_resolved',
+      model: 'gpt-5.6-sol',
+    });
+
+    prompts.close();
+    await done;
+  });
+
   it('survives a failed lookup (the model column just stays empty)', async () => {
     const codex = makeFakeCodex();
     const adapter = createCodexAdapter({
