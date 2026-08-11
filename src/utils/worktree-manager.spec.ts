@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MergeConflictError } from '@/core';
@@ -36,6 +36,18 @@ async function makeRepo(withCommit: boolean): Promise<string> {
     await g(dir, 'commit', '-m', 'initial');
   }
   return dir;
+}
+
+/**
+ * Install an executable git hook in `repo`. Hooks are shared with every linked
+ * worktree (`.git/hooks` lives in the main repo), which is what lets a merge run
+ * from the repo root be rejected by one.
+ */
+async function installHook(repo: string, name: string, body: string): Promise<void> {
+  const dir = (await g(repo, 'rev-parse', '--git-path', 'hooks')).stdout.trim();
+  const path = isAbsolute(dir) ? join(dir, name) : join(repo, dir, name);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `#!/bin/sh\n${body}`, { mode: 0o755 });
 }
 
 describe('WorktreeManager', () => {
@@ -207,6 +219,44 @@ describe('WorktreeManager', () => {
       const err = await wm.merge(wt, base).catch((e) => e);
       expect(err).toBeInstanceOf(MergeConflictError);
       expect((err as MergeConflictError).files).toEqual(['README.md']);
+    });
+
+    // マージ自体は成功したのにフックが commit を拒んだケース。競合ファイルは 1 件も
+    // 無いので `MergeConflictError`（= 抜け出せない terminal な conflict バッジ）に
+    // すり替えず、stderr を載せた元の GitError をそのまま上げる。
+    it('keeps the original error when the merge fails without conflicts (hook rejection)', async () => {
+      const wm = new WorktreeManager(repo);
+      const base = await wm.baseBranch();
+      const wt = await wm.add('hook-reject');
+      await writeFile(join(wt.path, 'feature.txt'), 'done\n');
+      await g(wt.path, 'add', '-A');
+      await g(wt.path, 'commit', '-m', 'feature');
+      await installHook(repo, 'pre-merge-commit', 'echo "nope: signing failed" >&2\nexit 1\n');
+
+      const err = await wm.merge(wt, base).catch((e) => e);
+      expect(err).not.toBeInstanceOf(MergeConflictError);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain('nope: signing failed');
+      // The merge git started is aborted, so the base tree is left clean and the
+      // feature file is *not* present (the merge commit never landed).
+      expect((await g(repo, 'status', '--porcelain')).stdout.trim()).toBe('');
+      await expect(readFile(join(repo, 'feature.txt'), 'utf8')).rejects.toBeTruthy();
+    });
+
+    // フックすら走らず index に触れないまま失敗する経路（不明な ref）。
+    // ここは abort すべき merge が存在しないので `--abort` を撃たない。
+    it('keeps the original error when git refuses to start the merge at all', async () => {
+      const wm = new WorktreeManager(repo);
+      const base = await wm.baseBranch();
+      const wt = await wm.add('missing-branch');
+      // Delete the branch under the worktree's feet: nothing to merge from.
+      await g(repo, 'worktree', 'remove', '--force', wt.path);
+      await g(repo, 'branch', '-D', wt.branch);
+
+      const err = await wm.merge(wt, base).catch((e) => e);
+      expect(err).not.toBeInstanceOf(MergeConflictError);
+      expect((err as Error).message).toMatch(/codiva\/missing-branch/);
+      expect((await g(repo, 'status', '--porcelain')).stdout.trim()).toBe('');
     });
   });
 
