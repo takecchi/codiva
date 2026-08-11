@@ -837,8 +837,9 @@ describe('applyClaudeMessage gates completion on in-flight sub-agent tasks', () 
     expect(state.status).toBe('completed');
   });
 
-  it.each(['cancelled', 'failed', 'timed_out'])(
-    'treats an unknown-but-terminal task status (%s) as settled',
+  // SDK の union は pending | running | completed | failed | killed | paused。
+  it.each(['failed', 'killed', 'some_future_status'])(
+    'treats a terminal task status (%s) as settled',
     (status) => {
       // 知らない言い回しは決着側に倒す（取りこぼすと張り付く）。
       let state = sdk(running, taskStarted('t1'), 1);
@@ -848,12 +849,54 @@ describe('applyClaudeMessage gates completion on in-flight sub-agent tasks', () 
     },
   );
 
-  it('keeps gating while task_updated only reports progress', () => {
+  it.each(['pending', 'running', 'paused'])('keeps gating while the task is %s', (status) => {
+    // `paused` は「終わった」ではない。決着扱いにすると再開したタスクを誰も追跡して
+    // いない状態で completed になり、その後のメッセージで `running` へ戻って
+    // **二度と終われなくなる**（この不具合そのものを別の扉から再導入することになる）。
     let state = sdk(running, taskStarted('t1'), 1);
     state = sdk(state, success('done'), 2);
-    state = sdk(state, taskUpdated('t1', 'in_progress'), 3);
+    state = sdk(state, taskUpdated('t1', status), 3);
     expect(state.status).toBe('running');
     expect(state.activeTaskIds).toEqual(['t1']);
+  });
+
+  it('self-heals from a dropped edge via the background_tasks_changed level signal', () => {
+    // エッジ（task_notification / 終端 task_updated）を 1 通取りこぼしても、
+    // レベル信号が集合ごと差し替えるのでゲートは wedge しない。
+    let state = sdk(running, taskStarted('t1'), 1);
+    state = sdk(state, success('done'), 2);
+    expect(state.status).toBe('running');
+    state = sdk(state, { type: 'system', subtype: 'background_tasks_changed', tasks: [] }, 3);
+    expect(state.status).toBe('completed');
+    expect(state.finishedAt).toBe(3);
+  });
+
+  it('adopts the level signal wholesale (tasks codiva never saw start)', () => {
+    let state = sdk(running, {
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'bg1' }, { task_id: 'bg2' }],
+    });
+    expect(state.activeTaskIds).toEqual(['bg1', 'bg2']);
+    state = sdk(state, success('done'), 2);
+    expect(state.status).toBe('running');
+    state = sdk(state, {
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'bg2' }],
+    });
+    expect(state.activeTaskIds).toEqual(['bg2']);
+  });
+
+  it('resets the gate when the CLI process (re)starts', () => {
+    // レベル信号は起動時に何も出さないので、前のプロセスの id が残っていると
+    // 誰も片付けられない（SDK が明示している要件）。
+    let state = sdk(running, taskStarted('t1'), 1);
+    expect(state.activeTaskIds).toEqual(['t1']);
+    state = sdk(state, { type: 'system', subtype: 'init', session_id: 'sdk-2' }, 2);
+    expect(state.activeTaskIds).toBeUndefined();
+    state = sdk(state, success('done'), 3);
+    expect(state.status).toBe('completed');
   });
 
   it('deduplicates repeated task_started for the same id', () => {

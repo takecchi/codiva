@@ -96,6 +96,13 @@ export type AgentEvent =
   | { kind: 'task_started'; taskId: string }
   /** サブエージェントが片付いた — 全部片付いたら保留中の完了を確定する。 */
   | { kind: 'task_settled'; taskId?: string }
+  /**
+   * **今生きているサブエージェントの全集合**（レベル信号）。`task_started` /
+   * `task_settled` のエッジと違い、届いた集合で**丸ごと置き換える** — エッジを
+   * 1 通取りこぼしても完了ゲートが wedge しない（= セッションが永久に `running` に
+   * ならない）ようにするための自己修復経路。出せる provider だけが出せばよい。
+   */
+  | { kind: 'tasks_changed'; taskIds: readonly string[] }
   /** ターンが正常終了した。 */
   | { kind: 'turn_completed'; text: string; totalCostUsd?: number }
   /**
@@ -216,6 +223,11 @@ export function applyAgentEvent(
       const model = event.model ?? state.model;
       return {
         ...state,
+        // CLI プロセスが起き直った＝前のプロセスのタスクはもう居ない。レベル信号は
+        // 起動時に何も出さない（membership が変わったときだけ）ので、ここで空に
+        // 戻さないと、前のプロセスの id が残ったまま誰も片付けられなくなる
+        // （SDK の `SDKBackgroundTasksChangedMessage` が明示している要件）。
+        activeTaskIds: undefined,
         // 保留中の許可がある間は awaiting_* を維持する（ダイアログの裏で
         // "Running" に戻さない）。
         status: state.pendingPermission ? state.status : 'running',
@@ -370,6 +382,20 @@ export function applyAgentEvent(
       }
       if (next.length === active.length) {
         return state;
+      }
+      return { ...state, activeTaskIds: next };
+    }
+
+    case 'tasks_changed': {
+      // REPLACE セマンティクス。エッジ（task_started / task_settled）の取りこぼしを
+      // ここで必ず正す — これがあるので「1 通落ちてゲートが永久に埋まる」が起きない。
+      const active = state.activeTaskIds ?? [];
+      const next = [...event.taskIds];
+      if (next.length === active.length && next.every((id, i) => id === active[i])) {
+        return state;
+      }
+      if (next.length === 0 && state.deferredResult && state.status === 'running') {
+        return completeTurn(state, { ...state.deferredResult, at });
       }
       return { ...state, activeTaskIds: next };
     }

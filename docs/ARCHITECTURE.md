@@ -504,21 +504,41 @@ incomplete.`）→ それを集約する `result`（`subtype: 'success'` + `is_e
 
 **ゲートは「解けなくなる」方が「早すぎる完了」より危険**。ゲートが埋まったままだとセッションは
 `running` から永久に出られず（片付いたタスクへの決着通知はもう来ない）、バッジも動作時間も嘘になる。
-そのため次の 4 点で**必ず解ける**ようにしてある（どれも「ずっと Running」の実バグ）:
+そのため次の 6 点で**必ず解ける**ようにしてある（どれも「ずっと Running」の実バグ）:
 
-1. **決着の信号は 2 系統見る** — `system/task_notification` に加えて、終端状態の `system/task_updated`
-   （`patch.status` が `pending` / `queued` / `created` / `in_progress` / `running` の**いずれでもない**）も
+1. **レベル信号で自己修復する**（いちばん強い担保）。`system/background_tasks_changed` は
+   「いま生きているバックグラウンドタスクの**全集合**」を運び、**REPLACE セマンティクス**を持つ。
+   SDK 自身が「エッジ（`task_started` / `task_notification`）の取りこぼしで running 表示が
+   wedge しないよう、集合ごと差し替えろ」と明示しているので、エッジ（古い CLI でも動く primary）と
+   併用して集合を必ず正す（`tasks_changed` イベント）。
+2. **CLI プロセスが起き直ったらゲートを空に戻す**（`session_started`）。レベル信号は起動時に
+   何も出さない（membership が変わったときだけ）ので、前のプロセスの id が残ると誰も片付けられない。
+3. **決着の信号は 2 系統見る** — `system/task_notification` に加えて、終端状態の `system/task_updated`
+   （`patch.status` が `pending` / `running` / **`paused`** の**いずれでもない**）も
    `task_settled` に写す。通知が来ないまま終わるタスク（止められた・落ちた）を取りこぼさないため、
-   判定は「まだ走っている状態の否定」で書く。
-2. **帰属できない決着通知はゲートを空にする**（`task_settled` の `taskId` が無い場合）。「どれか
-   分からないので何もしない」は 1 通で永久に張り付く。
-3. **保留した完了は許可/質問待ちの窓を越えて生き残る**。ゲートが空になった瞬間が `awaiting_*`
+   判定は「まだ走っている状態の否定」で書く（将来値が増えても決着側に倒れる）。
+   **`paused` を決着扱いにしない** — 一時停止は「終わった」ではないので、決着にすると再開した
+   タスクを誰も追跡していない状態で completed になり、その後のメッセージで `running` へ戻って
+   **二度と終われなくなる**（この不具合を別の扉から再導入することになる）。
+4. **帰属できない決着通知はゲートを空にする**（`task_settled` の `taskId` が無い場合）。「どれか
+   分からないので何もしない」は 1 通で永久に張り付く（Claude の `task_id` は必須なので実質は
+   他 provider 向けの防御）。
+5. **保留した完了は許可/質問待ちの窓を越えて生き残る**。ゲートが空になった瞬間が `awaiting_*`
    （バックグラウンドの Task が質問を上げている等）だと、その場では完了できず、ゲートは空なので
    `task_settled` も二度と来ない。回答して `running` に戻る `permission_resolved` が
    `settleDeferred` で拾って確定する。
-4. **ターンが終わる遷移では必ずゲートを捨てる**（`clearTurnState`。`interrupted` / `needs_login` /
-   `rate_limited` / `failed` / `completed`、および `agent_switched`）。残すと**次の**ターンの
-   `turn_completed` まで保留され続ける。
+6. **ターンの境界でターン限りの情報を捨てる**。終わる側は `clearTurnState`（`interrupted` /
+   `needs_login` / `rate_limited` / `failed` / `completed`、および `agent_switched`）、始まる側は
+   `user_input` が `deferredResult` を落とす（前のターンの完了が次のターンの途中で確定して
+   しまうため。ゲート自体はまだ生きている可能性があるので残す）。
+
+**許可要求は待ち行列**（`Session.pendingQueue`）。エージェントは 1 通のメッセージで**複数の
+tool_use を並行に**投げるため、`confirm` モードではその数だけ `canUseTool` が同時に走る。
+単一スロットに上書きすると**先の promise が永久に解決されず**、provider はその 1 本を待ち続け、
+ターン終了イベントも出さない — ストリームは生きたままなので下の「最後の砦」でも救えず、
+セッションが永久に許可待ち／`running` で張り付く。UI に出すのは先頭だけで、回答するたびに
+次を上げる（`permission_resolved` で一旦 `running` に戻さない）。ターンが死ぬときは
+**待ち行列ぜんぶ**を deny する（未応答の `tool_use` を 1 つでも残すと後の `resume` が壊れる）。
 
 **最後の砦（`Session.consume` の finally）**: エージェントのストリームが終端イベント
 （`turn_completed` / `turn_stopped`）を出さずに終わったら、`interrupted` に落とす。streaming input mode

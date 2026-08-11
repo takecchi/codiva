@@ -486,6 +486,66 @@ describe('Session', () => {
     expect(session.getState().messages.at(-1)?.text).toBe('continue');
   });
 
+  it('queues concurrent permission requests instead of orphaning the first promise', async () => {
+    // 「ずっと Running」の再現: エージェントは 1 通のメッセージで複数の tool_use を
+    // 並行に投げるので、`confirm` モードでは `canUseTool` が同時に走る。単一スロットに
+    // 上書きすると先の promise が永久に解決されず、provider はその 1 本を待ち続けて
+    // ターン終了イベントを出さない（ストリームは生きているので最後の砦でも救えない）。
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      policy: () => 'ask',
+      now: () => 1,
+    });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+
+    const first = fake.call('Bash', { command: 'one' });
+    const second = fake.call('Bash', { command: 'two' });
+    await tick();
+    // 出ているのは先頭だけ（2 件目は待ち行列）。
+    expect(session.getState().status).toBe('awaiting_permission');
+    expect(session.getState().pendingPermission?.input).toEqual({ command: 'one' });
+
+    session.allowPending();
+    await tick();
+    // 1 件目が解決し、続けて 2 件目が上がる（running へ戻さない）。
+    expect(await first).toMatchObject({ behavior: 'allow' });
+    expect(session.getState().status).toBe('awaiting_permission');
+    expect(session.getState().pendingPermission?.input).toEqual({ command: 'two' });
+
+    session.denyPending('no');
+    await tick();
+    expect(await second).toMatchObject({ behavior: 'deny' });
+    expect(session.getState().status).toBe('running');
+    expect(session.getState().pendingPermission).toBeUndefined();
+  });
+
+  it('denies every queued permission when the turn dies, not just the visible one', async () => {
+    const fake = makeFakeQuery();
+    const session = new Session({
+      queryFn: fake.queryFn,
+      input: INPUT,
+      policy: () => 'ask',
+      now: () => 1,
+    });
+    session.start();
+    fake.emit(initMsg());
+    await tick();
+    const first = fake.call('Bash', { command: 'one' });
+    const second = fake.call('Bash', { command: 'two' });
+    await tick();
+
+    fake.end();
+    await tick();
+    expect(session.getState().status).toBe('interrupted');
+    // 未応答の tool_use を 1 つでも残すと後の resume が壊れる。
+    expect(await first).toMatchObject({ behavior: 'deny' });
+    expect(await second).toMatchObject({ behavior: 'deny' });
+  });
+
   it('marks the session interrupted when the stream ends without finishing the turn', async () => {
     // 「ずっと Running」の再現: ストリームが終端イベント（result / error）を出さずに
     // 終わると、状態機械には何も届かないのでセッションが永久に `running` のまま

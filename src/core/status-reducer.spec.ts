@@ -100,6 +100,24 @@ describe('control events', () => {
     expect(state.deferredResult?.resultText).toBe('done');
   });
 
+  it('user_input drops a held completion from the PREVIOUS turn (but keeps the gate)', () => {
+    // 残すと「次のターンの途中で前のターンの結果テキストと共に completed になる」
+    // （デスクトップ通知も auto-PR も走る）。タスクはまだ生きている可能性があるので
+    // ゲート自体は落とさない。
+    const state = reduce(
+      {
+        ...initialState(BASE),
+        status: 'running',
+        activeTaskIds: ['t1'],
+        deferredResult: { at: 1000, resultText: 'turn 1 result' },
+      },
+      { kind: 'user_input', text: 'do more', at: 2000 },
+    );
+    expect(state.status).toBe('running');
+    expect(state.deferredResult).toBeUndefined();
+    expect(state.activeTaskIds).toEqual(['t1']);
+  });
+
   it('agent_switched drops the sub-agent completion gate (it is per-turn, per-provider)', () => {
     const state = reduce(
       {

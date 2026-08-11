@@ -376,6 +376,11 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         status: state.pendingPermission ? state.status : 'running',
         finishedAt: undefined,
         streamingText: undefined,
+        // 保留していた**前のターンの**完了は、新しい指示が来た時点で無効。残すと
+        // 「次のターンの途中で前のターンの結果テキストと共に completed になる」
+        // （通知も auto-PR も走る）。`activeTaskIds` は本当にまだ生きている可能性が
+        // あるので落とさない — ゲートは残し、確定を捨てる。
+        deferredResult: undefined,
         messages: withLog.messages,
         logSeq: withLog.logSeq,
       };
