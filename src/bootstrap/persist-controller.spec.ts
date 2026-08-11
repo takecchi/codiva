@@ -76,6 +76,27 @@ describe('createPersistController', () => {
     expect(await savedIds(path)).toEqual(['newest']);
   });
 
+  it('repairs again when another synchronous flush lands during the repair write', async () => {
+    const path = defaultStatePath(dir);
+    // Pins the ordering from the review: async write (gen 0) → sync flush (gen 1)
+    // → repair write → sync flush again (gen 2) → repair write's rename lands last.
+    // Repairing only once would leave 'stale2' on disk.
+    const script = ['stale1', 'mid1', 'stale2', 'mid2', 'final'];
+    let call = 0;
+    let persist: PersistController | undefined;
+    const snapshot = (): PersistedState => {
+      const index = call++;
+      if (index === 0 || index === 2) {
+        // A sync flush fires while this write is still in flight.
+        queueMicrotask(() => persist?.flushSync());
+      }
+      return stateWith(script[index] ?? 'final');
+    };
+    persist = createPersistController(snapshot, path);
+    await persist.flushAsync();
+    expect(await savedIds(path)).toEqual(['final']);
+  });
+
   it('keeps saving after a failed write', async () => {
     const blocked = await blockedPath();
     const persist = createPersistController(() => stateWith('a'), blocked);

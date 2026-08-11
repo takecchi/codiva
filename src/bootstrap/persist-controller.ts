@@ -33,10 +33,17 @@ export function createPersistController(
   let queue: Promise<void> = Promise.resolve();
   const save = (): Promise<void> => {
     const run = queue.then(async () => {
-      const generation = syncGeneration;
-      await saveState(snapshot(), statePath);
-      if (generation !== syncGeneration) {
+      // Loop until no sync flush landed while we were writing: repairing once is
+      // not enough, since a second flush during the repair write would itself be
+      // rolled back by that write's rename. Terminates because the only caller of
+      // `flushSync` is the signal handler, which exits right after.
+      let generation = syncGeneration;
+      for (;;) {
         await saveState(snapshot(), statePath);
+        if (generation === syncGeneration) {
+          return;
+        }
+        generation = syncGeneration;
       }
     });
     // Keep the chain alive after a failed write; saves are best-effort.
