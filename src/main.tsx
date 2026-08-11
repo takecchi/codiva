@@ -281,6 +281,8 @@ async function main(): Promise<void> {
   privacyAbort.abort();
   updateAbort.abort();
   await persist.flushAsync();
+  // 直前の `/config` / `/model` が書き込み中のまま終了しないように待つ（reject しない）。
+  await configStore.flush();
   terminal.teardown();
   // 後片付け（flush 含む）が終わってから外す。先に外すと shutdown 中の例外だけ
   // 記録が残らない。

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -33,6 +33,17 @@ describe('config file I/O', () => {
     const path = join(dir, 'nested', 'config.json'); // exercises mkdir of parent dir
     await saveConfig({ language: 'en' }, path);
     expect(await loadConfig(path)).toEqual({ language: 'en' });
+  });
+
+  // 一時ファイル → rename で書くので、書き終わったディレクトリに残骸を残さない
+  // （残ると `.codiva`/`~/.codiva` にゴミが溜まり、次の保存で拾われる余地もできる）。
+  it('leaves no temp file behind', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'codiva-cfg-'));
+    const path = join(dir, 'config.json');
+    await saveConfig({ language: 'en' }, path);
+    await saveConfig({ language: 'ja' }, path);
+    expect(await readdir(dir)).toEqual(['config.json']);
+    expect(await loadConfig(path)).toEqual({ language: 'ja' });
   });
 
   it('drops invalid language on load', async () => {
