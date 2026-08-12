@@ -44,6 +44,10 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
   片方だけ消すと、状態の付かない裸の `#<n>` が残り続ける（`setPr(undefined)` は `extraPrs` を
   触らないので、これが無いと自作 PR の参照を誰も刈れない）。**確認できなかったとき
   （`unavailable`）に流してはいけない** — レート制限やオフラインで PR 参照が消える。
+  落とした結果**別の `extraPr` が代表に繰り上がったら、その行を「回答済み」にしない**
+  （`PrCoordinator` の `answered` / `lastFetched` を更新せず `prLookup: 'loading'` を立てる）。
+  今回の答えは落とした PR のものなので、キャッシュ扱いにすると新代表が陳腐化するまで
+  裸の番号のまま待たされる。
 - **PR は「識別」と「状態」に分けて持つ**。`pr: PrRef`（番号・URL。ブランチに対して不変なので
   **永続化**し、復元直後から `#<n>` を出す）と `prStatus: PrStatus`（マージ可否・チェック・draft。
   揺れるので transient、`core/pr-refresh.ts` の間隔でキャッシュ）。reducer は**半分ずつ**比較して

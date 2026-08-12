@@ -306,8 +306,6 @@ export class PrCoordinator {
       return result.reason;
     }
     const pr = result.kind === 'found' ? result.pr : undefined;
-    this.answered.add(id);
-    this.lastFetched.set(id, this.now());
     const known = knownPrOf(state).knownPr;
     if (!pr && known) {
       // `absent` only comes back when *every* candidate answered, and `known` was one
@@ -318,6 +316,17 @@ export class PrCoordinator {
       session.dropPr(known);
     }
     session.setPr(pr);
+    // A session can hold several PRs. Dropping the one we asked about promotes the next
+    // `extraPr` to primary — a PR this answer says nothing about, so caching the answer
+    // for the row would strand the *new* number bare until its staleness window expired
+    // (60–180s, once per dropped reference). Leave the cache empty so the next tick asks
+    // about it, and show the looking mark until then.
+    if (!pr && known && primaryPr(session.getState())) {
+      session.setPrLookup('loading');
+      return undefined;
+    }
+    this.answered.add(id);
+    this.lastFetched.set(id, this.now());
     try {
       // Auto-ready: once a draft PR's checks pass, flip it to ready-for-review.
       // `checks` came along with the PR payload, so this costs no extra lookup.

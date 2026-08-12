@@ -229,6 +229,34 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(h.state().pr).toBeUndefined();
   });
 
+  // Dropping the tracked PR hands the row to the next `extraPr`, which this answer says
+  // nothing about. Treating the row as answered would leave that *new* number bare for a
+  // whole staleness window (60–180s) — the very state this PR set out to remove.
+  it('marks the next PR as being looked up when the tracked one is dropped', async () => {
+    const dropped = { number: 108, url: 'https://github.com/o/r/pull/108' };
+    const next = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const lookup = vi.fn<PrLookup>(async (_cwd, _branch, opts) =>
+      opts?.knownPr?.url === next.url
+        ? found({ ...next, mergeStatus: 'mergeable', checks: 'passing' })
+        : { kind: 'absent' },
+    );
+    const h = harness(lookup, {
+      state: { pr: dropped, prStatus: { mergeStatus: 'mergeable' }, extraPrs: [next] },
+    });
+    await h.refresh();
+    expect(h.calls()).toEqual(['dropPr:#108', 'setPr:none', 'prLookup:loading']);
+    expect(h.state().extraPrs).toEqual([next]);
+    expect(h.state().prLookup).toBe('loading');
+
+    // The answer was not cached for the row, so the very next tick resolves the new
+    // primary — no waiting out a freshness window that belongs to the dropped PR.
+    await h.refresh();
+    expect(lookup).toHaveBeenLastCalledWith('/wt/s1', 'codiva/s1', { knownPr: next });
+    expect(h.state().pr).toEqual(next);
+    expect(h.state().prStatus?.checks).toBe('passing');
+    expect(h.state().prLookup).toBeUndefined();
+  });
+
   it('keeps a self-opened PR when the lookup only failed', async () => {
     const gone = { number: 109, url: 'https://github.com/o/r/pull/109' };
     const h = harness(async () => ({ kind: 'unavailable', reason: 'rate_limit' }), {
