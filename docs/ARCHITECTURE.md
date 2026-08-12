@@ -421,6 +421,13 @@ codiva（client）   │◀─── session/update 通知（本文・ツール�
   先へ進ませる。逆にこちら発の要求（`rpc()`）の待ちは、プロセスが死んだ時点で全部起こす。
 - **`session/cancel` は通知（notification）**。`id` を付けて要求として送ると
   `-32601 Method not found` が返る（実測）ので、中断は id 無しで送る。
+- **中断が止められるのは「今走っているターン」だけ**。`Ctrl+C` はセッションの立ち上げ
+  （`initialize` → `session/new` / `session/resume`）の最中にも押せるが、そこで `session/cancel` を
+  送っても止める対象が無く空振りする。**そのまま `session/prompt` を出すと、UI は「中断した」と
+  言っているのにエージェントだけが worktree を書き換え続ける**（完了イベントは `interrupted` で
+  抑止されるので、誰も気付けないまま進む）。立ち上げ中に中断されたターンは**始めずに指示ごと
+  捨てる**（やり直しはユーザーが改めて送る）。1 プロセスが複数ターンを跨ぐ provider では、
+  「プロセスを殺せば止まる」（Codex）が成り立たないぶんここが自前の責務になる。
 - **許可の `optionId` は固定文字列ではない**（ツールごとに変わる）。`kind`（`allow_once` /
   `allow_always` / `reject_once` / `reject_always`）で選ぶ。
 - **質問の応答には `outcome` を必ず付ける**。`{"outcome":"accepted","answers":{…}}` /

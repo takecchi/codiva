@@ -211,11 +211,8 @@ export function createGrokAdapter(deps: {
       let model = request.options.model;
       /** codiva 側から中断したか（そのターンの `cancelled` を静かに終わらせる）。 */
       let interrupted = false;
-      /**
-       * 中断したいのに `sessionId` がまだ無い（`session/new` の最中）。確立した
-       * 直後に `session/cancel` を送るための予約。
-       */
-      let cancelPending = false;
+      /** `session/prompt` を出して応答を待っている（= 止められるターンがある）。 */
+      let turnInFlight = false;
       /** 直近の `retry_state.error_type`（CLI 自身の失敗分類）。 */
       let lastErrorType: string | undefined;
       let nextId = 1;
@@ -239,14 +236,6 @@ export function createGrokAdapter(deps: {
 
       const notify = (method: string, params: unknown): void => {
         send({ jsonrpc: '2.0', method, params });
-      };
-
-      /** セッション確立前に押された `Ctrl+C` を、確立直後に送り直す。 */
-      const flushPendingCancel = (): void => {
-        if (cancelPending && sessionId) {
-          cancelPending = false;
-          notify('session/cancel', { sessionId });
-        }
       };
 
       /** 許可要求 → codiva のダイアログ → ACP の応答。 */
@@ -429,7 +418,6 @@ export function createGrokAdapter(deps: {
           if (state?.currentModelId) {
             events.push({ kind: 'model_resolved', model: state.currentModelId });
           }
-          flushPendingCancel();
           return;
         }
         // resume できなかった（セッションが消えている等）ときは新しく開く。
@@ -457,11 +445,29 @@ export function createGrokAdapter(deps: {
         if (state?.currentModelId) {
           events.push({ kind: 'model_resolved', model: state.currentModelId });
         }
-        flushPendingCancel();
       };
 
       /** 1 ターン。`session/prompt` の応答が終わりを告げる。 */
       const runTurn = async (text: string): Promise<void> => {
+        // **中断されたターンは始めない**。`Ctrl+C` はセッションの立ち上げ
+        // （`initialize` → `session/new` / `session/resume`）の最中にも押せる。そこで
+        // 送る `session/cancel` は「今走っているターン」向けの通知なので空振りし、
+        // そのまま `session/prompt` を出すと **UI は「中断した」と言っているのに
+        // エージェントだけが worktree を書き換え続ける**。指示ごと捨てるのが正しい
+        // （ユーザーは止めたのだから、やり直すときは改めて送る）。
+        if (interrupted || request.abortController.signal.aborted) {
+          return;
+        }
+        turnInFlight = true;
+        try {
+          await runPrompt(text);
+        } finally {
+          turnInFlight = false;
+        }
+      };
+
+      /** `session/prompt` の 1 往復。 */
+      const runPrompt = async (text: string): Promise<void> => {
         const response = await rpc('session/prompt', {
           sessionId,
           prompt: [{ type: 'text', text }],
@@ -525,7 +531,6 @@ export function createGrokAdapter(deps: {
               return;
             }
             interrupted = false;
-            cancelPending = false;
             lastErrorType = undefined;
             if (!proc) {
               try {
@@ -586,15 +591,13 @@ export function createGrokAdapter(deps: {
 
         interrupt: async () => {
           interrupted = true;
-          // `session/cancel` は**通知**（id を付けると Method not found になる。実測）。
-          if (sessionId) {
+          // `session/cancel` は**通知**（id を付けると Method not found になる。実測）で、
+          // 止められるのは**今走っているターン**だけ。まだ `session/prompt` を出して
+          // いない段階（`initialize` / `session/new` / `session/resume` の最中）に送っても
+          // 空振りするので送らない — 代わりに `runTurn` が「そのターンを始めない」。
+          if (sessionId && turnInFlight) {
             notify('session/cancel', { sessionId });
-            return;
           }
-          // まだ `session/new` の最中。ここで黙って何もしないと、UI は「中断した」と
-          // 言っているのにエージェントは走り切り、完了扱いで auto-PR まで進む。
-          // セッションが確立し次第送れるよう予約しておく。
-          cancelPending = true;
         },
 
         setModel: async (next) => {

@@ -672,7 +672,7 @@ describe('createGrokAdapter', () => {
       expect(harness.events.at(-1)).toMatchObject({ kind: 'turn_stopped', cause: 'rate_limit' });
     });
 
-    it('セッション確立前の Ctrl+C も取りこぼさない（確立直後に cancel を送る）', async () => {
+    it('セッション確立中の Ctrl+C はそのターンを始めない（裏で走り続けさせない）', async () => {
       const grok = makeFakeGrok();
       const { harness, run: agentRun } = run(grok.spawn);
       harness.prompts.push('long task');
@@ -683,11 +683,42 @@ describe('createGrokAdapter', () => {
 
       // まだ sessionId が無い時点で中断（UI は既に「中断」と言っている）。
       await agentRun.interrupt?.();
+      // 走っているターンが無いので cancel は送らない（送っても空振りする）。
       expect(proc.find('session/cancel')).toBeUndefined();
 
       proc.reply('session/new', { sessionId: 'sess-1' });
-      await waitFor(() => proc.find('session/cancel') !== undefined, 'deferred cancel');
-      expect(proc.find('session/cancel')?.id).toBeUndefined();
+      for (let i = 0; i < 20; i += 1) {
+        await tick();
+      }
+      // **中断した指示は投げない**。ここで送ると UI は中断済みなのにエージェントだけが
+      // worktree を書き換え続ける（cancel は「今走っているターン」しか止められない）。
+      expect(proc.find('session/prompt')).toBeUndefined();
+      expect(kinds(harness.events)).not.toContain('turn_completed');
+
+      // 次の指示は普通に始まる（そのときの text で）。
+      harness.prompts.push('do it now');
+      await waitFor(() => proc.find('session/prompt') !== undefined, 'prompt for the new text');
+      expect(proc.find('session/prompt')?.params?.prompt).toEqual([
+        { type: 'text', text: 'do it now' },
+      ]);
+    });
+
+    it('resume の最中に Ctrl+C を押しても同じ（prompt を出さない）', async () => {
+      const grok = makeFakeGrok();
+      const { harness, run: agentRun } = run(grok.spawn, { resume: 'sess-old' });
+      harness.prompts.push('long task');
+      const proc = await grok.at(0);
+      await waitFor(() => proc.find('initialize') !== undefined, 'initialize');
+      proc.reply('initialize', { protocolVersion: 1 });
+      await waitFor(() => proc.find('session/resume') !== undefined, 'session/resume');
+      // sessionId は既に分かっているが、ターンはまだ走っていない。
+      await agentRun.interrupt?.();
+      expect(proc.find('session/cancel')).toBeUndefined();
+      proc.reply('session/resume', {});
+      for (let i = 0; i < 20; i += 1) {
+        await tick();
+      }
+      expect(proc.find('session/prompt')).toBeUndefined();
     });
 
     it('中断と end_turn が競っても completed にしない（auto-PR を走らせない）', async () => {
