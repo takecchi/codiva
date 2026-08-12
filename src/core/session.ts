@@ -6,7 +6,14 @@ import type { EffortLevel, PermissionMode } from './config';
 import { errorMessage } from './errors';
 import type { RateLimitInfoJson } from './rate-limit';
 import { isInterruptible } from './status-meta';
-import { accrueActive, initialState, reduce, USER_INTERRUPT_DETAIL } from './status-reducer';
+import {
+  AGENT_SWITCH_DETAIL,
+  accrueActive,
+  initialState,
+  reduce,
+  STREAM_ENDED_DETAIL,
+  USER_INTERRUPT_DETAIL,
+} from './status-reducer';
 import { composeSystemPrompt } from './system-prompt';
 import type {
   AgentId,
@@ -119,7 +126,20 @@ export class Session {
    */
   private attribution?: AgentId;
   private run?: AgentRun;
-  private pending?: { request: PermissionRequest; resolve: (r: PermissionDecision) => void };
+  /**
+   * 未応答の許可要求の**待ち行列**（先頭 = いま UI に出ているもの）。
+   *
+   * 単一スロットにしてはいけない: エージェントは 1 通のメッセージで**複数の tool_use を
+   * 並行に**投げられるので、`confirm` モードではその数だけ `canUseTool` が同時に走る。
+   * 後から来た要求で上書きすると**先の promise が永久に解決されない** — provider は
+   * その 1 本を待ち続け、ターン終了イベントも来ないので、ストリームは生きたまま
+   * セッションが永久に `running` / 許可待ちで張り付く（`consume` の最後の砦でも
+   * 救えない = ストリームは終わっていないため）。
+   */
+  private pendingQueue: {
+    request: PermissionRequest;
+    resolve: (r: PermissionDecision) => void;
+  }[] = [];
   private reqSeq = 0;
   /** True once the initial prompt has been enqueued (start / first send); keeps start() idempotent. */
   private startedOnce = false;
@@ -174,6 +194,26 @@ export class Session {
     }
   }
 
+  /** いま UI に出ている（＝先頭の）許可要求。 */
+  private get pending():
+    | { request: PermissionRequest; resolve: (r: PermissionDecision) => void }
+    | undefined {
+    return this.pendingQueue[0];
+  }
+
+  /**
+   * 未応答の許可要求を**すべて** deny で解決して待ち行列を空にする。ターンが終わる／
+   * セッションが止まる経路で必ず呼ぶ — 未応答の `tool_use` で終わる transcript は
+   * 後の `resume` を壊すし、放置した promise は provider を永久にブロックする。
+   */
+  private denyAllPending(message: string): void {
+    const queued = this.pendingQueue;
+    this.pendingQueue = [];
+    for (const entry of queued) {
+      entry.resolve({ behavior: 'deny', message });
+    }
+  }
+
   /** 現在のエージェント（UI が capability を引くための読み取り口）。 */
   getAgent(): AgentAdapter {
     return this.adapter;
@@ -195,10 +235,7 @@ export class Session {
     // 走っているターンを畳んでからでないと、2 本のストリームが同じ worktree を
     // 触ることになる。保留中の許可も解決しておく（未応答の tool_use で終わる
     // トランスクリプトは後の resume を壊す）。
-    if (this.pending) {
-      this.pending.resolve({ behavior: 'deny', message: 'agent switched' });
-      this.pending = undefined;
-    }
+    this.denyAllPending('agent switched');
     // 進行中のターンを止める。キューを閉じるだけでは足りない — ターンの最中の run は
     // キューではなく provider の出力を await しているので、そのままだと古い provider が
     // worktree を触り続け、遅れて届く `turn_completed` がセッションを completed に
@@ -221,6 +258,13 @@ export class Session {
     }
     this.restartAfterSwitch = this.consuming;
     this.run = undefined;
+    // 畳んだのが**進行中のターン**なら、状態も「止まった」ことにする。`agent_switched`
+    // は status を動かさないので、これが無いと積み残しが無いときに `running`（や応答
+    // できない許可待ち）のまま張り付く — ストリームはもう無いので誰も先へ進めない。
+    // 積み残しがあれば直後に新しいエージェントが起動して `running` へ戻る。
+    if (isInterruptible(this.state.status)) {
+      this.dispatch({ kind: 'interrupted', error: AGENT_SWITCH_DETAIL, at: this.now() });
+    }
     this.adapter = adapter;
     // provider ごとにモデル名の名前空間は別なので、切替前の既定/override を渡さない。
     // `/model` で明示的に選び直すまでは切替先 CLI の既定を使う。
@@ -389,10 +433,7 @@ export class Session {
    * (no dispatch) to keep stop() quiet — status must not change.
    */
   stop(): void {
-    if (this.pending) {
-      this.pending.resolve({ behavior: 'deny', message: 'session stopped' });
-      this.pending = undefined;
-    }
+    this.denyAllPending('session stopped');
     this.inputQueue.close();
     this.abortController.abort();
   }
@@ -429,12 +470,18 @@ export class Session {
   }
 
   private resolvePending(result: PermissionDecision): void {
-    const pending = this.pending;
+    const pending = this.pendingQueue.shift();
     if (!pending) {
       return;
     }
-    this.pending = undefined;
     pending.resolve(result);
+    // 並行して届いた次の要求があるなら、続けてそれを UI へ上げる（`permission_resolved`
+    // で一旦 running に戻してから出し直すと、その一瞬だけ状態が嘘になる）。
+    const next = this.pending;
+    if (next) {
+      this.dispatch({ kind: 'permission_request', request: next.request, at: this.now() });
+      return;
+    }
     this.dispatch({ kind: 'permission_resolved', at: this.now() });
   }
 
@@ -451,8 +498,14 @@ export class Session {
     this.reqSeq += 1;
     const request: PermissionRequest = { ...req, id: `${this.state.id}:${this.reqSeq}` };
     return new Promise<PermissionDecision>((resolve) => {
-      this.pending = { request, resolve };
-      this.dispatch({ kind: 'permission_request', request, at: this.now() });
+      // 先に出ている要求があるなら**待たせる**（上書きすると先の promise が
+      // 迷子になり、provider がそれを永久に待ち続ける）。UI へ上げるのは自分が
+      // 先頭になったときで、回答のたびに `resolvePending` が次を出す。
+      const idle = this.pendingQueue.length === 0;
+      this.pendingQueue.push({ request, resolve });
+      if (idle) {
+        this.dispatch({ kind: 'permission_request', request, at: this.now() });
+      }
     });
   };
 
@@ -523,10 +576,8 @@ export class Session {
         // turn (which can never resolve now) must be denied rather than left
         // dangling: a transcript ending on an unanswered tool_use can make the
         // later `resume` error out (same reasoning as `stop()`).
-        if ((auth || dropped) && this.pending) {
-          const message = auth ? 'authentication expired' : 'connection interrupted';
-          this.pending.resolve({ behavior: 'deny', message });
-          this.pending = undefined;
+        if (auth || dropped) {
+          this.denyAllPending(auth ? 'authentication expired' : 'connection interrupted');
         }
         this.dispatch(
           dropped
@@ -548,11 +599,20 @@ export class Session {
       // 切替のために畳んだループだった場合、その間に送られた指示がキューへ積まれた
       // ままになっている（`ensureConsuming` は consuming 中だったので何もしていない）。
       // ここで新しいエージェントを起こして拾い直す。
-      if (this.restartAfterSwitch) {
-        this.restartAfterSwitch = false;
-        if (this.inputQueue.pending > 0) {
-          this.ensureConsuming();
-        }
+      const switched = this.restartAfterSwitch;
+      this.restartAfterSwitch = false;
+      if (switched && this.inputQueue.pending > 0) {
+        this.ensureConsuming();
+      } else if (!this.abortController.signal.aborted && isInterruptible(this.state.status)) {
+        // **最後の砦**: ストリームが終端イベント（`turn_completed` / `turn_stopped`）を
+        // 出さずに終わった。streaming input mode ではプロンプト源を閉じるまで終わらない
+        // のが正常なので、ここに来るのは想定外の終了（CLI が黙って落ちた等）。状態機械
+        // には何も届いていないため、放っておくと**セッションが永久に `running`**（または
+        // 応答できない許可待ち）のまま張り付き、動作時間だけが増え続ける。
+        // 失敗ではなく resumable な `interrupted` に落として、追加指示 / `Ctrl+R` で
+        // 続けられるようにする（`stop()` / `abort()` は controller を abort するので
+        // ここには来ない = quiet 停止の意味は保たれる）。
+        this.dispatch({ kind: 'interrupted', error: STREAM_ENDED_DETAIL, at: this.now() });
       }
     }
   }
@@ -574,8 +634,7 @@ export class Session {
     // `resume` error out. (resolvePending clears `pending` before it dispatches, so
     // ordinary allow/deny answers never reach this.)
     if (this.pending && next.pendingPermission === undefined) {
-      this.pending.resolve({ behavior: 'deny', message: 'turn ended before this was answered' });
-      this.pending = undefined;
+      this.denyAllPending('turn ended before this was answered');
     }
     // Fold the transition into the active-time accumulator centrally, so every
     // status change (reducer- or SDK-driven) counts only the time actually spent

@@ -198,6 +198,27 @@ function todoOpOf(block: ToolUseBlock): TodoOp | undefined {
 /** Log-line prefix for `system/api_retry`; also the key for coalescing them. */
 const API_RETRY_PREFIX = 'api retry';
 
+/**
+ * `system/task_updated` の `patch.status` のうち「まだ走っている」もの。
+ *
+ * SDK の union は `'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'paused'`
+ * （`SDKTaskUpdatedMessage`）。決着の判定はこの**否定**で行う — 将来値が増えても
+ * 決着側に倒したいため（決着を取りこぼすと完了ゲートが解けず、セッションが永久に
+ * `running` になる）。**`paused` を落とさないこと**: 一時停止は「終わった」ではないので、
+ * 決着扱いにすると再開したタスクを誰も追跡していない状態で completed になり、
+ * その後に届くメッセージで `running` へ戻って二度と終われなくなる。
+ */
+const LIVE_TASK_STATUSES = new Set(['pending', 'running', 'paused']);
+
+/** `system/task_updated` の patch が「タスクが終わった」ことを示しているか。 */
+function isSettledTaskPatch(patch: unknown): boolean {
+  if (typeof patch !== 'object' || patch === null) {
+    return false;
+  }
+  const status = (patch as { status?: unknown }).status;
+  return typeof status === 'string' && !LIVE_TASK_STATUSES.has(status);
+}
+
 /** `system/*` を写す。 */
 function fromSystem(message: Record<string, unknown>): AgentEvent[] {
   if (message.subtype === 'init') {
@@ -226,6 +247,31 @@ function fromSystem(message: Record<string, unknown>): AgentEvent[] {
         taskId: typeof message.task_id === 'string' ? message.task_id : undefined,
       },
     ];
+  }
+  // **レベル信号**: 生きているバックグラウンドタスクの全集合。start / 完了 / kill /
+  // フォアグラウンドのバックグラウンド化のたびに届き、**REPLACE セマンティクス**
+  // （SDK の `SDKBackgroundTasksChangedMessage` が「エッジ（task_started /
+  // task_notification）の取りこぼしでゲートが wedge しないよう、集合ごと差し替えろ」と
+  // 明示している）。エッジと併用して**自己修復**させる — エッジだけだと 1 通落ちただけで
+  // セッションが永久に `running` になる。
+  if (message.subtype === 'background_tasks_changed') {
+    const tasks = Array.isArray(message.tasks) ? message.tasks : [];
+    const taskIds = tasks
+      .map((t) => (t as { task_id?: unknown }).task_id)
+      .filter((id): id is string => typeof id === 'string');
+    return [{ kind: 'tasks_changed', taskIds }];
+  }
+  // `task_updated` の `patch.status` も決着の信号（実測: `patch: { status: 'completed',
+  // end_time: ... }` が `task_notification` の直前に来る）。**両方**見るのは、
+  // 通知が来ないまま終わるタスク（TaskStop で止めた・落ちた）でも完了ゲートを
+  // 解けるようにするため — 解けないとセッションが永久に `running` に張り付く。
+  // 判定は「まだ走っている状態の否定」で書く（知らない言い回しでも決着側に倒す）。
+  if (
+    message.subtype === 'task_updated' &&
+    typeof message.task_id === 'string' &&
+    isSettledTaskPatch(message.patch)
+  ) {
+    return [{ kind: 'task_settled', taskId: message.task_id }];
   }
   // リトライ可能な API 失敗。CLI が再試行するのでセッションは走ったままで、
   // ログに 1 行残すだけ（連発するので直前の同種行を書き換える）。

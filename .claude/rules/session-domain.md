@@ -55,6 +55,12 @@ interrupted / rate_limited / needs_login / failed / conflict / archived
   `model`（解決済みモデルは provider ごとに別物）は捨てる。
 - **SDK メッセージは `CodivaEvent` でも `AgentEvent` でもない**。生の形を知るのは
   `claude-parse.ts` だけ（[sdk-integration.md](./sdk-integration.md)）。
+- **ターンが終わる遷移は必ず `clearTurnState` を通す**（`toInterrupted` / `toNeedsLogin` /
+  `toRateLimited` / `toFailed` / `completeTurn`）。`pendingPermission` と、サブエージェント
+  完了ゲート（`activeTaskIds` / `deferredResult`）は**そのターン限り**の一時情報で、残すと
+  次のターンの `turn_completed` が「まだ Task が走っている」と誤認されて保留され、
+  ゲートを解く `task_settled` はもう来ないので**セッションが永久に `running`** になる。
+  新しい終端遷移を足すときもここを通す。
 - 状態の確定は `Session.commit` の単一経路。ここが `accrueActive` を呼ぶので、
   個別の遷移に稼働時間の計算を散らさない。
 
@@ -131,6 +137,11 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
 - `stop()` / 再開可能状態へ落ちる前に**保留中の許可を deny で解決**する。未応答の `tool_use`
   で終わるトランスクリプトは後の resume を壊す。
 - 復元セッションは `start()` せず、最初の `send()` で遅延 resume（起動時にサブプロセスを乱立させない）。
+- **ストリームが終わったのに状態が「ターン進行中」のままなら中断扱いにする**（`consume()` の
+  `finally`）。終端イベントを出さずに終わる経路（CLI が黙って落ちた・transport が EOF）は必ず
+  あるので、放置すると `running` / `awaiting_*` のまま永久に張り付く（バッジも動作時間も嘘になり、
+  `Ctrl+C` 以外に出口が無い）。`stop()` / `abort()` は `abortController` を abort するのでここは
+  素通りする＝ quiet 停止の意味は保たれる。**この最後の砦を消さない。**
 - **エージェントの切替（`Session.setAgent()`）も走っているターンを畳んでから**行う。2 本の
   ストリームが同じ worktree を触らないように現在の run を捨て、保留中の許可も deny で解決する
   （未応答の `tool_use` で終わるトランスクリプトは後の resume を壊す）。新しいエージェントが

@@ -170,6 +170,11 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
   `requestPermission(req) => Promise<PermissionDecision>` として上げる。`Session` は
   「何が質問か」を知らず、codiva 自身のポリシー（`core/run-mode.ts`）だけを見る。
 - Promise を解決するまでセッションはブロックされる。UI の応答待ちで pending のままにしてよい。
+- **未応答の要求は待ち行列で持つ（単一スロットにしない）**。エージェントは 1 通のメッセージで
+  複数の tool_use を並行に投げるので、`confirm` モードでは `canUseTool` が同時に走る。
+  後から来た要求で上書きすると**先の promise が迷子になり**、provider はそれを永久に待ち続けて
+  ターン終了イベントを出さない（= セッションが永久に許可待ち／`running`。ストリームは生きている
+  ので `consume` の最後の砦でも救えない）。**ターンが死ぬときは待ち行列ぜんぶを deny する。**
 - **`AskUserQuestion` は allow ルールに関係なく必ず届く**。これが「質問あり」の実装点で、
   アダプタが `kind: 'question'` + `QuestionSpec[]` へ写して上げる。SDK へ返すときは
   `{ behavior: 'allow', updatedInput: { ...input, answers } }` の形
@@ -203,6 +208,13 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
   `running` を維持、全タスク settle 後に completed を確定する。`skip_transcript` の雑務タスクは
   ゲート対象外。**ゲート自体は `applyAgentEvent` 側（全 provider 共通）**にあるので、他の
   provider は「タスクが始まった/片付いた」を報告するだけでよい。
+- **ゲートは「解けなくなる」方が「早すぎる完了」より危険**（解けないとセッションが永久に
+  `running`）。エッジ（開始/終了の対）だけに頼らず、**レベル信号**
+  （`system/background_tasks_changed` = 生きているタスクの全集合・REPLACE）を `tasks_changed` へ
+  写して集合ごと差し替える。CLI プロセスが起き直ったら（`session_started`）集合を空に戻す。
+  決着かどうかの判定は**「まだ走っている状態の否定」**で書く（知らない値は決着側へ）。
+  ただし `paused` は**走っている側**（決着にすると再開したタスクを追跡できず、completed の
+  あとに `running` へ戻って二度と終われない）。詳細は docs/ARCHITECTURE.md「完了ゲート」。
 - `activeTaskIds` / `deferredResult` / `streamingText` は transient で**永続しない**。
 
 ## レート制限情報

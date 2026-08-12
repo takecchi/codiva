@@ -190,6 +190,61 @@ describe('applyAgentEvent / sub-agent completion gate', () => {
     const settled = applyAgentEvent(failed, { kind: 'task_settled', taskId: 't1' }, 7);
     expect(settled.status).toBe('failed');
   });
+
+  it('keeps the held completion when the gate drains during a permission prompt', () => {
+    // 「ずっと Running」の再現: バックグラウンド Task が質問を上げている最中に
+    // 最後のタスクが片付くと、その瞬間は `running` ではないので完了できない。
+    // ゲートは空になるので `task_settled` も二度と来ない — 完了を捨てると
+    // セッションが永久に `running` のまま張り付く（→ `permission_resolved` が拾う）。
+    const withTask = fold(running(), [{ kind: 'task_started', taskId: 't1' }]);
+    const early = applyAgentEvent(withTask, { kind: 'turn_completed', text: 'done' }, 5);
+    const asking: SessionState = {
+      ...early,
+      status: 'awaiting_input',
+      pendingPermission: { id: 'p1', toolName: 'AskUserQuestion', input: {}, kind: 'question' },
+    };
+    const settled = applyAgentEvent(asking, { kind: 'task_settled', taskId: 't1' }, 6);
+    expect(settled.status).toBe('awaiting_input');
+    expect(settled.activeTaskIds).toEqual([]);
+    // 完了は捨てずに持ったまま（回答したときに確定される）。
+    expect(settled.deferredResult?.resultText).toBe('done');
+  });
+
+  it('drains the whole gate on a settle notice that names no task', () => {
+    // 帰属できない決着通知でゲートが埋まったままになると、片付いたタスクへの
+    // `task_settled` はもう来ないので `running` から出られない。早すぎる完了より
+    // 張り付きのほうが害が大きいので、安全側は「空にする」。
+    const withTasks = fold(running(), [
+      { kind: 'task_started', taskId: 't1' },
+      { kind: 'task_started', taskId: 't2' },
+    ]);
+    const early = applyAgentEvent(withTasks, { kind: 'turn_completed', text: 'done' }, 5);
+    expect(early.status).toBe('running');
+
+    const settled = applyAgentEvent(early, { kind: 'task_settled' }, 6);
+    expect(settled.status).toBe('completed');
+    expect(settled.activeTaskIds).toBeUndefined();
+  });
+
+  it('drops the gate when the turn fails, so the next turn can still complete', () => {
+    // ゲートはそのターン限りの記録。失敗のあとも残すと、追加指示で再開した次の
+    // ターンの `turn_completed` まで保留され続ける（= ずっと Running）。
+    const withTask = fold(running(), [{ kind: 'task_started', taskId: 't1' }]);
+    const failed = applyAgentEvent(
+      withTask,
+      { kind: 'turn_stopped', cause: 'failed', detail: 'x' },
+      6,
+    );
+    expect(failed.activeTaskIds).toBeUndefined();
+    expect(failed.deferredResult).toBeUndefined();
+
+    const retried = applyAgentEvent(
+      { ...failed, status: 'running' },
+      { kind: 'turn_completed', text: 'done' },
+      7,
+    );
+    expect(retried.status).toBe('completed');
+  });
 });
 
 describe('applyAgentEvent / notices coalesce', () => {

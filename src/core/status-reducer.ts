@@ -1,4 +1,4 @@
-import { pushLogEntry } from './log-buffer';
+import { clipLogText, pushLogEntry } from './log-buffer';
 import { withoutPrRef } from './pr-detect';
 import { makeTitle } from './slug';
 import { isActiveStatus } from './status-meta';
@@ -110,6 +110,104 @@ export function appendLog(
 }
 
 /**
+ * ターンに紐づく一時情報（保留中の決定・サブエージェント完了ゲート）を落とす。
+ * **ターンが終わるすべての遷移で通す。**
+ *
+ * `activeTaskIds` / `deferredResult` は「トップレベルの `result` は届いたが
+ * バックグラウンドの Task がまだ走っている」ことの記録で、**そのターン限りの**もの。
+ * ターンが終わったあとも残すと、次のターンの `turn_completed` まで「まだ Task が
+ * 走っている」と誤認して保留され、ゲートを解く `task_settled` は二度と来ないので
+ * **セッションが永久に `running` のまま張り付く**（実際に起きた不具合）。
+ *
+ * `pendingPermission` も同じ理由で落とす（応答できない `canUseTool` の promise が
+ * ダイアログとして残り続ける）。`Session.commit` が「pending が消えた」ことを検知して
+ * deny で解決するので、未応答の `tool_use` で終わる transcript にもならない。
+ */
+function clearTurnState(state: SessionState): SessionState {
+  const { pendingPermission, ...rest } = clearTaskGate(state);
+  void pendingPermission;
+  return rest;
+}
+
+/**
+ * サブエージェント完了ゲートだけを落とす（保留中の決定は残す）。
+ * ステータスは変えずにゲートだけ捨てたい遷移用（`agent_switched`）。
+ */
+function clearTaskGate(state: SessionState): SessionState {
+  const { deferredResult, activeTaskIds, ...rest } = state;
+  void deferredResult;
+  void activeTaskIds;
+  return rest;
+}
+
+/**
+ * ターンの完了を確定する（`completed` へ）。ログには「新しい情報のときだけ」結果
+ * テキストを積む — 多くの provider は最後のアシスタント発話をターン結果としてもう一度
+ * 返すので、そのまま積むと画面上で同じ文章が 2 回出る。比較は**クリップ後**の文字列で
+ * 行う（`MAX_LOG_ENTRY_CHARS` より長い答えが自分自身の echo と一致しなくなるため）。
+ *
+ * `applyAgentEvent`（`turn_completed` / 最後の `task_settled`）と `reduce`
+ * （`permission_resolved` = 許可待ちの裏で溜まっていた完了の確定）の**両方**から
+ * 呼ぶので、`toInterrupted` などと同じくここに置く。
+ */
+export function completeTurn(
+  state: SessionState,
+  result: { at: number; totalCostUsd?: number; resultText: string },
+): SessionState {
+  const resultText = result.resultText.trim();
+  const lastAssistantText = state.messages.findLast((m) => m.kind === 'assistant_text')?.text;
+  const isEcho = resultText.length > 0 && clipLogText(resultText) === lastAssistantText;
+  const withLog =
+    resultText.length > 0 && !isEcho
+      ? appendLog(state, 'result', resultText)
+      : { messages: state.messages, logSeq: state.logSeq };
+  return {
+    ...clearTurnState(state),
+    status: 'completed',
+    finishedAt: result.at,
+    totalCostUsd: result.totalCostUsd,
+    streamingText: undefined,
+    messages: withLog.messages,
+    logSeq: withLog.logSeq,
+  };
+}
+
+/**
+ * 許可/質問待ちの裏で溜まっていたターン完了を確定できるなら確定する。
+ *
+ * サブエージェントの完了ゲート（`activeTaskIds`）が空になった瞬間に許可待ち
+ * （バックグラウンド Task が上げた質問など）だったケースの受け皿。その瞬間は
+ * `running` ではないので完了できず、ゲートは空なので `task_settled` も二度と来ない —
+ * 回答して `running` に戻るここで拾わないと**完了が永久に失われる**（= ずっと Running）。
+ */
+function settleDeferred(state: SessionState, at: number): SessionState {
+  if (!state.deferredResult || (state.activeTaskIds?.length ?? 0) > 0) {
+    return state;
+  }
+  return completeTurn(state, { ...state.deferredResult, at });
+}
+
+/**
+ * Transition into the `failed` state: the turn stopped for a reason that isn't
+ * resumable (unclassified error). `reduce`（`aborted`）と `applyAgentEvent`
+ * （`turn_stopped` の既定）の両方から呼ぶ — 失敗は終端なので、ここでも
+ * `clearTurnState` でターン限りの一時情報を落とす（残すと、追加指示で再開したときに
+ * 古い完了ゲートが次のターンの完了を飲み込む）。
+ */
+export function toFailed(state: SessionState, at: number, detail: string): SessionState {
+  const withLog = appendLog(state, 'error', detail);
+  return {
+    ...clearTurnState(state),
+    status: 'failed',
+    finishedAt: at,
+    error: detail,
+    streamingText: undefined,
+    messages: withLog.messages,
+    logSeq: withLog.logSeq,
+  };
+}
+
+/**
  * Transition into the `rate_limited` state: the session stopped because a usage/
  * rate limit was hit. Idle & resumable once the limit resets (like a completed
  * turn, it can receive more input) — but flagged distinctly so the user sees it
@@ -125,7 +223,7 @@ export function toRateLimited(
 ): SessionState {
   const withLog = appendLog(state, 'system', detail);
   return {
-    ...state,
+    ...clearTurnState(state),
     status: 'rate_limited',
     finishedAt: at,
     rateLimitResetsAt: resetsAt,
@@ -144,6 +242,21 @@ export function toRateLimited(
  * 使うことで `toInterrupted` の重複畳み込みが効き、ログが二重にならない。
  */
 export const USER_INTERRUPT_DETAIL = 'interrupted by user';
+
+/**
+ * エージェントのストリームが**終端イベントを出さずに終わった**ときのログ/詳細文
+ * （`Session.consume` の最後の砦）。
+ *
+ * streaming input mode ではプロンプト源を閉じるまでストリームは終わらないのが正常なので、
+ * ここに来るのは想定外の終了（CLI サブプロセスが黙って落ちた・transport が EOF になった等）。
+ * 状態機械には「ターンが終わった」と伝わらないため、放っておくと**セッションが永久に
+ * `running` のまま**になり、動作時間も増え続ける（実際に起きた不具合）。
+ * 失敗ではなく resumable な `interrupted` に落として、追加指示 / `Ctrl+R` で続けられるようにする。
+ */
+export const STREAM_ENDED_DETAIL = 'agent stream ended before the turn finished';
+
+/** エージェント切替（`Session.setAgent`）で進行中のターンを畳んだときのログ/詳細文。 */
+export const AGENT_SWITCH_DETAIL = 'turn stopped to switch agents';
 
 /**
  * Transition into the `interrupted` state: the live query dropped mid-flight
@@ -176,12 +289,8 @@ export function toInterrupted(state: SessionState, at: number, detail: string): 
     }
   }
   const withLog = appendLog(state, 'system', detail);
-  const { pendingPermission, deferredResult, activeTaskIds, ...rest } = state;
-  void pendingPermission;
-  void deferredResult;
-  void activeTaskIds;
   return {
-    ...rest,
+    ...clearTurnState(state),
     status: 'interrupted',
     finishedAt: at,
     streamingText: undefined,
@@ -212,12 +321,8 @@ export function toNeedsLogin(state: SessionState, at: number, detail: string): S
     return state;
   }
   const withLog = appendLog(state, 'error', detail);
-  const { pendingPermission, deferredResult, activeTaskIds, ...rest } = state;
-  void pendingPermission;
-  void deferredResult;
-  void activeTaskIds;
   return {
-    ...rest,
+    ...clearTurnState(state),
     status: 'needs_login',
     finishedAt: at,
     error: detail,
@@ -255,7 +360,9 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       }
       const { pendingPermission, ...rest } = state;
       void pendingPermission;
-      return { ...rest, status: 'running' };
+      // 許可待ちだったあいだにサブエージェント完了ゲートが空になっていたら、
+      // 保留されていたターン完了をここで確定する（`settleDeferred` の説明参照）。
+      return settleDeferred({ ...rest, status: 'running' }, event.at);
     }
 
     case 'user_input': {
@@ -269,6 +376,11 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         status: state.pendingPermission ? state.status : 'running',
         finishedAt: undefined,
         streamingText: undefined,
+        // 保留していた**前のターンの**完了は、新しい指示が来た時点で無効。残すと
+        // 「次のターンの途中で前のターンの結果テキストと共に completed になる」
+        // （通知も auto-PR も走る）。`activeTaskIds` は本当にまだ生きている可能性が
+        // あるので落とさない — ゲートは残し、確定を捨てる。
+        deferredResult: undefined,
         messages: withLog.messages,
         logSeq: withLog.logSeq,
       };
@@ -369,16 +481,7 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       if (event.cause === 'connection') {
         return toInterrupted(state, event.at, error);
       }
-      const withLog = appendLog(state, 'error', error);
-      return {
-        ...state,
-        status: 'failed',
-        finishedAt: event.at,
-        error,
-        streamingText: undefined,
-        messages: withLog.messages,
-        logSeq: withLog.logSeq,
-      };
+      return toFailed(state, event.at, error);
     }
 
     case 'interrupted':
@@ -399,7 +502,9 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
         : state.agentSessions;
       const next = carried?.[event.agent];
       return {
-        ...state,
+        // 完了ゲートは「今のターンで走っている Task」の記録なので、別の provider へ
+        // 引き継がない（引き継ぐと切替先の `turn_completed` が永久に保留される）。
+        ...clearTaskGate(state),
         agent: event.agent,
         agentSessions: carried,
         sdkSessionId: next,

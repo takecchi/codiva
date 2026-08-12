@@ -1,10 +1,12 @@
-import { clipLogText, clipStreamText, pushLogEntry } from './log-buffer';
+import { clipStreamText, pushLogEntry } from './log-buffer';
 import { addPrRefs, extractPrRefs } from './pr-detect';
 import type { RateLimitInfoJson } from './rate-limit';
 import { isResumable } from './status-meta';
 import {
   appendLog,
+  completeTurn,
   progressOf,
+  toFailed,
   toInterrupted,
   toNeedsLogin,
   toRateLimited,
@@ -104,6 +106,13 @@ export type AgentEvent =
   | { kind: 'task_started'; taskId: string }
   /** サブエージェントが片付いた — 全部片付いたら保留中の完了を確定する。 */
   | { kind: 'task_settled'; taskId?: string }
+  /**
+   * **今生きているサブエージェントの全集合**（レベル信号）。`task_started` /
+   * `task_settled` のエッジと違い、届いた集合で**丸ごと置き換える** — エッジを
+   * 1 通取りこぼしても完了ゲートが wedge しない（= セッションが永久に `running` に
+   * ならない）ようにするための自己修復経路。出せる provider だけが出せばよい。
+   */
+  | { kind: 'tasks_changed'; taskIds: readonly string[] }
   /** ターンが正常終了した。 */
   | { kind: 'turn_completed'; text: string; totalCostUsd?: number }
   /**
@@ -162,38 +171,6 @@ function applyTodoOp(todos: TodoItem[], op: TodoOp): TodoItem[] {
   }));
 }
 
-/**
- * 保留していた完了を確定する。ログには「新しい情報のときだけ」結果テキストを積む
- * — 多くの provider は最後のアシスタント発話をターン結果としてもう一度返すので、
- * そのまま積むと画面上で同じ文章が 2 回出る。比較は**クリップ後**の文字列で行う
- * （`MAX_LOG_ENTRY_CHARS` より長い答えが自分自身の echo と一致しなくなるため）。
- */
-function completeWith(
-  state: SessionState,
-  result: { at: number; totalCostUsd?: number; resultText: string },
-): SessionState {
-  const resultText = result.resultText.trim();
-  const lastAssistantText = state.messages.findLast((m) => m.kind === 'assistant_text')?.text;
-  const isEcho = resultText.length > 0 && clipLogText(resultText) === lastAssistantText;
-  const withLog =
-    resultText.length > 0 && !isEcho
-      ? appendLog(state, 'result', resultText)
-      : { messages: state.messages, logSeq: state.logSeq };
-  // 完了が確定したので、遅延用の一時情報は落とす。
-  const { deferredResult, activeTaskIds, ...rest } = state;
-  void deferredResult;
-  void activeTaskIds;
-  return {
-    ...rest,
-    status: 'completed',
-    finishedAt: result.at,
-    totalCostUsd: result.totalCostUsd,
-    streamingText: undefined,
-    messages: withLog.messages,
-    logSeq: withLog.logSeq,
-  };
-}
-
 /** `turn_completed` の畳み込み（サブエージェントが残っていれば保留する）。 */
 function onTurnCompleted(
   state: SessionState,
@@ -212,7 +189,7 @@ function onTurnCompleted(
       deferredResult: { at, totalCostUsd: cost, resultText: event.text },
     };
   }
-  return completeWith(state, { at, totalCostUsd: cost, resultText: event.text });
+  return completeTurn(state, { at, totalCostUsd: cost, resultText: event.text });
 }
 
 /** `turn_stopped` の畳み込み（分類ごとの遷移 + 要約の二重適用ガード）。 */
@@ -233,19 +210,8 @@ function onTurnStopped(
       return { ...toRateLimited(state, at, event.detail, event.resetsAt), totalCostUsd: cost };
     case 'connection':
       return { ...toInterrupted(state, at, event.detail), totalCostUsd: cost };
-    default: {
-      const withLog = appendLog(state, 'error', event.detail);
-      return {
-        ...state,
-        status: 'failed',
-        finishedAt: at,
-        totalCostUsd: cost,
-        error: event.detail,
-        streamingText: undefined,
-        messages: withLog.messages,
-        logSeq: withLog.logSeq,
-      };
-    }
+    default:
+      return { ...toFailed(state, at, event.detail), totalCostUsd: cost };
   }
 }
 
@@ -267,6 +233,11 @@ export function applyAgentEvent(
       const model = event.model ?? state.model;
       return {
         ...state,
+        // CLI プロセスが起き直った＝前のプロセスのタスクはもう居ない。レベル信号は
+        // 起動時に何も出さない（membership が変わったときだけ）ので、ここで空に
+        // 戻さないと、前のプロセスの id が残ったまま誰も片付けられなくなる
+        // （SDK の `SDKBackgroundTasksChangedMessage` が明示している要件）。
+        activeTaskIds: undefined,
         // 保留中の許可がある間は awaiting_* を維持する（ダイアログの裏で
         // "Running" に戻さない）。
         status: state.pendingPermission ? state.status : 'running',
@@ -410,15 +381,35 @@ export function applyAgentEvent(
 
     case 'task_settled': {
       const active = state.activeTaskIds ?? [];
-      const next = event.taskId ? active.filter((id) => id !== event.taskId) : active;
+      // id が無い決着通知は**ゲートを空にする**。「どのタスクか分からないので何もしない」
+      // にすると、その 1 通で完了ゲートが永久に埋まったままになり（片付いたタスクへの
+      // `task_settled` はもう来ない）セッションが `running` から出られなくなる。
+      // 早すぎる完了より張り付きのほうが害が大きいので、安全側は「空にする」。
+      const next = event.taskId ? active.filter((id) => id !== event.taskId) : [];
       // 最後の 1 本が片付き、保留していた完了があるなら今こそ確定する。走っている
       // 状態のときだけ — 途中で失敗/中断したセッションを遅れて来た通知で
-      // completed にしない。
+      // completed にしない。許可/質問待ちだった場合は `deferredResult` を持ったまま
+      // ゲートだけ空にし、回答して `running` へ戻る `permission_resolved` が確定する
+      // （`settleDeferred`。ここで諦めると完了が永久に失われる）。
       if (next.length === 0 && state.deferredResult && state.status === 'running') {
-        return completeWith(state, { ...state.deferredResult, at });
+        return completeTurn(state, { ...state.deferredResult, at });
       }
       if (next.length === active.length) {
         return state;
+      }
+      return { ...state, activeTaskIds: next };
+    }
+
+    case 'tasks_changed': {
+      // REPLACE セマンティクス。エッジ（task_started / task_settled）の取りこぼしを
+      // ここで必ず正す — これがあるので「1 通落ちてゲートが永久に埋まる」が起きない。
+      const active = state.activeTaskIds ?? [];
+      const next = [...event.taskIds];
+      if (next.length === active.length && next.every((id, i) => id === active[i])) {
+        return state;
+      }
+      if (next.length === 0 && state.deferredResult && state.status === 'running') {
+        return completeTurn(state, { ...state.deferredResult, at });
       }
       return { ...state, activeTaskIds: next };
     }
