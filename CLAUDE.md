@@ -59,10 +59,10 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | やりたいこと | 主なファイル |
 |---|---|
 | セッションの状態・遷移 | `core/types.ts`（union）/ `core/status-meta.ts`（性質の表）/ `core/status-reducer.ts`（純粋 reducer） |
-| 別のエージェント（Codex / Grok）に対応させる | `core/agent-ports.ts`（`AgentAdapter` / `AgentCapabilities` / `PermissionDecision` = DI 境界）/ `core/agent-events.ts`（`AgentEvent` の語彙 + 全 provider 共通の畳み込み `applyAgentEvent`）/ `core/claude-adapter.ts`・`core/claude-parse.ts`・`core/claude-errors.ts`（Claude 実装の 3 点セット）/ `core/codex-adapter.ts`・`core/codex-parse.ts`・`core/codex-errors.ts` + `core/codex-events.ts`（JSONL の型）・`core/codex-models.ts`・`core/codex-rollout.ts`（rollout から解決済みモデル）・`utils/codex.ts`（`codex exec` の起動 = 唯一の I/O）/ アダプタの登録は `bootstrap/build-manager.ts` の `buildAgents` |
-| SDK メッセージの解釈 | `core/claude-parse.ts` **のみ**（`parseClaudeMessage`: SDKMessage → `AgentEvent[]`）+ `core/__fixtures__/*.jsonl`。Codex は `core/codex-parse.ts`（`parseCodexEvent`: `codex exec --json` の JSONL → `AgentEvent[]`）+ `core/__fixtures__/codex-*.jsonl` |
+| 別のエージェントに対応させる | `core/agent-ports.ts`（`AgentAdapter` / `AgentCapabilities` / `PermissionDecision` = DI 境界）/ `core/agent-events.ts`（`AgentEvent` の語彙 + 全 provider 共通の畳み込み `applyAgentEvent`）/ `core/claude-adapter.ts`・`core/claude-parse.ts`・`core/claude-errors.ts`（Claude 実装の 3 点セット）/ `core/codex-adapter.ts`・`core/codex-parse.ts`・`core/codex-errors.ts` + `core/codex-events.ts`（JSONL の型）・`core/codex-models.ts`・`core/codex-rollout.ts`（rollout から解決済みモデル）・`utils/codex.ts`（`codex exec` の起動 = 唯一の I/O）/ `core/grok-adapter.ts`・`core/grok-parse.ts`・`core/grok-errors.ts` + `core/grok-events.ts`（ACP メッセージの型）・`core/grok-models.ts`・`utils/grok.ts`（`grok agent stdio` の起動 = 唯一の I/O）/ 行区切り JSON の枠切りは provider 非依存の `core/jsonl.ts`（Codex / Grok 共用）/ アダプタの登録は `bootstrap/build-manager.ts` の `buildAgents` |
+| SDK メッセージの解釈 | `core/claude-parse.ts` **のみ**（`parseClaudeMessage`: SDKMessage → `AgentEvent[]`）+ `core/__fixtures__/*.jsonl`。Codex は `core/codex-parse.ts`（`parseCodexEvent`: `codex exec --json` の JSONL → `AgentEvent[]`）+ `core/__fixtures__/codex-*.jsonl`。Grok は `core/grok-parse.ts`（`createGrokParser`: ACP = JSON-RPC over stdio の通知 → `AgentEvent[]`）+ `core/__fixtures__/grok-*.jsonl` |
 | エージェントの切替（`/agent`）| `core/session-manager.ts`（一覧=既定: `getDefaultAgentId` / `setDefaultAgent`・詳細=切替: `listAgents` / `getSessionAgent` / `setSessionAgent`）/ `ui/agent-select.tsx`（`mode:'default'`=一覧 / `'session'`=詳細）/ `core/status-reducer.ts` の `agent_switched` |
-| エージェントの導入・ログイン検出 | `core/agent-ports.ts` の `AgentAdapter.checkAvailability` / `AgentAvailability` / `core/agent-availability.ts`（`resolveDefaultAgentId` / `noAgentInstalled`・純粋）/ `utils/claude.ts` の `detectClaudeAvailability`・`utils/codex.ts` の `detectCodexAvailability`（実 I/O）/ `SessionManager.checkAgents`（集約・キャッシュ）/ `ui/hooks.ts` の `useAgentAvailability` |
+| エージェントの導入・ログイン検出 | `core/agent-ports.ts` の `AgentAdapter.checkAvailability` / `AgentAvailability` / `core/agent-availability.ts`（`resolveDefaultAgentId` / `noAgentInstalled`・純粋）/ `utils/claude.ts` の `detectClaudeAvailability`・`utils/codex.ts` の `detectCodexAvailability`・`utils/grok.ts` の `detectGrokAvailability`（実 I/O）/ `SessionManager.checkAgents`（集約・キャッシュ）/ `ui/hooks.ts` の `useAgentAvailability` |
 | エージェントに codiva 内でサインイン（`/login` / `/agent` の `l`）| `core/agent-login.ts`（URL/コード抽出・ANSI 除去・純粋）/ `utils/agent-login.ts`（`spawnLogin` = プロセス起動）/ `ui/login-dialog.tsx` / `core/agent-ports.ts` の `AgentAdapter.login` + `AgentLoginProcess` / `SessionManager.startLogin` / `canLogin` / `refreshAgents` |
 | セッションへ渡す systemPrompt | `core/system-prompt.ts`（worktree の共有 symlink 注意書き + `.codiva/prompt.md` の合成） |
 | セッションのライフサイクル | `core/session.ts`（1 エージェントストリーム。`setAgent()` で途中切替）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
@@ -86,8 +86,8 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 永続・復元 | `core/persistence.ts` / `utils/state-store.ts`（`.codiva/state.json`）/ `core/transcript.ts` + `utils/transcript.ts`（CLI トランスクリプト） |
 | 通知 | `core/notify.ts`（判定・純粋）/ `utils/notify.ts`（OS I/O） |
 | 学習データ利用の警告 | `core/privacy.ts`（判定・純粋）/ `utils/privacy.ts`（キャッシュ+非公開 API）/ `ui/banner.tsx` |
-| モデル選択 | `core/models.ts` / `utils/model-catalog.ts`（Claude）/ `core/codex-models.ts` + `utils/codex.ts` の `fetchCodexModelCatalog`（Codex）/ `ui/model-select.tsx` |
-| 一覧に出す「実際に動いているモデル」 | Claude は `system/init` が運ぶ。**Codex は JSONL に無い**ので `core/codex-rollout.ts`（純粋な抽出）+ `utils/codex.ts` の `resolveCodexRolloutModel`（rollout の `turn_context` を読む）→ `AgentEvent` の `model_resolved`（status を触らない専用イベント）。理由は docs/TECH_NOTES.md |
+| モデル選択 | `core/models.ts` / `utils/model-catalog.ts`（Claude）/ `core/codex-models.ts` + `utils/codex.ts` の `fetchCodexModelCatalog`（Codex）/ `core/grok-models.ts` + `utils/grok.ts` の `fetchGrokModelCatalog`（Grok。`initialize` の `_meta.modelState` を読む）/ `ui/model-select.tsx`。エージェントごとの選択肢は `app.tsx` の `modelsByAgent` の表で両 view へ渡す（provider ごとの ternary を増やさない） |
+| 一覧に出す「実際に動いているモデル」 | Claude は `system/init` が運ぶ。**Grok も自分で報告する**（`session/new` / `session/resume` の `models.currentModelId`・ターン応答の `_meta.modelId`・`_x.ai/models/update`）。**Codex だけが JSONL に持たない**ので `core/codex-rollout.ts`（純粋な抽出）+ `utils/codex.ts` の `resolveCodexRolloutModel`（rollout の `turn_context` を読む）が要る → いずれも `AgentEvent` の `model_resolved`（status を触らない専用イベント）。理由は docs/TECH_NOTES.md |
 | 選択肢リストの表示（質問・モデル） | `core/choice-lines.ts`（折返し + クリック逆算 `choiceRowHeights`/`choiceIndexAtRow`・純粋）/ `ui/choice-row.tsx`（1件の描画） |
 | アップデート通知・`/update` | `core/update.ts`（比較・判定・DI 境界）/ `utils/update.ts`（registry fetch・経路判定・`npm install`）/ `ui/update-dialog.tsx` |
 | 子プロセスへ渡す env（`NODE_ENV` を漏らさない） | `core/child-env.ts`（`childEnv` = 純粋）/ `utils/child-env.ts`（`childProcessEnv` = 実 `process.env`）/ `utils/claude-query.ts`（SDK の `query` に `Options.env` を被せた入口）。**プロセスを起こすときは必ず通す**（issue #103） |
@@ -106,7 +106,9 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 3. **エージェント固有の知識はアダプタに閉じる**。`core/` の中立モジュールは
    `@anthropic-ai/claude-agent-sdk` を import しない — 触ってよいのは `claude-adapter.ts` /
    `claude-parse.ts` / `claude-errors.ts` だけ（Codex 側の対は `codex-adapter.ts` /
-   `codex-parse.ts` / `codex-errors.ts` で、`codex` CLI の形の知識はそこにしか置かない）。
+   `codex-parse.ts` / `codex-errors.ts`、Grok 側の対は `grok-adapter.ts` / `grok-parse.ts` /
+   `grok-errors.ts` で、その CLI の形の知識はそこにしか置かない。例外は行区切り JSON の
+   枠切り `core/jsonl.ts` = provider 固有の知識を持たない純粋な framing）。
    provider のストリームは
    `AgentEvent`（`core/agent-events.ts`）へ写してから畳み込む（`applyAgentEvent` が唯一の畳み込み）。
    形は想定で書かず、spike の実データでテストする。

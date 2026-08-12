@@ -3,7 +3,9 @@
 コーディングエージェントとの境界と、`@anthropic-ai/claude-agent-sdk` を触るときの不変条件。
 **`core/agent-ports.ts` / `core/agent-events.ts` / `core/claude-adapter.ts` / `core/claude-parse.ts` /
 `core/claude-errors.ts` / `core/codex-adapter.ts` / `core/codex-parse.ts` / `core/codex-errors.ts` /
-`core/session.ts` / `utils/model-catalog.ts` / `utils/codex.ts` / `utils/title.ts` を触る前に読む。**
+`core/grok-adapter.ts` / `core/grok-parse.ts` / `core/grok-errors.ts` / `core/jsonl.ts` /
+`core/session.ts` / `utils/model-catalog.ts` / `utils/codex.ts` / `utils/grok.ts` /
+`utils/title.ts` を触る前に読む。**
 実測データと詳細は [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)、設計の理由は
 [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md)「エージェント抽象」。
 
@@ -37,8 +39,12 @@
 - **3 点セットは provider ごとに対で書く**。Claude が `claude-adapter.ts` / `claude-parse.ts` /
   `claude-errors.ts` なら、Codex は `codex-adapter.ts` / `codex-parse.ts` / `codex-errors.ts`
   （+ JSONL の型と受理ガードだけを持つ `codex-events.ts`、rollout の形を知る
-  `codex-rollout.ts`、実 I/O の `utils/codex.ts`）。
+  `codex-rollout.ts`、実 I/O の `utils/codex.ts`）、Grok は `grok-adapter.ts` / `grok-parse.ts` /
+  `grok-errors.ts`（+ ACP メッセージの型と受理ガードだけを持つ `grok-events.ts`、
+  モデル一覧の変換 `grok-models.ts`、実 I/O の `utils/grok.ts`）。
   **その CLI / SDK の形の知識をこの外へ漏らさない。**
+  例外は**その provider の知識を持たない純粋なヘルパ**だけ（行区切り JSON の枠切り
+  `core/jsonl.ts` の `createJsonlSplitter` は Codex と Grok が共用する）。
 - **その provider が「実際に動いているモデル」を報告しないなら、推測で埋めない。**
   `codex exec --json` はモデル名を一切運ばない（実測 0.147.0）。`--model` を明示していない
   セッションのモデル名は、CLI が書き残す rollout の `turn_context` からしか分からないので、
@@ -55,6 +61,10 @@
   だから「ターン中に長い猶予で 1 本（誰も await しない）＋ **ターンが終わってから短い猶予で
   引き直す**（そこでは必ず書かれている）」の 2 段にする — 前者だけだと、一度指示して結果を
   待つだけのセッション（いちばん普通の使い方）のモデル欄が永久に埋まらない。
+  **逆に、報告する provider には同じ仕掛けを足さない。** Grok は `session/new` /
+  `session/resume` の結果（`models.currentModelId`）・ターン応答の `_meta.modelId`・
+  `_x.ai/models/update` で解決済みモデルを直接運ぶので、rollout 相当の探り読みは要らない
+  （`grok-rollout.ts` は存在しない）。報告経路があるなら素直にそれを `model_resolved` へ写す。
 - **CLI は同梱せず、ユーザーがインストールしたものを起動する**（`git` / `gh` と同じ扱い）。
   provider の SDK パッケージを依存に足すと、その provider を使わないユーザーにまで
   プラットフォーム別バイナリを配ることになる。認証もその CLI のログインに委ねる
@@ -65,6 +75,21 @@
   外からは Claude の長寿命ストリームと同じ 1 本に見せられる（`AgentRun` の契約は
   「`AgentEvent` を流す非同期イテレータ」だけなので、プロセスの寿命は自由）。
   終端イベントが来ないままプロセスが終わる経路（中断・CLI 未導入）を必ず終了コードで補うこと。
+- **「1 セッション = 1 プロセス + 双方向 RPC」も同じく認める**。Grok は
+  `grok agent --no-leader stdio`（ACP = stdio 上の JSON-RPC 2.0）を 1 本張りっぱなしにし、
+  ターンは `session/prompt` の 1 往復（応答の `stopReason` が終わり）。1 本の接続に複数の往復が
+  同時に載るので、要求と応答の対応づけは JSON-RPC の `id` の対応表で持つ。
+  **一方通行のモード（Grok の `-p --output-format streaming-json`）を選ばない** — 許可も質問も
+  「向こうから要求が来て、答えるまで止まる」形なので、双方向のチャンネルが無いと表現できない。
+- **エージェント側から来た要求には必ず答える。** ACP の `session/request_permission` /
+  `_x.ai/ask_user_question` はどちらも**答えるまで向こうが止まる**ので、取りこぼすと
+  **ターンが永久に終わらない**（`awaiting_permission` のまま出口が無い）。パラメータが読めなくて
+  判断できない要求も黙って捨てず、断りの応答（Grok なら `cancelled`）を返して先へ進ませる。
+  応答の形も実測で確かめる — 質問は `outcome` を省くとツールが失敗し、許可の `optionId` は
+  固定文字列ではなく**ツールごとに変わる**ので `kind`（`allow_once` / `reject_once` …）で選ぶ。
+- **RPC の「要求」と「通知」を取り違えない。** Grok の `session/cancel` は**通知**で、`id` を
+  付けて要求として送ると `-32601 Method not found` が返る（実測）。応答を待つ側で書くと中断が
+  ハングする。どちらなのかは仕様ではなく**実バイナリで確かめる**。
 - **許可要求を上げられない provider は `permissions: false` を宣言する。ダイアログを偽装しない。**
   `codex exec` の JSON モードは承認要求を CLI 内部で自動 reject してストリームに何も出さないので、
   codiva が UI へ上げる経路が原理的に無い。ここで「それらしい許可ダイアログ」を出すと、
@@ -85,7 +110,7 @@
   `AgentAdapter.login()`（`AgentLoginProcess` を返す）を実装する。全画面 TUI の中で
   `<cli> login` を裏で起動し、**出力の認証 URL / デバイスコードを拾ってダイアログに出す**
   （純粋な畳み込みは `core/agent-login.ts`、起動は `utils/agent-login.ts` の `spawnLogin`）。
-  ブラウザで進む OAuth を選ぶ（Codex は stdin もローカルサーバも要らない
+  ブラウザで進む OAuth を選ぶ（Codex / Grok は stdin もローカルサーバも要らない
   `login --device-auth`）。**login CLI は URL を色付き（ANSI）で出す**ので、拾う前に必ず
   エスケープを剥がす（実測で取りこぼした）。TUI 内ログインを表現できない provider は
   `login()` を省略する（UI はログインの導線を出さない）。

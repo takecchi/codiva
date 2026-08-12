@@ -66,6 +66,11 @@ codiva/
 │   │   ├── claude-adapter.ts  # Claude 用 AgentAdapter（query() の組み立て・canUseTool の写像）
 │   │   ├── claude-parse.ts    # parseClaudeMessage()（SDK メッセージ形状の解釈を集約・純粋）
 │   │   ├── claude-errors.ts   # Claude CLI の失敗分類（文言/typed kind/HTTP status → AgentStopCause）
+│   │   ├── codex-adapter.ts / codex-parse.ts / codex-errors.ts # Codex 用の 3 点セット（1 ターン = 1 プロセス）
+│   │   ├── codex-events.ts / codex-models.ts / codex-rollout.ts # codex exec --json の JSONL 型 / モデル一覧 / rollout から解決済みモデル
+│   │   ├── grok-adapter.ts / grok-parse.ts / grok-errors.ts    # Grok 用の 3 点セット（ACP = JSON-RPC over stdio・1 セッション 1 プロセス）
+│   │   ├── grok-events.ts / grok-models.ts  # ACP メッセージの型と受理ガード / initialize が運ぶモデル一覧
+│   │   ├── jsonl.ts           # 行区切り JSON の枠切り createJsonlSplitter（provider 非依存。Codex / Grok が共用）
 │   │   ├── status-meta.ts     # STATUS_META（terminal/attention/active/resumable/復元先/通知キーの一元表）
 │   │   ├── session.ts         # 1 エージェントストリームのライフサイクル（setAgent で途中切替）
 │   │   ├── session-store.ts   # 購読可能スナップショット（順序・状態・参照同一性保持）
@@ -126,13 +131,18 @@ codiva は当初 Claude Code（`@anthropic-ai/claude-agent-sdk`）専用で、`S
 `SessionState` へ畳み込んでいた（旧 `core/sdk-parse.ts` の `applySdkMessage`）。そのため
 「SDK メッセージの形の知識」と「状態をどう変えるか」が 1 か所に混ざり、別のエージェント
 （Codex / Grok）を足すには畳み込みごと書き直すしかなかった。Phase A ではこれを 2 段に割り、
-provider を差し替えられる境界を入れ、Phase B で 2 つ目の provider（Codex）を載せた。
+provider を差し替えられる境界を入れ、Phase B で 2 つ目の provider（Codex）を、Phase C で
+3 つ目（Grok）を載せた。
 
 ```
 provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] ──[applyAgentEvent]──▶ SessionState
    SDKMessage                claude-parse.ts       agent-events.ts       core/types.ts
    codex の JSONL            codex-parse.ts        （全 provider 共通）
+   grok の ACP 通知           grok-parse.ts
 ```
+
+3 つとも形はまったく違う（長寿命の streaming input / 1 ターン 1 プロセスの JSONL /
+JSON-RPC の双方向ストリーム）が、**違いはアダプタの中で吸収され、右半分は 1 本のまま**。
 
 ### 1. 境界は `SessionHandle` / `AgentAdapter`（`QueryFn` ではない）
 
@@ -202,19 +212,19 @@ provider に依存しない**ので、Claude で始めた作業を途中から C
   `SessionManager.setSessionAgent(id, agentId)`）。
 
 **どのエージェントが使えるかは検出して見せる。** 各アダプタの optional な
-`checkAvailability()`（実 I/O は `utils/claude.ts` / `utils/codex.ts`。keychain は読まず、
+`checkAvailability()`（実 I/O は `utils/claude.ts` / `utils/codex.ts` / `utils/grok.ts`。keychain は読まず、
 Claude のログインは env / 資格情報ファイルで分かるときだけ true・それ以外は `'unknown'`）を
 `SessionManager.checkAgents()` が集約（多重起動を 1 本に畳みキャッシュ）し、`/agent` の各行に
 `使用できます` / `未ログイン` / `未導入` を出す。設定 `agent` が無ければ起動時検出で**導入済みの
 ものを既定に自動で寄せ**（`core/agent-availability.ts` の `resolveDefaultAgentId`、永続はしない）、
 どれも未導入なら一覧にセットアップ案内を出す（`noAgentInstalled`）。この検出のおかげで
-**`claude` も `codex` も入っていなくても codiva は起動できる**（起動時のプローブはすべて失敗を
-握り潰す）。
+**`claude` も `codex` も `grok` も入っていなくても codiva は起動できる**（起動時のプローブはすべて
+失敗を握り潰す）。
 
 **サインインも TUI の中で完結する**（`/login` / `/agent` の `l`）。端末は明け渡さず、`<cli> login` を
 裏で起動して**出力の認証 URL・デバイスコードをダイアログに出す**（自動でブラウザも開く）。進行の
 畳み込みは純粋な `core/agent-login.ts`、プロセス起動は `utils/agent-login.ts`、seam は
-`AgentAdapter.login()` +`SessionManager.startLogin` / `refreshAgents`。Codex は
+`AgentAdapter.login()` +`SessionManager.startLogin` / `refreshAgents`。Codex と Grok は
 `login --device-auth`（ローカルサーバも stdin も要らない headless 向けフロー）、Claude は
 `auth login`。**login CLI は URL を色付き（ANSI）で出す**ので、拾う前にエスケープを剥がす
 （実測で取りこぼして直した）。ブラウザ側で認証が終わってプロセスが終了したら `refreshAgents` で
@@ -261,12 +271,26 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
 `SessionManager.getSessionAgent(id)`（= `SessionHandle.getAgent()`）から引く（セッション途中で
 切り替えると変わりうるため）。
 
+| capability | Claude | Codex | Grok |
+|---|---|---|---|
+| `permissions` | true | **false**（exec の JSON モードは承認要求を上げられない） | true（ACP の要求がそのまま届く） |
+| `interrupt` | true | true | true |
+| `setModel` / `modelCatalog` | true | true | true |
+| `resume` | true | true | true |
+| `usage` | true | **false** | **false** |
+| `cost` | true | **false** | **false** |
+| `transcript` | true | **false** | **false** |
+
 現状 Claude だけが持つ（＝他 provider では縮退させる）機能は、使用状況ゲージ（`usage`）・
-コスト表示（`cost`）・CLI トランスクリプトからのログ復元（`transcript`）・許可/質問ダイアログ
-（`permissions`）・学習データ利用の警告（Claude Code の認証情報を読む `utils/privacy.ts`）。
-モデルカタログと `/model`（`modelCatalog` / `setModel`）は Codex も持つが**選べるモデルが
-まったく別**なので、UI は駆動中のエージェントで選択肢を出し分ける（取得に失敗しても
-互いのモデル名を出さない = `DEFAULT_ONLY_MODEL_OPTIONS`）。
+コスト表示（`cost`）・CLI トランスクリプトからのログ復元（`transcript`）・学習データ利用の警告
+（Claude Code の認証情報を読む `utils/privacy.ts`）。許可/質問ダイアログ（`permissions`）は
+**Codex だけが持たない**（理由は §6）。
+モデルカタログと `/model`（`modelCatalog` / `setModel`）は Codex も Grok も持つが**選べるモデルが
+それぞれまったく別**なので、UI は駆動中のエージェントで選択肢を出し分ける。出し分けは
+provider ごとの prop（`codexModels` のような ternary）ではなく **`modelsByAgent`
+（`Partial<Record<AgentId, ModelOption[]>>`）の表**を `App` が両 view へ渡す形にしてあり、
+provider が増えてもビュー側の分岐は増えない（未登録のエージェントは Claude 側のカタログへ
+フォールバック）。取得に失敗しても互いのモデル名を出さない（= `DEFAULT_ONLY_MODEL_OPTIONS`）。
 `AgentRun.interrupt` / `setModel` はメソッド自体が optional で、新しいアダプタは
 `NO_CAPABILITIES`（全部 false）から始めて実装できたものだけ true にする。
 文言側も `i18n.ts` の `AgentLabel`（表示名 + ログインコマンド）を差し込む形にしてあり、
@@ -353,6 +377,88 @@ Codex は接続が切れると `{"type":"error","message":"Reconnecting... 1/5 (
 - ターンが本当に落ちた信号は `turn.failed` と、終端イベント無しの非ゼロ終了コードだけ。
   そこから `classifyCodexError` が `auth` / `rate_limit` / `connection` / `failed` へ分類する
   （判定順は Claude 側と同じく**認証切れが最優先**）。
+
+### 7. Grok アダプタ: 1 セッション 1 プロセス + JSON-RPC の対応表
+
+Grok（xAI の `grok` CLI）は Phase C で入れた 3 つ目の provider で、実装は `core/grok-events.ts`
+（ACP メッセージの型と受理ガード）/ `core/grok-parse.ts`（`AgentEvent[]` への写像）/
+`core/grok-errors.ts`（`error_type` と文言 → `AgentStopCause`）/ `core/grok-adapter.ts`（制御）と
+`core/grok-models.ts`、唯一の I/O `utils/grok.ts`。Claude / Codex の 3 点セットと**対称**に置いてある。
+CLI を同梱せずユーザーの `grok` を起動する方針も、認証を `grok login` に委ねる方針も Codex と同じ。
+
+**駆動するのは ACP（Agent Client Protocol）= stdio 上の JSON-RPC 2.0** で、`grok agent --no-leader
+stdio` を起こす。headless の `-p --output-format streaming-json` を使わないのは、あれが**一方通行
+（読み取り専用）だから** — ツール使用の許可も質問も「エージェント側から要求が飛んできて、
+クライアントが答えるまで向こうが止まる」形でしか表現できず、双方向のチャンネルが要る。
+これが Codex（`permissions: false`）との決定的な違いで、**Grok では許可・質問ダイアログを本物として
+出せる**。`--no-leader` は共有の leader プロセスへ相乗りしないため（相乗りすると別クライアントの
+セッションの状態変化まで流れ込む）。
+
+#### なぜ「1 セッション 1 プロセス + 対応表」で、Codex の「1 ターン 1 プロセス」ではないのか
+
+プロセスの粒度は provider が決める。`codex exec` は 1 ターンで終了するのでアダプタが
+プロセスを起こし直すしかなかったが、**ACP は 1 本の接続の上で何ターンでも続く**（ターン =
+`session/prompt` の 1 往復で、応答の `stopReason` が終わりを告げる）。だから Grok では
+
+```
+                   ┌──── session/prompt(id=3) ─────────────▶
+codiva（client）   │◀─── session/update 通知（本文・ツール・plan）
+                   │◀─── session/request_permission(id=7) ── 要求
+                   │──── 応答(id=7) ───────────────────────▶
+                   └◀─── 応答(id=3) stopReason:end_turn ──── ターン終了
+```
+
+のように **1 本のプロセスに複数の往復が同時に載る**。JSON-RPC の `id` でしか要求と応答を
+対応づけられないので、アダプタは `Map<number, Pending>` の**対応表**を持つ。Codex の
+「1 プロセス = 1 ターン」ならプロセスの寿命がそのまま境界になるが、ここではそれが使えない。
+`AgentRun` の契約は「`AgentEvent` を流す非同期イテレータ」だけなので、この違いは外へ漏れない。
+
+守っていること:
+
+- **エージェントから来た要求には必ず答える**（`session/request_permission` /
+  `_x.ai/ask_user_question`）。答えるまで向こうは止まっているので、**取りこぼすとターンが永久に
+  終わらない**。パラメータが読めなくて判断できない要求も、黙って捨てずに `cancelled` を返して
+  先へ進ませる。逆にこちら発の要求（`rpc()`）の待ちは、プロセスが死んだ時点で全部起こす。
+- **`session/cancel` は通知（notification）**。`id` を付けて要求として送ると
+  `-32601 Method not found` が返る（実測）ので、中断は id 無しで送る。
+- **許可の `optionId` は固定文字列ではない**（ツールごとに変わる）。`kind`（`allow_once` /
+  `allow_always` / `reject_once` / `reject_always`）で選ぶ。
+- **質問の応答には `outcome` を必ず付ける**。`{"outcome":"accepted","answers":{…}}` /
+  `{"outcome":"cancelled"}` の 2 通りで、省くと「クライアントの応答が不正」としてツールが失敗する
+  （実測）。
+- **復元は `session/load` ではなく `session/resume`**。`load` は会話を丸ごと通知として**再生**して
+  しまい、codiva のログが二重になる。`resume` はモデル側の文脈だけを戻す（実測: 別プロセスで
+  resume したスレッドで、backend が先のターンを見えていた）。
+- **通知は 2 系統で届く**。ACP 標準の `session/update`（camelCase）と xAI 拡張の
+  `_x.ai/session_notification`（同じ `update` の封筒で snake_case）。`grok-parse.ts` は両方を
+  同じ入口へ流し、`agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
+  `tool_call_update` / `plan`（= TODO）/ `retry_state` だけを写して残りは捨てる。
+- **systemPrompt は `session/new` の `_meta.rules`** で渡す（CLI が自分の system prompt へ**追記**
+  する）。`systemPromptOverride` は使わない — Grok 自身の system prompt を置き換えてしまうため。
+
+#### 解決済みモデルと失敗分類
+
+**Grok は「実際に動いているモデル」を自分で報告する**（`session/new` / `session/resume` の結果の
+`models.currentModelId`、ターン応答の `_meta.modelId`、変更時の `_x.ai/models/update`）。だから
+Codex で必要だった rollout の探り読み（`codex-rollout.ts`）に相当するものは**存在しない**
+（`grok-rollout.ts` は無い）。`/model` のカタログも `initialize` の応答の
+`_meta.modelState.availableModels` から取れるので、`utils/grok.ts` の `fetchGrokModelCatalog` は
+エージェントを 1 回起こして `initialize` だけ送り、カタログを読んでプロセスを殺す
+（セッションも推論も作らない）。`grok models` を使わないのは、人間向けのテキストしか出さず
+（`--json` が無い）、**サインアウト状態でも 0 で終わる**ので認証の判定にも使えないため。導入判定は
+`grok --version`、ログイン判定は `XAI_API_KEY` か `~/.grok/auth.json` の有無（トークンの有効性までは見ない）。
+
+失敗分類は他の 2 つに無い手がかりを使う: `retry_state` 通知が **CLI 自身の分類**（`error_type`）を
+運ぶので、取れるならそれを優先し、無いときだけ文言を見る（`grokStopCause`）。ただし
+`error_type: "api"` は 4xx/5xx を一緒くたにするので**わざと文言判定へ落とす** — ここで `failed` に
+丸めると 401 が「よく分からない失敗」に格下げされ、再ログインを促せなくなる。
+
+#### 共有した唯一のもの: `core/jsonl.ts`
+
+Codex の stdout も Grok の stdio も「1 行 1 JSON」なので、枠切り `createJsonlSplitter`
+（部分行・CRLF・末尾行・1 行の上限）を `codex-events.ts` から**provider 非依存の `core/jsonl.ts`**
+へ移して共用した。ここだけは provider 固有の知識を含まない純粋な framing なので、
+「provider の形の知識はアダプタに閉じる」規約に反しない。
 
 ## セッション状態機械
 
@@ -1286,7 +1392,7 @@ codiva の子なので、上の `NODE_ENV=production` をそのまま継がせ�
   尊重するのと同じ理由で、ユーザーが明示した `NODE_ENV` は子にもそのまま渡す）。
 - `core/child-env.ts` の `childEnv(env)`（純粋）が、その目印を見て `NODE_ENV` と目印自身を
   落としたコピーを返す。実 `process.env` への適用は `utils/child-env.ts` の `childProcessEnv()`。
-- **codiva が起こすプロセスには必ずこれを渡す**（`codex exec` / `git` / `gh` / login CLI /
+- **codiva が起こすプロセスには必ずこれを渡す**（`codex exec` / `grok agent stdio` / `git` / `gh` / login CLI /
   通知・URL オープン / `npm`）。Claude は SDK 経由なので `utils/claude-query.ts` の
   `claudeQuery`（`Options.env` を被せた `query`）に入口を 1 本化した。`Options.env` は
   `process.env` とマージされず**丸ごと置き換える**ので、渡すのは常に全体のコピーにする。
