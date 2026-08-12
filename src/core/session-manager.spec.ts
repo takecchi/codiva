@@ -1822,7 +1822,7 @@ describe('SessionManager', () => {
       const manager = managerWithAgents();
       const id = manager.create('do the thing');
       await flush();
-      // `grok` は型にはあるがアダプタ未登録 — UI へは出ないし切り替わらない。
+      // このマネージャに登録していないアダプタ — UI へは出ないし切り替わらない。
       expect(manager.setSessionAgent(id, 'grok')).toBe(false);
       expect(manager.getSessionAgent(id)).toBe(claude);
     });

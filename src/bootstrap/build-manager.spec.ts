@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CodivaConfig, IgnoredFilesMode } from '@/core';
-import { sessionOptionsFrom } from './build-manager';
+import { buildAgents, sessionOptionsFrom } from './build-manager';
 
 describe('sessionOptionsFrom', () => {
   it('forwards the configured knobs verbatim', () => {
@@ -37,5 +37,23 @@ describe('sessionOptionsFrom', () => {
 
   it('leaves an absent repo prompt undefined', () => {
     expect(sessionOptionsFrom({}).appendSystemPrompt).toBeUndefined();
+  });
+});
+
+/**
+ * アダプタの登録。ここが唯一の「provider の I/O を注入する場所」なので、
+ * 足したはずのエージェントが `/agent` に出ない（= registry に載っていない）
+ * 取り違えだけを安く固定する。実プロセスは起こさない。
+ */
+describe('buildAgents', () => {
+  it('registers every implemented provider', () => {
+    const agents = buildAgents({} as CodivaConfig, { repoRoot: process.cwd() });
+    expect(Object.keys(agents).sort()).toEqual(['claude', 'codex', 'grok']);
+    expect(agents.grok?.displayName).toBe('Grok');
+    expect(agents.grok?.loginCommand).toBe('grok');
+    // 許可・質問を上げられる provider として登録されている（Codex との違い）。
+    expect(agents.grok?.capabilities.permissions).toBe(true);
+    // TUI 内ログインの導線が生えている（`/login` と `/agent` の `l`）。
+    expect(agents.grok?.login).toBeDefined();
   });
 });

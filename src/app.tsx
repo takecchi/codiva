@@ -1,5 +1,5 @@
 import { Box, useApp, useWindowSize } from 'ink';
-import { type FC, useRef, useState } from 'react';
+import { type FC, useMemo, useRef, useState } from 'react';
 import {
   type CodivaConfig,
   messages as catalogs,
@@ -46,6 +46,11 @@ export const App: FC<{
    */
   codexModelCatalog?: Promise<readonly ModelOption[]>;
   /**
+   * Grok のモデルカタログ取得（`grok agent stdio` の `initialize`）。Codex と同じく
+   * Claude とは別のモデル群なので、駆動中のエージェントで出し分ける。
+   */
+  grokModelCatalog?: Promise<readonly ModelOption[]>;
+  /**
    * 学習データ利用（claude.ai の「Help improve our AI models」）の判定。合成ルートが
    * render 前に開始した Promise をそのまま受け、解決したら一覧のバナーに注意行を出す
    * （`'on'` のときだけ）。設定 `privacyWarning: false` では未指定になる。
@@ -91,6 +96,7 @@ export const App: FC<{
   messages = catalogs.ja,
   modelCatalog,
   codexModelCatalog,
+  grokModelCatalog,
   trainingOptIn,
   updater,
   loadBranch,
@@ -103,6 +109,17 @@ export const App: FC<{
   const models = useModelCatalog(modelCatalog);
   // 取得に失敗しても Claude のモデル名を Codex の選択肢に出さない（別物なので）。
   const codexModels = useModelCatalog(codexModelCatalog, DEFAULT_ONLY_MODEL_OPTIONS);
+  // 取得に失敗しても Claude のモデル名を Grok の選択肢に出さない（別物なので）。
+  const grokModels = useModelCatalog(grokModelCatalog, DEFAULT_ONLY_MODEL_OPTIONS);
+  /**
+   * エージェントごとの `/model` の選択肢。**表で持つ**ことで、provider が増えても
+   * ビュー側の分岐（`agent === 'codex' ? ... : ...`）を増やさずに済む。
+   * 未登録のエージェントは Claude 側のカタログ（`models`）へフォールバックする。
+   */
+  const modelsByAgent = useMemo(
+    () => ({ codex: codexModels, grok: grokModels }),
+    [codexModels, grokModels],
+  );
   const training = useTrainingOptIn(trainingOptIn);
   const { info: updateInfo, clear: clearUpdateInfo } = useUpdateCheck(updater?.initial);
   const [view, setView] = useState<View>({ mode: 'list' });
@@ -148,7 +165,7 @@ export const App: FC<{
             manager={manager}
             id={view.id}
             models={models}
-            codexModels={codexModels}
+            modelsByAgent={modelsByAgent}
             onBack={() => setView({ mode: 'list' })}
             onCopy={onCopy}
             onOpenUrl={onOpenUrl}
@@ -163,7 +180,7 @@ export const App: FC<{
             branch={branch}
             model={model}
             models={models}
-            codexModels={codexModels}
+            modelsByAgent={modelsByAgent}
             version={version}
             updateInfo={updateInfo}
             updater={updater}

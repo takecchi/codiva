@@ -5,6 +5,7 @@ import {
   type CodivaConfig,
   createClaudeAdapter,
   createCodexAdapter,
+  createGrokAdapter,
   type Messages,
   notificationFor,
   resolveClaudeSettingSources,
@@ -19,6 +20,7 @@ import {
   createTitleGenerator,
   detectClaudeAvailability,
   detectCodexAvailability,
+  detectGrokAvailability,
   lookupPr,
   lookupPrs,
   markPrReady,
@@ -26,6 +28,7 @@ import {
   resolveCodexRolloutModel,
   saveRepoPrompt,
   spawnCodex,
+  spawnGrok,
   spawnLogin,
   type WorktreeManager,
 } from '@/utils';
@@ -94,6 +97,12 @@ export function buildAgents(
       // セッションのモデル名は rollout の `turn_context` からしか分からない。
       // `waitMs` はアダプタが決める（ターン中は長く、ターン終了後の引き直しは短く）。
       resolveModel: (threadId, waitMs) => resolveCodexRolloutModel(threadId, { waitMs }),
+      spawnLogin,
+    }),
+    grok: createGrokAdapter({
+      spawn: spawnGrok,
+      generateTitle,
+      checkAvailability: () => detectGrokAvailability(),
       spawnLogin,
     }),
   };

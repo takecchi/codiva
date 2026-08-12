@@ -5,7 +5,7 @@ import type { AgentId } from './types';
  * 自動選択の優先順位（設定 `agent` が無いとき、導入済みのうち先頭を既定にする）。
  * codiva の元々の既定が Claude なので Claude を先に置く。
  */
-export const DEFAULT_AGENT_ORDER: readonly AgentId[] = ['claude', 'codex'];
+export const DEFAULT_AGENT_ORDER: readonly AgentId[] = ['claude', 'codex', 'grok'];
 
 /**
  * 新規セッションを既定でどのエージェントで動かすかを決める純関数。

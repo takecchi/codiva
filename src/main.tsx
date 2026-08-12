@@ -21,6 +21,7 @@ import {
   detectInstallKind,
   enableFatalErrorReports,
   fetchCodexModelCatalog,
+  fetchGrokModelCatalog,
   fetchModelCatalog,
   fetchTrainingOptIn,
   fetchUsageSnapshot,
@@ -178,6 +179,12 @@ async function main(): Promise<void> {
     cwd: repoRoot,
     signal: probeAbort.signal,
   });
+  // Grok 側の選択肢。ACP の `initialize` 応答（`_meta.modelState`）を読むだけで、
+  // セッションは作らない = 推論は走らない。`grok` が入っていなければ空配列になる。
+  const grokModelCatalog = fetchGrokModelCatalog({
+    cwd: repoRoot,
+    signal: probeAbort.signal,
+  });
 
   // プラン（Pro / Max / Team …）と使用リミット枠をステータスバーに出すための取得。
   // `rate_limit_event` はセッションがターンを回している間しか届かないので、待機中も
@@ -257,6 +264,7 @@ async function main(): Promise<void> {
       messages={t}
       modelCatalog={modelCatalog}
       codexModelCatalog={codexModelCatalog}
+      grokModelCatalog={grokModelCatalog}
       trainingOptIn={trainingOptIn}
       updater={updater}
       loadBranch={() => worktrees.currentBranch()}
