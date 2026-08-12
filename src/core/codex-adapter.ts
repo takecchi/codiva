@@ -28,11 +28,23 @@ import type { CodexSandbox, EffortLevel } from './config';
  */
 
 /**
- * 解決済みモデルの問い合わせを 1 セッションで何回まで試すか。空振り（rollout が
- * まだ書かれていない）は次のターンで引き直すが、そもそも取れない環境
- * （rollout を書かない設定・別レイアウト）で毎ターン探し回らないための上限。
+ * 解決済みモデルの問い合わせが**空振り**してよい回数の上限。そもそも取れない環境
+ * （rollout を書かない設定・別レイアウト）で毎ターン探し回らないための予算で、
+ * 1 ターンにつき最大 2 回（ターン中 + ターン終了後の引き直し）消費する。
  */
-const MAX_MODEL_PROBES = 3;
+const MAX_MODEL_PROBES = 4;
+
+/**
+ * 問い合わせに与える猶予（実 I/O 側の `resolveCodexRolloutModel` へ渡す）。
+ *
+ * - **ターン中**（`thread.started` の直後に張る）は長く待つ。CLI が解決済みモデルを
+ *   書き出すのは実測で `thread.started` から**約 3 秒後**なので、短く切ると必ず空振りする。
+ *   この問い合わせは**誰も await しない**（ストリームを止めない）ので長くても害が無い。
+ * - **ターン終了後の引き直し**は短くする。そこでは既に書かれているので普通は 1 回で
+ *   当たり、取れない環境ではターンの合間を長く引き止めない（ここだけは await する）。
+ */
+const MODEL_PROBE_WAIT_MS = 20_000;
+const MODEL_PROBE_TAIL_WAIT_MS = 1_500;
 
 /** 1 ターンぶんの `codex exec` を起動するための入力（I/O 実装は `utils/codex.ts`）。 */
 export interface CodexSpawnRequest {
@@ -106,8 +118,11 @@ export function createCodexAdapter(deps: {
    * `resolveCodexRolloutModel`）。`codex exec --json` はモデル名を運ばないので、
    * `--model` を明示していないセッションはこれが唯一の出所になる。
    * 省略可（渡さなければモデル欄は空のまま = 従来どおり）。
+   *
+   * `waitMs` は「答えが出るまで待ってよい上限」。答えは CLI が非同期に書き出すので、
+   * 待たずに聞くと空振りする（{@link MODEL_PROBE_WAIT_MS}）。
    */
-  resolveModel?: (threadId: string) => Promise<string | undefined>;
+  resolveModel?: (threadId: string, waitMs: number) => Promise<string | undefined>;
   /** TUI 内ログインのプロセス起動（I/O は `utils/agent-login.ts` の `spawnLogin`）。 */
   spawnLogin?: (command: string, args: readonly string[]) => AgentLoginProcess;
 }): AgentAdapter {
@@ -141,41 +156,49 @@ export function createCodexAdapter(deps: {
       // `--model` を明示していないセッション（= CLI の既定に任せている）のモデル欄は
       // これでしか埋まらない。**ストリームは止めない** — 問い合わせは走らせておいて、
       // answered ぶんを後続イベントの合間に流す。
-      let modelProbe: Promise<void> | undefined;
       let pendingModel: string | undefined;
-      let probedThread: string | undefined;
-      let probeAttempts = 0;
+      /** ターン中に張っている問い合わせ（1 本だけ）。 */
+      let inTurnProbe: Promise<void> | undefined;
+      /** 一度でも読めたか（読めたらそのセッションでは以後探さない）。 */
+      let resolvedOnce = false;
+      /** 空振り（+ 失敗）した回数。{@link MAX_MODEL_PROBES} で打ち切る。 */
+      let misses = 0;
 
-      const probeModel = (id: string): void => {
+      /**
+       * 問い合わせを 1 本張る（呼ばなくてよいときは undefined を返す）。
+       *
+       * **空振りは記憶しない** — 答えは CLI が遅れて書き出すので、早すぎた問い合わせが
+       * 空振りするのは正常な経路。latch すると「次に聞けば読めるのに二度と聞かない」
+       * セッションになる。歯止めは回数の予算（{@link MAX_MODEL_PROBES}）だけにする。
+       */
+      const startProbe = (id: string, waitMs: number): Promise<void> | undefined => {
         const resolve = deps.resolveModel;
         // 明示指定があるときは Session が先に表示済みなので問い合わせない。
-        if (!resolve || model !== undefined || probedThread === id || modelProbe) {
-          return;
+        if (!resolve || model !== undefined || resolvedOnce || misses >= MAX_MODEL_PROBES) {
+          return undefined;
         }
-        // 取れない環境（rollout を書かない設定・別レイアウト）で毎ターン探し回らない。
-        if (probeAttempts >= MAX_MODEL_PROBES) {
-          return;
-        }
-        probeAttempts += 1;
-        probedThread = id;
-        // **空振りは記憶しない**。`turn_context` はターン開始時に書かれるので、初回が
-        // 早すぎて空振りすることがある。ここで id を latch したままにすると、次の
-        // ターンなら即座に読めるのに二度と引き直さないセッションになる。
-        const retryLater = () => {
-          probedThread = undefined;
-        };
-        modelProbe = resolve(id)
+        return resolve(id, waitMs)
           .then((found) => {
             if (found === undefined) {
-              retryLater();
+              misses += 1;
               return;
             }
+            resolvedOnce = true;
             pendingModel = found;
           })
-          .catch(retryLater)
-          .finally(() => {
-            modelProbe = undefined;
+          .catch(() => {
+            misses += 1;
           });
+      };
+
+      /** ターン中の問い合わせ（走っていれば何もしない。答えは後続イベントの合間に流れる）。 */
+      const probeDuringTurn = (id: string): void => {
+        if (inTurnProbe) {
+          return;
+        }
+        inTurnProbe = startProbe(id, MODEL_PROBE_WAIT_MS)?.finally(() => {
+          inTurnProbe = undefined;
+        });
       };
 
       /**
@@ -242,7 +265,7 @@ export function createCodexAdapter(deps: {
                   }
                   if (event.type === 'thread.started') {
                     threadId = event.thread_id;
-                    probeModel(event.thread_id);
+                    probeDuringTurn(event.thread_id);
                   } else if (event.type === 'turn.completed' || event.type === 'turn.failed') {
                     sawTerminal = true;
                   }
@@ -271,17 +294,25 @@ export function createCodexAdapter(deps: {
                   : { kind: 'turn_stopped', cause: classifyCodexError(detail), detail };
               }
 
-              // 問い合わせの回収は**終端イベントを流したあと**。`turn_context` は
-              // ターン開始時に書かれるので、短いターンだと解決がストリームの終わりに
-              // 間に合わない。ここで待たないと、1 ターンで終わって idle になった
-              // セッションのモデル欄が次の指示まで空のままになる。`model_resolved` は
+              // 問い合わせの回収は**終端イベントを流したあと**。`model_resolved` は
               // status を触らないので、完了イベントの後に流しても巻き戻さない。
               //
-              // 中断・破棄のときは**待たない**（`Ctrl+C` の直後や終了処理を、表示用の
-              // 問い合わせで最大 1 秒引き止めない）。タイマーは unref してあるので、
+              // **ここで引き直すのが本命**。CLI が解決済みモデルを書き出すのは
+              // `thread.started` から約 3 秒後（実測）なので、ターン中に張った
+              // 問い合わせは空振りしうる。一方**ターンが終わった時点なら必ず書かれている**
+              // ので、ここで聞けば当たる。これが無いと 1 ターンで idle になった
+              // セッションのモデル欄が次の指示まで（1 回きりのセッションなら永久に）
+              // 空のままになる — 実際にそうなっていた。
+              //
+              // 走っている問い合わせは**待たない**（あちらは長い猶予を持つので、待つと
+              // ターンの合間を最大その猶予ぶん引き止める）。同じファイルを読むだけなので
+              // 二重に走っても害は無い。
+              //
+              // 中断・破棄のときは**そもそも聞かない**（`Ctrl+C` の直後や終了処理を、
+              // 表示用の問い合わせで引き止めない）。タイマーは unref してあるので、
               // 置き去りにした問い合わせが TUI の終了を止めることもない。
-              if (modelProbe && !interrupted && !request.abortController.signal.aborted) {
-                await modelProbe;
+              if (threadId && !interrupted && !request.abortController.signal.aborted) {
+                await startProbe(threadId, MODEL_PROBE_TAIL_WAIT_MS);
               }
               const resolved = takeResolvedModel();
               if (resolved) {
@@ -311,8 +342,8 @@ export function createCodexAdapter(deps: {
           // セッションでは「明示モデルを選ぶ → 既定へ戻す」としてもモデル欄が明示モデルの
           // 表示から二度と更新されない（予算はユーザーの操作回数で自然に頭打ちになる）。
           if (next === undefined) {
-            probedThread = undefined;
-            probeAttempts = 0;
+            resolvedOnce = false;
+            misses = 0;
           }
         },
       };

@@ -396,8 +396,8 @@ describe('createCodexAdapter resolveModel', () => {
     });
     const adapter = createCodexAdapter({
       spawn: codex.spawn,
-      resolveModel: (threadId) => {
-        seen.push(threadId);
+      resolveModel: (threadId, waitMs) => {
+        seen.push(`${threadId}:${waitMs > 5_000 ? 'long' : 'short'}`);
         return pending;
       },
     });
@@ -414,7 +414,9 @@ describe('createCodexAdapter resolveModel', () => {
 
     answer('gpt-5.6-sol');
     await waitFor(() => events.some((e) => e.kind === 'model_resolved'), 'the resolved model');
-    expect(seen).toEqual(['th-1']);
+    // ターン中は長い猶予で聞き（誰も待たない）、ターン終了後は短い猶予で引き直す
+    // （そこでは既に書かれているので当たれば即返る）。
+    expect(seen).toEqual(['th-1:long', 'th-1:short']);
     expect(events.find((e) => e.kind === 'model_resolved')).toEqual({
       kind: 'model_resolved',
       model: 'gpt-5.6-sol',
@@ -553,11 +555,41 @@ describe('createCodexAdapter resolveModel', () => {
     expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
   });
 
+  // **これが本命の回帰テスト。** CLI が解決済みモデルを書き出すのは `thread.started` から
+  // 約 3 秒後（実測 0.147.0）なので、ターン中に張った問い合わせは空振りしうる。ターンが
+  // 終わった時点なら必ず書かれているので、そこで引き直せば当たる。これが無いと
+  // 「Codex でセッションを始めてもモデル欄が空のまま」になる（実際にそうなっていた）。
+  it('re-asks at the end of the turn when the in-turn lookup was too early', async () => {
+    const codex = makeFakeCodex();
+    const answers: (string | undefined)[] = [undefined, 'gpt-5.6-sol'];
+    let asked = 0;
+    const adapter = createCodexAdapter({
+      spawn: codex.spawn,
+      resolveModel: async () => answers[asked++],
+    });
+    const { prompts, events, done } = drive(adapter);
+
+    // 1 ターンで終わって idle になるセッション（次の指示は来ない）。
+    prompts.push('only turn');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit(threadStarted('th-1'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'model_resolved'), 'the tail lookup');
+    expect(asked).toBe(2);
+    const kinds = events.map((e) => e.kind);
+    expect(kinds.indexOf('model_resolved')).toBeGreaterThan(kinds.indexOf('turn_completed'));
+
+    prompts.close();
+    await done;
+  });
+
   // 空振り（`turn_context` がまだ書かれていない）を記憶してしまうと、次のターンなら
   // すぐ読めるのに二度と引き直さないセッションになる。
   it('retries on the next turn when the rollout was not readable yet', async () => {
     const codex = makeFakeCodex();
-    const answers: (string | undefined)[] = [undefined, 'gpt-5.6-sol'];
+    // ターン 1 は 2 回（ターン中 + 終了後）とも空振りし、ターン 2 で読めるようになる。
+    const answers: (string | undefined)[] = [undefined, undefined, 'gpt-5.6-sol'];
     let asked = 0;
     const adapter = createCodexAdapter({
       spawn: codex.spawn,
@@ -579,7 +611,7 @@ describe('createCodexAdapter resolveModel', () => {
     codex.at(1).emit(turnCompleted);
     codex.at(1).end();
     await waitFor(() => events.some((e) => e.kind === 'model_resolved'), 'the retry to answer');
-    expect(asked).toBe(2);
+    expect(asked).toBe(3);
 
     prompts.close();
     await done;
@@ -609,7 +641,9 @@ describe('createCodexAdapter resolveModel', () => {
         `turn ${turn} to end`,
       );
     }
-    expect(asked).toBe(3);
+    // 予算は 4 回ぶん（1 ターンにつきターン中 + 終了後の 2 回）。5 ターン回しても
+    // それ以上は探しに行かない。
+    expect(asked).toBe(4);
 
     prompts.close();
     await done;
@@ -626,8 +660,8 @@ describe('createCodexAdapter resolveModel', () => {
       spawn: codex.spawn,
       resolveModel: async () => {
         asked += 1;
-        // 最初の 3 回（= 上限ぶん）は空振り、そのあとは読める。
-        return asked > 3 ? 'gpt-5.6-sol' : undefined;
+        // 最初の 4 回（= 上限ぶん）は空振り、そのあとは読める。
+        return asked > 4 ? 'gpt-5.6-sol' : undefined;
       },
     });
     const { run, prompts, events, done } = drive(adapter);
@@ -644,10 +678,11 @@ describe('createCodexAdapter resolveModel', () => {
       );
     };
 
+    // 2 ターン（= 4 回の問い合わせ）で予算を使い切る。3 ターン目は探しに行かない。
     for (let i = 0; i < 3; i += 1) {
       await turn(i);
     }
-    expect(asked).toBe(3);
+    expect(asked).toBe(4);
     expect(events.some((e) => e.kind === 'model_resolved')).toBe(false);
 
     // 明示モデルを選び、また既定へ戻す。
@@ -655,7 +690,7 @@ describe('createCodexAdapter resolveModel', () => {
     await run.setModel?.(undefined);
     await turn(3);
 
-    expect(asked).toBe(4);
+    expect(asked).toBe(5);
     expect(events.find((e) => e.kind === 'model_resolved')).toEqual({
       kind: 'model_resolved',
       model: 'gpt-5.6-sol',
