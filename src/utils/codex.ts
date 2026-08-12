@@ -211,18 +211,31 @@ export async function fetchCodexModelCatalog(opts?: {
  */
 const ROLLOUT_HEAD_BYTES = 512 * 1024;
 
-/** `turn_context` が書かれるまで待つリトライ（間隔 × 回数）。 */
-const ROLLOUT_RETRY_MS = 200;
-const ROLLOUT_RETRIES = 6;
-
 /**
- * ファイル探索そのものを何回まで繰り返すか。
+ * `turn_context` が書かれるまで待つ既定の猶予と、読み直しの間隔（指数バックオフ）。
  *
- * リトライの主目的は「`turn_context` がまだ書かれていない」を待つことで、**ファイル自体は
- * スレッド開始時に作られる**（`session_meta` が先に書かれる）。見つからないまま数回試して
- * 駄目なら、待っても現れないので早めに諦める（全日付を舐める走査を無駄に繰り返さない）。
+ * **実測（codex-cli 0.147.0、`codex exec --json` を実際に走らせて計測）**:
+ *
+ * | 時刻（`thread.started` 基準） | 起きること |
+ * |---|---|
+ * | +0.0s | stdout に `thread.started` |
+ * | ~+0.2s | rollout ファイルが作られる（`session_meta` が先に書かれる） |
+ * | **~+3.0s** | **`turn_context`（モデル slug）が書かれる** |
+ * | +7.2s | `turn.completed` |
+ *
+ * つまり `turn_context` は「ターン開始時」ではなく**入力 `response_item` と
+ * `world_state` を書き終えたあと**に来る。かつては 200ms × 6 回 = 最長 1.2 秒
+ * （しかもファイル探索の上限で実質 0.6 秒）で諦めていたため、**既定モデルで動く
+ * Codex セッションのモデル欄はほぼ必ず空のまま**だった。猶予は実測の数倍取り、
+ * 間隔はバックオフさせて読み直しの回数を抑える。
+ *
+ * ファイル探索の回数にも上限を置かない（猶予そのものが上限になる）。作られる前に
+ * 張った問い合わせが「数回探して見つからないから諦める」で終わっていたのも、
+ * 空振りの一因だった。
  */
-const MAX_ROLLOUT_SEARCHES = 3;
+const ROLLOUT_WAIT_MS = 20_000;
+const ROLLOUT_POLL_MS = 200;
+const ROLLOUT_POLL_MAX_MS = 2_000;
 
 /** `$CODEX_HOME`（未設定なら `~/.codex`）。 */
 function codexHome(): string {
@@ -251,7 +264,8 @@ async function subdirsDesc(dir: string): Promise<string[]> {
  *
  * 代わりに**新しい日付から見て最初に当たった時点で止める**ことで実費を抑える
  * （当日始まったスレッドなら readdir 数回で終わる）。全日付を舐めるのは「そのスレッドの
- * rollout が本当に無い」ときだけで、その繰り返しは {@link MAX_ROLLOUT_SEARCHES} が抑える。
+ * rollout が本当に無い」ときだけで、その繰り返しは呼び出し側の猶予（{@link ROLLOUT_WAIT_MS}）
+ * とバックオフが抑える。
  */
 async function findRollout(home: string, threadId: string): Promise<string | undefined> {
   const sessionsDir = join(home, 'sessions');
@@ -299,45 +313,49 @@ const sleep = (ms: number) =>
  * そのスレッドが**実際に使っているモデル**を rollout から読む
  * （`core/codex-rollout.ts` の理由書きを参照）。
  *
- * `turn_context` はターンが始まった時点で書かれるので、`thread.started` の直後だと
- * まだ無いことがある。数回だけ間を置いて読み直し、それでも読めなければ諦める
- * （**throw しない** — モデル欄が空のままになるだけで、セッションは壊さない）。
+ * `turn_context` は `thread.started` から**数秒遅れて**書かれる（実測 ~3 秒。
+ * {@link ROLLOUT_WAIT_MS} の表）。`waitMs` の猶予いっぱい、バックオフしながら
+ * 読み直し、それでも読めなければ諦める（**throw しない** — モデル欄が空のままに
+ * なるだけで、セッションは壊さない）。
+ *
+ * 呼び出し側（`core/codex-adapter.ts`）は猶予を 2 通り使い分ける: ターン中の
+ * 問い合わせは長く待ってよく（誰も await しない）、ターン終了後の引き直しは短くする
+ * （そこでは既に書かれているので当たれば即返る）。
  */
 export async function resolveCodexRolloutModel(
   threadId: string,
-  opts?: { home?: string; retries?: number; retryMs?: number },
+  opts?: { home?: string; waitMs?: number; pollMs?: number; maxPollMs?: number },
 ): Promise<string | undefined> {
   const home = opts?.home ?? codexHome();
-  const retries = opts?.retries ?? ROLLOUT_RETRIES;
-  const retryMs = opts?.retryMs ?? ROLLOUT_RETRY_MS;
+  const pollMs = Math.max(1, opts?.pollMs ?? ROLLOUT_POLL_MS);
+  const maxPollMs = Math.max(pollMs, opts?.maxPollMs ?? ROLLOUT_POLL_MAX_MS);
+  const deadline = Date.now() + Math.max(0, opts?.waitMs ?? ROLLOUT_WAIT_MS);
   // 一度見つけたパスは使い回す。rollout はスレッド開始時に作られて以後追記されるだけ
-  // なので途中で変わらない ＝ リトライは**同じ 1 ファイルを読み直すだけ**でよく、
+  // なので途中で変わらない ＝ 読み直しは**同じ 1 ファイルを読み直すだけ**でよく、
   // 全日付を舐める走査を待ち時間のたびに繰り返さずに済む。
   let path: string | undefined;
-  let searches = 0;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    if (attempt > 0) {
-      await sleep(retryMs);
-    }
+  let delay = pollMs;
+  for (;;) {
     try {
-      if (path === undefined) {
-        if (searches >= MAX_ROLLOUT_SEARCHES) {
-          // ファイルが無い（rollout を残さない設定・別レイアウト）。待っても現れない。
-          return undefined;
-        }
-        searches += 1;
-        path = await findRollout(home, threadId);
-      }
+      // まだ見つかっていなければ探索も繰り返す。**「数回で打ち切る」はしない** —
+      // ファイルが作られる前（`thread.started` 直後）に張った問い合わせが、
+      // ファイルの出現を待てずに諦めてしまう。
+      path ??= await findRollout(home, threadId);
       const text = path ? await readHead(path) : undefined;
       const model = text ? codexRolloutModelFromText(text) : undefined;
       if (model) {
         return model;
       }
     } catch {
-      // 権限・レイアウト変更など。次の試行へ（最後まで駄目なら undefined）。
+      // 権限・レイアウト変更など。猶予内なら次の試行へ。
     }
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      return undefined;
+    }
+    await sleep(Math.min(delay, left));
+    delay = Math.min(delay * 2, maxPollMs);
   }
-  return undefined;
 }
 
 /** 導入・ログイン確認の上限（サブプロセスが固まっても TUI を止めない）。 */

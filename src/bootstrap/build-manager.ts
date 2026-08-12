@@ -92,7 +92,8 @@ export function buildAgents(
       checkAvailability: () => detectCodexAvailability(),
       // `codex exec --json` は解決済みモデルを運ばない。既定モデルで動いている
       // セッションのモデル名は rollout の `turn_context` からしか分からない。
-      resolveModel: (threadId) => resolveCodexRolloutModel(threadId),
+      // `waitMs` はアダプタが決める（ターン中は長く、ターン終了後の引き直しは短く）。
+      resolveModel: (threadId, waitMs) => resolveCodexRolloutModel(threadId, { waitMs }),
       spawnLogin,
     }),
   };

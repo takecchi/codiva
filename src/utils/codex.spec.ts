@@ -233,7 +233,8 @@ describe('resolveCodexRolloutModel', () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  const fast = { retries: 1, retryMs: 1 };
+  // 「もう書かれている」ケースは 1 回目で当たるので猶予は最小で足りる。
+  const fast = { waitMs: 5, pollMs: 1 };
 
   it('reads the model the CLI actually resolved for that thread', async () => {
     await writeRollout(home, ['2026', '08', '11'], THREAD, [meta, turn('gpt-5.6-sol')]);
@@ -278,8 +279,27 @@ describe('resolveCodexRolloutModel', () => {
 
   it('retries until the turn_context has been written (it lands after thread.started)', async () => {
     await writeRollout(home, ['2026', '08', '11'], THREAD, [meta]);
-    const pending = resolveCodexRolloutModel(THREAD, { home, retries: 40, retryMs: 5 });
+    const pending = resolveCodexRolloutModel(THREAD, { home, waitMs: 5_000, pollMs: 1 });
     await writeRollout(home, ['2026', '08', '11'], THREAD, [meta, turn('gpt-5.6-sol')]);
     expect(await pending).toBe('gpt-5.6-sol');
+  });
+
+  // 実測（0.147.0）では rollout ファイル自体も `thread.started` の**あと**に作られる
+  // （~0.2 秒）。「数回探して見つからなければ諦める」で打ち切ると、ターン開始と同時に
+  // 張った問い合わせがファイルの出現を待てずに空振りする。
+  it('keeps looking for the rollout file until the deadline (it appears after the call)', async () => {
+    const pending = resolveCodexRolloutModel(THREAD, { home, waitMs: 5_000, pollMs: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await writeRollout(home, ['2026', '08', '11'], THREAD, [meta, turn('gpt-5.6-sol')]);
+    expect(await pending).toBe('gpt-5.6-sol');
+  });
+
+  // 猶予はバックオフしても必ず守る（ターン終了後の引き直しはここで待たせない）。
+  it('gives up within the patience window it was given', async () => {
+    const started = Date.now();
+    expect(
+      await resolveCodexRolloutModel(THREAD, { home, waitMs: 40, pollMs: 5, maxPollMs: 10 }),
+    ).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
