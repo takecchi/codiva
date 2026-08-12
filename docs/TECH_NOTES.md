@@ -1134,3 +1134,191 @@ Codex の JSONL には上流に採取済みのフィクスチャが無く、実�
 
 > この手法は「CLI の出力形式に依存したパーサを、CLI 本体を差し替えずにテストしたい」場面で
 > そのまま再利用できる。上流にフィクスチャが無い provider を足すときの既定手段にする。
+
+## Grok Build CLI（`grok agent stdio` / ACP）の実測（grok 1.0.0, 2026-08-12）
+
+codiva の 3 つ目の provider（issue #107）。Claude / Codex と同じく **CLI は同梱せず、
+ユーザーがインストールした `grok` を起動する**（導入は `curl -fsSL https://x.ai/cli/install.sh | bash`、
+認証は `grok login`）。実装は `core/grok-*.ts` + `utils/grok.ts`。
+
+### なぜ headless（`-p --output-format streaming-json`）ではなく ACP なのか
+
+`grok` には 2 つの非対話モードがある。
+
+| モード | 形 | 許可・質問 |
+|---|---|---|
+| `grok -p <prompt> --output-format streaming-json` | 1 ターン = 1 プロセス、NDJSON を**一方向**に吐く | **上げられない**（読み取り専用） |
+| `grok agent stdio` | JSON-RPC 2.0（ACP = Agent Client Protocol）の**双方向**ストリーム | `session/request_permission` / `_x.ai/ask_user_question` が飛んでくる |
+
+Codex に倣えば前者だが、それでは Codex と同じく `permissions: false` に落ちる。後者は
+**エージェント側からクライアントへ要求が飛ぶ**ので、codiva の許可ダイアログ・質問ダイアログを
+そのまま繋げる。よって codiva は ACP を選んでいる（`GROK_CAPABILITIES.permissions = true`）。
+
+### codiva が組み立てる起動コマンド
+
+`utils/grok.ts` の `grokAgentArgs()`。**シェルは使わず引数配列**。
+
+```
+grok agent [--reasoning-effort <effort>] --no-leader stdio
+```
+
+- **フラグは `agent` と `stdio` の間**に置く。`grok agent stdio --reasoning-effort high` は
+  `error: unexpected argument` で落ちる（実測）。
+- `--no-leader` で共有 leader プロセス（`~/.grok/leader.sock`）に相乗りしない。worktree ごとに
+  独立したセッションを持つ codiva では、相乗りは他クライアントの状態変化を呼び込むだけ。
+- stdin へ JSON-RPC を 1 行 1 通で書き、stdout から同じ形で読む（**stdio は双方向**なので
+  Codex のように `stdin: 'ignore'` にはできない）。stderr は tracing ログ（診断用に 4000 文字保持）。
+
+### メソッド（client → agent）
+
+| メソッド | 形 | 備考 |
+|---|---|---|
+| `initialize` | 要求 | 最初に必ず 1 回。応答の `_meta.modelState` が**モデルカタログの出所** |
+| `session/new` | 要求 | `{cwd, mcpServers:[], _meta:{rules, modelId}}` → `{sessionId, models}` |
+| `session/resume` | 要求 | `{sessionId, cwd, mcpServers:[]}`。文脈だけ戻す |
+| `session/load` | 要求 | resume と違い**会話を通知として全部流し直す**。codiva は使わない |
+| `session/prompt` | 要求 | 1 往復 = 1 ターン。応答の `stopReason` が終わりを告げる |
+| `session/set_model` | 要求 | `{sessionId, modelId}`。走っているセッションに効く |
+| `session/cancel` | **通知** | **`id` を付けると `-32601 Method not found`**（実測）。付けずに送ると走っているターンが `stopReason: "cancelled"` で返る |
+
+`stopReason` は `end_turn` / `cancelled` / `max_tokens` / `max_turn_requests` / `refusal`。
+codiva は `end_turn` を完了、`cancelled` を（自分で止めたなら静かに）中断、残りは
+「理由を 1 行残して完了」にしている（失敗ではないので追加指示をそのまま送れる）。
+
+### 要求（agent → client）— **答えないとターンが永久に止まる**
+
+```jsonc
+// 許可（ACP 標準）
+{"method":"session/request_permission","params":{
+  "toolCall":{"toolCallId":"call_1","rawInput":{"command":"rm -rf build"},
+              "_meta":{"x.ai/tool":{"name":"run_terminal_command","kind":"execute"}}},
+  "options":[{"optionId":"allow-once","kind":"allow_once"},
+             {"optionId":"reject-once","kind":"reject_once"}]}}
+// 応答: {"outcome":{"outcome":"selected","optionId":"allow-once"}} / {"outcome":{"outcome":"cancelled"}}
+
+// 質問（xAI 拡張。ACP の ext メソッドは wire 上で `_` が前置される）
+{"method":"_x.ai/ask_user_question","params":{
+  "toolCallId":"call_q","mode":"default",
+  "questions":[{"question":"Which approach?","multiSelect":false,
+                "options":[{"label":"Rewrite","description":"Start over"}]}]}}
+// 応答: {"outcome":"accepted","answers":{"Which approach?":["Rewrite"]}} / {"outcome":"cancelled"}
+```
+
+- **`optionId` は固定文字列ではない**。編集用・コマンド用・MCP 用で別の id が来るので、
+  `kind`（`allow_once` / `allow_always` / `reject_once` / `reject_always`）で選ぶ。
+- **`answers` は「質問文」をキーにしたマップ**で、値は選択ラベルの配列（後方互換で単一文字列も可）。
+  `outcome` を落とすとツールが
+  `Client returned an invalid response to user question: missing field \`outcome\`` で失敗する（実測）。
+  拒否は **`cancelled`**（`declined` という値は無い。実測でエラーメッセージが受理値を列挙する:
+  `expected one of \`accepted\`, \`chat_about_this\`, …`）。
+- 知らない要求にも **必ず**応答を返す（codiva は `-32601` を返す）。放置するとエージェントは
+  待ち続け、ターンが終わらない。
+- なお、許可を求めるかどうかは **Grok 自身のポリシー**が決める。`echo hi` や通常のファイル編集は
+  自分で自動承認し、`rm -rf` のような不可逆な操作でだけ要求が上がってくる（実測）。
+
+### 通知は 2 本のレールで届く
+
+| method | 形 | 例 |
+|---|---|---|
+| `session/update` | ACP 標準（camelCase） | `agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update` / `plan` / `available_commands_update` / `session_info_update` |
+| `_x.ai/session_notification` | xAI 拡張（同じ `update` 封筒だが **snake_case**） | `turn_completed` / `response_completed` / `retry_state` / `pending_interaction` / `interaction_resolved` / `last_turn_summary` / `tool_call_delta_chunk` / `session_summary_generated` |
+
+`core/grok-events.ts` の `grokUpdateOf()` が両方から `update` を取り出し、`core/grok-parse.ts` が
+`AgentEvent` へ写す。codiva が解釈するのは
+`agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update` / `plan` / `retry_state` の
+6 種だけで、残りは捨てる（CLI が種別を足しても落ちない）。
+
+- **本文の区切りが無い**。`agent_message_chunk` の細切れしか来ず「1 通終わった」という通知が
+  無いので、パーサ側で溜めてツール呼び出し・ターン終了で確定させる（`createGrokParser` が
+  状態を持つ唯一の理由。Claude / Codex の parse は状態を持たない）。
+- **TODO は `plan` 通知から作る**。`todo_write` のツール呼び出しも来るが同じ内容なので、
+  ログが 2 行に増えないよう握り潰す。
+- `retry_state` は**再試行の実況**であって終了ではない（Codex の `{"type":"error"}` と同じ罠）。
+  ログは `coalesceKey` で 1 行に畳む。
+
+### 失敗の分類は CLI 自身の `error_type` を優先する
+
+`retry_state` は codiva の `AgentStopCause` に近い分類を**自分で**持っている:
+
+```json
+{"sessionUpdate":"retry_state","type":"failed","error_type":"auth",
+ "message":"Unauthorized (401) from https://api.x.ai/v1/responses: unauthenticated: Incorrect API key provided."}
+```
+
+`core/grok-errors.ts` は `error_type` を先に見て、`auth` / `rate_limit` / `network` はそのまま採用する。
+ただし **`api` は文言判定へ落とす** — あれは 4xx も 5xx も一緒くたなので、そこで `failed` に丸めると
+401 が「よく分からない失敗」に格下げされ、再ログインを促せなくなる。
+ターン自体が落ちたときは `session/prompt` の応答が JSON-RPC エラー（`-32603`）になり、
+`error.data` に同じ本文が入る。
+
+### 解決済みモデルは**素直に運ばれてくる**（Codex と対照的）
+
+Codex は rollout ファイルを読みに行くしかなかったが、Grok は 3 か所で報告する:
+
+- `session/new` / `session/resume` の応答 → `models.currentModelId`
+- `session/prompt` の応答 → `_meta.modelId`
+- `_x.ai/models/update` 通知 → `currentModelId`
+
+したがって **`grok-rollout.ts` に相当するものは無い**し、探索の予算・リトライも要らない。
+一覧の「実際に動いているモデル」は最初のターンの前（セッション確立時）に埋まる。
+
+### モデルカタログは `initialize` の `_meta.modelState`
+
+`grok models` は人間向けのテキストしか出さない（`--json` は無い）:
+
+```
+You are not authenticated.
+
+Default model: grok-4.5
+
+Available models:
+  * grok-4.5 (default)
+```
+
+**しかも未認証でも終了コードは 0** なので、ログイン判定にも使えない。`utils/grok.ts` の
+`fetchGrokModelCatalog()` は `grok agent stdio` を起こして `initialize` だけ送り、
+`_meta.modelState.availableModels`（`modelId` / `name` / `description` / `_meta.totalContextTokens` /
+`reasoningEfforts`）を読んだらプロセスを畳む。セッションを作らないので推論は走らない。
+
+### 認証まわりで踏んだところ
+
+- 資格情報は `~/.grok/auth.json`（`GROK_HOME` で移せる）。`XAI_API_KEY` でも動く。
+  導入判定は `grok --version`、ログイン判定は**この 2 つの有無**で行う（トークンの有効性は見ない）。
+- 未認証だと `session/new` が
+  `{"code":-32000,"message":"Authentication required","data":"no auth method id provided"}` を返す。
+  codiva はこれを `auth`（= `needs_login`）に写す。
+- **`authenticate` を勝手に呼んではいけない**。`{"methodId":"grok.com","_meta":{"headless":true}}` で
+  呼んでも応答が返らないまま**ブラウザ OAuth の完了を待ち続ける**（実測。60 秒で打ち切り）。
+  ログインは必ずユーザー操作（codiva の `/login` = `grok login --device-auth`）から始める。
+- `grok login --device-auth` は認証 URL とデバイスコードを **stderr** に、ANSI 付きで出す。
+  既存の `core/agent-login.ts`（ANSI 除去 + URL/コード抽出）がそのまま使える。
+
+### systemPrompt は `session/new` の `_meta.rules`
+
+worktree の共有 symlink 注意書き + `.codiva/prompt.md`（`core/system-prompt.ts`）は
+`_meta.rules` で渡す。CLI 側で **Grok 自身の system prompt の末尾に足される**ことを、
+モックバックエンドに届いた実リクエストで確認した。`_meta.systemPromptOverride` も存在するが、
+あれは Grok の system prompt を**丸ごと置き換える**ので使わない。
+
+### フィクスチャの採取: モック Responses API + 実バイナリ（Codex と同じ手法）
+
+`src/core/__fixtures__/grok-*.jsonl` は **実 `grok` 1.0.0 の stdout をそのまま**保存したもの
+（ACP のフレーミング・ツール実行・許可要求・質問要求はすべて本物で、モデルの生成だけが差し替え）。
+
+1. `POST /v1/responses`（OpenAI Responses API 互換）に SSE を返すモックサーバを立てる。
+   実測で必要だったフィールドは **`sequence_number`（全イベント必須）** と、`response.completed` の
+   `usage.input_tokens_details` / `output_tokens_details`。欠けると CLI 側が
+   `Failed to deserialize ResponseStreamEvent from stream` で落ちる。
+2. API キー認証にして、xAI の API をモックへ向ける:
+
+   ```bash
+   XAI_API_KEY=xai-mock GROK_CLI_CHAT_PROXY_BASE_URL=http://127.0.0.1:<port>/v1 \
+     grok agent --xai-api-base-url http://127.0.0.1:<port>/v1 stdio
+   ```
+
+   モックは `GET /v1/models` にも答える必要がある（起動時に必ず取りに来る）。
+   なお **`grok-4.5` は `/v1/responses`、`grok-code-fast-2` は `/v1/chat_completions`** を叩く
+   （モデルによって wire API が違う。実測）。
+3. クライアント役の小さなスクリプトで `initialize` → `session/new` → `session/prompt` を回し、
+   届いた許可要求・質問要求に応答しながら stdout を 1 行ずつ保存する。
+4. 絶対パス・ホスト名をサニタイズしてから `src/core/__fixtures__/` へ昇格させる。

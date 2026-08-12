@@ -25,7 +25,7 @@ describe('resolveDefaultAgentId', () => {
   });
 
   it('ignores a configured agent that is not registered', () => {
-    // 型にはあるがアダプタ未登録（grok）は無視して自動選択へ。
+    // この表に登録されていないアダプタ（ここでは grok）は無視して自動選択へ。
     expect(resolveDefaultAgentId('grok', REG, avail({ claude: YES }), ORDER)).toBe('claude');
   });
 

@@ -623,7 +623,7 @@ const ja: Messages = {
     loginUnknown: '導入済み',
     notInstalled: (cmd) => `未導入（\`${cmd}\` をインストール）`,
     noneInstalled:
-      'コーディングエージェントが見つかりません。`claude` か `codex` を入れてログインしてください',
+      'コーディングエージェントが見つかりません。`claude` / `codex` / `grok` のいずれかを入れてログインしてください',
     switched: (name) => `${name} に切り替えました（次の指示から適用）`,
     defaultSet: (name) => `新規セッションの既定を ${name} にしました`,
     unavailable: 'エージェントを切り替えられませんでした',
@@ -916,7 +916,7 @@ const en: Messages = {
     notLoggedIn: (cmd) => `Not logged in (run \`${cmd} login\`)`,
     loginUnknown: 'Installed',
     notInstalled: (cmd) => `Not installed (install \`${cmd}\`)`,
-    noneInstalled: 'No coding agent found. Install `claude` or `codex` and log in',
+    noneInstalled: 'No coding agent found. Install `claude`, `codex`, or `grok` and log in',
     switched: (name) => `Switched to ${name} (applies to the next instruction)`,
     defaultSet: (name) => `New sessions will use ${name}`,
     unavailable: 'Could not switch the agent',

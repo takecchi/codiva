@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createJsonlSplitter, toCodexEvent } from '@/core/codex-events';
+import { toCodexEvent } from '@/core/codex-events';
+import { createJsonlSplitter } from '@/core/jsonl';
 
 /**
  * `codex exec` の stdout は行区切りの JSON だが、チャンクは行の途中で切れるし、

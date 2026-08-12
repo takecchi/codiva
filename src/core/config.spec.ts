@@ -188,12 +188,12 @@ describe('toConfig', () => {
     expect(toConfig({ ignoredFiles })).toEqual({});
   });
 
-  it.each([['claude'], ['codex']] as const)('keeps a supported agent: %o', (agent) => {
+  it.each([['claude'], ['codex'], ['grok']] as const)('keeps a supported agent: %o', (agent) => {
     expect(toConfig({ agent })).toEqual({ agent });
   });
 
-  // `grok` は型（`AgentId`）にはあるがアダプタが無いので設定では選ばせない。
-  it.each([['grok'], ['gpt'], [true], [1], [null]])('drops an unsupported agent: %o', (agent) => {
+  // 未対応の値（アダプタの無い provider 名・非文字列）は落とす。
+  it.each([['gpt'], ['gemini'], [true], [1], [null]])('drops an unsupported agent: %o', (agent) => {
     expect(toConfig({ agent })).toEqual({});
   });
 

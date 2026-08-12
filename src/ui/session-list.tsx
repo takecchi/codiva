@@ -142,8 +142,11 @@ export const SessionList: FC<{
   model?: string;
   /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
   models?: readonly ModelOption[];
-  /** `/model` の選択肢（Codex）。既定 agent が Codex のときはこちらを使う。 */
-  codexModels?: readonly ModelOption[];
+  /**
+   * エージェントごとの `/model` の選択肢。既定エージェントで引く（表に無いものは
+   * {@link models} = Claude 側へフォールバック）。
+   */
+  modelsByAgent?: Partial<Record<AgentId, readonly ModelOption[]>>;
   version?: string;
   /**
    * 起動時チェックで見つかった新しいバージョン。バナーの 1 行だけに使う
@@ -191,7 +194,7 @@ export const SessionList: FC<{
   branch,
   model,
   models,
-  codexModels,
+  modelsByAgent,
   version,
   updateInfo,
   updater,
@@ -1159,7 +1162,7 @@ export const SessionList: FC<{
       {modelSelect ? (
         <ModelSelect
           current={manager.getModel()}
-          models={manager.getDefaultAgentId() === 'codex' ? codexModels : models}
+          models={modelsByAgent?.[manager.getDefaultAgentId() ?? 'claude'] ?? models}
           onSelect={(model) => {
             manager.setModel(model);
             setModelSelect(false);

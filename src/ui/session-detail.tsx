@@ -78,10 +78,11 @@ export const SessionDetail: FC<{
   /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
   models?: readonly ModelOption[];
   /**
-   * Codex セッションの `/model` の選択肢（`codex debug models`）。Claude とは
-   * まったく別のモデル群なので、駆動中のエージェントで出し分ける。
+   * エージェントごとの `/model` の選択肢。Claude / Codex / Grok は選べるモデルが
+   * まったく別なので、このセッションを駆動しているエージェントで引く。
+   * 表に無いエージェントは {@link models}（Claude 側）へフォールバックする。
    */
-  codexModels?: readonly ModelOption[];
+  modelsByAgent?: Partial<Record<AgentId, readonly ModelOption[]>>;
   /**
    * 一覧へ戻る。Esc と `/exit` の両方がここへ来る（詳細ビューの `/exit` は
    * アプリ終了ではなく「このセッションを閉じる」。終了は一覧の `/exit`）。
@@ -98,7 +99,7 @@ export const SessionDetail: FC<{
    * （OSC 8 は対応端末向けの上乗せ。`ui/log-line.tsx`）。
    */
   onOpenUrl?: (url: string) => void;
-}> = ({ manager, id, models, codexModels, onBack, onCopy, onOpenUrl }) => {
+}> = ({ manager, id, models, modelsByAgent, onBack, onCopy, onOpenUrl }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -866,7 +867,7 @@ export const SessionDetail: FC<{
           <ModelSelect
             // The session's live (resolved) model — pre-selects the current row.
             current={session.model}
-            models={session.agent === 'codex' ? codexModels : models}
+            models={(session.agent && modelsByAgent?.[session.agent]) ?? models}
             onSelect={(model) => {
               manager.setSessionModel(session.id, model);
               setModelSelect(false);

@@ -1214,12 +1214,75 @@ zsh: abort      codiva
 >   （対象リポジトリのファイルを codiva が勝手に触らない）。
 > - タイトル生成は Claude の haiku を使い回す（短文のために `codex exec` をもう 1 本起こすのは高い）。
 
-## Phase C: Grok 対応（未着手）
+## Phase C: Grok 対応（ACP = JSON-RPC over stdio）✅
 
-- [ ] Grok CLI のストリームを実データで採取 → `AgentEvent` への写像を設計
-- [ ] `core/grok-adapter.ts` + capability の表明（resume を持たない場合の扱いを決める —
-      `resume: false` なら切替・再起動で文脈が切れることを UI が明示する必要がある）
-- [ ] `classifyError`（Grok 側の認証切れ / レート制限の文言）
+> **駆動するのは headless モード（`-p --output-format streaming-json`）ではなく ACP
+> （Agent Client Protocol）**。headless は一方通行（読み取り専用）で、ツール使用の許可も質問も
+> 表現できない — あれは「エージェント側から要求が飛んできて、クライアントが答えるまで向こうが
+> 止まる」形なので双方向のチャンネルが要る。`grok agent --no-leader stdio` の JSON-RPC 2.0 を
+> 話すことで、**Codex では諦めた許可・質問ダイアログを Grok では本物として出せる**
+> （`GROK_CAPABILITIES.permissions = true`）。Phase B と同じく **CLI は同梱せず**ユーザーの
+> `grok` を起動し、認証は `grok login` に委ねる。
+
+- [x] 実データの採取: 実 `grok`（1.0.0）をローカルのモックモデルバックエンドに向けて走らせ、
+      `src/core/__fixtures__/grok-*.jsonl` へ昇格（basic / reasoning / shell / edit / todo /
+      permission / question / autherror の 8 本）。**形を想定で書かない**
+- [x] `core/grok-events.ts`: ACP メッセージ（要求 / 応答 / 通知）の型と受理ガード。通知は
+      **2 系統**で届く — ACP 標準の `session/update`（camelCase）と xAI 拡張の
+      `_x.ai/session_notification`（同じ `update` の封筒で snake_case）を同じ入口へ畳む
+- [x] `core/grok-parse.ts`: `createGrokParser`（ACP 通知 → `AgentEvent[]`。**状態を変えない**）。
+      写すのは `agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update` /
+      `plan`（= TODO。毎回リスト全体が来るので `replace`）/ `retry_state` だけで、残り
+      （`available_commands_update` / `session_info_update` / `response_completed` …）は捨てる
+- [x] `core/grok-errors.ts`: `classifyGrokError`（文言 → `AgentStopCause`。**認証切れが最優先**の
+      順序は Claude / Codex と同じ）+ `grokStopCause`。Grok には他の 2 つに無い手がかりとして
+      `retry_state.error_type`（CLI 自身の分類）があるので**そちらを優先**する。ただし
+      `error_type: "api"` は 4xx/5xx を一緒くたにするので**わざと文言判定へ落とす**
+      （`failed` に丸めると 401 が格下げされて再ログインを促せない）
+- [x] `core/grok-adapter.ts`: `AgentAdapter` 実装 + `GROK_CAPABILITIES`。**1 セッション = 1 プロセス**
+      （Codex の「1 ターン 1 プロセス」ではない）で、ターンは `session/prompt` の 1 往復・
+      応答の `stopReason` が終わりを告げる。1 本の接続に複数の往復が同時に載るので、
+      JSON-RPC の `id` をキーにした**対応表**（`Map<number, Pending>`）を持つ
+- [x] `utils/grok.ts`: 唯一の I/O（`grokAgentArgs` = 引数の組み立て・`spawnGrok` = プロセス起動と
+      stdio の行分割・`detectGrokAvailability` = `grok --version` + 資格情報の有無・
+      `fetchGrokModelCatalog` = エージェントを 1 回起こして `initialize` だけ送る）
+- [x] `core/grok-models.ts`: `toGrokModelOptions`（`initialize` の `_meta.modelState.availableModels`
+      → `ModelOption[]`）。取得できないときは `DEFAULT_ONLY_MODEL_OPTIONS`
+- [x] 許可要求・質問の写像: `session/request_permission` → 許可ダイアログ、
+      `_x.ai/ask_user_question` → 質問ダイアログ（`QuestionSpec`）。**Codex と違い偽装ではない**
+- [x] 合成レイヤ: `bootstrap/build-manager.ts` の `buildAgents` に `grok` を登録。設定
+      `agent: "grok"` を受理（`CONFIGURABLE_AGENTS`）し、自動選択の順（`DEFAULT_AGENT_ORDER`）は
+      claude → codex → grok。**新しい設定項目は足していない**
+- [x] `/model` のカタログ配線を一般化: `App` が provider ごとの ternary（`codexModels` +
+      `agent === 'codex' ? …`）をやめ、`modelsByAgent`（`Partial<Record<AgentId, ModelOption[]>>`）
+      の表を両 view へ渡す。provider が増えてもビュー側の分岐が増えない
+- [x] リファクタ: JSONL の枠切り `createJsonlSplitter` を `core/codex-events.ts` から
+      **provider 非依存の `core/jsonl.ts`** へ移して Codex / Grok で共用
+- [x] テスト: フィクスチャ駆動の `grok-parse.spec.ts` / `grok-events.spec.ts`
+
+> 実績メモ:
+> - **`session/cancel` は通知**。`id` を付けて要求として送ると `-32601 Method not found` が返る
+>   （実測）。中断は id 無しで送る。
+> - **クライアント側の要求には必ず答える**。`session/request_permission` /
+>   `_x.ai/ask_user_question` はどちらも「答えるまで向こうが止まる」ので、取りこぼすと
+>   **ターンが永久に終わらない**。パラメータが読めない要求も黙って捨てず `cancelled` を返す。
+>   質問の応答は `outcome` を省くと「クライアントの応答が不正」としてツールが失敗する（実測）。
+>   許可の `optionId` は固定文字列ではなく**ツールごとに変わる**ので、`kind`
+>   （`allow_once` / `reject_once` …）で選ぶ。
+> - **復元は `session/load` ではなく `session/resume`**。`load` は会話を丸ごと通知として**再生**
+>   するのでログが二重になる。`resume` はモデル側の文脈だけを戻す（実測: 別プロセスで resume した
+>   スレッドで backend が先のターンを見えていた）。
+> - **解決済みモデルは Grok が自分で報告する**（`session/new` / `session/resume` の
+>   `models.currentModelId`、ターン応答の `_meta.modelId`、`_x.ai/models/update`）。Codex で必要
+>   だった rollout の探り読みに相当するものは要らない（`grok-rollout.ts` は無い）。
+> - **`grok models` は使わない**。人間向けのテキストしか出さず（`--json` が無い）、
+>   **サインアウト状態でも 0 で終わる**ので認証の判定にも使えない。カタログは `initialize` の
+>   応答から取り、その 1 往復だけでプロセスを殺す（セッションも推論も作らない）。
+> - systemPrompt（worktree の共有 symlink 注意書き + `.codiva/prompt.md`）は `session/new` の
+>   `_meta.rules` で渡す（CLI が自分の system prompt へ**追記**する。モデルまで届くのを確認済み）。
+>   `systemPromptOverride` は**使わない** — Grok 自身の system prompt を置き換えてしまうため。
+> - `usage` / `cost` は false（ターンはトークン数だけで USD もアカウント全体の使用状況も無い）。
+>   `transcript` も false。タイトル生成は Codex と同じく Claude の haiku を使い回す。
 
 ## Phase D: capability による UI 縮退 / `/agent` / 引き継ぎ（一部完了）
 
