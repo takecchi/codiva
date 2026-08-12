@@ -1,5 +1,5 @@
 import type { AgentAdapter } from './agent-ports';
-import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
+import type { PrInfo, PrLookupResult, PrLookupState, PrRef, SessionState } from './types';
 import type { DiffStat, SyncBaseResult, Worktree } from './worktree';
 
 /**
@@ -46,6 +46,8 @@ export interface SessionHandle {
   stop(): void;
   archive(): void;
   setPr(pr: PrInfo | undefined): void;
+  /** Forget a PR `gh` authoritatively reported as non-existent (see `Session.dropPr`). */
+  dropPr(pr: PrRef): void;
   setPrLookup(lookup: PrLookupState | undefined): void;
   markConflict(files: string[]): void;
 }
@@ -57,16 +59,38 @@ export interface SessionHandle {
 export interface PrAutomation {
   /** Open a draft PR for a pushed branch (or return the existing one). */
   createPr(cwd: string, branch: string): Promise<PrInfo | undefined>;
-  /** Flip a draft PR to ready-for-review. */
-  markReady(cwd: string, branch: string): Promise<void>;
+  /**
+   * Flip a draft PR to ready-for-review. `ref` is anything `gh` resolves a PR from —
+   * callers pass the PR's **URL**, which pins the repo as well as the number.
+   */
+  markReady(cwd: string, ref: string): Promise<void>;
+}
+
+/** Extra hints for a PR lookup beyond the session's branch. */
+export interface PrLookupOptions {
+  /**
+   * A PR already associated with this session. Tried after the branches, and it is the
+   * *only* way to reach a PR the session opened itself on a branch that isn't checked
+   * out in the worktree (see {@link PrLookupTarget.knownPr}).
+   *
+   * The whole `PrRef` (not just the number) because a session can open a PR in
+   * **another repository** (`gh pr create -R owner/other`), and PR numbers are
+   * per-repo: asking by number in the session's worktree would silently resolve the
+   * *current* repo's PR of that number instead.
+   */
+  knownPr?: PrRef;
 }
 
 /**
- * Look up the PR for a branch (via `gh`). Returns a three-way result — found /
- * absent / unavailable — never a bare undefined, so a failed lookup can't be
- * mistaken for "this branch has no PR" (which would clear the badge).
+ * Look up the PR to track for a session (via `gh`). Returns a three-way result —
+ * found / absent / unavailable — never a bare undefined, so a failed lookup can't be
+ * mistaken for "this session has no PR" (which would clear the badge).
  */
-export type PrLookup = (cwd: string, branch: string) => Promise<PrLookupResult>;
+export type PrLookup = (
+  cwd: string,
+  branch: string,
+  opts?: PrLookupOptions,
+) => Promise<PrLookupResult>;
 
 /** One session to resolve a PR for in a batched lookup. */
 export interface PrLookupTarget {
@@ -77,10 +101,13 @@ export interface PrLookupTarget {
   /** The recorded `codiva/<slug>` branch (HEAD is preferred when it differs). */
   branch: string;
   /**
-   * PR number already known for this session, if any. Lets the implementation tell
-   * "this PR is gone" from "the listing was truncated before reaching it".
+   * A PR already known for this session, if any — including one the session opened
+   * itself (`extraPrs`). Lets the implementation tell "this PR is gone" from "the
+   * listing didn't reach it" (truncated, or its head branch isn't checked out here),
+   * and is what makes a session-opened PR's state trackable at all. Identified by
+   * `PrRef` rather than by number — see {@link PrLookupOptions.knownPr}.
    */
-  knownPr?: number;
+  knownPr?: PrRef;
 }
 
 /**

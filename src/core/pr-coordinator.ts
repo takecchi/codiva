@@ -1,3 +1,4 @@
+import { primaryPr } from './pr-detect';
 import {
   MAX_AUTO_RECOVERY_ATTEMPTS,
   prRecovered,
@@ -15,7 +16,7 @@ import type {
   WorktreeMeta,
   WorktreeService,
 } from './session-ports';
-import type { PrLookupResult, PrUnavailableReason, SessionState } from './types';
+import type { PrLookupResult, PrRef, PrUnavailableReason, SessionState } from './types';
 
 export interface PrCoordinatorDeps {
   worktrees: WorktreeService;
@@ -58,6 +59,25 @@ export const PR_LOOKUP_BACKOFF_MS = 5 * 60_000;
 
 /** Failures worth backing off from; the rest are transient enough to retry at once. */
 const BACKOFF_REASONS = new Set<PrUnavailableReason>(['rate_limit', 'cli', 'auth']);
+
+/**
+ * The PR to hand the lookup so it can ask about *this* PR directly.
+ *
+ * `primaryPr`, not `state.pr`: the PR shown for a session is often one the session
+ * opened itself (`extraPrs`, detected from its `gh pr create`), and that PR's head
+ * branch is usually a throwaway `feat/…` the worktree no longer has checked out. With
+ * only branch names to ask by, such a PR could never be resolved — so its state (and
+ * with it the merge/CI glyph) stayed unknown for the whole life of the session, while
+ * the number sat there looking tracked. Passing the ref promotes it to the session's
+ * tracked PR on the next poll (the reducer folds it out of `extraPrs`).
+ *
+ * The whole ref travels, URL included: the PR may be in another repository, and the
+ * lookup needs that to avoid resolving a same-numbered PR in the session's own repo.
+ */
+function knownPrOf(state: SessionState): { knownPr?: PrRef } {
+  const pr = primaryPr(state);
+  return pr ? { knownPr: pr } : {};
+}
 
 /** A session picked for this refresh cycle, with everything needed to resolve it. */
 interface RefreshTarget {
@@ -208,12 +228,14 @@ export class PrCoordinator {
   }
 
   /**
-   * Show "looking…" only while there's nothing else to show, and only until the
-   * first answered lookup: re-marking it on later ticks would flicker the cell
-   * (⋯ → empty for a branch with no PR, ⋯ → ? after a failure).
+   * Show "looking…" while the cell has nothing definite to show — no PR at all, or a
+   * number (restored from disk / just created) whose state we haven't fetched yet.
+   * Only until the first answered lookup: re-marking it on later ticks would flicker
+   * the cell (⋯ → empty for a branch with no PR, ⋯ → ? after a failure).
    */
   private markLooking({ id, state, session }: RefreshTarget): void {
-    if (!state.pr && state.prLookup === undefined && !this.answered.has(id)) {
+    const unknown = !state.pr || !state.prStatus;
+    if (unknown && state.prLookup === undefined && !this.answered.has(id)) {
       session.setPrLookup('loading');
     }
   }
@@ -230,7 +252,7 @@ export class PrCoordinator {
           id,
           cwd: meta.worktree.path,
           branch: state.branch,
-          ...(state.pr ? { knownPr: state.pr.number } : {}),
+          ...knownPrOf(state),
         })),
       );
     } catch {
@@ -254,7 +276,11 @@ export class PrCoordinator {
   ): Promise<PrUnavailableReason | undefined> {
     let result: PrLookupResult;
     try {
-      result = await lookup(target.meta.worktree.path, target.state.branch);
+      result = await lookup(
+        target.meta.worktree.path,
+        target.state.branch,
+        knownPrOf(target.state),
+      );
     } catch {
       // A lookup port that rejects rather than classifying: same handling as
       // `unavailable` — keep whatever we knew and flag the cell.
@@ -280,14 +306,36 @@ export class PrCoordinator {
       return result.reason;
     }
     const pr = result.kind === 'found' ? result.pr : undefined;
+    const known = knownPrOf(state).knownPr;
+    if (!pr && known) {
+      // `absent` only comes back when *every* candidate answered, and `known` was one
+      // of them (asked by URL) — so this is GitHub saying that exact PR doesn't exist.
+      // Drop the reference: `setPr(undefined)` alone would leave a phantom sitting in
+      // `extraPrs`, which `primaryPr` keeps rendering as a bare `#<n>` that no future
+      // poll can ever attach a state to. Nothing else prunes `extraPrs`.
+      session.dropPr(known);
+    }
+    session.setPr(pr);
+    // A session can hold several PRs. Dropping the one we asked about promotes the next
+    // `extraPr` to primary — a PR this answer says nothing about, so caching the answer
+    // for the row would strand the *new* number bare until its staleness window expired
+    // (60–180s, once per dropped reference). Leave the cache empty so the next tick asks
+    // about it, and show the looking mark until then.
+    if (!pr && known && primaryPr(session.getState())) {
+      session.setPrLookup('loading');
+      return undefined;
+    }
     this.answered.add(id);
     this.lastFetched.set(id, this.now());
-    session.setPr(pr);
     try {
       // Auto-ready: once a draft PR's checks pass, flip it to ready-for-review.
       // `checks` came along with the PR payload, so this costs no extra lookup.
+      // Addressed by its *URL*, not by `state.branch` and not by number: the PR we
+      // just resolved may be one the session opened on another branch — or in another
+      // repo — so a branch would fail (or ready an unrelated PR on the session branch)
+      // and a bare number would resolve to whatever #<n> this repo happens to have.
       if (this.deps.autoPr && this.deps.prAutomation && pr?.isDraft && pr.checks === 'passing') {
-        await this.deps.prAutomation.markReady(meta.worktree.path, state.branch);
+        await this.deps.prAutomation.markReady(meta.worktree.path, pr.url);
         session.setPr({ ...pr, isDraft: false });
       }
     } catch {

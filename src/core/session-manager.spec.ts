@@ -11,6 +11,7 @@ import type {
   PrInfo,
   PrLookupResult,
   PrLookupState,
+  PrRef,
   SessionState,
 } from '@/core/types';
 import { MergeConflictError } from '@/core/worktree';
@@ -94,6 +95,11 @@ class FakeSession implements SessionHandle {
     // Real reducer: it splits `pr` into the persisted ref + volatile status and keeps
     // each half's reference when unchanged, which is what the persist check reads.
     this.state = reduce(this.state, { kind: 'pr', pr, at: 0 });
+    this.onChange(this.state);
+  }
+  dropPr(pr: PrRef) {
+    this.calls.push(`dropPr:#${pr.number}`);
+    this.state = reduce(this.state, { kind: 'pr_gone', pr, at: 0 });
     this.onChange(this.state);
   }
   setPrLookup(lookup: PrLookupState | undefined) {
@@ -1056,7 +1062,8 @@ describe('SessionManager', () => {
       manager.create('feature');
       await flush();
       await manager.refreshPrs();
-      expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
+      // No PR known yet, so nothing to ask about by number.
+      expect(lookupPr).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature', {});
       expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 42, url: 'https://x/pr/42' });
       expect(manager.getSnapshot()[0]?.prStatus).toEqual({ mergeStatus: 'mergeable' });
       expect(created[0]?.calls).toContain('setPr:#42');
@@ -1176,7 +1183,8 @@ describe('SessionManager', () => {
       manager.create('feature');
       await flush();
       await manager.refreshPrs();
-      expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', 'codiva/feature');
+      // Readied by PR URL (the PR need not live on the session's branch, or its repo).
+      expect(prAutomation.markReady).toHaveBeenCalledWith('/tmp/wt/feature', 'u');
       expect(manager.getSnapshot()[0]?.pr).toEqual({ number: 5, url: 'u' });
       expect(manager.getSnapshot()[0]?.prStatus).toEqual({
         mergeStatus: 'unknown',

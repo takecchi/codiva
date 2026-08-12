@@ -22,6 +22,7 @@ import type {
   PermissionRequest,
   PrInfo,
   PrLookupState,
+  PrRef,
   SessionState,
 } from './types';
 import type { IgnoredFilesMode } from './worktree';
@@ -449,6 +450,17 @@ export class Session {
    */
   setPr(pr: PrInfo | undefined): void {
     this.dispatch({ kind: 'pr', pr, at: this.now() });
+  }
+
+  /**
+   * Forget a PR `gh` answered about by URL with "there is no such PR". Only for that
+   * authoritative answer — a lookup that couldn't tell us keeps the reference.
+   * Without this the number would stay on the row forever with no state: the poll
+   * clears `pr`, but a reference detected from the session's own `gh pr create`
+   * lives in `extraPrs`, which nothing else removes.
+   */
+  dropPr(pr: PrRef): void {
+    this.dispatch({ kind: 'pr_gone', pr, at: this.now() });
   }
 
   /**

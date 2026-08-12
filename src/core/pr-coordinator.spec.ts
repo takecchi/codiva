@@ -4,13 +4,14 @@ import { MAX_AUTO_RECOVERY_ATTEMPTS, type RecoveryKind } from './pr-recovery';
 import { PR_BATCH_MIN_SESSIONS, PR_POLL_SOON_MS, PR_POLL_STABLE_MS } from './pr-refresh';
 import type {
   PrAutomation,
+  PrLookup,
   PrLookupTarget,
   SessionHandle,
   WorktreeMeta,
   WorktreeService,
 } from './session-ports';
 import { initialState } from './status-reducer';
-import type { PrInfo, PrLookupResult, PrLookupState, SessionState } from './types';
+import type { PrInfo, PrLookupResult, PrLookupState, PrRef, SessionState } from './types';
 
 const worktrees: WorktreeService = {
   baseBranch: async () => 'main',
@@ -49,6 +50,16 @@ function fakeSession(state: SessionState) {
           ? { mergeStatus: pr.mergeStatus, isDraft: pr.isDraft, checks: pr.checks }
           : undefined,
         prLookup: undefined,
+      };
+    },
+    dropPr(ref: PrRef) {
+      calls.push(`dropPr:#${ref.number}`);
+      // Mirror the reducer: the ref can live in either half.
+      const extraPrs = state.extraPrs?.filter((p) => p.url !== ref.url);
+      state = {
+        ...state,
+        extraPrs: extraPrs && extraPrs.length > 0 ? extraPrs : undefined,
+        ...(state.pr?.url === ref.url ? { pr: undefined, prStatus: undefined } : {}),
       };
     },
     setPrLookup(lookup: PrLookupState | undefined) {
@@ -100,7 +111,7 @@ interface Harness {
  * result unless the fake decides per-branch.
  */
 function harness(
-  lookup: (cwd: string, branch: string) => Promise<PrLookupResult>,
+  lookup: PrLookup,
   over: {
     ids?: string[];
     state?: Partial<SessionState>;
@@ -178,6 +189,115 @@ describe('PrCoordinator.refreshPrs', () => {
     expect(h.state().prLookup).toBeUndefined();
   });
 
+  // A PR the session opened itself (`gh pr create` on its own branch) is only reachable
+  // through its own ref: nothing in the worktree points at its head branch. Without it
+  // the lookup answered `absent` forever, so the row showed a bare `#<n>` with no state
+  // — and, having been "answered", not even a loading mark.
+  it('asks about a PR the session opened itself, and adopts it as the tracked PR', async () => {
+    const own = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const lookup = vi.fn<PrLookup>(async (_cwd, _branch, opts) =>
+      opts?.knownPr?.url === own.url
+        ? found({ ...own, mergeStatus: 'merged', checks: 'none' })
+        : { kind: 'absent' },
+    );
+    const h = harness(lookup, { state: { extraPrs: [own] } });
+    await h.refresh();
+    // The whole ref, URL included — the PR may not even be in this repository.
+    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: own });
+    expect(h.state().pr).toEqual(own);
+    expect(h.state().prStatus?.mergeStatus).toBe('merged');
+  });
+
+  it('keeps passing the ref once that PR is the tracked one', async () => {
+    const own = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const lookup = vi.fn<PrLookup>(async () => found({ ...own, mergeStatus: 'mergeable' }));
+    const h = harness(lookup, { state: { pr: own } });
+    await h.refresh();
+    expect(lookup).toHaveBeenCalledWith('/wt/s1', 'codiva/s1', { knownPr: own });
+  });
+
+  // `absent` means every candidate answered, the known URL among them — so that PR
+  // really doesn't exist (a misread `gh pr create` URL, a repo that went away). Keeping
+  // the reference would strand the row on a bare `#<n>` that no poll can ever fill in:
+  // `setPr(undefined)` clears `pr`, but nothing else prunes `extraPrs`.
+  it('forgets a self-opened PR once its own URL comes back absent', async () => {
+    const gone = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const h = harness(async () => ({ kind: 'absent' }), { state: { extraPrs: [gone] } });
+    await h.refresh();
+    expect(h.calls()).toEqual(['prLookup:loading', 'dropPr:#109', 'setPr:none']);
+    expect(h.state().extraPrs).toBeUndefined();
+    expect(h.state().pr).toBeUndefined();
+  });
+
+  // Dropping the tracked PR hands the row to the next `extraPr`, which this answer says
+  // nothing about. Treating the row as answered would leave that *new* number bare for a
+  // whole staleness window (60–180s) — the very state this PR set out to remove.
+  it('marks the next PR as being looked up when the tracked one is dropped', async () => {
+    const dropped = { number: 108, url: 'https://github.com/o/r/pull/108' };
+    const next = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const lookup = vi.fn<PrLookup>(async (_cwd, _branch, opts) =>
+      opts?.knownPr?.url === next.url
+        ? found({ ...next, mergeStatus: 'mergeable', checks: 'passing' })
+        : { kind: 'absent' },
+    );
+    const h = harness(lookup, {
+      state: { pr: dropped, prStatus: { mergeStatus: 'mergeable' }, extraPrs: [next] },
+    });
+    await h.refresh();
+    expect(h.calls()).toEqual(['dropPr:#108', 'setPr:none', 'prLookup:loading']);
+    expect(h.state().extraPrs).toEqual([next]);
+    expect(h.state().prLookup).toBe('loading');
+
+    // The answer was not cached for the row, so the very next tick resolves the new
+    // primary — no waiting out a freshness window that belongs to the dropped PR.
+    await h.refresh();
+    expect(lookup).toHaveBeenLastCalledWith('/wt/s1', 'codiva/s1', { knownPr: next });
+    expect(h.state().pr).toEqual(next);
+    expect(h.state().prStatus?.checks).toBe('passing');
+    expect(h.state().prLookup).toBeUndefined();
+  });
+
+  it('keeps a self-opened PR when the lookup only failed', async () => {
+    const gone = { number: 109, url: 'https://github.com/o/r/pull/109' };
+    const h = harness(async () => ({ kind: 'unavailable', reason: 'rate_limit' }), {
+      state: { extraPrs: [gone] },
+    });
+    await h.refresh();
+    expect(h.calls()).not.toContain('dropPr:#109');
+    expect(h.state().extraPrs).toEqual([gone]);
+  });
+
+  it('never drops anything when there was no known PR to confirm', async () => {
+    const h = harness(async () => ({ kind: 'absent' }));
+    await h.refresh();
+    expect(h.calls()).toEqual(['prLookup:loading', 'setPr:none']);
+  });
+
+  // Numbers are per-repo, so readying by number could flip an unrelated PR that happens
+  // to share it in the session's own repo.
+  it('readies the PR it resolved by URL, even in another repository', async () => {
+    const cross = { number: 42, url: 'https://github.com/acme/other/pull/42' };
+    const markReady = vi.fn(async () => {});
+    const h = harness(
+      async () => found({ ...cross, mergeStatus: 'mergeable', checks: 'passing', isDraft: true }),
+      {
+        autoPr: true,
+        prAutomation: { createPr: async () => undefined, markReady },
+        state: { extraPrs: [cross] },
+      },
+    );
+    await h.refresh();
+    expect(markReady).toHaveBeenCalledWith('/wt/s1', cross.url);
+  });
+
+  // The number alone says nothing about mergeability or CI, so the row is still
+  // waiting on an answer — restored sessions start exactly here.
+  it('marks the cell loading when the number is known but its status is not', async () => {
+    const h = harness(async () => found(PR), { state: { pr: { number: 42, url: 'u' } } });
+    await h.refresh();
+    expect(h.calls()).toEqual(['prLookup:loading', 'setPr:#42']);
+  });
+
   it('records `absent` as "no PR" (clearing a stale badge)', async () => {
     const h = harness(async () => ({ kind: 'absent' }), {
       state: {
@@ -186,8 +306,9 @@ describe('PrCoordinator.refreshPrs', () => {
       },
     });
     await h.refresh();
-    // A PR was already known, so no loading mark — and `absent` is authoritative.
-    expect(h.calls()).toEqual(['setPr:none']);
+    // A PR was already known, so no loading mark — and `absent` is authoritative: the
+    // known PR was one of the answered candidates, so the reference goes too.
+    expect(h.calls()).toEqual(['dropPr:#42', 'setPr:none']);
     expect(h.state().pr).toBeUndefined();
   });
 
@@ -319,7 +440,8 @@ describe('PrCoordinator.refreshPrs', () => {
       prAutomation: { createPr: async () => undefined, markReady },
     });
     await h.refresh();
-    expect(markReady).toHaveBeenCalledWith('/wt/s1', 'codiva/s1');
+    // Addressed by URL: the PR need not live on the session's branch (or in its repo).
+    expect(markReady).toHaveBeenCalledWith('/wt/s1', 'u');
     expect(h.state().prStatus?.isDraft).toBe(false);
   });
 
@@ -445,8 +567,27 @@ describe('PrCoordinator batching (one `gh pr list` for many sessions)', () => {
     });
     await b.refresh();
     expect(b.seen[0]).toEqual(
-      ids.map((id) => ({ id, cwd: `/wt/${id}`, branch: `codiva/${id}`, knownPr: 42 })),
+      ids.map((id) => ({
+        id,
+        cwd: `/wt/${id}`,
+        branch: `codiva/${id}`,
+        knownPr: { number: 42, url: 'u' },
+      })),
     );
+  });
+
+  it('passes the ref of a PR the session opened itself', async () => {
+    const b = batchHarness((targets) => new Map(targets.map((t) => [t.id, { kind: 'absent' }])), {
+      state: {
+        extraPrs: [
+          { number: 7, url: 'u7' },
+          { number: 9, url: 'u9' },
+        ],
+      },
+    });
+    await b.refresh();
+    // The one the list shows as primary (the newest) is the one worth resolving.
+    expect(b.seen[0]?.[0]?.knownPr).toEqual({ number: 9, url: 'u9' });
   });
 
   it('omits knownPr for sessions with no PR yet', async () => {
