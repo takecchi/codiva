@@ -44,7 +44,10 @@ interface FakeProcess {
   /** 直近の要求をエラーで返す。 */
   replyError(method: string, error: { code?: number; message: string; data?: unknown }): void;
   find(method: string): RpcRequest | undefined;
+  /** stdout が尽きた（プロセスが死んだ）。 */
   end(): void;
+  /** 終了コードと stderr を差し替える（クラッシュの再現）。 */
+  setExit(exit: { code: number | null; stderr: string }): void;
   wasKilled(): boolean;
 }
 
@@ -53,6 +56,7 @@ function makeFakeProcess(): FakeProcess {
   const out = new AsyncQueue<unknown>();
   const sent: RpcRequest[] = [];
   let killed = false;
+  let exit: { code: number | null; stderr: string } = { code: 0, stderr: '' };
   const find = (method: string): RpcRequest | undefined =>
     [...sent].reverse().find((m) => m.method === method);
   return {
@@ -63,7 +67,7 @@ function makeFakeProcess(): FakeProcess {
         killed = true;
         out.close();
       },
-      result: () => ({ code: 0, stderr: '' }),
+      result: () => exit,
     },
     sent,
     emit: (message: unknown) => out.push(message),
@@ -77,6 +81,9 @@ function makeFakeProcess(): FakeProcess {
     },
     find,
     end: () => out.close(),
+    setExit: (next) => {
+      exit = next;
+    },
     wasKilled: () => killed,
   };
 }
@@ -590,6 +597,113 @@ describe('createGrokAdapter', () => {
       await handshake(await grok.at(1), { sessionId: 'sess-2' });
       const second = await grok.at(1);
       await waitFor(() => second.find('session/prompt') !== undefined, 'prompt on the new process');
+    });
+
+    it('ターンの最中にプロセスが死んだら、stderr を理由にして再開可能な停止にする', async () => {
+      const grok = makeFakeGrok();
+      const { harness } = run(grok.spawn);
+      harness.prompts.push('hi');
+      const proc = await grok.at(0);
+      await handshake(proc);
+      await waitFor(() => proc.find('session/prompt') !== undefined, 'prompt');
+
+      // クラッシュ: 応答を返さないまま stdout が尽きる。
+      proc.setExit({ code: 101, stderr: 'thread panicked at ...' });
+      proc.end();
+
+      await waitFor(() => harness.events.some((e) => e.kind === 'turn_stopped'), 'stop');
+      const stopped = harness.events.at(-1);
+      // **`failed`（終端・再開不可）にしない** — 一過性のクラッシュで再開の導線を消さない。
+      expect(stopped).toMatchObject({ kind: 'turn_stopped', cause: 'connection' });
+      // 理由はプロセスから取る（合成文言だと診断にならない）。
+      expect(stopped).toMatchObject({ detail: expect.stringContaining('thread panicked') });
+
+      // 次の指示は新しいプロセスで、**同じ会話を resume して**やり直す。
+      harness.prompts.push('retry');
+      const second = await grok.at(1);
+      await waitFor(() => second.find('initialize') !== undefined, 'initialize after crash');
+      second.reply('initialize', { protocolVersion: 1 });
+      await waitFor(() => second.find('session/resume') !== undefined, 'resume after crash');
+      expect(second.find('session/resume')?.params).toMatchObject({ sessionId: 'sess-1' });
+      second.reply('session/resume', {});
+      await waitFor(() => second.find('session/prompt') !== undefined, 'prompt after crash');
+    });
+
+    it('プロセスが死んだ理由が認証切れなら auth のまま（分類を潰さない）', async () => {
+      const grok = makeFakeGrok();
+      const { harness } = run(grok.spawn);
+      harness.prompts.push('hi');
+      const proc = await grok.at(0);
+      await handshake(proc);
+      await waitFor(() => proc.find('session/prompt') !== undefined, 'prompt');
+      proc.setExit({ code: 1, stderr: 'Not signed in. To authenticate without a browser, run:' });
+      proc.end();
+      await waitFor(() => harness.events.some((e) => e.kind === 'turn_stopped'), 'stop');
+      expect(harness.events.at(-1)).toMatchObject({ kind: 'turn_stopped', cause: 'auth' });
+    });
+
+    it('retry_state の error_type を失敗の分類に使う（文言では読めないとき）', async () => {
+      const grok = makeFakeGrok();
+      const { harness } = run(grok.spawn);
+      harness.prompts.push('hi');
+      const proc = await grok.at(0);
+      await handshake(proc);
+      await waitFor(() => proc.find('session/prompt') !== undefined, 'prompt');
+      proc.emit({
+        jsonrpc: '2.0',
+        method: '_x.ai/session_notification',
+        params: {
+          sessionId: 'sess-1',
+          update: {
+            sessionUpdate: 'retry_state',
+            type: 'failed',
+            error_type: 'rate_limit',
+            message: 'the provider said no',
+          },
+        },
+      });
+      await waitFor(() => harness.events.some((e) => e.kind === 'notice'), 'retry notice');
+      proc.replyError('session/prompt', {
+        message: 'Internal error',
+        data: 'the provider said no',
+      });
+      await waitFor(() => harness.events.some((e) => e.kind === 'turn_stopped'), 'stop');
+      // 文言だけなら `failed` に落ちるところを、CLI 自身の分類が救う。
+      expect(harness.events.at(-1)).toMatchObject({ kind: 'turn_stopped', cause: 'rate_limit' });
+    });
+
+    it('セッション確立前の Ctrl+C も取りこぼさない（確立直後に cancel を送る）', async () => {
+      const grok = makeFakeGrok();
+      const { harness, run: agentRun } = run(grok.spawn);
+      harness.prompts.push('long task');
+      const proc = await grok.at(0);
+      await waitFor(() => proc.find('initialize') !== undefined, 'initialize');
+      proc.reply('initialize', { protocolVersion: 1 });
+      await waitFor(() => proc.find('session/new') !== undefined, 'session/new');
+
+      // まだ sessionId が無い時点で中断（UI は既に「中断」と言っている）。
+      await agentRun.interrupt?.();
+      expect(proc.find('session/cancel')).toBeUndefined();
+
+      proc.reply('session/new', { sessionId: 'sess-1' });
+      await waitFor(() => proc.find('session/cancel') !== undefined, 'deferred cancel');
+      expect(proc.find('session/cancel')?.id).toBeUndefined();
+    });
+
+    it('中断と end_turn が競っても completed にしない（auto-PR を走らせない）', async () => {
+      const grok = makeFakeGrok();
+      const { harness, run: agentRun } = run(grok.spawn);
+      harness.prompts.push('hi');
+      const proc = await grok.at(0);
+      await handshake(proc);
+      await waitFor(() => proc.find('session/prompt') !== undefined, 'prompt');
+      await agentRun.interrupt?.();
+      // cancel が届く前にターンが終わっていた場合。
+      proc.reply('session/prompt', { stopReason: 'end_turn' });
+      await tick();
+      await tick();
+      await tick();
+      expect(kinds(harness.events)).not.toContain('turn_completed');
     });
 
     it('消費側に捨てられたらプロセスを畳む', async () => {

@@ -95,6 +95,12 @@ const PROTOCOL_VERSION = 1;
  */
 const AUTH_REQUIRED = /authentication required|not signed in|no auth method/i;
 
+/**
+ * プロセスが黙って死んだときに合成するエラーの code。`session/prompt` の応答と
+ * 区別して、終了コードと stderr から本当の理由を組み立てるために使う。
+ */
+const EXITED_CODE = -32000;
+
 /** `rpc()` が解決する形（要求・通知はここへ来ない）。 */
 type GrokReply = Extract<GrokMessage, { kind: 'response' } | { kind: 'error' }>;
 
@@ -103,10 +109,15 @@ interface Pending {
   resolve(message: GrokReply): void;
 }
 
+/**
+ * JSON-RPC のエラーを 1 本の文字列に。**両方を残す** — `message` は総称
+ * （`Internal error` / `Authentication required`）、`data` に実際の理由が入るので、
+ * 片方だけだと分類（`grokStopCause`）も画面の説明も情報を落とす。
+ */
 function errorText(error: { message: string; data?: unknown }): string {
   const data = error.data;
   if (typeof data === 'string' && data.trim().length > 0) {
-    return data;
+    return `${error.message}: ${data}`;
   }
   return error.message;
 }
@@ -200,6 +211,13 @@ export function createGrokAdapter(deps: {
       let model = request.options.model;
       /** codiva 側から中断したか（そのターンの `cancelled` を静かに終わらせる）。 */
       let interrupted = false;
+      /**
+       * 中断したいのに `sessionId` がまだ無い（`session/new` の最中）。確立した
+       * 直後に `session/cancel` を送るための予約。
+       */
+      let cancelPending = false;
+      /** 直近の `retry_state.error_type`（CLI 自身の失敗分類）。 */
+      let lastErrorType: string | undefined;
       let nextId = 1;
 
       const send = (message: unknown): void => {
@@ -221,6 +239,14 @@ export function createGrokAdapter(deps: {
 
       const notify = (method: string, params: unknown): void => {
         send({ jsonrpc: '2.0', method, params });
+      };
+
+      /** セッション確立前に押された `Ctrl+C` を、確立直後に送り直す。 */
+      const flushPendingCancel = (): void => {
+        if (cancelPending && sessionId) {
+          cancelPending = false;
+          notify('session/cancel', { sessionId });
+        }
       };
 
       /** 許可要求 → codiva のダイアログ → ACP の応答。 */
@@ -293,9 +319,19 @@ export function createGrokAdapter(deps: {
           }
           if (message.kind === 'request') {
             if (message.method === 'session/request_permission') {
-              void answerPermission(message.id, message.params).catch(() => {});
+              // 投げても**必ず答える**。放置するとエージェントは待ち続け、ターンが
+              // 永久に終わらない（`awaiting_permission` のまま出口が無い）。
+              void answerPermission(message.id, message.params).catch(() => {
+                send({
+                  jsonrpc: '2.0',
+                  id: message.id,
+                  result: { outcome: { outcome: 'cancelled' } },
+                });
+              });
             } else if (message.method === '_x.ai/ask_user_question') {
-              void answerQuestion(message.id, message.params).catch(() => {});
+              void answerQuestion(message.id, message.params).catch(() => {
+                send({ jsonrpc: '2.0', id: message.id, result: { outcome: 'cancelled' } });
+              });
             } else {
               // 知らない要求は「未実装」で返す。黙って捨てるとエージェントが待ち続ける。
               send({
@@ -316,6 +352,11 @@ export function createGrokAdapter(deps: {
           }
           const update = grokUpdateOf(message);
           if (update) {
+            // CLI 自身の分類（`retry_state.error_type`）を覚えておき、ターンが
+            // 落ちたときの分類に使う（文言の正規表現より確か）。
+            if (update.sessionUpdate === 'retry_state' && update.error_type) {
+              lastErrorType = update.error_type;
+            }
             for (const event of parser.parse(update)) {
               events.push(event);
             }
@@ -339,15 +380,22 @@ export function createGrokAdapter(deps: {
             if (proc === stream) {
               proc = undefined;
             }
+            // 理由は**プロセスから**取る（`grok agent exited` のような合成文言だと
+            // 分類が効かず、一過性のクラッシュが `failed`（再開不可の終端）になる）。
+            const { code, stderr } = stream.result();
+            const detail = stderr.trim() || `grok agent exited with code ${code ?? 'null'}`;
             for (const [id, waiter] of pending) {
               pending.delete(id);
               waiter.resolve({
                 kind: 'error',
                 id,
-                error: { code: -32000, message: 'grok agent exited' },
+                error: { code: EXITED_CODE, message: detail },
               });
             }
-          });
+          })
+          // `.finally` の中で throw しても TUI を落とさない（未処理の rejection は
+          // プロセス死になる）。catch は**必ず最後**に置く。
+          .catch(() => {});
 
         // 立ち上げに失敗したら**自分で畳む**（起こしっぱなしの `grok` が worktree を
         // 触り続けないように）。次のターンで起こし直せるよう `proc` は空に戻す。
@@ -381,6 +429,7 @@ export function createGrokAdapter(deps: {
           if (state?.currentModelId) {
             events.push({ kind: 'model_resolved', model: state.currentModelId });
           }
+          flushPendingCancel();
           return;
         }
         // resume できなかった（セッションが消えている等）ときは新しく開く。
@@ -408,6 +457,7 @@ export function createGrokAdapter(deps: {
         if (state?.currentModelId) {
           events.push({ kind: 'model_resolved', model: state.currentModelId });
         }
+        flushPendingCancel();
       };
 
       /** 1 ターン。`session/prompt` の応答が終わりを告げる。 */
@@ -422,11 +472,18 @@ export function createGrokAdapter(deps: {
         }
         if (response.kind === 'error') {
           const detail = errorText(response.error);
-          if (interrupted) {
+          if (interrupted || request.abortController.signal.aborted) {
             // 中断は Session 側で既に確定させてある（二重にログを出さない）。
             return;
           }
-          events.push({ kind: 'turn_stopped', cause: grokStopCause(detail), detail });
+          // プロセスが黙って死んだ（終端イベントも応答も無い）ときは、文言から
+          // 何も読み取れなくても**再開できる中断**に倒す。`failed` は終端 =
+          // 再開の導線が消えるので、一過性のクラッシュをそこへ落とさない。
+          const cause =
+            grokStopCause(detail, lastErrorType) === 'failed' && response.error.code === EXITED_CODE
+              ? 'connection'
+              : grokStopCause(detail, lastErrorType);
+          events.push({ kind: 'turn_stopped', cause, detail });
           return;
         }
         const result = response.result as GrokPromptResult | undefined;
@@ -446,6 +503,12 @@ export function createGrokAdapter(deps: {
           }
           return;
         }
+        if (interrupted || request.abortController.signal.aborted) {
+          // **中断が競り勝つ**。`Ctrl+C` と `end_turn` が同時に届くことがあり、
+          // ここで完了にすると `interrupted` が `completed` に化けて auto-PR まで
+          // 走ってしまう（ユーザーは止めたつもりでいる）。
+          return;
+        }
         if (stop !== undefined && stop !== 'end_turn') {
           // `max_tokens` / `max_turn_requests` / `refusal`。失敗ではないので
           // 理由を 1 行残して完了にする（そのまま追加指示を送れる）。
@@ -462,6 +525,8 @@ export function createGrokAdapter(deps: {
               return;
             }
             interrupted = false;
+            cancelPending = false;
+            lastErrorType = undefined;
             if (!proc) {
               try {
                 await start();
@@ -478,6 +543,17 @@ export function createGrokAdapter(deps: {
             }
             await runTurn(text);
           }
+        } catch (error: unknown) {
+          // **`finally` で閉じる前に積む**。閉じたキューへの push は黙って捨てられる
+          // ので、外側の `.catch()` に任せると理由がどこにも残らない。
+          if (!request.abortController.signal.aborted) {
+            const detail = error instanceof Error ? error.message : String(error);
+            events.push({
+              kind: 'turn_stopped',
+              cause: grokStopCause(detail, lastErrorType),
+              detail,
+            });
+          }
         } finally {
           events.close();
         }
@@ -489,9 +565,9 @@ export function createGrokAdapter(deps: {
       };
       request.abortController.signal.addEventListener('abort', abort, { once: true });
 
-      void drive().catch((error: unknown) => {
-        const detail = error instanceof Error ? error.message : String(error);
-        events.push({ kind: 'turn_stopped', cause: grokStopCause(detail), detail });
+      // `drive` は自分で catch するので、ここは保険（未処理 rejection で TUI を
+      // 落とさないため）。
+      void drive().catch(() => {
         events.close();
       });
 
@@ -513,7 +589,12 @@ export function createGrokAdapter(deps: {
           // `session/cancel` は**通知**（id を付けると Method not found になる。実測）。
           if (sessionId) {
             notify('session/cancel', { sessionId });
+            return;
           }
+          // まだ `session/new` の最中。ここで黙って何もしないと、UI は「中断した」と
+          // 言っているのにエージェントは走り切り、完了扱いで auto-PR まで進む。
+          // セッションが確立し次第送れるよう予約しておく。
+          cancelPending = true;
         },
 
         setModel: async (next) => {

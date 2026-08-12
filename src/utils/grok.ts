@@ -240,6 +240,8 @@ export function fetchGrokModelCatalog(opts?: {
         // 読めなければフォールバックさせる。
       }
       finish([]);
-    })();
+      // `finish` の中で throw しても TUI を落とさない（未処理の rejection は
+      // プロセス死になる）。
+    })().catch(() => finish([]));
   });
 }
