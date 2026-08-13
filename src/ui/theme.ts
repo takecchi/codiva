@@ -104,6 +104,7 @@ export const glyph = {
   gaugeEmpty: '░', // usage bar — remaining part (dim)
   warning: '⚠', // environment-level caution (e.g. training data sharing is on)
   merged: '⑂', // PR already merged (fork mark)
+  closed: '⊘', // PR closed without merging (nothing left to do)
   mergeable: '✓', // PR can be merged cleanly
   conflicting: '✗', // PR has conflicts, or its checks failed
   checksPending: '●', // PR checks still running

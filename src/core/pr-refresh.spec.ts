@@ -59,6 +59,16 @@ describe('prPollIntervalMs', () => {
       expected: PR_POLL_STABLE_MS,
     },
     {
+      // 再オープンはあり得るので merged のように止めはしないが、閉じた PR の CI が
+      // 終わっても見に行く理由は無いので、pending でも fast へ落とさない。
+      label: 'a closed PR is as good as final, but can be reopened',
+      state: state({
+        status: 'completed',
+        ...withPr({ mergeStatus: 'closed', checks: 'pending' }),
+      }),
+      expected: PR_POLL_STABLE_MS,
+    },
+    {
       label: 'the number is known but the status is not — fetch it right away',
       state: state({ status: 'completed', pr: REF }),
       expected: 0,

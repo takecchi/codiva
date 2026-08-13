@@ -80,7 +80,11 @@ describe('lookupPr', () => {
     { state: 'OPEN', mergeable: 'MERGEABLE', expected: 'mergeable' },
     { state: 'OPEN', mergeable: 'CONFLICTING', expected: 'conflicting' },
     { state: 'OPEN', mergeable: 'UNKNOWN', expected: 'unknown' },
-    { state: 'CLOSED', mergeable: 'UNKNOWN', expected: 'unknown' },
+    { state: 'CLOSED', mergeable: 'UNKNOWN', expected: 'closed' },
+    // マージされずに閉じられた PR。GitHub は「マージできたはず」を返し続けるので、
+    // state を優先しないと終わった PR に緑の ✓ が付く。
+    { state: 'CLOSED', mergeable: 'MERGEABLE', expected: 'closed' },
+    { state: 'CLOSED', mergeable: 'CONFLICTING', expected: 'closed' },
   ] as const)('maps state=$state mergeable=$mergeable → $expected', async (c) => {
     const exec = vi.fn<ExecLike>(async (file) =>
       file === 'git'

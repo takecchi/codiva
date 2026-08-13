@@ -334,7 +334,16 @@ export class PrCoordinator {
       // just resolved may be one the session opened on another branch — or in another
       // repo — so a branch would fail (or ready an unrelated PR on the session branch)
       // and a bare number would resolve to whatever #<n> this repo happens to have.
-      if (this.deps.autoPr && this.deps.prAutomation && pr?.isDraft && pr.checks === 'passing') {
+      // Never on a closed PR: `gh pr ready` on one either errors (swallowed here, so
+      // it would retry every poll) or, worse, succeeds — quietly marking a PR someone
+      // closed as ready for review.
+      if (
+        this.deps.autoPr &&
+        this.deps.prAutomation &&
+        pr?.isDraft &&
+        pr.checks === 'passing' &&
+        pr.mergeStatus !== 'closed'
+      ) {
         await this.deps.prAutomation.markReady(meta.worktree.path, pr.url);
         session.setPr({ ...pr, isDraft: false });
       }

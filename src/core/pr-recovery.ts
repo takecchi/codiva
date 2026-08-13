@@ -50,6 +50,13 @@ export function stuckKinds(state: SessionState): RecoveryKind[] {
   if (!state.pr || !status || status.mergeStatus === 'merged') {
     return [];
   }
+  if (status.mergeStatus === 'closed') {
+    // マージされずにクローズされた PR は「詰まっている」のではなく**終わっている**。
+    // 競合と同じに扱うと、誰も取り込む気の無い PR に対して `autoSync` がベースを
+    // 取り込んで push し、`autoFixCi` が赤いチェックの修正を頼んで（1 ターン課金して）
+    // しまう。閉じた判断を覆せるのは人間だけなので、codiva は何も提案しない。
+    return [];
+  }
   const kinds: RecoveryKind[] = [];
   if (status.mergeStatus === 'conflicting') {
     kinds.push('sync');

@@ -12,14 +12,25 @@ import { glyph, statusColor, theme } from './theme';
 /**
  * Glyph + color shown before `#<number>`. The cell is one column wide, so a single
  * glyph has to carry both the merge state and the CI state; the priority is "what
- * would make me look": merged → failing checks → running checks → conflict → clean.
- * GitHub-conventional colors (merged violet, clean green, broken red, running amber).
- * `unknown` (GitHub still computing, no checks configured) shows no glyph so the row
- * stays quiet until the state is real.
+ * would make me look": merged → closed → failing checks → running checks → conflict
+ * → clean. GitHub-conventional colors (merged violet, clean green, broken red,
+ * running amber). `unknown` (GitHub still computing, no checks configured) shows no
+ * glyph so the row stays quiet until the state is real.
+ *
+ * The two terminal states come first because the CI state stops meaning anything
+ * once a PR is over: a closed PR whose last run went red would otherwise show the
+ * same red ✗ as a live PR waiting to be fixed — and unlike that one, codiva
+ * deliberately offers no recovery for it (`core/pr-recovery.ts`).
  */
 export function prStatusBadge(status: PrStatus): { char: string; color: string } | undefined {
   if (status.mergeStatus === 'merged') {
     return { char: glyph.merged, color: statusColor.external };
+  }
+  if (status.mergeStatus === 'closed') {
+    // Muted gray rather than GitHub's red: red in this list reads as "act on me"
+    // (failing checks / conflict), and a closed PR is precisely the case where
+    // there is nothing to act on. Same color as an archived row for that reason.
+    return { char: glyph.closed, color: statusColor.archived };
   }
   if (status.checks === 'failing') {
     return { char: glyph.conflicting, color: statusColor.failed };

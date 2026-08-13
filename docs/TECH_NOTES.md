@@ -889,6 +889,9 @@ Claude セッション自身の `gh` と分け合うので、これだけで枯�
   `--limit` で切り詰められても取りこぼさない。
 - `state: 'MERGED'` のとき `mergeable` は `UNKNOWN` に落ちる（#77 で観測）。`state` を優先する
   `toMergeStatus` の根拠。
+- `state: 'CLOSED'`（マージせず閉じた）でも `mergeable` は閉じる直前の値（`MERGEABLE` /
+  `CONFLICTING`）を返しうる。ここでも `state` が勝つので、終わった PR に緑の `✓` や
+  「立て直せ」の `✗` が付かない（`closed` は専用グリフ `⊘`）。
 
 実 API で `lookupPrs` を通した結果（1 回の `pr list` + セッションごとのローカル `git rev-parse`）:
 
