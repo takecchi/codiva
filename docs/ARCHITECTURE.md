@@ -947,6 +947,11 @@ Claude Code の実画面に寄せる: 画面は**端末の縦幅いっぱい**�
   操作パネルで m/d/x = マージ/破棄/削除（`x` は行ごと消すので成功時は一覧へ戻る）。
   `pendingPermission` があれば `PermissionDialog` に委譲。単一 `useInput` の
   state machine（panel = input | actions）でタイピングとキー操作の衝突を防ぐ。
+  許可/質問待ちの間はさらに 2 ゾーン（`DetailFocus` = dialog | log）を Tab で往復し、
+  `log` ゾーンでは ↑↓ / PgUp / PgDn がログのスクロールに戻る（ダイアログは `active={false}`
+  で表示のまま）。**質問の背景（何をしようとしているのか）を読んでから回答するための出口**で、
+  以前は `pending` の間キーを全部ダイアログへ委譲していたため会話ログを 1 行も遡れなかった。
+  ゾーンを分けるのは一覧の `ListFocus` と同じ理由（↑↓ が指す対象を一意にする）。
 - `PromptInput` / `StatusFooter`: presentational。キー処理は view の単一 `useInput` に集約（ロジックは持たない）。`PromptInput` は複数行対応（純粋モデルは `core/text-buffer.ts`、キー対応は `ui/input.ts` の `editText`/`resolveEnter`）。幅を超えたテキストは**折り返す**（truncate しない）: 折り返し後の表示行・キャレット位置・クリック逆算・選択範囲はすべて純粋な `core/composer-layout.ts`（`composerLayout`）が算出し、折り返し幅は Box の実測値（`useComposerWidth`）を描画・当たり判定・↑↓ 移動で共有する。IME 対応で実端末カーソルをキャレットに重ねる（`useCursor`）。
 - **`useComposer` / `Composer`（`ui/composer.tsx`）— 入力欄は 1 実装**: 入力欄は 4 か所（一覧の新規指示・
   詳細の追加指示・`/prompt` のエディタ・質問ダイアログの「自分で入力する」）にあるが、バッファ

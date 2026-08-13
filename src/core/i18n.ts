@@ -88,7 +88,19 @@ export interface Messages {
      * フッタヒントではなく独立した行に出す（再開の `resume.oneKeyHint` と同じ扱い）。
      */
     cancelHint: string;
+    /** 許可/質問ダイアログにフォーカスがあるとき（`dialog` ゾーン）のフッタヒント */
     helpPending: string;
+    /**
+     * 許可/質問待ちのまま会話ログを遡っているとき（`log` ゾーン）のフッタヒント。
+     * 質問の背景を読んでから回答するためのゾーンなので、戻り方（Tab / Esc）を必ず出す。
+     */
+    helpLog: string;
+    /**
+     * `log` ゾーンのあいだ「表示だけ」になっているダイアログの中に出す案内。
+     * 一覧の `permission.inactiveHelp`（↑↓ = セッション切替）は詳細では嘘になるので、
+     * 共有コンポーネントへは view からこの文言を渡す。
+     */
+    dialogInactiveHelp: string;
     helpActions: string;
     helpInput: string;
   };
@@ -552,7 +564,9 @@ const ja: Messages = {
     discardAction: '破棄（worktree削除）',
     removeAction: '削除（一覧から消す）',
     cancelHint: 'Ctrl+C: 実行中のターンを中断（あとで再開できます）',
-    helpPending: 'Esc: 一覧へ戻る',
+    helpPending: 'ダイアログで回答 ・ Tab: ログを遡る ・ Esc: 一覧へ戻る',
+    helpLog: '↑↓/PgUp/PgDn: ログを遡る ・ Tab: 回答へ戻る ・ Esc: ダイアログへ',
+    dialogInactiveHelp: '↑↓/PgUp/PgDn: ログを遡る ・ クリックで回答へ ・ Tab: 回答へ戻る',
     helpActions: 'm/d/x: 操作 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 入力へ ・ Esc: 戻る',
     helpInput:
       'Enter: 送信 ・ Shift+Enter: 改行 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ ・ Ctrl+U: 全消し',
@@ -849,7 +863,9 @@ const en: Messages = {
     discardAction: 'Discard (remove worktree)',
     removeAction: 'Remove (drop from the list)',
     cancelHint: 'Ctrl+C: interrupt the current turn (you can resume it later)',
-    helpPending: 'Esc: back to list',
+    helpPending: 'Answer in the dialog · Tab: scroll back the log · Esc: back to list',
+    helpLog: '↑↓/PgUp/PgDn: scroll the log · Tab: back to the dialog · Esc: dialog',
+    dialogInactiveHelp: '↑↓/PgUp/PgDn: scroll the log · click to answer · Tab: back to the dialog',
     helpActions: 'm/d/x: actions · ↑↓/PgUp/PgDn: log · Tab: input · Esc: back',
     helpInput:
       'Enter: send · Shift+Enter: newline · ↑↓/PgUp/PgDn: log · Tab: actions · Esc: back · Ctrl+U: clear',

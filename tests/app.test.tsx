@@ -1306,6 +1306,97 @@ describe('App detail view (in-app connection)', () => {
     expect(lastFrame()).not.toContain('rm -rf /'); // ダイアログは閉じている
   });
 
+  /**
+   * 許可/質問待ちのあいだ Tab で「ダイアログ ⇄ 会話ログ」を往復できる。かつては `pending` の
+   * あいだキーを全部ダイアログへ委譲していたため、詳細ビューでは**会話ログを 1 行も遡れず**
+   * 「何の話か分からないまま回答する」しかなかった（一覧の `ListFocus` と同じ問題）。
+   * ホイールはゾーンに関係なく効く（スクロールは副作用の無い操作）。
+   */
+  it('許可待ちでも Tab でログを遡れ、Tab で回答へ戻れる', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    let captured: Options | undefined;
+    const queryFn = ((params: { options: Options }) => {
+      captured = params.options;
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    manager.cycleMode(); // confirm モード（ツールが許可待ちへ上がる）
+    // フッタヒントとダイアログの案内が切り詰められない幅で描く。
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 20, 120);
+    stdin.write('ask me');
+    await settle(lastFrame);
+    stdin.write('\r');
+    await settle(lastFrame);
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-tab-log' }));
+    // 可視域より多い行を流して「遡れる」状態を作る。
+    for (let i = 0; i < 40; i++) {
+      out.push(
+        asMsg({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `log-${String(i).padStart(2, '0')}` }] },
+        }),
+      );
+    }
+    await settle(lastFrame);
+    stdin.write('\t'); // focus the list
+    await settle(lastFrame);
+    stdin.write('\r'); // open the detail view
+    await settle(lastFrame);
+
+    const ctx = { signal: new AbortController().signal } as unknown as Parameters<
+      NonNullable<Options['canUseTool']>
+    >[2];
+    const decision = captured?.canUseTool?.('Bash', { command: 'rm -rf build' }, ctx);
+    await settle(lastFrame);
+    expect(manager.getSnapshot()[0]?.status).toBe('awaiting_permission');
+
+    const frame = () => stripAnsi(lastFrame());
+    const top = () => [...frame().matchAll(/log-(\d+)/g)].map((mm) => Number(mm[1]))[0] ?? -1;
+    expect(frame()).toContain('rm -rf build'); // ダイアログが出ている
+    expect(frame()).toContain(messages.ja.detail.helpPending);
+    expect(frame()).not.toContain(messages.ja.detail.dialogInactiveHelp);
+
+    // dialog ゾーンでは ↑ はダイアログのもの（ログは動かない）。
+    const before = top();
+    expect(before).toBeGreaterThanOrEqual(0);
+    stdin.write('\x1b[A');
+    await settle(lastFrame);
+    expect(top()).toBe(before);
+    // ただしホイールはゾーンに関係なく効く（押下と違い副作用が無い）。
+    stdin.write('\x1b[<64;10;5M');
+    await settle(lastFrame);
+    expect(top()).toBeLessThan(before);
+    stdin.write('\x1b[<65;10;5M'); // 末尾へ戻す
+    await settle(lastFrame);
+    expect(top()).toBe(before);
+
+    // Tab → log ゾーン。ダイアログは**表示のまま**（質問文を読みながら遡れる）。
+    stdin.write('\t');
+    await settle(lastFrame);
+    expect(frame()).toContain(messages.ja.detail.helpLog);
+    expect(frame()).toContain(messages.ja.detail.dialogInactiveHelp);
+    expect(frame()).toContain('rm -rf build');
+
+    // ↑ でログを遡れる（= 回答の前に背景を読める）。
+    stdin.write('\x1b[A');
+    await settle(lastFrame);
+    expect(top()).toBeLessThan(before);
+    expect(frame()).toContain('過去ログを表示中');
+
+    // Tab で回答へ戻り、そのまま許可できる（往復でダイアログは壊れない）。
+    stdin.write('\t');
+    await settle(lastFrame);
+    expect(frame()).toContain(messages.ja.detail.helpPending);
+    stdin.write('y');
+    await settle(lastFrame);
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow' });
+    app.unmount();
+  }, 30000);
+
   // 詳細ビューの `/exit` はアプリ終了ではなく「セッションを閉じて一覧へ戻る」
   // （終了は一覧ビューの `/exit` = commands.test.tsx でカバー）。
   it('/exit in the detail view returns to the list without quitting the app', async () => {

@@ -41,11 +41,17 @@ export const PermissionDialog: FC<{
   /** false ならキーを受け取らない（表示のみ）。省略時は true。 */
   active?: boolean;
   /**
-   * ダイアログの中がクリックされた（= ここを操作したい）。一覧ビューは
-   * フォーカスゾーンを `dialog` へ移す。詳細ビューは常に active なので渡さない。
+   * ダイアログの中がクリックされた（= ここを操作したい）。一覧ビューはフォーカスゾーンを
+   * `dialog` へ、詳細ビューは `log` ゾーンから `dialog` ゾーンへ戻す。
    */
   onActivate?: () => void;
-}> = ({ request, onAnswer, onAllow, onDeny, onCopy, active = true, onActivate }) => {
+  /**
+   * `active={false}` のときに枠内へ出す案内。**ゾーンから抜ける／戻る方法は view 固有**
+   * （一覧は「↑↓ でセッション切替」、詳細は「↑↓ でログを遡る」）なので、共有コンポーネントに
+   * view の知識を持たせず文言を渡してもらう。省略時は一覧向けの既定。
+   */
+  inactiveHint?: string;
+}> = ({ request, onAnswer, onAllow, onDeny, onCopy, active = true, onActivate, inactiveHint }) => {
   if (request.kind === 'question') {
     return (
       <QuestionDialog
@@ -55,6 +61,7 @@ export const PermissionDialog: FC<{
         onCopy={onCopy}
         active={active}
         onActivate={onActivate}
+        inactiveHint={inactiveHint}
       />
     );
   }
@@ -65,6 +72,7 @@ export const PermissionDialog: FC<{
       onDeny={onDeny}
       active={active}
       onActivate={onActivate}
+      inactiveHint={inactiveHint}
     />
   );
 };
@@ -75,7 +83,8 @@ const ToolDialog: FC<{
   onDeny: (message: string) => void;
   active: boolean;
   onActivate?: () => void;
-}> = ({ request, onAllow, onDeny, active, onActivate }) => {
+  inactiveHint?: string;
+}> = ({ request, onAllow, onDeny, active, onActivate, inactiveHint }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
   // 枠の位置と高さを実測する（クリックがこのダイアログの中かを判定するため）。
@@ -141,7 +150,7 @@ const ToolDialog: FC<{
           {m.permission.deny}
         </Text>
       ) : (
-        <Text dimColor>{m.permission.inactiveHelp}</Text>
+        <Text dimColor>{inactiveHint ?? m.permission.inactiveHelp}</Text>
       )}
     </Box>
   );
@@ -171,7 +180,8 @@ const QuestionDialog: FC<{
   onCopy?: (text: string) => void;
   active: boolean;
   onActivate?: () => void;
-}> = ({ request, onAnswer, onDeny, onCopy, active, onActivate }) => {
+  inactiveHint?: string;
+}> = ({ request, onAnswer, onDeny, onCopy, active, onActivate, inactiveHint }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
   const questions = request.questions ?? [];
@@ -454,7 +464,7 @@ const QuestionDialog: FC<{
       <Box marginTop={1}>
         <Text dimColor>
           {!active
-            ? m.permission.inactiveHelp
+            ? (inactiveHint ?? m.permission.inactiveHelp)
             : mode === 'typing'
               ? m.permission.typingHelp
               : m.permission.questionHelp(current.multiSelect ?? false)}
