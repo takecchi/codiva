@@ -64,13 +64,27 @@ import { StatusFooter } from './status-footer';
 import { statusColor, theme } from './theme';
 
 /**
+ * 許可/質問ダイアログが出ているあいだのフォーカスゾーン（Tab で往復）。
+ *
+ * - `dialog`（既定）… `PermissionDialog` がキーを持つ。view 側は出口の Tab だけを処理する。
+ * - `log` … ↑↓ / PgUp / PgDn が**会話ログのスクロール**に戻る。ダイアログは
+ *   `active={false}` で表示のまま残す（回答の途中経過は内部 state なのでアンマウントしない）。
+ *
+ * ゾーンを分ける理由は一覧の `ListFocus` と同じ「↑↓ が指す対象を一意にする」こと。
+ * かつては `pending` のあいだキーを全部ダイアログへ委譲していたため、**質問の背景
+ * （何をしようとしているのか）を読み返せないまま回答させられていた**。
+ */
+type DetailFocus = 'dialog' | 'log';
+
+/**
  * The in-app detail view: live log of a single session plus a follow-up
  * composer. Reconnects to the running SDK session (no external CLI) — send
  * routes straight to `manager.send`, and merge/discard live in an actions panel.
  *
  * A single `useInput` runs a small state machine (panel = input | actions) so
  * typing and command keys never collide (see .claude/rules/ink-components.md).
- * When the session is blocked on a permission/question, the dialog owns the keys.
+ * When the session is blocked on a permission/question, the dialog owns the keys
+ * unless the user tabs over to the log ({@link DetailFocus}).
  */
 export const SessionDetail: FC<{
   manager: SessionManager;
@@ -141,6 +155,10 @@ export const SessionDetail: FC<{
     setAnchor(next);
   };
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
+  // 許可/質問ダイアログが出ているあいだのゾーン（`pending` のときだけ意味を持つ）。
+  // 既定は `dialog`: 回答は待たせている用事なので、そこへ辿り着くのに Tab を踏ませない
+  // （一覧の `zoneForRow` と同じ方針）。
+  const [dialogFocus, setDialogFocus] = useState<DetailFocus>('dialog');
   // Open when the user runs `/model`; the ModelSelect dialog then owns the keys.
   const [modelSelect, setModelSelect] = useState(false);
   // Open when the user runs `/agent`; the AgentSelect dialog then owns the keys.
@@ -175,6 +193,8 @@ export const SessionDetail: FC<{
   const recovering = recovery.busy;
 
   const pending = session?.pendingPermission;
+  // ダイアログがキーを持っているか。`log` ゾーンでは表示だけになり、↑↓ はログへ戻る。
+  const dialogActive = pending !== undefined && dialogFocus === 'dialog';
   const status = session?.status;
   const isTerminal = status !== undefined && isTerminalStatus(status);
   // このセッションを駆動しているエージェントと、その capability。UI は「持たない機能の
@@ -229,6 +249,15 @@ export const SessionDetail: FC<{
     // reject し得るので裸で投げない（unhandled rejection = TUI の死。git-and-io.md）。
     void manager.interrupt(session.id).catch(() => undefined);
   };
+
+  // 決着が付いたら（回答した / ターンが先へ進んだ）ゾーンを既定へ畳む。宙に浮かせたまま
+  // にすると、同じセッションが次に質問した瞬間にキーの意味が変わる（一覧が composer へ
+  // 畳むのと同じ理由）。
+  useEffect(() => {
+    if (!pending && dialogFocus !== 'dialog') {
+      setDialogFocus('dialog');
+    }
+  }, [pending, dialogFocus]);
 
   // Fetch the diff summary once the session reaches a terminal state.
   useEffect(() => {
@@ -501,11 +530,19 @@ export const SessionDetail: FC<{
     // editText に流れ込み「スクロールしようとすると文字が入力される」のを防ぐ）。
     const mouse = parseSgrMouse(rawInput);
     if (mouse) {
-      // モーダル表示中はマウスも飲む（一覧の `session-list.tsx` と同じ方針）。
+      // 画面を占有するモーダル表示中はマウスも飲む（一覧の `session-list.tsx` と同じ方針）。
       // `parseSgrMouse` で弾くのは自分のハンドラを守るだけで、同じ生入力は兄弟の
       // useInput にも届く。飲まないとダイアログ上の 1 クリックで背後のログの選択が
-      // 動き、URL の上ならブラウザまで開いてしまう（許可待ちの最中に）。
-      if (modelSelect || agentSelect || loginAgent !== null || pending) {
+      // 動き、URL の上ならブラウザまで開いてしまう。
+      if (modelSelect || agentSelect || loginAgent !== null) {
+        return;
+      }
+      // 許可/質問ダイアログにキーがあるあいだ（`dialog` ゾーン）は**押下系だけ**飲む。
+      // ホイールは通す — スクロールは押下と違って副作用が無く、質問の背景を読み返す
+      // 第一の手段なので、ここで奪うと「ログが見えないまま回答」に戻ってしまう。
+      // `log` ゾーンではユーザーが明示的にログを触ると選んだ状態なので、範囲選択・
+      // URL のクリックもそのまま通す。
+      if (dialogActive && mouse.kind !== 'wheel') {
         return;
       }
       if (mouse.kind === 'wheel') {
@@ -586,6 +623,12 @@ export const SessionDetail: FC<{
         setConfirm(null);
         return;
       }
+      // ログを遡っていたなら、まず回答（ダイアログ）へ戻す。一覧の Esc がどのゾーンからも
+      // 既定ゾーンへ戻るのと同じで、待たせている質問を素通りして画面を離れさせない。
+      if (pending && !dialogActive) {
+        setDialogFocus('dialog');
+        return;
+      }
       if (panel === 'actions') {
         setPanel('input');
         return;
@@ -611,7 +654,35 @@ export const SessionDetail: FC<{
       return;
     }
     if (pending) {
-      return; // PermissionDialog owns the keys
+      // 許可/質問待ちのあいだは 2 ゾーン（`DetailFocus`）を Tab で往復する。
+      // ここに ↑↓ を両ゾーンで持たせないのが要点 — 一覧と同じで、混ぜるとダイアログの
+      // 選択肢移動に食われてログを 1 行も遡れなくなる（= 質問の背景が読めない）。
+      if (key.tab) {
+        setDialogFocus(dialogActive ? 'log' : 'dialog');
+        return;
+      }
+      if (dialogActive) {
+        return; // PermissionDialog owns the keys（出口の Tab は上で処理した）
+      }
+      // `log` ゾーン: ログのスクロールだけを受ける（回答は Tab / クリックで戻ってから）。
+      if (key.pageUp) {
+        applyAnchor(scrollUp(anchorRef.current, total, logCap));
+        return;
+      }
+      if (key.pageDown) {
+        applyAnchor(scrollDown(anchorRef.current, total, logCap));
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        applyAnchor(
+          key.upArrow
+            ? scrollUp(anchorRef.current, total, logCap, ARROW_SCROLL_LINES)
+            : scrollDown(anchorRef.current, total, logCap, ARROW_SCROLL_LINES),
+        );
+        return;
+      }
+      // 印字キーはここでは何もしない（コンポーザはダイアログに場所を譲っていて出ていない）。
+      return;
     }
     // Log scroll (terminal scrollback is disabled under the alt screen). The
     // step is derived from the *visible* log height, not the full terminal, so a
@@ -703,7 +774,9 @@ export const SessionDetail: FC<{
     : agentSelect
       ? m.agent.help
       : pending
-        ? m.detail.helpPending
+        ? dialogActive
+          ? m.detail.helpPending
+          : m.detail.helpLog
         : panel === 'actions'
           ? m.detail.helpActions
           : m.detail.helpInput;
@@ -876,8 +949,16 @@ export const SessionDetail: FC<{
             onCancel={() => setModelSelect(false)}
           />
         ) : pending ? (
+          // `log` ゾーンでも**描いたまま**にする（質問文を読みながらログを遡れるように）。
+          // キーを持つのは `dialog` ゾーンのときだけで、無効化はアンマウントではなく
+          // `active` で行う — 回答の途中経過（何問目か・チェック・書きかけの自由記述）は
+          // 内部 state なので、Tab で往復するたびに捨てられては困る（一覧と同じ）。
           <PermissionDialog
             request={pending}
+            active={dialogActive}
+            // ダイアログをクリックしたら回答へ戻す（Tab と同じ出口をマウスにも用意する）。
+            onActivate={() => setDialogFocus('dialog')}
+            inactiveHint={m.detail.dialogInactiveHelp}
             onAnswer={(answers) => manager.answer(session.id, answers)}
             onAllow={() => manager.allow(session.id)}
             onDeny={(message) => manager.deny(session.id, message)}
