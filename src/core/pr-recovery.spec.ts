@@ -61,6 +61,14 @@ describe('prStuckKind', () => {
       want: undefined,
     },
     { name: 'checks pending', pr: PR, prStatus: { mergeStatus: 'unknown', checks: 'pending' } },
+    {
+      // 閉じた PR は「詰まっている」のではなく終わっている。競合していても赤くても、
+      // 取り込みや CI 修正を提案しない（人が閉じた判断を codiva が覆さない）。
+      name: 'closed without merging is never stuck',
+      pr: PR,
+      prStatus: { mergeStatus: 'closed', checks: 'failing' },
+      want: undefined,
+    },
   ];
   it.each(cases)('$name', ({ pr, prStatus, want }) => {
     expect(prStuckKind(session({ pr, prStatus }))).toBe(want);
@@ -79,6 +87,7 @@ describe('stuckKinds', () => {
     { prStatus: { mergeStatus: 'conflicting' as const }, want: ['sync'] },
     { prStatus: { mergeStatus: 'mergeable' as const, checks: 'failing' as const }, want: ['ci'] },
     { prStatus: { mergeStatus: 'mergeable' as const, checks: 'passing' as const }, want: [] },
+    { prStatus: { mergeStatus: 'closed' as const, checks: 'failing' as const }, want: [] },
   ])('$prStatus → $want', ({ prStatus, want }) => {
     expect(stuckKinds(session({ pr: PR, prStatus }))).toEqual(want);
   });

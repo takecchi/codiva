@@ -71,11 +71,18 @@ export interface LogEntry {
 /**
  * Merge state of a PR, shown as a glyph next to `#<number>`:
  *  - `merged`      — already merged (fork mark)
+ *  - `closed`      — closed *without* being merged (the work was dropped)
  *  - `mergeable`   — can be merged cleanly (check)
  *  - `conflicting` — has conflicts, cannot merge (cross)
  *  - `unknown`     — GitHub hasn't computed mergeability yet (no glyph)
+ *
+ * `closed` is its own state rather than a flavour of `conflicting`: both mean "this
+ * can't merge as it stands", but a conflict is something codiva can act on (take the
+ * base in, hand the conflict to the session) while a closed PR is a *decision* a human
+ * made. Folding it into `conflicting` would have codiva keep proposing — and with
+ * `autoSync` on, keep spending turns on — a PR nobody intends to merge.
  */
-export type PrMergeStatus = 'merged' | 'mergeable' | 'conflicting' | 'unknown';
+export type PrMergeStatus = 'merged' | 'closed' | 'mergeable' | 'conflicting' | 'unknown';
 
 /**
  * *Which* PR a session's branch corresponds to. Stable: a branch keeps the same PR

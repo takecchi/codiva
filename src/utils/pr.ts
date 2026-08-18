@@ -65,11 +65,17 @@ interface PrViewJson {
 
 /**
  * Map GitHub's `state` / `mergeable` into our glyph-driving status. `state`
- * wins: a merged PR is `merged` regardless of the (stale) mergeable value.
+ * wins: a merged PR is `merged` regardless of the (stale) mergeable value, and a
+ * closed one is `closed` even though GitHub keeps reporting whether it *could* have
+ * merged (`mergeable: 'MERGEABLE'` on a closed PR would otherwise render as a green
+ * ✓, i.e. "ready to merge" for a PR that is over).
  */
 function toMergeStatus(state: unknown, mergeable: unknown): PrMergeStatus {
   if (state === 'MERGED') {
     return 'merged';
+  }
+  if (state === 'CLOSED') {
+    return 'closed';
   }
   if (mergeable === 'MERGEABLE') {
     return 'mergeable';

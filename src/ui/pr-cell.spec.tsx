@@ -19,6 +19,17 @@ describe('PrCell', () => {
     );
   });
 
+  // マージされずに閉じられた PR は専用のアイコン。最後のチェックが赤いまま閉じられた
+  // ケースで ✗（= 直せ）に化けると、リカバリーしない方針と表示が食い違う。
+  it('shows the closed glyph for a PR that was closed without merging', () => {
+    expect(cell({ pr: { number: 42, url: 'u' }, status: { mergeStatus: 'closed' } })).toBe(
+      `${glyph.closed} #42`,
+    );
+    expect(
+      cell({ pr: { number: 42, url: 'u' }, status: { mergeStatus: 'closed', checks: 'failing' } }),
+    ).toBe(`${glyph.closed} #42`);
+  });
+
   it('shows the lookup mark alone when even the number is unknown', () => {
     expect(cell({ lookup: 'loading' })).toBe(glyph.prLoading);
     expect(cell({ lookup: 'error' })).toBe(glyph.prUnknown);

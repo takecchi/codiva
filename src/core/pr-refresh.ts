@@ -39,6 +39,12 @@ export function prPollIntervalMs(state: SessionState): number | undefined {
     return 0;
   }
   if (status) {
+    // Closed (unmerged) is as good as final, but not *quite*: a human can reopen the
+    // PR, so keep asking at the slow interval instead of dropping it like `merged`.
+    // Checked before `checks`, since a closed PR's CI finishing changes nothing here.
+    if (status.mergeStatus === 'closed') {
+      return PR_POLL_STABLE_MS;
+    }
     // Checks running → poll fast (the glyph moves and auto-ready triggers off it).
     // `unknown` mergeability is GitHub still computing it (seconds), so "soon".
     if (status.checks === 'pending') {
