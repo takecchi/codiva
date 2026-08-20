@@ -37,6 +37,15 @@ export interface UsagePollingDeps {
    * Rejection is ignored; the poll runs either way.
    */
   after?: Promise<unknown>;
+  /**
+   * 問い合わせてよいか（毎回の poll の直前に聞く）。`false` の回は probe を立てず、
+   * 「空振り」としても数えない（あとで対象が現れたら再開する）。
+   *
+   * 使用状況ゲージは `usage` を報告する provider のアカウントの話なので、Codex /
+   * Grok だけで作業している間は表示もしないし取りにも行かない（合成レイヤが
+   * `showsAccountUsage` で判定する）。省略時は常に問い合わせる。
+   */
+  enabled?: () => boolean;
   /** Override for tests. Defaults to {@link USAGE_POLL_INTERVAL_MS}. */
   intervalMs?: number;
 }
@@ -66,6 +75,11 @@ export function startUsagePolling(deps: UsagePollingDeps): () => void {
 
   const poll = async (): Promise<void> => {
     if (inFlight || stopped) {
+      return;
+    }
+    // 出さない画面のために `claude` のサブプロセスを立てない。stop() はしない —
+    // あとで Claude のセッションを作ったら（既定を戻したら）そこから再開する。
+    if (deps.enabled?.() === false) {
       return;
     }
     inFlight = true;

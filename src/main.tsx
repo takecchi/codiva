@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { render } from 'ink';
 import {
+  capabilityLookup,
   DEFAULT_AGENT_ORDER,
   errorMessage,
   formatMemoryUsage,
@@ -10,6 +11,7 @@ import {
   resolveIgnoredFilesMode,
   resolveLang,
   type SessionManager,
+  showsAccountUsage,
   summarizeStatuses,
 } from '@/core';
 import {
@@ -193,6 +195,14 @@ async function main(): Promise<void> {
   const stopUsagePolling = startUsagePolling({
     fetch: () => fetchUsageSnapshot(claudeQuery, { cwd: repoRoot, signal: probeAbort.signal }),
     apply: (snapshot) => manager.applyUsage(snapshot),
+    // ゲージを出さない構成（Codex / Grok だけで作業している）では probe も立てない。
+    // 判定は一覧の表示条件と**同じ純関数**を通す（表示と取得が食い違わないように）。
+    enabled: () =>
+      showsAccountUsage({
+        sessions: manager.getSnapshot(),
+        defaultAgent: manager.getDefaultAgentId(),
+        capabilities: capabilityLookup(manager.listAgents()),
+      }),
     // カタログ取得の後にずらす（どちらも probe サブプロセスを立てるので、起動直後に
     // 2本同時に走らせない）。失敗しても取得は行う。
     after: modelCatalog,

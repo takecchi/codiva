@@ -35,6 +35,11 @@ export interface BannerInput {
   /** アプリのバージョン（package.json 由来）。ワードマークの右に `vX.Y.Z` で表示。 */
   version?: string;
   sessionCount: number;
+  /**
+   * 新しいセッションを動かすエージェントの表示名（`/agent` の既定）。固有名詞なので
+   * カタログを通さずアダプタの `displayName` をそのまま渡す。取れなければ出さない。
+   */
+  agent?: string;
   totalCostUsd?: number;
   /** ログイン中のアカウント（プラン名・組織名）。SDK probe 由来で、無ければ出さない。 */
   account?: AccountSummary;
@@ -98,6 +103,12 @@ export function bannerLines(m: Messages, input: BannerInput): BannerLine[] {
       text: `${m.banner.plan(input.account.plan, input.account.organization)}${FIELD_GAP}`,
       tone: 'dim',
     });
+  }
+  // 既定のエージェントもこの行に並べる（「何が、どのモデルで動くか」を 1 行で読む）。
+  // 一覧の行のエージェント列は混在時だけ出るので、単一 provider で使っている人が
+  // 「今どれで動いているか」を確かめられる場所はここになる。
+  if (input.agent) {
+    identity.push({ text: `${m.banner.agent(input.agent)}${FIELD_GAP}`, tone: 'dim' });
   }
   identity.push({ text: m.banner.model(input.model ?? m.banner.defaultModel), tone: 'dim' });
   // 現在のブランチも**この行**に並べる（cwd 行ではなく）。理由は 2 つ:

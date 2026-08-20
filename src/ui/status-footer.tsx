@@ -16,19 +16,31 @@ import { glyph, theme } from './theme';
  *
  * **The footer is exactly one line at any width.** モード表示は縮まず（ツールが
  * 自動実行かどうかは常に読めるべき）、ヒントだけが末尾で切り詰められる。
+ *
+ * `confirmSupported={false}`（駆動中のエージェントが許可要求を上げられない =
+ * `AgentCapabilities.permissions === false`）のときは、確認モードでも「非対応」と
+ * 明示する。ツールは確認なしに実行されるので、`confirm mode on` をそのまま出すと
+ * **待っていれば聞かれる**と読めてしまう（Codex セッションで実際にそうなっていた）。
  */
 export const StatusFooter: FC<{
   mode: RunMode;
   hint?: string;
-}> = ({ mode, hint }) => {
+  /** 駆動中のエージェントが許可要求を上げられるか。省略 = 上げられる（一覧など対象が定まらない画面）。 */
+  confirmSupported?: boolean;
+}> = ({ mode, hint, confirmSupported = true }) => {
   const m = useMessages();
   const auto = mode === 'auto';
+  const modeLabel = auto
+    ? m.footer.autoMode
+    : confirmSupported
+      ? m.footer.confirmMode
+      : m.footer.confirmModeUnsupported;
   return (
     <Box marginLeft={2}>
       {/* モード表示は縮まない（ツールが自動実行かどうかは常に読めるべき）。 */}
       <Box flexShrink={0}>
         <Text color={auto ? theme.auto : theme.confirm} bold>
-          {auto ? glyph.auto : glyph.confirm} {auto ? m.footer.autoMode : m.footer.confirmMode}
+          {auto ? glyph.auto : glyph.confirm} {modeLabel}
         </Text>
       </Box>
       {/* ヒントだけが縮む枠（溢れは末尾で切り詰め、折り返さない）。 */}

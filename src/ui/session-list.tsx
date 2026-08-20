@@ -1,8 +1,11 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useEffect, useRef, useState } from 'react';
+import { type FC, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AGENT_COLUMN_CELLS,
+  AGENT_COLUMN_WIDTH,
   type AgentId,
   activeElapsedMs,
+  agentSupports,
   atFirstComposerRow,
   atLastComposerRow,
   type BannerLine,
@@ -14,6 +17,7 @@ import {
   type CodivaConfig,
   type ConfigToggleId,
   canSelfUpdate,
+  capabilityLookup,
   configToggleRows,
   dialogMaxRows,
   errorMessage,
@@ -44,6 +48,9 @@ import {
   resumeInstruction,
   rowLineAtPoint,
   type SessionManager,
+  sessionAgentId,
+  showsAccountUsage,
+  showsAgentColumn,
   showsBranchColumn,
   type TrainingOptIn,
   toggleConfigPatch,
@@ -53,6 +60,7 @@ import {
   type UpdateRun,
   type UpdateService,
   type UpdateViewState,
+  usesMultipleAgents,
 } from '@/core';
 import { AgentSelect } from './agent-select';
 import { Banner } from './banner';
@@ -212,6 +220,14 @@ export const SessionList: FC<{
   const mode = useRunMode(manager);
   const rateLimits = useRateLimit(manager);
   const account = useAccount(manager);
+  // 登録アダプタの capability と表示名。`AgentCapabilities` を見た**明示的な分岐**で
+  // 縮退させるためのもの（数字が 0 だから自然に消える、という偶然に頼らない）。
+  // 登録は起動時（`bootstrap/build-manager.ts`）に決まって以後変わらないので manager で
+  // memo する（`listAgents()` は毎回新しい配列を返すため、それを依存にすると memo が効かない）。
+  const agents = useMemo(() => manager.listAgents(), [manager]);
+  const capabilities = useMemo(() => capabilityLookup(agents), [agents]);
+  const agentNames = useMemo(() => new Map(agents.map((a) => [a.id, a.displayName])), [agents]);
+  const defaultAgent = manager.getDefaultAgentId();
   const now = useClock(1000);
   // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
@@ -489,7 +505,12 @@ export const SessionList: FC<{
   // 使っている間はそのぶん厳しく判定する — 1 行が桁数を超えると Yoga が固定幅の列を
   // 縮め、行が 2 行に折り返して**以降の行のクリック位置が全部ズレる**（rowLineAtPoint は
   // 「1 セッション = 1 行」前提）。落とす候補はブランチ列（内容が worktree 名で復元可能）。
-  const showBranch = showsBranchColumn(columns - (prCell - PR_CELL_WIDTH));
+  // エージェント列は**混在しているときだけ**出す（単一 provider なら既定はヘッダに
+  // 出ているので、全行に同じ名前を並べても情報が増えない）。
+  const showAgent = showsAgentColumn(columns, usesMultipleAgents(sessions));
+  const showBranch = showsBranchColumn(
+    columns - (prCell - PR_CELL_WIDTH) - (showAgent ? AGENT_COLUMN_CELLS : 0),
+  );
   const listHeight = useBoxHeight(rowsRef);
   const listCap = fullscreen
     ? Math.max(1, listHeight ?? listViewportRows(termRows))
@@ -577,6 +598,11 @@ export const SessionList: FC<{
     }
   };
 
+  // 使用状況ゲージ（アカウント全体の枠）は `usage` を報告する provider を使っている
+  // ときだけ出す。Codex / Grok だけで作業している人に Claude の枠を出しても読みようが
+  // なく（埋めているのは別のツール）、5 分ごとの probe サブプロセスも無駄になる。
+  const showUsage = showsAccountUsage({ sessions, defaultAgent, capabilities });
+
   // ヘッダの表示行。描画（Banner）と当たり判定（bannerCaretAt）で同じ配列を使う —
   // 行 index = 表示行という前提を共有しているので、片方だけ差し替えると選択がズレる。
   const headerLines = bannerLines(m, {
@@ -585,7 +611,10 @@ export const SessionList: FC<{
     model,
     version,
     sessionCount: sessions.length,
-    totalCostUsd: totalCostUsd(sessions),
+    agent: defaultAgent ? agentNames.get(defaultAgent) : undefined,
+    // 金額を報告しない provider のセッションは合計に数えない（`cost` capability）。
+    // 混ぜたときに「Claude ぶんの合計」を全体のコストとして出さないため。
+    totalCostUsd: totalCostUsd(sessions, (agent) => agentSupports(capabilities, agent, 'cost')),
     account,
     updateLatest: updateInfo?.latest,
   });
@@ -1001,7 +1030,7 @@ export const SessionList: FC<{
         <Banner
           lines={headerLines}
           selection={headerSel.selection}
-          usage={rateLimits}
+          usage={showUsage ? rateLimits : undefined}
           now={now}
           textRef={headerRef}
           trainingOptIn={trainingOptIn}
@@ -1041,6 +1070,15 @@ export const SessionList: FC<{
                   <Box width={12}>
                     <ProgressBadge state={s} />
                   </Box>
+                  {/* どのエージェントで走っているか（混在時のみ。単一なら列ごと出さない）。
+                      表示名はアダプタ由来の固有名詞なのでカタログを通さない。 */}
+                  {showAgent ? (
+                    <Box width={AGENT_COLUMN_WIDTH} marginRight={1}>
+                      <Text dimColor wrap="truncate-end">
+                        {agentNames.get(sessionAgentId(s)) ?? ''}
+                      </Text>
+                    </Box>
+                  ) : null}
                   {/* 各セッションが実際に走っているモデル（SDK 由来の解決済み値）。
                       バナーの設定モデルと異なりうる。未取得なら空欄。 */}
                   <Box width={11} marginRight={1}>

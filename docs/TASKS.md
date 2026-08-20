@@ -1284,10 +1284,10 @@ zsh: abort      codiva
 > - `usage` / `cost` は false（ターンはトークン数だけで USD もアカウント全体の使用状況も無い）。
 >   `transcript` も false。タイトル生成は Codex と同じく Claude の haiku を使い回す。
 
-## Phase D: capability による UI 縮退 / `/agent` / 引き継ぎ（一部完了）
+## Phase D: capability による UI 縮退 / `/agent` / 引き継ぎ ✅
 
-> Phase B（Codex 対応）に必要なぶんだけ先に入れた。**残りは未着手**なので下の未チェック項目を
-> そのまま次の作業単位にする。
+> Phase B（Codex 対応）に必要なぶんだけ先に入れ、残り（capability 縮退の仕上げ・エージェントの
+> 表示・引き継ぎプロンプト）を後から入れて完了。
 
 - [x] `/model` の縮退: `SessionManager.getSessionAgent(id).capabilities` を詳細ビューが見て、
       `setModel` を持たない provider では**ダイアログを開かず理由を出す**（黙って無反応にしない）。
@@ -1311,12 +1311,20 @@ zsh: abort      codiva
 - [x] **未導入でも起動でき、案内を出す**: 設定 `agent` が無ければ起動時検出で**導入済みのものへ
       自動で寄せる**（`resolveDefaultAgentId`、永続はしない）。どれも未導入なら一覧に
       `agent.noneInstalled` の 1 行を出す（`noAgentInstalled` が全件未導入で確定したときだけ）
-- [ ] **残りの capability 縮退**: 使用状況ゲージ（`usage`）・コスト表示（`cost`）・許可ダイアログ
-      （`permissions`）・トランスクリプト復元（`transcript`）は**まだ capability を見ていない**。
-      現状は実害が出ていないだけ（Codex は USD を運ばないのでヘッダの合計コスト行は
-      `cost > 0` の条件で自然に出ない / 許可要求がそもそも届かないのでダイアログも出ない /
-      Claude のトランスクリプトパスに Codex の thread id のファイルは無いので復元が空になるだけ）。
-      **混在時に嘘をつく余地が残っている**ので、明示的な分岐に置き換える
+- [x] **残りの capability 縮退**: 判定を純粋な `core/agent-capabilities.ts` に集約
+      （`supportsCapability` = **不明なら縮退しない** / `capabilityLookup` / `agentSupports` /
+      `showsAccountUsage`）。「数字が 0 だから自然に消える」偶然に頼るのをやめ、明示的な分岐にした:
+      - `cost`: `totalCostUsd(states, reportsCost)` が報告しない provider を合計から外す
+        （混在時に「Claude ぶんの合計」を全体として出さない）
+      - `usage`: 一覧が `showsAccountUsage`（既定エージェント or `archived` でないセッションの
+        どれかが `usage` を報告するか）でゲージを出し分け、**同じ純関数**を
+        `bootstrap/usage-poller.ts` の `enabled` にも渡す = 出さないゲージのために 5 分ごとの
+        `claude` probe を立てない
+      - `permissions`: フッタの確認モード表示を `confirmSupported` で `確認モード (非対応)` に
+        差し替える（Codex では原理的に聞かれないのに「確認モード」と言い切っていた =
+        「待っていれば聞かれる」と読める嘘）。ダイアログ自体は偽装も抑止もしない
+      - `transcript`: `bootstrap/restore-sessions.ts` が持たない provider のセッションでは
+        読みにも行かない（worktree が同じで id が偶然衝突すれば別 provider のログを混ぜる余地）
 - [x] **TUI 内ログイン**（`/login` コマンド + `/agent` ダイアログの `l`）。端末を明け渡さず
       `<cli> login` を裏で起動し、出力の認証 URL / デバイスコードをダイアログに出して自動で
       ブラウザを開く（`core/agent-login.ts` = 進行の畳み込み・純粋 / `utils/agent-login.ts` =
@@ -1324,8 +1332,15 @@ zsh: abort      codiva
       / `canLogin` / `refreshAgents`）。Codex は `login --device-auth`、Claude は `auth login`。
       **色付き出力の ANSI を剥がしてから URL/コードを拾う**（実測: 拾えず → 修正）。
       完了後 `refreshAgents` で状態を再判定
-- [ ] **引き継ぎプロンプトの生成**: 切替先は前の会話を持たないので、worktree の状況（ブランチ・
-      差分・直前の指示）を要約した最初の指示文を組み立てる純関数を core に置く
+- [x] **引き継ぎプロンプトの生成**: `core/agent-handoff.ts`（`handoffInstruction` /
+      `lastUserInstruction`・純粋・英語固定 = AI 向け文字列なので i18n 対象外）。ブランチ・
+      最初の指示・直前の指示を並べ、**続ける前に自分で `git status` / `git diff` を読む**よう
+      促す。渡し方は `AgentRunOptions.systemPrompt`（`composeSystemPrompt` の最後の節）で、
+      `Session` が**使い捨て**で持ち次の `open()` で消費する。
+      - キューへ指示として積まない（積むと切替直後に「状況を読むだけのターン」が 1 本走り、
+        provider のプロセスを無駄に立てる）
+      - 常設にしない（引き継ぎ後のターンや通信断からの再起動でも「前任者から引き継いだ」と
+        言い続けてしまう）。各項目は 1 行に畳んで `MAX_HANDOFF_FIELD_CHARS` で切る
 - [x] i18n: `AgentLabel` を `DEFAULT_AGENT_LABEL` 固定ではなく**セッションのエージェント**から
       引くよう配線（`agentLabelOf()` + `SessionManager.getSessionAgentLabel()`）。認証切れの案内は
       一覧・詳細・デスクトップ通知の 3 経路すべてで駆動中の provider を出す — Codex のセッションに
@@ -1335,8 +1350,19 @@ zsh: abort      codiva
       指示を**古いエージェントが受け取っていた**。入力キューを閉じて新しいキューに差し替え、
       進行中のターンは `run.interrupt()` で畳み、積み残しの指示は `drain()` で新しいキューへ
       移す（詳細は `.claude/rules/session-domain.md`）。`/agent` を入れて初めて踏める経路だった
-- [ ] 一覧・詳細にエージェントの表示（どのセッションが何で走っているか）と、`LogEntry.agent` を
-      使ったログ上の区切り表示（状態には載っているが**どこにも描いていない**）
+- [x] 一覧・詳細にエージェントの表示（どのセッションが何で走っているか）と、`LogEntry.agent` を
+      使ったログ上の区切り表示:
+      - ヘッダ（`bannerLines` の `agent`）に**新規セッションの既定**を出す（プラン・モデル・
+        ブランチと同じ行 = 行を増やさない）
+      - 一覧の行に**混在しているときだけ**エージェント列を出す（`core/agent-display.ts` の
+        `usesMultipleAgents` + `core/layout.ts` の `showsAgentColumn`）。全部同じ provider なら
+        ヘッダと重複するだけで title / branch から幅を奪うため。列が奪う幅
+        （`AGENT_COLUMN_CELLS`）はブランチ列の判定から差し引く（行が折り返すと
+        `rowLineAtPoint` の「1 セッション = 1 行」が崩れてクリック位置が全部ズレる）
+      - 詳細は追加指示のプレースホルダに出す（`m.detail.followupPlaceholder(agent)`。
+        ステータスヘッダを持たないビューなので**1 行も増やさずに**出せる場所がここ）
+      - ログは `logLines(…, dividerFor)` が `LogEntry.agent` の境界に区切り行を 1 本挿む
+        （`── ここから Codex ──`。切替を使っていないセッションには 1 本も出ない）
 
 ---
 

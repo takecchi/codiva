@@ -35,6 +35,32 @@ export function showsBranchColumn(columns: number): boolean {
 }
 
 /**
+ * 一覧のエージェント列の幅（セル）。表示名（`Claude` / `Codex` / `Grok`）は最長 6 セルで、
+ * 右に 1 セルの間隔を足した固定幅列。
+ */
+export const AGENT_COLUMN_WIDTH = 6;
+
+/** エージェント列が行から奪う幅（列 + 右の間隔）。ブランチ列の判定から差し引く。 */
+export const AGENT_COLUMN_CELLS = AGENT_COLUMN_WIDTH + 1;
+
+/**
+ * エージェント列を出すのに必要な最小の端末桁数。ブランチ列（80 桁）より緩いのは、
+ * こちらは**混在しているときだけ**出る列で、狭ければブランチ列を先に落として席を作れるから。
+ */
+export const MIN_AGENT_COLUMN_COLUMNS = 60;
+
+/**
+ * 一覧の行にエージェント名の列を出すか判定する純関数。`mixed` は
+ * `usesMultipleAgents(sessions)`（`core/agent-display.ts`）。
+ *
+ * 全部同じ provider なら出さない: 既定のエージェントはヘッダに出ているので、
+ * 同じ名前を全行に並べても情報が増えないのに title / branch から幅を奪う。
+ */
+export function showsAgentColumn(columns: number, mixed: boolean): boolean {
+  return mixed && columns >= MIN_AGENT_COLUMN_COLUMNS;
+}
+
+/**
  * ヘッダ（`ui/banner.tsx`）の使用状況ゲージ以外に 1 行が使う幅の見積り（ja の最長ケース）:
  * マスコット 15 + 余白 2 + 一覧のパディング 2 + 行頭のインデント 2 + 見出し 16
  * （`現在のセッション`）+ 余白 2 + 使用率 4 + 余白 2 + 残り時間 21（`3日23時間後にリセット`）。

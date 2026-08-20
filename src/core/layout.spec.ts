@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { COMMANDS } from './commands';
 import {
+  AGENT_COLUMN_CELLS,
+  AGENT_COLUMN_WIDTH,
   BANNER_ROWS,
   bannerGaugeWidth,
   COMPOSER_ROWS,
@@ -15,10 +17,12 @@ import {
   listView,
   listViewportRows,
   logViewportRows,
+  MIN_AGENT_COLUMN_COLUMNS,
   MIN_BRANCH_COLUMN_COLUMNS,
   MIN_FULLSCREEN_ROWS,
   PALETTE_MIN_ROWS,
   paletteMaxRows,
+  showsAgentColumn,
   showsBranchColumn,
 } from './layout';
 
@@ -43,6 +47,26 @@ describe('showsBranchColumn', () => {
     [0, false],
   ])('columns=%d → %s', (columns, expected) => {
     expect(showsBranchColumn(columns)).toBe(expected);
+  });
+});
+
+describe('showsAgentColumn', () => {
+  it.each<[number, boolean, boolean]>([
+    // 混在していないときは幅があっても出さない（既定はヘッダに出ている）。
+    [120, false, false],
+    [120, true, true],
+    [MIN_AGENT_COLUMN_COLUMNS, true, true],
+    [MIN_AGENT_COLUMN_COLUMNS - 1, true, false],
+    [0, true, false],
+  ])('columns=%d mixed=%s → %s', (columns, mixed, expected) => {
+    expect(showsAgentColumn(columns, mixed)).toBe(expected);
+  });
+
+  it('列が奪う幅は表示名 + 間隔 1 セル', () => {
+    // 描画（`width` + `marginRight`）とブランチ列の判定で同じ値を使うための番人。
+    expect(AGENT_COLUMN_CELLS).toBe(AGENT_COLUMN_WIDTH + 1);
+    // 'Claude'（6 セル）が切り詰められない幅であること。
+    expect(AGENT_COLUMN_WIDTH).toBeGreaterThanOrEqual('Claude'.length);
   });
 });
 

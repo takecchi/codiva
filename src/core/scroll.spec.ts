@@ -204,6 +204,46 @@ describe('logLines: クリックできる URL の範囲（links）', () => {
   });
 });
 
+describe('logLines: エージェント切替の区切り行', () => {
+  const prefixFor = () => '';
+  const divider = (agent: string) => `-- ${agent} --`;
+
+  it('LogEntry.agent が変わる境界に 1 行だけ挿む', () => {
+    const rows = logLines(
+      [
+        { seq: 1, kind: 'system', text: 'a' },
+        { seq: 2, kind: 'system', text: 'b', agent: 'codex' },
+        { seq: 3, kind: 'system', text: 'c', agent: 'codex' },
+        { seq: 4, kind: 'system', text: 'd', agent: 'claude' },
+      ],
+      40,
+      prefixFor,
+      divider,
+    );
+    expect(rows.map((r) => r.text)).toEqual(['a', '-- codex --', 'b', 'c', '-- claude --', 'd']);
+    // 区切りのキーは行のキーと衝突しない（描画キーは key で決まる）。
+    expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
+  });
+
+  it('切替を使っていないセッション（agent が全行 undefined）には 1 本も出さない', () => {
+    const rows = logLines(
+      [
+        { seq: 1, kind: 'system', text: 'a' },
+        { seq: 2, kind: 'system', text: 'b' },
+      ],
+      40,
+      prefixFor,
+      divider,
+    );
+    expect(rows.map((r) => r.text)).toEqual(['a', 'b']);
+  });
+
+  it('dividerFor を渡さなければ従来どおり（行数を変えない）', () => {
+    const messages: LogEntry[] = [{ seq: 1, kind: 'system', text: 'a', agent: 'codex' }];
+    expect(logLines(messages, 40, prefixFor)).toHaveLength(1);
+  });
+});
+
 describe('logLines (entries → physical rows)', () => {
   const prefixFor = (kind: LogKind) => (kind === 'user' ? '> ' : '');
 

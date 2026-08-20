@@ -1,4 +1,5 @@
 import { applyAgentEvent } from './agent-events';
+import { handoffInstruction, lastUserInstruction } from './agent-handoff';
 import type { AgentAdapter, AgentRun, PermissionDecision } from './agent-ports';
 import { AsyncQueue } from './async-queue';
 import { createClaudeAdapter, type QueryFn } from './claude-adapter';
@@ -126,6 +127,12 @@ export class Session {
    * いないユーザーには何も増えない）。
    */
   private attribution?: AgentId;
+  /**
+   * 切替直後の 1 回だけ systemPrompt に載せる引き継ぎの状況説明
+   * （`core/agent-handoff.ts`）。**使い捨て**にするのは、引き継ぎが済んだ以降の
+   * ターンでも「前任者から引き継いだ」と言い続けないため。
+   */
+  private handoff?: string;
   private run?: AgentRun;
   /**
    * 未応答の許可要求の**待ち行列**（先頭 = いま UI に出ているもの）。
@@ -233,6 +240,14 @@ export class Session {
     if (adapter.id === this.adapter.id) {
       return;
     }
+    // 引き継ぎの状況説明は**切替前**に組み立てる（前任者の名前と、まだ消えていない
+    // ログから直前の指示を拾う必要がある）。実際に渡すのは次の `open()` で 1 回だけ。
+    this.handoff = handoffInstruction({
+      from: this.adapter.displayName,
+      branch: this.state.branch,
+      task: this.state.prompt,
+      lastInstruction: lastUserInstruction(this.state.messages),
+    });
     // 走っているターンを畳んでからでないと、2 本のストリームが同じ worktree を
     // 触ることになる。保留中の許可も解決しておく（未応答の tool_use で終わる
     // トランスクリプトは後の resume を壊す）。
@@ -543,9 +558,15 @@ export class Session {
         : (this.deps.resume ?? this.state.sdkSessionId);
       // worktree の環境説明（symlink 共有の注意書き）とリポジトリ追加指示をまとめた
       // systemPrompt。どちらも無ければ undefined で、その場合は渡さない。
+      // 引き継ぎの説明は**この 1 回だけ**載せる（切替直後の最初の run）。ここで
+      // 落としておかないと、通信断からの再起動でも「前任者から引き継いだ」と
+      // 言い続けることになる。
+      const handoff = this.handoff;
+      this.handoff = undefined;
       const systemPrompt = composeSystemPrompt({
         ignoredFiles: opts?.ignoredFiles,
         repoPrompt: opts?.appendSystemPrompt,
+        handoff,
       });
       this.run = this.adapter.open({
         cwd: this.state.worktreePath,

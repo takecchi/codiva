@@ -36,6 +36,20 @@ describe('bannerLines', () => {
     expect(rows(bannerLines(m, { sessionCount: 0 }))).toHaveLength(2);
   });
 
+  it('既定のエージェントはモデルと同じ行に並ぶ（行を増やさない）', () => {
+    // 一覧の行のエージェント列は混在時だけ出るので、単一 provider で使っている人が
+    // 「何で動くか」を確かめられるのはここになる。
+    const lines = rows(
+      bannerLines(m, { sessionCount: 0, agent: 'Codex', model: 'gpt-5', cwd: '/tmp/repo' }),
+    );
+    expect(lines[1]).toBe('Agent: Codex   Model: gpt-5');
+    expect(lines).toHaveLength(3);
+  });
+
+  it('エージェント未指定なら出さない', () => {
+    expect(rows(bannerLines(m, { sessionCount: 0 }))[1]).toBe('Model: CLI default');
+  });
+
   it('プラン名はモデルと同じ行に並ぶ（行を増やさない）', () => {
     const lines = rows(
       bannerLines(m, {

@@ -1,7 +1,8 @@
 # エージェント連携規約（Claude Agent SDK）
 
 コーディングエージェントとの境界と、`@anthropic-ai/claude-agent-sdk` を触るときの不変条件。
-**`core/agent-ports.ts` / `core/agent-events.ts` / `core/claude-adapter.ts` / `core/claude-parse.ts` /
+**`core/agent-ports.ts` / `core/agent-events.ts` / `core/agent-capabilities.ts` /
+`core/agent-handoff.ts` / `core/claude-adapter.ts` / `core/claude-parse.ts` /
 `core/claude-errors.ts` / `core/codex-adapter.ts` / `core/codex-parse.ts` / `core/codex-errors.ts` /
 `core/grok-adapter.ts` / `core/grok-parse.ts` / `core/grok-errors.ts` / `core/jsonl.ts` /
 `core/session.ts` / `utils/model-catalog.ts` / `utils/codex.ts` / `utils/grok.ts` /
@@ -30,7 +31,15 @@
   provider 形への写像はアダプタが行う（Claude は `claude-adapter.ts` の `canUseTool`）。
 - その provider に無い機能は `AgentCapabilities` で表明する（`permissions` / `interrupt` /
   `setModel` / `resume` / `modelCatalog` / `usage` / `cost` / `transcript`）。UI は capability を
-  見て縮退する（今つながっているのは `/model` と `Ctrl+C`。残りは Phase D）。
+  見て縮退する。**判定は純粋な `core/agent-capabilities.ts` を通す**（`supportsCapability` /
+  `capabilityLookup` / `agentSupports` / `showsAccountUsage`）。守ること 2 つ:
+  - **capability が分からないときは縮退しない**（未登録の provider・`agent` を持たない古い
+    セッションで機能を隠すと、動くはずの操作が黙って消える）。
+  - **「値が 0 だから自然に消える」に頼らない**。コスト・使用状況・トランスクリプト復元は
+    Claude 由来の仕組みで、他 provider は何も供給しないので今は勝手に消えるが、それは偶然。
+    混在時に「Claude ぶんの合計」を全体として出す余地が残るので明示的な分岐にする
+    （どこで何を縮退させているかの表は docs/ARCHITECTURE.md）。表示を縮退させたら
+    **取得も止める**（出さないゲージのために `claude` の probe を立てない）。
   `AgentRun.interrupt` / `setModel` は
   optional。新しいアダプタは `NO_CAPABILITIES` から始めて、実装できたものだけ true にする。
 
