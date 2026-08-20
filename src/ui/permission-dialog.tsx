@@ -9,6 +9,7 @@ import {
   choiceView,
   DIALOG_CHOICE_MIN_ROWS,
   dialogContentWidth,
+  isSpaceKey,
   type PermissionRequest,
   parseSgrMouse,
   wrapDisplayLines,
@@ -447,7 +448,9 @@ const QuestionDialog: FC<{
         return;
       }
       // Space は複数選択の実選択肢に対してのみトグル（特別項目には効かない）。
-      if (input === ' ' && current.multiSelect && cursor < optionCount) {
+      // 判定は `isSpaceKey`: 日本語 IME がオンだと素の Space は全角スペース（U+3000）で
+      // 届くため、半角だけを見ると Shift+Space でしかチェックが付けられない。
+      if (isSpaceKey(input) && current.multiSelect && cursor < optionCount) {
         const label = current.options[cursor]?.label;
         if (label) {
           setMulti((prev) => {

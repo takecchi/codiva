@@ -4,10 +4,12 @@ import {
   type ConfigToggleId,
   type ConfigToggleRow,
   dialogContentWidth,
+  isSpaceKey,
   parseSgrMouse,
 } from '@/core';
 import { ChoiceRow } from './choice-row';
 import { useMessages } from './i18n-context';
+import { normalizeChord } from './input';
 import { glyph, theme } from './theme';
 
 /**
@@ -32,11 +34,14 @@ export const ConfigSelect: FC<{
   const [cursor, setCursor] = useState(0);
   const active = Math.min(cursor, Math.max(0, rows.length - 1));
 
-  useInput((rawInput, key) => {
+  useInput((rawInput, rawKey) => {
     // モーダルは自分の useInput を持つので、マウスレポートは先頭で握り潰す。
     if (parseSgrMouse(rawInput)) {
       return;
     }
+    // 他の画面と同じく chord を復号する（modifyOtherKeys / CSI-u を送る端末では
+    // Enter や Space が生のエスケープ列で届き、素の比較が外れる）。
+    const { input, key } = normalizeChord(rawInput, rawKey);
     if (key.escape) {
       onClose();
       return;
@@ -53,8 +58,9 @@ export const ConfigSelect: FC<{
       return;
     }
     // Enter と Space のどちらでも切り替えられるようにする（チェックリストの慣習が
-    // 端末によって違うため）。Space は印字キーなので rawInput で見る。
-    if (key.return || rawInput === ' ') {
+    // 端末によって違うため）。Space は印字キーなので `input` を見る（日本語 IME が
+    // オンだと全角スペースで届くため判定は `isSpaceKey`）。
+    if (key.return || isSpaceKey(input)) {
       const row = rows[active];
       if (row) {
         onToggle(row.id);
