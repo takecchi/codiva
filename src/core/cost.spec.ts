@@ -26,6 +26,16 @@ describe('totalCostUsd', () => {
   it('is 0 for an empty list', () => {
     expect(totalCostUsd([])).toBe(0);
   });
+
+  it('金額を報告しない provider のセッションは数えない', () => {
+    // 混在時に「Claude ぶんの合計」を全体のコストとして出さないための明示的な分岐
+    // （0 だから自然に消える、という偶然に頼らない）。
+    const claude = { ...stateWithCost('a', 0.5), agent: 'claude' as const };
+    const codex = { ...stateWithCost('b', 0.5), agent: 'codex' as const };
+    expect(totalCostUsd([claude, codex], (agent) => agent === 'claude')).toBeCloseTo(0.5, 10);
+    // 述語なしは従来どおり全件を数える。
+    expect(totalCostUsd([claude, codex])).toBeCloseTo(1, 10);
+  });
 });
 
 describe('formatUsd', () => {

@@ -63,6 +63,9 @@ codiva/
 │   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（codiva 起点のイベント・純関数）
 │   │   ├── agent-ports.ts     # エージェントの DI 境界（AgentAdapter/AgentRun/AgentCapabilities/PermissionDecision・leaf）
 │   │   ├── agent-events.ts    # AgentEvent の語彙 + applyAgentEvent()（全 provider 共通の畳み込み・純粋）
+│   │   ├── agent-capabilities.ts # capability による UI 縮退の判定（不明なら縮退しない・showsAccountUsage）
+│   │   ├── agent-display.ts   # 「どのセッションが何で走っているか」の判定（sessionAgentId / usesMultipleAgents）
+│   │   ├── agent-handoff.ts   # 切替先へ渡す状況説明（英語固定・systemPrompt に 1 回だけ載る）
 │   │   ├── claude-adapter.ts  # Claude 用 AgentAdapter（query() の組み立て・canUseTool の写像）
 │   │   ├── claude-parse.ts    # parseClaudeMessage()（SDK メッセージ形状の解釈を集約・純粋）
 │   │   ├── claude-errors.ts   # Claude CLI の失敗分類（文言/typed kind/HTTP status → AgentStopCause）
@@ -262,6 +265,20 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
   会話を resume しようとして壊れる）。
 - **ログ行の帰属**（`LogEntry.agent`）は**切替が起きたあとだけ**刻む。単一エージェントで完結する
   セッションのログ行の形を変えないため（切替を使っていないユーザーには何も増えない）。
+  詳細ビューはこの帰属が変わる境界に区切り行（`── ここから Codex ──`）を 1 本挿む
+  （行の挿入は `core/scroll.ts` の `logLines(…, dividerFor)`、文言はカタログ + アダプタの表示名）。
+- **引き継ぎの状況説明を 1 回だけ渡す**（`core/agent-handoff.ts` の `handoffInstruction`）。
+  切替先は前の会話を持たないので、何も渡さないと「途中まで作業された作業ツリー」を白紙から
+  見ることになり、済んだ作業をやり直したり直前の指示を無視したりする。ブランチ・最初の指示・
+  直前の指示を並べ、**続ける前に自分で `git status` / `git diff` を読む**よう促す文を
+  `AgentRunOptions.systemPrompt`（`composeSystemPrompt` の最後の節）に載せる。
+  - **使い捨て**にする（`Session` が次の `open()` で消費する）。常設にすると、引き継ぎが済んだ
+    あとのターンや通信断からの再起動でも「前任者から引き継いだ」と言い続けることになる。
+  - **キューへ指示として積まない**。積むと切替直後に「状況を読むだけのターン」が 1 本走り、
+    provider のプロセスを無駄に立てる（ユーザーが次の指示を出すまで何も起こらないのが正しい）。
+  - 各項目は 1 行に畳んで `MAX_HANDOFF_FIELD_CHARS` で切る（指示文はファイルを丸ごと貼った
+    ものになりうるので、systemPrompt が本文より大きくなるのを防ぐ）。AI 向けの文字列なので
+    i18n カタログには置かない（英語固定。`SHARED_IGNORED_FILES_NOTICE` と同じ扱い）。
 
 ### 5. Claude 専用機能は capability で optional 化する
 
@@ -301,10 +318,37 @@ provider が増えてもビュー側の分岐は増えない（未登録のエ�
 「`claude` でログインし直して」と言わないための配線で、一覧・詳細・デスクトップ通知の 3 経路で効く。
 エージェント名は固有名詞なので翻訳しない（モデル名と同じ i18n の例外）。
 
-> 縮退の配線は Phase D で段階的に入れている。現状効いているのは `/model`（`setModel` /
-> `modelCatalog`）・`Ctrl+C`（`interrupt`）・認証文言（`AgentLabel`）で、使用状況ゲージ・
-> コスト・許可ダイアログ・トランスクリプト復元はまだ capability を見ていない（現状は
-> 実害が出ていないだけ。[TASKS.md](./TASKS.md) の Phase D）。
+縮退の判定は**純粋な `core/agent-capabilities.ts`** に寄せてある（`supportsCapability` /
+`capabilityLookup` / `agentSupports` / `showsAccountUsage`）。要点は 2 つ:
+
+- **capability が分からないときは縮退しない**（`supportsCapability(undefined, …) === true`）。
+  未登録の provider・`agent` を持たない古いセッションで機能を隠すと、動くはずの操作が黙って
+  消える。既存の `caps && !caps.setModel` と同じ規約。
+- **「数字が 0 だから自然に消える」に頼らない**。Codex / Grok は USD を運ばないのでヘッダの
+  合計コストは今のところ勝手に消えるが、それは偶然であって、混在時に「Claude ぶんの合計」を
+  全体のコストとして出す余地が残る。`AgentCapabilities` を見た明示的な分岐に置き換える。
+
+| 縮退する対象 | capability | 見る場所 | 縮退の形 |
+|---|---|---|---|
+| `/model` のダイアログ | `setModel` / `modelCatalog` | `ui/session-detail.tsx` | 開かずに理由を出す・選択肢を provider 別に出し分け |
+| `Ctrl+C` のヒント | `interrupt` | `ui/session-detail.tsx` | ヒント行を出さない |
+| 合計コスト（ヘッダ） | `cost` | `core/cost.ts` の `totalCostUsd(states, reportsCost)` | 報告しない provider のセッションを合計に数えない |
+| 使用状況ゲージ（ヘッダ） | `usage` | `showsAccountUsage`（一覧の表示 + `bootstrap/usage-poller.ts` の `enabled`） | 使っていなければ**出さないし取りにも行かない**（5 分ごとの probe を立てない） |
+| 確認モードのフッタ表示 | `permissions` | `ui/status-footer.tsx` の `confirmSupported` | `確認モード (非対応)` に差し替える（下記） |
+| トランスクリプト復元 | `transcript` | `bootstrap/restore-sessions.ts` | その provider のセッションでは読みにも行かない |
+| 認証切れの文言 | —（`AgentLabel`） | 一覧・詳細・通知 | 駆動中の provider のコマンド名を出す |
+
+**確認モードの表示を capability で変える理由**: `permissions: false` の provider（Codex）では
+許可ダイアログが原理的に出ない。それでもフッタが `確認モード` と言い切っていたので、
+「待っていれば聞かれる」と読めてしまっていた（ツールは確認なしに実行される）。ダイアログを
+偽装しないのと同じ理由で、**モード表示の側を正直にする**。
+
+**使用状況ゲージを消す判定**（`showsAccountUsage`）は「新規セッションの既定エージェント、または
+`archived` でないセッションのどれかが `usage` を報告する」。ゲージが表しているのは
+その provider のアカウントの消費で、Codex / Grok だけで作業している人には読みようがない
+（`archived` を数えないのは、乗り換えた人のヘッダにマージ済みのセッション 1 件で残り続けるのを
+避けるため）。**表示と取得は同じ純関数を通す**ので、出していないゲージのために
+`claude` のサブプロセスが立つことはない。
 
 ### 6. Codex アダプタ: 1 ターン = 1 プロセス
 

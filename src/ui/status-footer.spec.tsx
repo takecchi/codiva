@@ -27,6 +27,16 @@ describe('StatusFooter', () => {
     expect(lastFrame()).toContain('確認モード');
   });
 
+  it('許可要求を上げられないエージェントでは確認モードを言い切らない', () => {
+    // Codex セッションでは確認ダイアログが原理的に出ない（`permissions: false`）。
+    // `confirm mode on` のまま出すと「待っていれば聞かれる」と読めてしまう。
+    const { lastFrame } = renderFooter({ mode: 'confirm', confirmSupported: false });
+    expect(lastFrame()).toContain('confirm mode (n/a)');
+    // 自動モードは capability に関係なく従来どおり（自動実行は嘘にならない）。
+    const auto = renderFooter({ mode: 'auto', confirmSupported: false });
+    expect(auto.lastFrame()).toContain('auto mode on');
+  });
+
   it('画面固有のヒントをモード行の後ろに繋げる', () => {
     const { lastFrame } = renderFooter({ mode: 'auto', hint: 'Tab: list' });
     expect(lastFrame()).toContain('Tab: list');

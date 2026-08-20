@@ -2,7 +2,7 @@ import stringWidth from 'string-width';
 import { GRAPHEMES } from './graphemes';
 import { type RichLine, type RichSpan, renderMarkdown } from './markdown';
 import { clamp } from './math';
-import type { LogEntry, LogKind } from './types';
+import type { AgentId, LogEntry, LogKind } from './types';
 import { detectUrls, type LinkRange, linksInSlice, mergeLinks, spanLinks } from './url';
 
 /**
@@ -334,15 +334,32 @@ export function clearLogLinesCache(): void {
  * Memoized per entry (see {@link ENTRY_ROWS}) — the output is the same value the
  * unmemoized version produced, but appending a line only costs that one line.
  * Rows must therefore be treated as read-only by callers.
+ *
+ * `dividerFor` を渡すと、`LogEntry.agent` が変わる境界に 1 行の区切りを挿む
+ * （`/agent` でエージェントを切り替えたセッションで「どこからが誰の発言か」を出す）。
+ * 文言は UI が持つ（カタログ + アダプタの表示名）ので、ここは行を差し込むだけ。
  */
 export function logLines(
   messages: readonly LogEntry[],
   width: number,
   prefixFor: (kind: LogKind) => string,
+  dividerFor?: (agent: AgentId) => string,
 ): DisplayLine[] {
   currentPass += 1;
   const out: DisplayLine[] = [];
+  // 直前の行を出したエージェント。`LogEntry.agent` は**切替が起きたあとだけ**入るので、
+  // undefined → 'codex' の 1 回目も境界として拾える（切替を使っていないセッションでは
+  // 全行 undefined = 区切りは 1 本も出ない）。
+  let spoken: AgentId | undefined;
   for (const entry of messages) {
+    if (dividerFor && entry.agent !== undefined && entry.agent !== spoken) {
+      // 区切りはメモ化しない（1 行・境界の数だけ）。text は切替のたびに 1 種類しか
+      // 増えないので、Ink の測定キャッシュにも溜まらない。
+      out.push({ key: `${entry.seq}:agent`, kind: 'system', text: dividerFor(entry.agent) });
+    }
+    if (entry.agent !== undefined) {
+      spoken = entry.agent;
+    }
     // Appended one at a time on purpose: `push(...rows)` passes every row as an
     // argument, which overflows the stack for an entry that wrapped into tens of
     // thousands of rows (a narrow terminal + a pasted file).

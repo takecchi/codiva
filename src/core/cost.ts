@@ -1,4 +1,4 @@
-import type { SessionState } from './types';
+import type { AgentId, SessionState } from './types';
 
 /**
  * Running cost helpers. Each session's `totalCostUsd` is the SDK's cumulative
@@ -6,9 +6,22 @@ import type { SessionState } from './types';
  * these derive the run-wide total and a display string. Pure — no I/O.
  */
 
-/** Sum of every session's cost. Archived sessions are included — money was still spent. */
-export function totalCostUsd(states: SessionState[]): number {
-  return states.reduce((sum, s) => sum + (s.totalCostUsd ?? 0), 0);
+/**
+ * Sum of every session's cost. Archived sessions are included — money was still spent.
+ *
+ * `reportsCost` は「その provider が金額を報告するか」（`AgentCapabilities.cost`）を
+ * 渡す口。持たない provider のセッションは**合計に数えない** — 数字が 0 だから自然に
+ * 消える、という偶然に頼っていると、Claude と Codex を混ぜたときに「Claude ぶんの
+ * 合計」を全体のコストとして出してしまう（省略時は全件を数える = 従来の挙動）。
+ */
+export function totalCostUsd(
+  states: SessionState[],
+  reportsCost?: (agent: AgentId | undefined) => boolean,
+): number {
+  return states.reduce(
+    (sum, s) => (reportsCost && !reportsCost(s.agent) ? sum : sum + (s.totalCostUsd ?? 0)),
+    0,
+  );
 }
 
 /**

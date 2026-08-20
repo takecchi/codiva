@@ -937,6 +937,7 @@ describe('Session.setAgent', () => {
   function recorder(id: AgentId) {
     const seen: string[] = [];
     const resumes: (string | undefined)[] = [];
+    const systemPrompts: (string | undefined)[] = [];
     const adapter: AgentAdapter = {
       id,
       displayName: id,
@@ -944,6 +945,7 @@ describe('Session.setAgent', () => {
       capabilities: NO_CAPABILITIES,
       open(request: AgentRunRequest) {
         resumes.push(request.resume);
+        systemPrompts.push(request.options.systemPrompt);
         return {
           async *[Symbol.asyncIterator]() {
             for await (const text of request.prompt) {
@@ -955,7 +957,7 @@ describe('Session.setAgent', () => {
         };
       },
     };
-    return { adapter, seen, resumes };
+    return { adapter, seen, resumes, systemPrompts };
   }
 
   it('routes the next instruction to the new agent, not the old one', async () => {
@@ -974,6 +976,32 @@ describe('Session.setAgent', () => {
     expect(b.seen).toEqual(['now you']);
     expect(a.seen).toEqual(['do the thing']);
     expect(session.getState().agent).toBe('codex');
+  });
+
+  it('hands the new agent a handover briefing on the first run only', async () => {
+    // 切替先は前の会話を持たない（各 CLI が自分のトランスクリプトを持つ）ので、
+    // worktree の状況を systemPrompt で 1 回だけ渡す（`core/agent-handoff.ts`）。
+    const a = recorder('claude');
+    const b = recorder('codex');
+    const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+    // 切替前は引き継ぎの説明を渡さない。
+    expect(a.systemPrompts).toEqual([undefined]);
+
+    session.setAgent(b.adapter);
+    session.send('now you');
+    await tick();
+
+    const briefing = b.systemPrompts[0];
+    expect(briefing).toContain('taking over this session from claude');
+    expect(briefing).toContain('- Branch: codiva/t');
+    expect(briefing).toContain('- Original task: do the thing');
+
+    // 2 回目のターン（同じエージェント）には持ち越さない — 引き継ぎは済んでいる。
+    session.send('and this');
+    await tick();
+    expect(b.systemPrompts.slice(1).every((p) => p === undefined)).toBe(true);
   });
 
   it('resumes the previous conversation when switching back', async () => {

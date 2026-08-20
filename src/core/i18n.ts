@@ -76,7 +76,12 @@ export interface Messages {
     changesTitle: (branch: string) => string;
     noCommittedChanges: string;
     uncommitted: (n: number) => string;
-    followupPlaceholder: string;
+    /**
+     * 追加指示の入力欄プレースホルダ（agent = このセッションを駆動しているエージェントの
+     * 表示名）。詳細ビューはステータスヘッダを持たないので、「何で走っているか」を
+     * 1 行も増やさずに出せる場所がここ。
+     */
+    followupPlaceholder: (agent: string) => string;
     scrollHint: (newerBelow: number) => string;
     actionsTitle: string;
     mergeAction: string;
@@ -227,6 +232,11 @@ export interface Messages {
     unsupported: (name: string) => string;
     /** `/agent` の行で `l` を押すとログインできる、のヒント */
     loginKey: string;
+    /**
+     * 会話ログの中の切替の区切り行（name は以降を担当するエージェントの表示名）。
+     * どこからが別のエージェントの発言かを 1 行で示す。
+     */
+    logDivider: (name: string) => string;
   };
   /** TUI 内ログイン（login-dialog.tsx。`/login` と `/agent` の `l` で開く） */
   login: {
@@ -345,6 +355,11 @@ export interface Messages {
   banner: {
     /** 使用中モデルの表示（設定 model。未設定は CLI 既定）。プラン表示と同じ行に並ぶ。 */
     model: (name: string) => string;
+    /**
+     * 新規セッションを動かすエージェントの表示（`/agent` の既定）。名前はアダプタ由来の
+     * 固有名詞なのでそのまま差し込む（モデル名と同じ扱い）。
+     */
+    agent: (name: string) => string;
     /** model 未設定時に表示するプレースホルダ（CLI 既定）。 */
     defaultModel: string;
     /**
@@ -432,6 +447,12 @@ export interface Messages {
   footer: {
     autoMode: string;
     confirmMode: string;
+    /**
+     * 確認モードだが、駆動中のエージェントが許可要求を上げられない
+     * （`AgentCapabilities.permissions === false`）ときのモード表示。ツールは
+     * 確認なしで実行されるので、`confirmMode` のまま出すと嘘になる。
+     */
+    confirmModeUnsupported: string;
     cycleHint: string;
   };
   /** スラッシュコマンド（commands.ts / command-palette.tsx） */
@@ -563,7 +584,7 @@ const ja: Messages = {
     changesTitle: (branch) => `変更（${branch} vs ベース）:`,
     noCommittedChanges: '（コミット済みの変更なし）',
     uncommitted: (n) => `未コミット ${n} 件`,
-    followupPlaceholder: '追加の指示を入力…',
+    followupPlaceholder: (agent) => `${agent} に追加の指示を入力…`,
     scrollHint: (n) => `▲ 過去ログを表示中 — 最新まで ${n} 行（↓/PgDn で下へ）`,
     actionsTitle: '操作',
     mergeAction: 'マージ（--no-ff）',
@@ -651,6 +672,7 @@ const ja: Messages = {
     unavailable: 'エージェントを切り替えられませんでした',
     unsupported: (name) => `${name} はこの操作に対応していません`,
     loginKey: 'l: ログイン',
+    logDivider: (name) => `── ここから ${name} ──`,
   },
   login: {
     title: (name) => `${name} にサインイン`,
@@ -733,6 +755,7 @@ const ja: Messages = {
   },
   banner: {
     model: (name) => `モデル: ${name}`,
+    agent: (name) => `エージェント: ${name}`,
     defaultModel: 'CLI 既定',
     plan: (plan, organization) =>
       organization ? `プラン: ${plan} (${organization})` : `プラン: ${plan}`,
@@ -781,6 +804,7 @@ const ja: Messages = {
   footer: {
     autoMode: '自動モード',
     confirmMode: '確認モード',
+    confirmModeUnsupported: '確認モード (非対応)',
     cycleHint: '(shift+tab で切替)',
   },
   command: {
@@ -864,7 +888,7 @@ const en: Messages = {
     changesTitle: (branch) => `Changes (${branch} vs base):`,
     noCommittedChanges: '(no committed changes)',
     uncommitted: (n) => `${n} uncommitted change${n === 1 ? '' : 's'}`,
-    followupPlaceholder: 'Enter a follow-up instruction…',
+    followupPlaceholder: (agent) => `Enter a follow-up instruction for ${agent}…`,
     scrollHint: (n) => `▲ Viewing older log — ${n} newer lines below (↓/PgDn to go down)`,
     actionsTitle: 'Actions',
     mergeAction: 'Merge (--no-ff)',
@@ -948,6 +972,7 @@ const en: Messages = {
     unavailable: 'Could not switch the agent',
     unsupported: (name) => `${name} does not support this`,
     loginKey: 'l: sign in',
+    logDivider: (name) => `── ${name} from here ──`,
   },
   login: {
     title: (name) => `Sign in to ${name}`,
@@ -1031,6 +1056,7 @@ const en: Messages = {
   },
   banner: {
     model: (name) => `Model: ${name}`,
+    agent: (name) => `Agent: ${name}`,
     defaultModel: 'CLI default',
     plan: (plan, organization) =>
       organization ? `Plan: ${plan} (${organization})` : `Plan: ${plan}`,
@@ -1075,6 +1101,7 @@ const en: Messages = {
   footer: {
     autoMode: 'auto mode on',
     confirmMode: 'confirm mode on',
+    confirmModeUnsupported: 'confirm mode (n/a)',
     cycleHint: '(shift+tab to cycle)',
   },
   command: {

@@ -1,5 +1,5 @@
 import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useEffect, useMemo, useRef, useState } from 'react';
+import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type AgentId,
   ARROW_SCROLL_LINES,
@@ -212,6 +212,17 @@ export const SessionDetail: FC<{
     command: a.loginCommand,
     availability: agentAvailability.get(a.id),
   }));
+  // 表示名は provider ごとの固有名詞なのでアダプタから引く（カタログには置かない）。
+  const agentNames = useMemo(
+    () => new Map(manager.listAgents().map((a) => [a.id, a.displayName])),
+    [manager],
+  );
+  // 会話ログの中の切替の区切り行。`logLines` のメモ化の依存に入るので、毎描画で
+  // 作り直さないよう useCallback で固定する（作り直すと全行を再展開してしまう）。
+  const agentDivider = useCallback(
+    (agentId: AgentId) => m.agent.logDivider(agentNames.get(agentId) ?? agentId),
+    [m, agentNames],
+  );
   // 進行中のターンがあるか（= Ctrl+C で中断できるか）。許可/質問待ちも対象
   // （ターンは生きていて回答待ちで止まっているだけ）。中断を持たない provider では
   // そもそも出さない。
@@ -360,8 +371,8 @@ export const SessionDetail: FC<{
     ? Math.max(1, Math.floor(measuredLogRows ?? logViewportRows(rows)))
     : Math.max(1, rows);
   const entryRows = useMemo<DisplayLine[]>(
-    () => (messages ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind]) : []),
-    [messages, logWidth],
+    () => (messages ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind], agentDivider) : []),
+    [messages, logWidth, agentDivider],
   );
   // ストリーミング中の本文。**ログの末尾の行として**描くので、返ってきたぶんだけ
   // 下へ伸びていき、末尾にいなければ（アンカーが数値なら）視界は動かない。
@@ -1008,11 +1019,21 @@ export const SessionDetail: FC<{
                 maxRows={paletteMaxRows(rows, 'detail')}
               />
             ) : null}
-            <Composer composer={composer} focused placeholder={m.detail.followupPlaceholder} />
+            <Composer
+              composer={composer}
+              focused
+              placeholder={m.detail.followupPlaceholder(agentLabelOf(agent).name)}
+            />
           </Box>
         )}
 
-        <StatusFooter mode={mode} hint={footerHint} />
+        {/* 許可要求を上げられない provider（Codex）では「確認モード」を言い切らない —
+            ツールは確認なしに実行されるので、待っていれば聞かれると読めてしまう。 */}
+        <StatusFooter
+          mode={mode}
+          hint={footerHint}
+          confirmSupported={caps?.permissions !== false}
+        />
       </Box>
     </Box>
   );
