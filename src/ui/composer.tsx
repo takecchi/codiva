@@ -81,6 +81,12 @@ export interface ComposerController {
   maxRows: number;
   /** 実測した折り返し幅（未計測なら undefined = 折り返さない）。 */
   wrapWidth: number | undefined;
+  /**
+   * この入力欄が実際に描く行数（内部スクロールの窓 + 上下の罫線）。当たり判定の
+   * 「縦に潰れていないか」検算に使うほか、**入力欄を内側に持つダイアログ**が自分の
+   * 縦幅を見積るのに使う（`ui/permission-dialog.tsx` の選択肢ブロックの予算）。
+   */
+  drawnRows: number;
   /** 現在のハイライト範囲（ドラッグ選択）。 */
   selection: SelectionRange | undefined;
   /** ドラッグ中か（press と release のあいだ）。 */
@@ -221,6 +227,7 @@ export function useComposer(opts: ComposerOptions = {}): ComposerController {
     boxRef,
     maxRows,
     wrapWidth,
+    drawnRows,
     selection: sel.selection,
     dragging: sel.dragging,
     clearSelection: () => {

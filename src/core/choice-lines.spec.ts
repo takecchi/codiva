@@ -5,6 +5,7 @@ import {
   choiceIndexAtRow,
   choiceLines,
   choiceRowHeights,
+  choiceView,
 } from './choice-lines';
 
 describe('choiceLines', () => {
@@ -106,5 +107,141 @@ describe('choiceRowHeights / choiceIndexAtRow', () => {
 
   it('returns undefined for an empty list', () => {
     expect(choiceIndexAtRow([], 0)).toBeUndefined();
+  });
+});
+
+describe('choiceView', () => {
+  // 質問ダイアログの実物に近い形: 選択肢 4 件（ラベル1 + 説明1）+ 「自分で入力する」1 行。
+  const heights = [2, 2, 2, 2, 1];
+
+  it('shows every choice when the rows fit', () => {
+    expect(choiceView(heights, 0, 9)).toEqual({
+      start: 0,
+      end: 5,
+      hiddenAbove: 0,
+      hiddenBelow: 0,
+      showAbove: false,
+      showBelow: false,
+    });
+  });
+
+  it('returns an empty window for an empty list', () => {
+    expect(choiceView([], 0, 5)).toEqual({
+      start: 0,
+      end: 0,
+      hiddenAbove: 0,
+      hiddenBelow: 0,
+      showAbove: false,
+      showBelow: false,
+    });
+  });
+
+  // 端ごとにインジケータ 1 行を予約するので、描画行数（選択肢 + インジケータ）は cap 以下。
+  const cases: {
+    name: string;
+    cursor: number;
+    cap: number;
+    want: ReturnType<typeof choiceView>;
+  }[] = [
+    {
+      name: 'カーソルが先頭: 下へ隠す',
+      cursor: 0,
+      cap: 4,
+      want: {
+        start: 0,
+        end: 1,
+        hiddenAbove: 0,
+        hiddenBelow: 4,
+        showAbove: false,
+        showBelow: true,
+      },
+    },
+    {
+      name: 'カーソルが末尾: 上へ隠す',
+      cursor: 4,
+      cap: 4,
+      want: {
+        start: 3,
+        end: 5,
+        hiddenAbove: 3,
+        hiddenBelow: 0,
+        showAbove: true,
+        showBelow: false,
+      },
+    },
+    {
+      name: 'カーソルが途中: 両端に隠れる',
+      cursor: 2,
+      cap: 5,
+      want: {
+        start: 2,
+        end: 3,
+        hiddenAbove: 2,
+        hiddenBelow: 2,
+        showAbove: true,
+        showBelow: true,
+      },
+    },
+    {
+      // 「これについて相談する」を選んでいるあいだ（cursor はこのリストの範囲外）は
+      // 末尾に張り付ける。範囲外の cursor で窓が飛ばないことの番人。
+      name: 'カーソルが範囲外: 末尾に丸める',
+      cursor: 99,
+      cap: 4,
+      want: {
+        start: 3,
+        end: 5,
+        hiddenAbove: 3,
+        hiddenBelow: 0,
+        showAbove: true,
+        showBelow: false,
+      },
+    },
+  ];
+  it.each(cases)('$name', ({ cursor, cap, want }) => {
+    const view = choiceView(heights, cursor, cap);
+    expect(view).toEqual(want);
+    // カーソルの件は必ず窓の中（範囲外なら末尾）。
+    const sel = Math.min(cursor, heights.length - 1);
+    expect(sel).toBeGreaterThanOrEqual(view.start);
+    expect(sel).toBeLessThan(view.end);
+    // 描画行数（選択肢 + インジケータ）が cap を超えない = ログの席を奪わない。
+    const drawn =
+      heights.slice(view.start, view.end).reduce((sum, rows) => sum + rows, 0) +
+      (view.showAbove ? 1 : 0) +
+      (view.showBelow ? 1 : 0);
+    expect(drawn).toBeLessThanOrEqual(cap);
+  });
+
+  // ↓ でカーソルを送ると窓がついてくる（下端アンカー = `listView` と同じ挙動）。
+  it('scrolls as the cursor moves down', () => {
+    const seen = [0, 1, 2, 3, 4].map((cursor) => choiceView(heights, cursor, 4));
+    for (const [cursor, view] of seen.entries()) {
+      expect(cursor).toBeGreaterThanOrEqual(view.start);
+      expect(cursor).toBeLessThan(view.end);
+    }
+    // 単調に下へ送られる（同じ窓に留まる回もあるが戻らない）。
+    for (let i = 1; i < seen.length; i += 1) {
+      expect(seen[i]?.start ?? 0).toBeGreaterThanOrEqual(seen[i - 1]?.start ?? 0);
+    }
+  });
+
+  /**
+   * 1 件が可視域より高いときは**上限を超えてもその件を出す**（選んでいるものが見えないと
+   * 何を決めるのか分からない）。`paletteMaxRows` の下限と同じ「最低限は必ず見せる」方針。
+   */
+  it('keeps the cursor choice even when it is taller than the cap', () => {
+    expect(choiceView([5, 1], 0, 2)).toEqual({
+      start: 0,
+      end: 1,
+      hiddenAbove: 0,
+      hiddenBelow: 1,
+      showAbove: false,
+      showBelow: true,
+    });
+  });
+
+  it('treats a cap below 1 as 1 row', () => {
+    expect(choiceView([1, 1, 1], 0, 0).end).toBe(1);
   });
 });

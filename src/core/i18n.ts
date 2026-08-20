@@ -165,6 +165,12 @@ export interface Messages {
      * （composer → dialog → list）をもう一周させる。
      */
     inactiveHelp: string;
+    /**
+     * 選択肢がダイアログの高さ上限に収まらないとき、上/下に隠れている件数
+     * （`core/choice-lines.ts` の `choiceView`）。↑↓ で送るとスクロールする。
+     */
+    moreAbove: (n: number) => string;
+    moreBelow: (n: number) => string;
   };
   /** モデル選択ダイアログ（model-select.tsx。/model コマンドで開く） */
   model: {
@@ -613,6 +619,8 @@ const ja: Messages = {
     chatAboutThis: 'これについて相談する',
     chatMessage: 'ユーザーは選択肢を選ばず、この件について会話で相談することを選びました。',
     inactiveHelp: '↑↓: セッション切替 ・ クリックで回答へ ・ Tab: 入力へ',
+    moreAbove: (n) => `↑ 他 ${n} 件`,
+    moreBelow: (n) => `↓ 他 ${n} 件`,
   },
   // モデル名・説明文はここに持たない。Claude Code のカタログ（英語）をそのまま
   // 出すのが唯一の出所という設計判断（core/models.ts 参照）。翻訳するとモデル追加
@@ -912,6 +920,8 @@ const en: Messages = {
     chatAboutThis: 'Chat about this',
     chatMessage: 'The user chose to chat about this instead of picking an option.',
     inactiveHelp: '↑↓: switch sessions · click to answer · Tab: input',
+    moreAbove: (n) => `↑ ${n} more`,
+    moreBelow: (n) => `↓ ${n} more`,
   },
   model: {
     title: 'Select model',

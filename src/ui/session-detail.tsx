@@ -8,6 +8,7 @@ import {
   composerRowCount,
   type DiffStat,
   type DisplayLine,
+  dialogMaxRows,
   isFullscreenViewport,
   isInterruptible,
   isResumable,
@@ -963,6 +964,10 @@ export const SessionDetail: FC<{
             onAllow={() => manager.allow(session.id)}
             onDeny={(message) => manager.deny(session.id, message)}
             onCopy={onCopy}
+            // 選択肢が多くても会話ログの席を残す（溢れはダイアログ側の内部スクロールへ）。
+            // これが無いと 24 行の端末ではログの可視行が 0 になり、`Tab: ログを遡る` に
+            // 切り替えても質問の背景を読めなかった（`core/layout.ts` の `dialogMaxRows`）。
+            maxRows={dialogMaxRows(rows, 'detail')}
           />
         ) : panel === 'actions' ? (
           <DialogBox flexDirection="column">
