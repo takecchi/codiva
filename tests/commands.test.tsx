@@ -12,6 +12,7 @@ import {
   makeManager,
   noopSession,
   renderFullscreen,
+  settle,
   stripAnsi,
 } from './helpers';
 
@@ -224,9 +225,11 @@ describe('slash commands', () => {
       100,
     );
     stdin.write('/prompt');
-    await flush();
+    await settle(lastFrame);
     stdin.write('\r');
-    await flush();
+    // 座標をフレームから割り出す前は**描画が止まるまで**待つ（固定 flush では、まだ
+    // 描き変わる余地があるうちに押して別の行に当たる。helpers.ts の `settle` の注記）。
+    await settle(lastFrame);
 
     const lines = stripAnsi(lastFrame()).split('\n');
     // 6 行すべてが順番どおり描かれている（縮小で抜けていない）。
@@ -236,11 +239,11 @@ describe('slash commands', () => {
     const row = lines.findIndex((l) => l.includes('ccc2'));
     const col = (lines[row] ?? '').indexOf('ccc2');
     stdin.write(`\x1b[<0;${col + 1};${row + 1}M`);
-    await flush();
+    await settle(lastFrame);
     stdin.write(`\x1b[<32;${col + 5};${row + 1}M`);
-    await flush();
+    await settle(lastFrame);
     stdin.write(`\x1b[<0;${col + 5};${row + 1}m`);
-    await flush();
+    await settle(lastFrame);
 
     expect(copied).toEqual(['ccc2']);
     app.unmount();

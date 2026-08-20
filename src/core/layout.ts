@@ -158,6 +158,40 @@ export function paletteMaxRows(rows: number, view: 'list' | 'help' | 'detail'): 
   return Math.max(PALETTE_MIN_ROWS, rows - reserved);
 }
 
+/** 入力欄（`ui/prompt-input.tsx`）が最小構成で使う縦幅: 上下の罫線 2 + 1 行。 */
+export const COMPOSER_ROWS = 3;
+
+/**
+ * 許可/質問ダイアログが出ているあいだ、その下に**必ず残す**行数（詳細ビューは会話ログ、
+ * 一覧ビューはセッション行）。
+ *
+ * ダイアログはログの兄弟で `flexShrink={0}` なので、縦に伸びたぶんは `flexGrow` の
+ * ログ領域から丸ごと奪われる。実測（幅 100 桁・選択肢 4 件 + 説明）で 24 行の端末では
+ * **ログの可視行が 0** になり、`Tab: ログを遡る` に切り替えても何も見えなかった
+ * （= 質問の背景を読めないまま答えることになる）。ここで席を確保して、溢れるぶんは
+ * ダイアログ側の内部スクロール（`core/choice-lines.ts` の `choiceView`）に押し出す。
+ */
+export const DIALOG_CONTENT_RESERVE = 5;
+
+/** ダイアログに必ず与える縦幅（見出し + 質問 + 選択肢数行 + 相談する + ヒント + 枠）。 */
+export const DIALOG_MIN_ROWS = 12;
+
+/** ダイアログの選択肢ブロックに必ず残す行数（カーソルの件が見えなくならないように）。 */
+export const DIALOG_CHOICE_MIN_ROWS = 3;
+
+/**
+ * 許可/質問ダイアログ（`ui/permission-dialog.tsx`）が使ってよい縦幅（**枠線を含む**）を
+ * 端末高から求める純関数。`paletteMaxRows` と同じ考え方で、下に残す領域
+ * （{@link DIALOG_CONTENT_RESERVE}）を先に取り分ける。
+ *
+ * ダイアログは入力欄の位置に出る（入力欄は消える）ので、確保済み chrome から
+ * その 3 行（{@link COMPOSER_ROWS}）を戻して数える。
+ */
+export function dialogMaxRows(rows: number, view: 'list' | 'detail'): number {
+  const chrome = view === 'detail' ? DETAIL_CHROME_ROWS : LIST_CHROME_ROWS;
+  return Math.max(DIALOG_MIN_ROWS, rows - (chrome - COMPOSER_ROWS) - DIALOG_CONTENT_RESERVE);
+}
+
 /**
  * セッション一覧を高さ `cap` 行のウィンドウに収めるための表示範囲。
  * 一覧がヘッダ/フッタの間で内部スクロールするときに使う純粋な計算。

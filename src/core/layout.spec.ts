@@ -3,9 +3,13 @@ import { COMMANDS } from './commands';
 import {
   BANNER_ROWS,
   bannerGaugeWidth,
+  COMPOSER_ROWS,
   DETAIL_CHROME_ROWS,
   DIALOG_CHROME_COLUMNS,
+  DIALOG_CONTENT_RESERVE,
+  DIALOG_MIN_ROWS,
   dialogContentWidth,
+  dialogMaxRows,
   isFullscreenViewport,
   LIST_CHROME_ROWS,
   listView,
@@ -254,6 +258,45 @@ describe('paletteMaxRows', () => {
     for (const view of ['list', 'help', 'detail'] as const) {
       expect(paletteMaxRows(0, view)).toBe(PALETTE_MIN_ROWS);
       expect(paletteMaxRows(10, view)).toBeGreaterThanOrEqual(PALETTE_MIN_ROWS);
+    }
+  });
+});
+
+describe('dialogMaxRows', () => {
+  // ダイアログは入力欄の位置に出る（入力欄は消える）ので、その 3 行は戻して数える。
+  it('subtracts the view chrome and the reserved content rows', () => {
+    expect(dialogMaxRows(40, 'detail')).toBe(
+      40 - (DETAIL_CHROME_ROWS - COMPOSER_ROWS) - DIALOG_CONTENT_RESERVE,
+    );
+    expect(dialogMaxRows(40, 'list')).toBe(
+      40 - (LIST_CHROME_ROWS - COMPOSER_ROWS) - DIALOG_CONTENT_RESERVE,
+    );
+  });
+
+  /**
+   * これが本題: 質問ダイアログが伸びてもログ（詳細）／セッション行（一覧）の席が
+   * 残ること。実測では 24 行の端末でログの可視行が 0 になっていた。
+   */
+  it('leaves room for the log below the dialog on a 24-row terminal', () => {
+    const detailChromeWithDialog = DETAIL_CHROME_ROWS - COMPOSER_ROWS;
+    expect(24 - detailChromeWithDialog - dialogMaxRows(24, 'detail')).toBeGreaterThanOrEqual(
+      DIALOG_CONTENT_RESERVE,
+    );
+  });
+
+  it('never returns less than the minimum rows', () => {
+    for (const view of ['list', 'detail'] as const) {
+      expect(dialogMaxRows(0, view)).toBe(DIALOG_MIN_ROWS);
+      expect(dialogMaxRows(16, view)).toBeGreaterThanOrEqual(DIALOG_MIN_ROWS);
+    }
+  });
+
+  it('grows monotonically with the terminal height', () => {
+    let prev = 0;
+    for (let rows = 0; rows <= 80; rows += 1) {
+      const max = dialogMaxRows(rows, 'detail');
+      expect(max).toBeGreaterThanOrEqual(prev);
+      prev = max;
     }
   });
 });

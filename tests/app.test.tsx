@@ -6,6 +6,7 @@ import { type AgentAdapter, type AgentLoginProcess, NO_CAPABILITIES } from '@/co
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/claude-adapter';
 import { DEFAULT_AGENT_LABEL, messages } from '@/core/i18n';
+import { DIALOG_CONTENT_RESERVE } from '@/core/layout';
 import { PR_POLL_STABLE_MS } from '@/core/pr-refresh';
 import { SessionManager } from '@/core/session-manager';
 import type { PrLookup, WorktreeService } from '@/core/session-ports';
@@ -937,6 +938,106 @@ describe('App end-to-end (real Session, driven query)', () => {
     await flush();
     await expect(decision).resolves.toMatchObject({
       updatedInput: { answers: { '進めますか?': 'はい' } },
+    });
+    app.unmount();
+  });
+
+  /**
+   * 質問ダイアログはログの**兄弟**で `flexShrink={0}` なので、選択肢の数だけ縦に伸びると
+   * `flexGrow` のログ領域から席を奪う。実測（幅 100 桁・選択肢 4 件 + 説明）で 24 行の
+   * 端末ではログの可視行が **0** になり、`Tab: ログを遡る` に切り替えても質問の背景を
+   * 読めなかった。上限（`dialogMaxRows`）を超えるぶんは選択肢の内部スクロール
+   * （`choiceView`）へ押し出し、ログの席を必ず残す。
+   */
+  it('低い端末でも Ask がログを潰さず、選択肢が内部スクロールする', async () => {
+    const out = new AsyncQueue<SDKMessage>();
+    const captured: Options[] = [];
+    const queryFn = ((params: { options: Options }) => {
+      captured.push(params.options);
+      const gen = (async function* () {
+        yield* out;
+      })() as unknown as Query & { interrupt: () => Promise<void> };
+      gen.interrupt = async () => {};
+      return gen;
+    }) as unknown as QueryFn;
+
+    const manager = new SessionManager({ worktrees, queryFn, now: () => 0 });
+    // 24 行 = よくある端末の下限（ここが壊れていた）。
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 100);
+    stdin.write('start');
+    await settle(lastFrame);
+    stdin.write('\r');
+    await settle(lastFrame);
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-ask-cap' }));
+    for (let i = 0; i < 30; i++) {
+      out.push(
+        asMsg({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `log-${String(i).padStart(2, '0')}` }] },
+        }),
+      );
+    }
+    await settle(lastFrame);
+    stdin.write('\t'); // focus the list
+    await settle(lastFrame);
+    stdin.write('\r'); // open the detail view
+    await settle(lastFrame);
+
+    const ctx = { signal: new AbortController().signal } as unknown as Parameters<
+      NonNullable<Options['canUseTool']>
+    >[2];
+    const decision = captured[0]?.canUseTool?.(
+      'AskUserQuestion',
+      {
+        questions: [
+          {
+            question: 'どの方針で進めますか?',
+            header: '方針',
+            options: [
+              { label: '案A', description: 'A で進める' },
+              { label: '案B', description: 'B で進める' },
+              { label: '案C', description: 'C で進める' },
+              { label: '案D', description: 'D で進める' },
+            ],
+          },
+        ],
+      },
+      ctx,
+    );
+    await settle(lastFrame);
+
+    // ログの可視行が残っている（ダイアログは上限まで、溢れは選択肢のスクロールへ）。
+    // 質問そのものも 1 行のログ（`AskUserQuestion: …`）として並ぶので、それも数える。
+    const logRows = () => [...stripAnsi(lastFrame()).matchAll(/log-\d+|AskUserQuestion/g)].length;
+    expect(logRows()).toBeGreaterThanOrEqual(DIALOG_CONTENT_RESERVE);
+    // 黙って切らない: 隠した件数を出す。
+    expect(stripAnsi(lastFrame())).toContain(messages.ja.permission.moreBelow(4));
+    expect(stripAnsi(lastFrame())).toContain(`${glyph.caret} 案A`);
+
+    // ↓ でカーソルを送ると窓がついてくる（案D まで辿れる）。
+    for (let i = 0; i < 4; i++) {
+      stdin.write('\x1b[B');
+      await settle(lastFrame);
+    }
+    expect(stripAnsi(lastFrame())).toContain('案D');
+    expect(stripAnsi(lastFrame())).toContain(messages.ja.permission.moreAbove(3));
+    // スクロールしてもログの席は動かない（ダイアログの高さは上限で一定）。
+    expect(logRows()).toBeGreaterThanOrEqual(DIALOG_CONTENT_RESERVE);
+
+    // 窓の中の選択肢はクリックでも選べる（当たり判定はインジケータ 1 行ぶんずれる）。
+    const row = stripAnsi(lastFrame())
+      .split('\n')
+      .findIndex((l) => l.includes('案D'));
+    expect(row).toBeGreaterThan(0);
+    stdin.write(`\x1b[<0;10;${row + 1}M`);
+    await settle(lastFrame);
+    expect(stripAnsi(lastFrame())).toContain(`${glyph.caret} 案D`);
+
+    stdin.write('\r');
+    await settle(lastFrame);
+    await expect(decision).resolves.toMatchObject({
+      behavior: 'allow',
+      updatedInput: { answers: { 'どの方針で進めますか?': '案D' } },
     });
     app.unmount();
   });

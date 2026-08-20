@@ -2,12 +2,16 @@ import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useRef, useState } from 'react';
 import {
   type ChoiceRowItem,
+  type ChoiceView,
   choiceIndexAtRow,
   choiceLines,
   choiceRowHeights,
+  choiceView,
+  DIALOG_CHOICE_MIN_ROWS,
   dialogContentWidth,
   type PermissionRequest,
   parseSgrMouse,
+  wrapDisplayLines,
 } from '@/core';
 import { ChoiceRow } from './choice-row';
 import { Composer, useComposer } from './composer';
@@ -51,7 +55,23 @@ export const PermissionDialog: FC<{
    * view の知識を持たせず文言を渡してもらう。省略時は一覧向けの既定。
    */
   inactiveHint?: string;
-}> = ({ request, onAnswer, onAllow, onDeny, onCopy, active = true, onActivate, inactiveHint }) => {
+  /**
+   * 枠を含めてダイアログが使ってよい縦幅（`core/layout.ts` の `dialogMaxRows`）。
+   * 溢れる選択肢は内部スクロールへ押し出して、下のログ／セッション一覧の席を守る。
+   * 省略すると全件描く（低い端末ではログの可視行が 0 になる）。
+   */
+  maxRows?: number;
+}> = ({
+  request,
+  onAnswer,
+  onAllow,
+  onDeny,
+  onCopy,
+  active = true,
+  onActivate,
+  inactiveHint,
+  maxRows,
+}) => {
   if (request.kind === 'question') {
     return (
       <QuestionDialog
@@ -62,6 +82,7 @@ export const PermissionDialog: FC<{
         active={active}
         onActivate={onActivate}
         inactiveHint={inactiveHint}
+        maxRows={maxRows}
       />
     );
   }
@@ -173,6 +194,23 @@ const ToolDialog: FC<{
  * 当たり判定は実測した選択肢ブロックの上端 + 描画と同じ `choiceRowHeights` で逆算する
  * （1 件 = 1 行ではない: ラベルの折返しと説明の行があるため）。
  */
+/**
+ * 選択肢ブロック（実選択肢 + 「自分で入力する」）に使える行数。`maxRows` は枠を含む
+ * ダイアログ全体の上限なので、**このコンポーネントが実際に描く**固定部分
+ * （`otherRows`）を引いた残りが選択肢の予算になる。`CommandPalette` の `fitRows` と
+ * 同じく、描画構造を知っているコンポーネント側に置く小さな純関数。
+ *
+ * 下限（{@link DIALOG_CHOICE_MIN_ROWS}）を割るときは上限より高くなることを許す
+ * （`paletteMaxRows` の `PALETTE_MIN_ROWS` と同じ方針 — 予算より「カーソルの選択肢が
+ * 見えること」を優先する）。
+ */
+function choiceCap(maxRows: number | undefined, otherRows: number): number | undefined {
+  if (maxRows === undefined) {
+    return undefined;
+  }
+  return Math.max(DIALOG_CHOICE_MIN_ROWS, maxRows - otherRows);
+}
+
 const QuestionDialog: FC<{
   request: PermissionRequest;
   onAnswer: (answers: Record<string, string>) => void;
@@ -181,7 +219,8 @@ const QuestionDialog: FC<{
   active: boolean;
   onActivate?: () => void;
   inactiveHint?: string;
-}> = ({ request, onAnswer, onDeny, onCopy, active, onActivate, inactiveHint }) => {
+  maxRows?: number;
+}> = ({ request, onAnswer, onDeny, onCopy, active, onActivate, inactiveHint, maxRows }) => {
   const m = useMessages();
   const { columns } = useWindowSize();
   const questions = request.questions ?? [];
@@ -243,17 +282,65 @@ const QuestionDialog: FC<{
   const mainHeights = choiceRowHeights(mainItems, width);
   const chatHeights = choiceRowHeights([chatItem], width);
 
+  // 操作ヒントは状態で変わる（表示のみ / 自由記述中 / 選択中）。文字列を先に決めて
+  // 描画と高さの見積りで同じものを使う（折返して 2 行になる端末があるため）。
+  const hintText = !active
+    ? (inactiveHint ?? m.permission.inactiveHelp)
+    : mode === 'typing'
+      ? m.permission.typingHelp
+      : m.permission.questionHelp(current?.multiSelect ?? false);
+
+  /*
+   * 選択肢ブロックの予算 = ダイアログの上限 - 固定部分。固定部分は**下の JSX が実際に
+   * 描く行**と 1 対 1 で対応させる（食い違うと上限を超えてログの席を奪う / 逆に余らせる）:
+   *   枠線 2 + 見出し 1 + 質問文（折返し n）+ 選択肢ブロックの上余白 1
+   *   + 自由記述中なら（上余白 1 + 入力欄）
+   *   + 区切りブロック（上余白 1 + 区切り線 1 + 「相談する」n）
+   *   + ヒント（上余白 1 + 折返し n）
+   */
+  const questionRows = current ? wrapDisplayLines(current.question, width).length : 1;
+  const chatRows = chatHeights[0] ?? 1;
+  const otherRows =
+    2 +
+    1 +
+    questionRows +
+    1 +
+    // 入力欄は自分が描く行数を知っている（罫線 + 内部スクロールの窓）。
+    (mode === 'typing' ? 1 + composer.drawnRows : 0) +
+    (1 + 1 + chatRows) +
+    (1 + wrapDisplayLines(hintText, width).length);
+  const cap = choiceCap(maxRows, otherRows);
+  // 上限に収まらないぶんは内部スクロール（カーソルの件が必ず見える）。上限なしなら全件。
+  const view: ChoiceView =
+    cap === undefined
+      ? {
+          start: 0,
+          end: mainItems.length,
+          hiddenAbove: 0,
+          hiddenBelow: 0,
+          showAbove: false,
+          showBelow: false,
+        }
+      : choiceView(mainHeights, cursor, cap);
+  const visibleItems = mainItems.slice(view.start, view.end);
+  const visibleHeights = mainHeights.slice(view.start, view.end);
+
   /**
    * クリックした行の選択肢 index（`chatIndex` を含む）。ブロックの外・未実測・縦に潰れて
    * いるときは undefined = 判定しない（黙って別の選択肢を選ぶより効かないほうがよい。
    * ヘッダ・コンポーザと同じ方針）。
    */
   const choiceAtRow = (y: number): number | undefined => {
-    const mainRows = mainHeights.reduce((sum, rows) => sum + rows, 0);
+    // 判定は**描いたウィンドウ**で行う（隠れている件を数えない）。上端のインジケータは
+    // 1 行を占めるので、その分だけ選択肢の 1 行目がずれる。
+    const mainRows =
+      visibleHeights.reduce((sum, rows) => sum + rows, 0) +
+      (view.showAbove ? 1 : 0) +
+      (view.showBelow ? 1 : 0);
     if (mainBox && !(mainHeight !== undefined && mainHeight < mainRows)) {
-      const hit = choiceIndexAtRow(mainHeights, y - mainBox.top);
+      const hit = choiceIndexAtRow(visibleHeights, y - mainBox.top - (view.showAbove ? 1 : 0));
       if (hit !== undefined) {
-        return hit;
+        return view.start + hit;
       }
     }
     // 「相談する」のブロックは 1 行目が区切り線なので、その 1 行ぶんずらして数える。
@@ -421,20 +508,24 @@ const QuestionDialog: FC<{
         {m.permission.questionTitle(qIndex + 1, questions.length, current.header)}
       </Text>
       <Text>{current.question}</Text>
-      {/* 実選択肢 + 「自分で入力する」。**当たり判定と同じ `mainItems` から描く** —
+      {/* 実選択肢 + 「自分で入力する」。**当たり判定と同じ `visibleItems` から描く** —
           別々に組み立てると prefix（= 折返し幅）が食い違い、クリックが別の行に当たる。
-          `ref` はクリック位置の逆算用（この Box の上端が選択肢の 1 行目）。 */}
+          `ref` はクリック位置の逆算用（この Box の上端がインジケータ／選択肢の 1 行目）。
+          高さの上限を超えるぶんは窓の外へ出す（↑↓ でカーソルを送るとスクロールする）。
+          黙って切らない: 隠れている件数をインジケータに出す（一覧の `listView` と同じ）。 */}
       <Box ref={mainRef} flexDirection="column" marginTop={1}>
-        {mainItems.map((item, i) => (
+        {view.showAbove ? <Text dimColor>{m.permission.moreAbove(view.hiddenAbove)}</Text> : null}
+        {visibleItems.map((item, i) => (
           <ChoiceRow
             key={item.choice.label}
             prefix={item.prefix}
             label={item.choice.label}
             description={item.choice.description}
-            active={cursor === i}
+            active={cursor === view.start + i}
             width={width}
           />
         ))}
+        {view.showBelow ? <Text dimColor>{m.permission.moreBelow(view.hiddenBelow)}</Text> : null}
       </Box>
 
       {mode === 'typing' ? (
@@ -462,13 +553,8 @@ const QuestionDialog: FC<{
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>
-          {!active
-            ? (inactiveHint ?? m.permission.inactiveHelp)
-            : mode === 'typing'
-              ? m.permission.typingHelp
-              : m.permission.questionHelp(current.multiSelect ?? false)}
-        </Text>
+        {/* 高さの見積り（`otherRows`）と**同じ文字列**を描く。 */}
+        <Text dimColor>{hintText}</Text>
       </Box>
     </Box>
   );

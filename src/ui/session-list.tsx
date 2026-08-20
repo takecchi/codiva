@@ -15,6 +15,7 @@ import {
   type ConfigToggleId,
   canSelfUpdate,
   configToggleRows,
+  dialogMaxRows,
   errorMessage,
   formatDuration,
   formatModel,
@@ -1241,6 +1242,8 @@ export const SessionList: FC<{
           onAllow={() => manager.allow(target.id)}
           onDeny={(message) => manager.deny(target.id, message)}
           onCopy={onCopy}
+          // 選択肢が多くてもセッション行の席を残す（溢れは内部スクロールへ）。
+          maxRows={dialogMaxRows(termRows, 'list')}
         />
       ) : (
         <Box flexDirection="column">

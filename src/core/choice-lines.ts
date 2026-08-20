@@ -88,6 +88,110 @@ export function choiceRowHeights(items: readonly ChoiceRowItem[], width: number)
 }
 
 /**
+ * 選択リストを高さ `cap` **行**のウィンドウに収めるための表示範囲。
+ * `core/layout.ts` の {@link ListView} と同じ役割だが、**1 件 = 1 行ではない**
+ * （ラベルの折返し + 説明）ので件数ではなく行数で詰める。
+ */
+export interface ChoiceView {
+  /** 表示する最初の選択肢 index（含む） */
+  start: number;
+  /** 表示する最後の選択肢 index の次（含まない） */
+  end: number;
+  /** ウィンドウより上に隠れている件数 */
+  hiddenAbove: number;
+  /** ウィンドウより下に隠れている件数 */
+  hiddenBelow: number;
+  /** 上端に「↑ 他 N 件」インジケータ行を出すか */
+  showAbove: boolean;
+  /** 下端に「↓ 他 N 件」インジケータ行を出すか */
+  showBelow: boolean;
+}
+
+/** カーソルの件を必ず含む、`budget` 行に収まる範囲（下端アンカー）。 */
+function fitWindow(
+  heights: readonly number[],
+  cursor: number,
+  budget: number,
+): { start: number; end: number } {
+  const total = heights.length;
+  const sel = Math.max(0, Math.min(cursor, total - 1));
+  let start = sel;
+  let end = sel + 1;
+  // カーソルの件だけは budget を超えても必ず入れる（選んでいるものが見えないと
+  // 何を決めるのか分からない）。溢れるのは「1 件が可視域より高い」極端な場合だけ。
+  let used = heights[sel] ?? 0;
+  // 下端アンカー: まず上へ伸ばす（= カーソルを下端に置く）。`visibleLineRange` /
+  // `listView` と同じ挙動にして、↓ でスクロールする感覚を全画面で揃える。
+  while (start > 0 && used + (heights[start - 1] ?? 0) <= budget) {
+    start -= 1;
+    used += heights[start] ?? 0;
+  }
+  // 上に詰め切れなかったぶん（カーソルが先頭寄り）は下へ伸ばす。
+  while (end < total && used + (heights[end] ?? 0) <= budget) {
+    used += heights[end] ?? 0;
+    end += 1;
+  }
+  return { start, end };
+}
+
+/**
+ * 選択リスト（高さがバラバラな `heights` 行の並び）を `cap` 行に収める表示範囲を、
+ * `cursor` の件を必ず見える位置に保ちながら求める純関数。溢れる端には
+ * 「↑↓ 他 N 件」インジケータ用に 1 行を予約するので、描画行数（選択肢 +
+ * インジケータ）は原則 `cap` 以下になる。
+ *
+ * これが無いと質問ダイアログは選択肢の数だけ縦に伸びる。ダイアログは
+ * `flexShrink={0}` なので、伸びたぶんは**兄弟のログ領域**（`flexGrow`）から奪われ、
+ * 低い端末では会話ログの可視行が 0 になって「質問の背景を読めないまま答える」ことに
+ * なっていた（`core/layout.ts` の `dialogMaxRows`）。
+ *
+ * `listView` にある「隠れているのが 1 件だけならインジケータの席にその件を出す」
+ * 最適化は入れていない。1 件が 1 行とは限らないので、席（1 行）に収まる保証がない。
+ */
+export function choiceView(heights: readonly number[], cursor: number, cap: number): ChoiceView {
+  const total = heights.length;
+  const c = Math.max(1, Math.floor(cap));
+  const sum = heights.reduce((acc, rows) => acc + rows, 0);
+  if (total === 0 || sum <= c) {
+    return {
+      start: 0,
+      end: total,
+      hiddenAbove: 0,
+      hiddenBelow: 0,
+      showAbove: false,
+      showBelow: false,
+    };
+  }
+  // インジケータの予約でウィンドウが縮むと別の端が新たに溢れることがある（縮小は
+  // 隠れ件数を増やすだけなので単調）。`listView` と同じく増やす方向にのみ更新して
+  // 不動点まで反復する。
+  let above = false;
+  let below = false;
+  let win = { start: 0, end: total };
+  for (let i = 0; i < 3; i += 1) {
+    const reserved = (above ? 1 : 0) + (below ? 1 : 0);
+    win = fitWindow(heights, cursor, Math.max(1, c - reserved));
+    const nextAbove = win.start > 0;
+    const nextBelow = win.end < total;
+    if (nextAbove === above && nextBelow === below) {
+      break;
+    }
+    above = above || nextAbove;
+    below = below || nextBelow;
+  }
+  const hiddenAbove = win.start;
+  const hiddenBelow = total - win.end;
+  return {
+    start: win.start,
+    end: win.end,
+    hiddenAbove,
+    hiddenBelow,
+    showAbove: above && hiddenAbove > 0,
+    showBelow: below && hiddenBelow > 0,
+  };
+}
+
+/**
  * 表示行オフセット（リストの先頭行を 0 とする）→ 選択肢 index。範囲外なら undefined。
  * 説明の行もその選択肢の一部として扱う（見えている塊のどこを押しても選べる）。
  */
