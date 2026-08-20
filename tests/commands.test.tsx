@@ -404,6 +404,15 @@ describe('slash commands', () => {
     stdin.write(' '); // Space でも切り替えられる（既定へ戻る = キー削除）
     await flush();
     expect(patches).toEqual([{ notifications: false }, { notifications: undefined }]);
+
+    // 日本語 IME がオンのあいだ素の Space は全角（U+3000）で届くので、それでも効く。
+    stdin.write('　');
+    await flush();
+    expect(patches).toEqual([
+      { notifications: false },
+      { notifications: undefined },
+      { notifications: false },
+    ]);
   });
 
   it('/config closes on Esc and stops owning the keys', async () => {

@@ -73,3 +73,22 @@ export function decodeKeySequence(input: string): DecodedKey | undefined {
   }
   return undefined;
 }
+
+/** IDEOGRAPHIC SPACE (U+3000) = 全角スペース。 */
+const IDEOGRAPHIC_SPACE = '　';
+
+/**
+ * 「Space が押された」の判定（トグル系のキー操作用）。
+ *
+ * 半角スペースだけを見てはいけない: **日本語 IME がオンのあいだ、素の Space は
+ * 全角スペース（U+3000）として届く**（macOS のかな入力の既定。未変換のまま Space を
+ * 押すと 全角スペースが確定して入る）。Shift+Space だけが半角で届くため、
+ * `input === ' '` だけを見ていると「IME を切るか Shift を足さないとチェックが
+ * 付かない」= 日本語で作業している間ずっと押しにくいキーになる。
+ *
+ * 文字として挿入する経路（コンポーザ）はこの正規化を通さない — 打った全角スペースは
+ * 全角のまま入るのが正しい。ここは**キー操作としての Space** を判定する場所だけで使う。
+ */
+export function isSpaceKey(input: string): boolean {
+  return input === ' ' || input === IDEOGRAPHIC_SPACE;
+}

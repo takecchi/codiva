@@ -395,6 +395,19 @@ describe('PermissionDialog — question', () => {
     expect(lastFrame()).toContain('❯ [x] English');
   });
 
+  // 日本語 IME がオンのあいだ、素の Space は**全角スペース（U+3000）**として届く
+  // （macOS のかな入力の既定）。半角だけを見ていると Shift+Space でしかチェックが
+  // 付けられない = 日本語で作業している間ずっと押しにくい（実機で再現した不具合）。
+  it('全角スペース（IME オンの Space）でもトグルできる', async () => {
+    const { stdin, lastFrame } = render(
+      <PermissionDialog request={question(true)} onAnswer={noop} onAllow={noop} onDeny={noop} />,
+    );
+    await flush();
+    stdin.write('　'); // U+3000 → toggle English
+    await flush();
+    expect(lastFrame()).toContain('❯ [x] English');
+  });
+
   /**
    * `active={false}`（一覧の list ゾーン）では表示だけ。ここでキーを取ると、一覧の
    * ↑↓ が選択肢移動に食われて**セッションを切り替えられない**（元の不具合）。

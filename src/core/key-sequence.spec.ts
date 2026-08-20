@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeKeySequence } from './key-sequence';
+import { decodeKeySequence, isSpaceKey } from './key-sequence';
 
 const ESC = String.fromCharCode(27);
 
@@ -64,5 +64,20 @@ describe('decodeKeySequence', () => {
     ['unterminated', '[27;2;13'],
   ])('returns undefined for %s', (_desc, input) => {
     expect(decodeKeySequence(input)).toBeUndefined();
+  });
+});
+
+describe('isSpaceKey', () => {
+  it.each([
+    ['半角スペース', ' ', true],
+    // 日本語 IME がオンのあいだ、素の Space はこれで届く（実機で再現した不具合）。
+    ['全角スペース (U+3000)', '　', true],
+    ['空文字', '', false],
+    ['タブ', '\t', false],
+    ['複数のスペース（ペースト等）', '  ', false],
+    ['通常の文字', 'a', false],
+    ['スペースを含むテキスト', 'a b', false],
+  ])('%s', (_desc, input, expected) => {
+    expect(isSpaceKey(input)).toBe(expected);
   });
 });
