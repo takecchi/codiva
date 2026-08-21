@@ -141,9 +141,16 @@ export function spawnGrok(request: GrokSpawnRequest, command = 'grok'): GrokProc
   };
 }
 
-/** `grok` の設定・資格情報の置き場（`GROK_HOME` で移せる）。 */
+/**
+ * `grok` の設定・資格情報の置き場（`GROK_HOME` で移せる）。
+ *
+ * **空文字は「未設定」として扱う**（`codexHome()` と同じ）。`?? ` だけだと
+ * `GROK_HOME=""` で `auth.json` を**相対パス**で読みに行き、リポジトリに同名の
+ * ファイルがあるだけで「ログイン済み」と誤判定する。
+ */
 function grokHome(): string {
-  return process.env.GROK_HOME ?? join(homedir(), '.grok');
+  const home = process.env.GROK_HOME?.trim();
+  return home && home.length > 0 ? home : join(homedir(), '.grok');
 }
 
 /**

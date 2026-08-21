@@ -236,9 +236,19 @@ export function toGrokUpdate(value: unknown): GrokSessionUpdate | undefined {
       return isObject(value.content) ? (value as GrokSessionUpdate) : undefined;
     case 'tool_call':
     case 'tool_call_update':
-      return value as GrokSessionUpdate;
+      // `content` は `toolOutputText` が **for-of で回す**ので、来ているなら
+      // 「オブジェクトの配列」であることまで見る（配列でない truthy を通すと
+      // for-of が TypeError を投げ、それがアダプタの generator を突き抜けて
+      // **ターンのストリームごと死ぬ** = `grok` が孤児として残る）。
+      return value.content === undefined ||
+        (Array.isArray(value.content) && value.content.every(isObject))
+        ? (value as GrokSessionUpdate)
+        : undefined;
     case 'plan':
-      return Array.isArray(value.entries) ? (value as GrokSessionUpdate) : undefined;
+      // 各要素は `e.content` / `e.status` として無条件に読む。
+      return Array.isArray(value.entries) && value.entries.every(isObject)
+        ? (value as GrokSessionUpdate)
+        : undefined;
     case 'retry_state':
       return typeof value.message === 'string' ? (value as GrokSessionUpdate) : undefined;
     default:

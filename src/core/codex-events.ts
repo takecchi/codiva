@@ -116,6 +116,16 @@ function hasItem(value: object): boolean {
   if (detail.type === 'todo_list') {
     return Array.isArray(detail.items);
   }
+  // 本文をそのまま（`text.trim()` で）読む型は `text` の型まで見る。欠けた行を
+  // 通すと `parseCodexEvent` が TypeError で落ち、上と同じくターンごと死ぬ。
+  if (detail.type === 'reasoning' || detail.type === 'agent_message') {
+    return hasString(item, 'text');
+  }
+  // `$ <command>` として表示に使うので、文字列でなければ受けない
+  // （`"$ undefined"` というログ行を出さない）。
+  if (detail.type === 'command_execution') {
+    return hasString(item, 'command');
+  }
   return true;
 }
 

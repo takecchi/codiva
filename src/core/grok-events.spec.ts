@@ -196,6 +196,17 @@ describe('toGrokUpdate', () => {
     ['content が文字列の chunk', { sessionUpdate: 'agent_thought_chunk', content: 'hi' }],
     ['entries が配列でない plan', { sessionUpdate: 'plan', entries: { a: 1 } }],
     ['entries の無い plan', { sessionUpdate: 'plan' }],
+    // `e.content` / `e.status` を無条件に読むので、要素まで見る。
+    ['entries の要素が object でない plan', { sessionUpdate: 'plan', entries: [null] }],
+    // `content` は for-of で回す（配列でない truthy は TypeError = ターンごと死ぬ）。
+    [
+      'content が配列でない tool_call_update',
+      { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: { text: 'x' } },
+    ],
+    [
+      'content の要素が object でない tool_call_update',
+      { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: ['x'] },
+    ],
     ['message の無い retry_state', { sessionUpdate: 'retry_state', type: 'failed' }],
   ])('%s を捨てる', (_name, value) => {
     expect(toGrokUpdate(value)).toBeUndefined();

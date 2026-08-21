@@ -104,6 +104,13 @@ describe('toCodexEvent', () => {
     // parse 側が無条件に配列として触るフィールドが無いもの。
     [{ type: 'item.started', item: { id: 'i0', type: 'file_change' } }],
     [{ type: 'item.completed', item: { id: 'i0', type: 'todo_list' } }],
+    // parse 側が `text.trim()` として無条件に読むフィールドが無いもの
+    // （通すと TypeError がターンのストリームごと殺す）。
+    [{ type: 'item.completed', item: { id: 'i0', type: 'agent_message' } }],
+    [{ type: 'item.completed', item: { id: 'i0', type: 'reasoning' } }],
+    [{ type: 'item.completed', item: { id: 'i0', type: 'reasoning', text: 42 } }],
+    // `$ <command>` として表示に使うので、無いものは受けない（"$ undefined" を出さない）。
+    [{ type: 'item.completed', item: { id: 'i0', type: 'command_execution' } }],
   ])('rejects %j', (value) => {
     expect(toCodexEvent(value)).toBeUndefined();
   });
