@@ -1,7 +1,7 @@
 {
   "name": "codiva",
   "version": "0.5.2",
-  "description": "TUI app that runs parallel Claude Code sessions in isolated git worktrees",
+  "description": "TUI app that runs parallel coding-agent sessions (Claude Code / Codex / Grok) in isolated git worktrees",
   "type": "module",
   "bin": {
     "codiva": "dist/index.js"
@@ -18,6 +18,9 @@
     "claude",
     "claude-code",
     "claude-agent-sdk",
+    "codex",
+    "grok",
+    "coding-agent",
     "tui",
     "ink",
     "git-worktree",

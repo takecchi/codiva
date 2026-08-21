@@ -1,6 +1,6 @@
 # codiva
 
-対象Gitリポジトリで起動し、指示ごとに独立した git worktree 上で Claude Code セッション（Claude Agent SDK）を並列実行する TUI アプリ。TypeScript (ESM, strict) + Ink 7 + npm。
+対象Gitリポジトリで起動し、指示ごとに独立した git worktree 上でコーディングエージェント（Claude Code = Claude Agent SDK / Codex CLI / Grok CLI）のセッションを並列実行する TUI アプリ。TypeScript (ESM, strict) + Ink 7 + npm。
 
 ## コマンド
 
