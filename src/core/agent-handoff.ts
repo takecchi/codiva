@@ -42,6 +42,11 @@ export interface HandoffInput {
   messages?: readonly LogEntry[];
 }
 
+/** Provider に送る最初の指示へ、内部の引き継ぎ情報を前置する。 */
+export function attachHandoff(text: string, handoff: string | undefined): string {
+  return handoff ? `${handoff}\n\n# Current instruction after the switch\n\n${text}` : text;
+}
+
 /** 1 行に畳んで長すぎるものを切る（systemPrompt の箇条書きに収めるため）。 */
 function field(text: string | undefined): string | undefined {
   const flat = text?.replace(/\s+/g, ' ').trim();
@@ -100,7 +105,9 @@ export function handoffTranscript(messages: readonly LogEntry[]): string | undef
   }
   const omitted = kept.length < turns.length;
   return [
-    ...(omitted ? ['[Earlier conversation omitted because the handover reached its size limit.]'] : []),
+    ...(omitted
+      ? ['[Earlier conversation omitted because the handover reached its size limit.]']
+      : []),
     ...kept,
   ].join('\n\n');
 }

@@ -1,4 +1,5 @@
 import type { AgentEvent } from './agent-events';
+import { attachHandoff } from './agent-handoff';
 import type {
   AgentAdapter,
   AgentAvailability,
@@ -147,6 +148,7 @@ export function createCodexAdapter(deps: {
       // ターンをまたいで持ち回るもの。`threadId` は resume の鍵で、`thread.started` を
       // 見るたびに更新する（初回は request.resume = 復元されたセッションの id）。
       let threadId = request.resume;
+      let handoff = request.options.handoff;
       let model = request.options.model;
       // `Ctrl+C` で殺したターンは失敗ではない（Session が先に `interrupted` を確定させる）。
       let interrupted = false;
@@ -240,7 +242,10 @@ export function createCodexAdapter(deps: {
               // 付かず、次のターンは**新しいスレッド**として始まる。latch していると
               // そこで前置されず、systemPrompt を一度も渡せないセッションになる
               // （symlink 共有の注意書きが落ちると、リンク越しに元リポジトリを壊しうる）。
-              const prompt = threadId ? text : withSystemPrompt(text, request.options.systemPrompt);
+              const userPrompt = attachHandoff(text, handoff);
+              const prompt = threadId
+                ? userPrompt
+                : withSystemPrompt(userPrompt, request.options.systemPrompt);
 
               const proc = deps.spawn({
                 cwd: request.cwd,
@@ -265,6 +270,7 @@ export function createCodexAdapter(deps: {
                   }
                   if (event.type === 'thread.started') {
                     threadId = event.thread_id;
+                    handoff = undefined;
                     probeDuringTurn(event.thread_id);
                   } else if (event.type === 'turn.completed' || event.type === 'turn.failed') {
                     sawTerminal = true;

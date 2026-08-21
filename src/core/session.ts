@@ -43,22 +43,6 @@ export type PermissionPolicy = (
 const defaultPolicy: PermissionPolicy = (toolName) =>
   toolName === 'AskUserQuestion' ? 'ask' : 'allow';
 
-/** Attach a provider-switch handoff to exactly the first prompt the new run consumes. */
-async function* withHandoff(
-  prompt: AsyncIterable<string>,
-  handoff: string | undefined,
-): AsyncIterable<string> {
-  let pending = handoff;
-  for await (const text of prompt) {
-    if (pending) {
-      yield `${pending}\n\n# Current instruction after the switch\n\n${text}`;
-      pending = undefined;
-    } else {
-      yield text;
-    }
-  }
-}
-
 /** Per-session knobs forwarded to the SDK query (sourced from the config file). */
 export interface SessionOptions {
   model?: string;
@@ -585,7 +569,7 @@ export class Session {
       });
       this.run = this.adapter.open({
         cwd: this.state.worktreePath,
-        prompt: withHandoff(this.inputQueue, handoff),
+        prompt: this.inputQueue,
         resume,
         options: {
           model,
@@ -593,6 +577,7 @@ export class Session {
           permissionMode: opts?.permissionMode,
           maxBudgetUsd: opts?.maxBudgetUsd,
           systemPrompt,
+          handoff,
         },
         requestPermission: this.requestPermission,
         abortController: this.abortController,

@@ -1,4 +1,5 @@
 import type { AgentEvent } from './agent-events';
+import { attachHandoff } from './agent-handoff';
 import type {
   AgentAdapter,
   AgentAvailability,
@@ -525,6 +526,7 @@ export function createGrokAdapter(deps: {
 
       /** プロンプトの流れを 1 本のターン列として回す。 */
       const drive = async (): Promise<void> => {
+        let handoff = request.options.handoff;
         try {
           for await (const text of request.prompt) {
             if (request.abortController.signal.aborted) {
@@ -546,7 +548,9 @@ export function createGrokAdapter(deps: {
                 continue;
               }
             }
-            await runTurn(text);
+            const prompt = attachHandoff(text, handoff);
+            handoff = undefined;
+            await runTurn(prompt);
           }
         } catch (error: unknown) {
           // **`finally` で閉じる前に積む**。閉じたキューへの push は黙って捨てられる
