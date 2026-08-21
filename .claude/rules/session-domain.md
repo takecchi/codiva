@@ -115,8 +115,15 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
 ## 永続化（`core/persistence.ts` / `utils/state-store.ts`）
 
 - 保存対象の条件（`toPersistedSession`）: `restorableStatus(status)` が定義済み **かつ**
-  `worktreePath` あり **かつ** `sdkSessionId` あり。`creating` / `conflict` / `archived`、および
+  `worktreePath` あり **かつ** **どこかに resume 用の id がある**（`sdkSessionId`
+  または `agentSessions` のいずれか）。`creating` / `conflict` / `archived`、および
   init 前に落ちて resume 不能なものは保存しない。
+  - **「現在の `sdkSessionId` があること」を条件にしてはいけない。** `agent_switched` は
+    切替先が初めての provider だと `sdkSessionId` を undefined にするので、
+    **切替直後に何も送らずに終了したセッションが state.json から丸ごと消えていた**
+    （戻るための `agentSessions.claude` は残っているのに、worktree だけが孤児になり
+    タイトル・コスト・PR 参照も失われる）。読み込み側（`toPersistedSessionJson`）も
+    同じ条件で受理する。
 - 読み込み側（`fromPersistedJson`）は `completed` / `interrupted` / `failed` のみ受理し、
   壊れた JSON は空状態へフォールバックする（TUI を落とさない）。
 - **エージェントも保存する**: `agent`（最後に駆動していた provider）と `agentSessions`
@@ -173,6 +180,21 @@ UI・永続・通知は**この表を参照**し、独自の集合（`TERMINAL` 
     実行**してしまい、捨てるとユーザーの指示が黙って消える（ログには `user_input` として
     残るのに実行されない）。番人は `session.spec.ts` の
     「stops the in-flight turn and hands queued follow-ups to the NEW agent」。
+    - **移せるのは「まだ誰にも渡していない」ぶんだけ**。Claude Agent SDK は
+      プロンプトの `AsyncIterable` を**先読み**する（常に `next()` が張られている）ため、
+      ターン中の追加指示はその場で CLI の stdin へ書かれ、`AsyncQueue.pending` は 0 のまま。
+      つまり Claude では**切替直前に送った追加指示が古い CLI 側のキューに残る**
+      （SDK の `interrupt()` はそれを `still_queued` の uuid で教えてくるが、
+      `cancel_async_message` で個別に取り消すには uuid を打って送る必要があり未対応）。
+      Codex / Grok は消費が遅延評価なので移し替えが効く。
+- **切替で畳んだ run のイベントは畳まない**（`Session` の世代カウンタ `epoch`）。
+  `for await` は捨てた `run` のイテレータを掴んだままなので、古い provider のイベントが
+  切替後にも届く。帰属（`attribution`）はもう切替先なので、そのまま `applyAgentEvent` に
+  通すと**前任者の resume id が切替先の id として `agentSessions` と state.json に焼き付き**
+  （以後 `codex exec resume <claude の uuid>` を投げ続ける）、古いターンの `turn_completed` で
+  セッションが `completed` に戻って auto-PR まで走る。世代が変わったら `break` して
+  ストリームを閉じる（番人は `session.spec.ts` の
+  「ignores events that the folded run emits after the switch」）。
 - 1 エージェントセッション 1 ライター。codiva 以外（外部 `claude --resume` 等）から同じ
   セッションに繋がない。**同時に 2 つの provider を 1 つの worktree で走らせない**。
 

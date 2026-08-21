@@ -241,6 +241,12 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
 - ルーチンツール（Write/Edit/Bash 等）は `auto` モードで自動 allow、`confirm` モードで UI に上げる。
   判定は `core/run-mode.ts` の `createModePolicy`。`acceptEdits` でも `Write` が
   `canUseTool` に落ちてくる（実測）ので「編集系は自動許可」を前提にしない。
+- **質問かどうかを「ツール名」で判定しない。** 質問の名前は provider ごとに違う
+  （Claude は `AskUserQuestion`、Grok は `_x.ai/ask_user_question`）。ポリシーが見るのは
+  アダプタが正規化した `kind: 'question'` で、判定は `core/session.ts` の `isQuestion` に
+  1 箇所だけ置く。ツール名だけを見ていたので、**Grok の質問が既定（`auto`）モードで
+  自動 allow され、`answers` の無い「承諾」が返って質問がダイアログに一度も出なかった**
+  （provider 側には「ユーザーは答えなかった」と同じに見える）。
 
 ## result の解釈
 
