@@ -3,11 +3,11 @@ import {
   type AgentCapabilitySource,
   agentSupports,
   capabilityLookup,
-  showsAccountUsage,
+  showsAccountInfo,
   supportsCapability,
 } from './agent-capabilities';
 import { NO_CAPABILITIES } from './agent-ports';
-import type { AgentId, SessionStatus } from './types';
+import type { AgentId } from './types';
 
 const FULL = {
   permissions: true,
@@ -64,17 +64,18 @@ describe('capabilityLookup / agentSupports', () => {
   });
 });
 
-describe('showsAccountUsage', () => {
+describe('showsAccountInfo', () => {
   const capabilities = capabilityLookup(AGENTS);
-  const session = (agent: AgentId, status: SessionStatus = 'completed') => ({ agent, status });
 
-  it.each<[string, AgentId | undefined, { agent?: AgentId; status: SessionStatus }[], boolean]>([
-    ['既定が usage を報告する', 'claude', [], true],
-    ['既定は報告しないがセッションが報告する', 'codex', [session('claude')], true],
-    ['既定もセッションも報告しない', 'codex', [session('codex'), session('grok')], false],
-    ['archived だけの claude は数えない', 'codex', [session('claude', 'archived')], false],
-    ['既定が不明なら出す', undefined, [session('codex')], true],
-  ])('%s', (_label, defaultAgent, sessions, expected) => {
-    expect(showsAccountUsage({ sessions, defaultAgent, capabilities })).toBe(expected);
+  // 見るのは**既定エージェントだけ**（引数に稼働中セッションを取らないのがその表明）。
+  // ヘッダのアカウント節は「次に動くエージェント」の説明なので、Claude のセッションが
+  // 残っているからといって Codex を選んだ人に claude.ai のプランと枠を出さない。
+  it.each<[string, AgentId | undefined, boolean]>([
+    ['既定が usage を報告する', 'claude', true],
+    ['既定が報告しない（Codex）', 'codex', false],
+    ['既定が報告しない（Grok）', 'grok', false],
+    ['既定が不明なら出す', undefined, true],
+  ])('%s', (_label, defaultAgent, expected) => {
+    expect(showsAccountInfo({ defaultAgent, capabilities })).toBe(expected);
   });
 });

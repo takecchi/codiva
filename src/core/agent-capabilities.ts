@@ -1,5 +1,5 @@
 import type { AgentCapabilities } from './agent-ports';
-import type { AgentId, SessionStatus } from './types';
+import type { AgentId } from './types';
 
 /**
  * capability による UI 縮退の判定（純粋）。
@@ -15,12 +15,6 @@ import type { AgentId, SessionStatus } from './types';
 export interface AgentCapabilitySource {
   readonly id: AgentId;
   readonly capabilities: AgentCapabilities;
-}
-
-/** `SessionState` のうちここが見る部分だけ（テストから素の値で駆動できるように）。 */
-export interface AgentUsageSession {
-  readonly agent?: AgentId;
-  readonly status: SessionStatus;
 }
 
 /** id → capabilities の引き当て（未登録の provider は undefined = 不明）。 */
@@ -55,26 +49,27 @@ export function agentSupports(
 }
 
 /**
- * ヘッダの使用状況ゲージ（アカウント全体の枠）を出すか。
+ * ヘッダのアカウント節（プラン名 + 使用状況ゲージ）を出すか。
  *
- * ゲージが表しているのは **`usage` を報告する provider のアカウント**の消費であって、
- * codiva 全体の消費ではない。Codex / Grok だけで作業している人に Claude の枠を
- * 出しても読みようがなく（それを埋めているのは別のツール）、5 分ごとの probe
- * サブプロセスも無駄になる。だから「新規セッションの既定」か「まだ生きている
- * セッションのどれか」が `usage` を報告するときだけ出す。
+ * 判定は**新規セッションの既定エージェントだけ**を見る。ヘッダのその節が説明して
+ * いるのは「次に動くエージェント」で、プラン / モデル / 使用状況は 1 つのアカウントの
+ * 話として並んでいるので、`/agent` で切り替えたら 3 つ揃って切り替わるのが読み方として
+ * 一貫している（Codex / Grok を選んでいる人に claude.ai のプラン名と枠を出しても、
+ * それを埋めているのは別のツールなので読みようがない）。
  *
- * `archived` を数えないのは、マージ済みの過去のセッション 1 件で永久に出続けるのを
- * 避けるため（provider を乗り換えた人のヘッダに残る）。
+ * **稼働中のセッションは見ない**。Claude のセッションが走っている最中に既定を切り替える
+ * とその消費は見えなくなるが、既定を戻せばまた出る — 「ヘッダは既定エージェントの説明」
+ * という一貫性を、消費を覗ける便利さより優先する（かつては「既定 or archived でない
+ * セッションのどれか」で判定していたので、Codex に切り替えても Claude のプランと枠が
+ * 残り続けていた）。
+ *
+ * プラン名も使用状況も**同じ 1 回の probe**（`utils/usage-probe.ts`）が運ぶので、判定も
+ * 1 つに束ねてある。表示と取得はこの同じ純関数を通す（`bootstrap/usage-poller.ts` の
+ * `enabled`）ので、出していないゲージのために `claude` のサブプロセスが立つことはない。
  */
-export function showsAccountUsage(input: {
-  sessions: readonly AgentUsageSession[];
+export function showsAccountInfo(input: {
   defaultAgent?: AgentId;
   capabilities: CapabilityLookup;
 }): boolean {
-  if (agentSupports(input.capabilities, input.defaultAgent, 'usage')) {
-    return true;
-  }
-  return input.sessions.some(
-    (s) => s.status !== 'archived' && agentSupports(input.capabilities, s.agent, 'usage'),
-  );
+  return agentSupports(input.capabilities, input.defaultAgent, 'usage');
 }

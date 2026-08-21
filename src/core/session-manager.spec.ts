@@ -1692,6 +1692,26 @@ describe('SessionManager', () => {
       await flush();
       expect(models).toEqual(['claude-opus-4-8', 'claude-haiku-4-5']);
     });
+
+    // ヘッダのモデル欄はこの値を購読して出す（`ui/hooks.ts` の `useDefaultModel`）。
+    // 通知しないと `/model` のあとも起動時の値が居座り、実際に使われるモデルと食い違う。
+    it('notifies subscribers when the default model changes (header reads it)', () => {
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 1,
+        options: { model: 'claude-opus-4-8' },
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+      });
+      const listener = vi.fn();
+      manager.subscribe(listener);
+      manager.setModel('claude-haiku-4-5');
+      expect(listener).toHaveBeenCalledTimes(1);
+      manager.setModel('claude-haiku-4-5'); // 同じ値 = no-op（余計な再描画を起こさない）
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('repo instructions (/prompt)', () => {
@@ -1936,6 +1956,22 @@ describe('SessionManager', () => {
       const { manager } = managerWith({ claude: fakeAdapter('claude') });
       expect(manager.setDefaultAgent('codex')).toBe(false); // 未登録
       expect(manager.setDefaultAgent('claude')).toBe(false); // 既に既定
+    });
+
+    // ヘッダのエージェント名・プラン・モデル・使用状況はこの値で出し分ける
+    // （`ui/hooks.ts` の `useDefaultAgent`）。モデル未設定のときは `setModel` が
+    // no-op になるので、切替そのものが必ず 1 回通知する必要がある。
+    it('notifies subscribers on a default-agent change (header reads it)', () => {
+      const { manager } = managerWith({
+        claude: fakeAdapter('claude'),
+        codex: fakeAdapter('codex'),
+      });
+      const listener = vi.fn();
+      manager.subscribe(listener);
+      expect(manager.setDefaultAgent('codex')).toBe(true);
+      expect(listener).toHaveBeenCalledTimes(1); // model は未設定 = setModel は no-op
+      expect(manager.setDefaultAgent('codex')).toBe(false);
+      expect(listener).toHaveBeenCalledTimes(1); // 変わらないなら再描画も起こさない
     });
 
     it('detects availability once and caches it (concurrent calls share one probe)', async () => {

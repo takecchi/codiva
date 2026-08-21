@@ -32,7 +32,7 @@
 - その provider に無い機能は `AgentCapabilities` で表明する（`permissions` / `interrupt` /
   `setModel` / `resume` / `modelCatalog` / `usage` / `cost` / `transcript`）。UI は capability を
   見て縮退する。**判定は純粋な `core/agent-capabilities.ts` を通す**（`supportsCapability` /
-  `capabilityLookup` / `agentSupports` / `showsAccountUsage`）。守ること 2 つ:
+  `capabilityLookup` / `agentSupports` / `showsAccountInfo`）。守ること 2 つ:
   - **capability が分からないときは縮退しない**（未登録の provider・`agent` を持たない古い
     セッションで機能を隠すと、動くはずの操作が黙って消える）。
   - **「値が 0 だから自然に消える」に頼らない**。コスト・使用状況・トランスクリプト復元は
