@@ -28,8 +28,17 @@ export interface PersistedSession {
   worktreePath: string;
   /** Base branch this session was cut from / merges back into. */
   base: string;
-  /** SDK session id for `resume`. Always present — only sessions that reached init (and are thus truly resumable) are persisted. */
-  sdkSessionId: string;
+  /**
+   * 現在のエージェントの resume 用セッション id。
+   *
+   * **未設定のことがある**: `/agent` で一度も使っていない provider へ切り替えると
+   * `sdkSessionId` は undefined になる（その provider にはまだ会話が無い）。それでも
+   * `agentSessions` に他 provider の id が残っていれば「切替前の会話へ戻れる」ので
+   * 保存する — ここを必須にしていたために、**切替直後に何も送らずに終了した
+   * セッションが state.json から丸ごと消えていた**（worktree だけが孤児として残り、
+   * タイトル・コスト・PR 参照・戻るための resume id が全部失われる）。
+   */
+  sdkSessionId?: string;
   /**
    * このセッションを最後に駆動していたエージェント。この項目が無い（＝切替対応より
    * 前に書かれた）スナップショットは `'claude'` として復元する。
@@ -100,10 +109,15 @@ export function restorableStatus(
 
 /**
  * Build a PersistedSession from live state + worktree meta, or undefined if this
- * session isn't worth persisting. We require an `sdkSessionId`: without it there's
+ * session isn't worth persisting. We require **some** resume id: without any there's
  * nothing to `resume`, and restoring such a session would silently start a brand-new
  * conversation on the first follow-up (losing the original prompt). The worktree is
  * still kept on disk regardless, so no work is lost — only the codiva session entry.
+ *
+ * 「いずれかの provider の id」で判定するのが要点。`agent_switched` は切替先が初めての
+ * provider だと `sdkSessionId` を undefined にするので、現在値だけを見ると
+ * **切替直後のセッションが保存対象から外れて state.json から消える**（`agentSessions`
+ * には戻るための id が残っているのに）。
  */
 export function toPersistedSession(
   state: SessionState,
@@ -111,7 +125,10 @@ export function toPersistedSession(
   now: number,
 ): PersistedSession | undefined {
   const status = restorableStatus(state.status);
-  if (!status || !state.worktreePath || !state.sdkSessionId) {
+  const resumable =
+    state.sdkSessionId !== undefined ||
+    Object.values(state.agentSessions ?? {}).some((id) => typeof id === 'string' && id.length > 0);
+  if (!status || !state.worktreePath || !resumable) {
     return undefined;
   }
   return {
@@ -126,9 +143,12 @@ export function toPersistedSession(
     agent: state.agent,
     // 現在のエージェントの id も控えに畳んでおく（`agent_switched` は切替の瞬間に
     // しか畳まないので、切替せずに終了したセッションの id がここから漏れる）。
-    agentSessions: state.agent
-      ? { ...state.agentSessions, [state.agent]: state.sdkSessionId }
-      : state.agentSessions,
+    // 現在の provider がまだ会話を持っていない（切替直後）ときは畳まない —
+    // `undefined` を書き込むと控えの他 provider の id と紛れる。
+    agentSessions:
+      state.agent && state.sdkSessionId
+        ? { ...state.agentSessions, [state.agent]: state.sdkSessionId }
+        : state.agentSessions,
     status,
     startedAt: state.startedAt,
     finishedAt: state.finishedAt,
@@ -324,13 +344,15 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
       ? o.status
       : undefined;
   const startedAt = num(o.startedAt);
-  // These are the minimum needed to rebuild + resume a session. sdkSessionId is
-  // required — a persisted session without it can't be resumed (see toPersistedSession).
+  const agentSessions = toAgentSessions(o.agentSessions);
+  // These are the minimum needed to rebuild + resume a session. **どこかに**
+  // resume 用の id が要る（現在の provider のものが無くても、`agentSessions` に
+  // 切替前のものが残っていれば戻れる。詳細は `toPersistedSession`）。
   if (
     id === undefined ||
     worktreePath === undefined ||
     status === undefined ||
-    sdkSessionId === undefined
+    (sdkSessionId === undefined && Object.keys(agentSessions ?? {}).length === 0)
   ) {
     return undefined;
   }
@@ -347,7 +369,7 @@ function toPersistedSessionJson(v: unknown): PersistedSession | undefined {
     base: base ?? 'HEAD',
     sdkSessionId,
     agent: toAgentId(o.agent),
-    agentSessions: toAgentSessions(o.agentSessions),
+    agentSessions,
     status,
     startedAt: startedAt ?? 0,
     finishedAt: num(o.finishedAt),

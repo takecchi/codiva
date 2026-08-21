@@ -221,9 +221,32 @@ describe('toPersistedSession', () => {
     expect(toPersistedSession(s, { slug: 'x', base: 'm' }, NOW)).toBeUndefined();
   });
 
-  it('drops sessions without an sdkSessionId (nothing to resume)', () => {
+  it('drops sessions without any resume id (nothing to resume)', () => {
     const s = state({ status: 'completed' }); // initialState leaves sdkSessionId undefined
     expect(toPersistedSession(s, { slug: 'x', base: 'm' }, NOW)).toBeUndefined();
+  });
+
+  it('keeps a session switched to a provider it never used yet', () => {
+    // `agent_switched` は「切替先が初めての provider」なら `sdkSessionId` を
+    // undefined にする（そこにはまだ会話が無い）。現在値だけを見て捨てると、
+    // 切替直後に何も送らずに終了したセッションが **state.json から丸ごと消える** —
+    // 戻るための id（`agentSessions.claude`）は残っているのに、worktree だけが
+    // 孤児になりタイトル・コスト・PR 参照も失われる。
+    const s = state({
+      status: 'completed',
+      agent: 'codex',
+      sdkSessionId: undefined,
+      agentSessions: { claude: 'sdk-claude' },
+    });
+    const p = toPersistedSession(s, { slug: 'x', base: 'm' }, NOW);
+    expect(p).toBeDefined();
+    expect(p?.sdkSessionId).toBeUndefined();
+    expect(p?.agent).toBe('codex');
+    expect(p?.agentSessions).toEqual({ claude: 'sdk-claude' });
+    // 読み込み側も同じ条件で受理する（往復できる）。
+    const back = fromPersistedJson({ version: 1, sessions: [p] });
+    expect(back.sessions).toHaveLength(1);
+    expect(back.sessions[0]?.agentSessions).toEqual({ claude: 'sdk-claude' });
   });
 });
 
