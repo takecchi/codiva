@@ -921,12 +921,15 @@ const en: Messages = {
     creating: 'Preparing',
     running: 'Running',
     step: (done, total) => `Step ${done}/${total}`,
-    awaitingPermission: 'Awaiting permission',
+    // **バッジは一覧の 12 セル固定幅の列に入る**（`session-list.tsx`）。溢れると
+    // `truncate-end` で切れて読めなくなるので、12 セル以内に収める
+    // （番人は `i18n.spec.ts` の「バッジは一覧の列幅に収まる」）。
+    awaitingPermission: 'Permission',
     awaitingInput: 'Question',
     completed: 'Completed',
     interrupted: 'Interrupted',
     rateLimited: 'Rate limited',
-    needsLogin: 'Login required',
+    needsLogin: 'Login needed',
     failed: 'Failed',
     conflict: 'Conflict',
     archived: 'Archived',

@@ -8,6 +8,7 @@ import {
   agentSupports,
   atFirstComposerRow,
   atLastComposerRow,
+  BADGE_COLUMN_WIDTH,
   type BannerLine,
   bannerCaretAt,
   bannerLines,
@@ -413,7 +414,9 @@ export const SessionList: FC<{
         if (id && manager.canLogin(id)) {
           setLoginAgent(id);
         } else {
-          setActionError(m.login.unsupported(''));
+          // 文言はエージェント名を差し込む形（空だと先頭に空白だけが残る）。
+          const name = manager.listAgents().find((a) => a.id === id)?.displayName ?? '';
+          setActionError(m.login.unsupported(name));
         }
       },
       // `/prompt` はリポジトリ追加指示（.codiva/prompt.md）のエディタを開く。
@@ -1005,26 +1008,30 @@ export const SessionList: FC<{
 
   const footerHint = modelSelect
     ? m.model.help
-    : agentSelect
-      ? m.agent.help
-      : promptEdit
-        ? m.prompt.help
-        : configView
-          ? m.config.help
-          : // ダイアログがキーを持っている間だけダイアログ用のヒント。list ゾーンでは
-            // ダイアログが見えていても操作対象は一覧なので、通常の一覧ヒントを出す。
-            dialogActive
-            ? m.list.helpPending
-            : zone === 'list'
-              ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
-                // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
-                // 含むヒントに切り替える。
-                target?.status === 'needs_login'
-                ? m.auth.listHint(targetAgentLabel)
-                : target && isResumable(target.status)
-                  ? m.resume.listHint
-                  : m.list.helpList
-              : m.list.helpComposer;
+    : // ログインダイアログもキーを飲む（Esc だけ効く）。ここを抜かすと、下の
+      // 一覧ヒント（Enter: 送信 / Tab: 一覧…）が出たまま何も効かない。
+      loginAgent !== null
+      ? m.login.help
+      : agentSelect
+        ? m.agent.help
+        : promptEdit
+          ? m.prompt.help
+          : configView
+            ? m.config.help
+            : // ダイアログがキーを持っている間だけダイアログ用のヒント。list ゾーンでは
+              // ダイアログが見えていても操作対象は一覧なので、通常の一覧ヒントを出す。
+              dialogActive
+              ? m.list.helpPending
+              : zone === 'list'
+                ? // 認証切れの行はまず「別ターミナルで claude にログイン」を促す（r だけ
+                  // 見せても再開できないため）。それ以外の再開可能な行は再開キー（r）を
+                  // 含むヒントに切り替える。
+                  target?.status === 'needs_login'
+                  ? m.auth.listHint(targetAgentLabel)
+                  : target && isResumable(target.status)
+                    ? m.resume.listHint
+                    : m.list.helpList
+                : m.list.helpComposer;
 
   // `/help` の全一覧はコマンドが増えるほど縦に伸びる（14 個で 24 行の端末に入らず、
   // Yoga がパレットの枠を潰して行が消えた）。ヘッダは装飾なので、開いている間だけ
@@ -1074,7 +1081,7 @@ export const SessionList: FC<{
                       {s.title}
                     </Text>
                   </Box>
-                  <Box width={12}>
+                  <Box width={BADGE_COLUMN_WIDTH}>
                     <ProgressBadge state={s} />
                   </Box>
                   {/* どのエージェントで走っているか（混在時のみ。単一なら列ごと出さない）。

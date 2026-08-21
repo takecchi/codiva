@@ -62,6 +62,12 @@ export const LoginDialog: FC<{
     });
     return () => {
       live = false;
+      // **アンマウントでもプロセスを畳む。** Esc（`cancel()`）だけに任せていると、
+      // ダイアログを開いたまま codiva を終了したとき `<cli> login --device-auth` が
+      // 孤児として残り、自分のタイムアウトまでポーリングし続ける（終了処理も
+      // クラッシュハンドラもこれを回収しない）。成功後の閉じでも呼ぶが、
+      // 終わったプロセスへの kill は no-op。
+      proc.cancel();
     };
   }, []);
 

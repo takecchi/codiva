@@ -35,6 +35,13 @@ export function showsBranchColumn(columns: number): boolean {
 }
 
 /**
+ * 一覧のステータスバッジ列の幅（セル）。**固定幅**なので、カタログのバッジ文言は
+ * この幅に収める必要がある（溢れると `truncate-end` で切れて読めない。折り返させると
+ * 1 セッションが 2 行になり、行のクリック判定が全部ズレる）。番人は `i18n.spec.ts`。
+ */
+export const BADGE_COLUMN_WIDTH = 12;
+
+/**
  * 一覧のエージェント列の幅（セル）。表示名（`Claude` / `Codex` / `Grok`）は最長 6 セルで、
  * 右に 1 セルの間隔を足した固定幅列。
  */

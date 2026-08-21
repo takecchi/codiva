@@ -783,15 +783,18 @@ export const SessionDetail: FC<{
 
   const footerHint = modelSelect
     ? m.model.help
-    : agentSelect
-      ? m.agent.help
-      : pending
-        ? dialogActive
-          ? m.detail.helpPending
-          : m.detail.helpLog
-        : panel === 'actions'
-          ? m.detail.helpActions
-          : m.detail.helpInput;
+    : // ログインダイアログは Esc しか効かないので、ヒントもそれに合わせる。
+      loginAgent !== null
+      ? m.login.help
+      : agentSelect
+        ? m.agent.help
+        : pending
+          ? dialogActive
+            ? m.detail.helpPending
+            : m.detail.helpLog
+          : panel === 'actions'
+            ? m.detail.helpActions
+            : m.detail.helpInput;
   // コマンドとして解決される入力か（`/` 付き、または詳細で使える名前と完全一致）。
   const commandPreview = commands.preview(buffer.value);
 
@@ -932,10 +935,16 @@ export const SessionDetail: FC<{
             agents={agentChoices}
             onSelect={(next) => {
               setAgentSelect(false);
+              // 「今と同じ」かはマネージャに聞く（`session.agent` はスロットルされた
+              // 購読値で、切替対応より前のセッションでは undefined にもなる）。
+              const unchanged = manager.getSessionAgent(session.id)?.id === next;
               if (manager.setSessionAgent(session.id, next)) {
                 const name = manager.getSessionAgent(session.id)?.displayName ?? '';
                 recovery.setNotice(m.agent.switched(name));
-              } else {
+              } else if (!unchanged) {
+                // **同じエージェントを選び直したのはエラーではない**（カーソルは
+                // 今のエージェントから始まるので `/agent` → Enter が最も打ちやすい）。
+                // 一覧側の `setDefaultAgent` も同じ false を「何もしない」と扱っている。
                 setActionError(m.agent.unavailable);
               }
               applyAnchor('bottom');

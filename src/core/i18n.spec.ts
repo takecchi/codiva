@@ -1,3 +1,4 @@
+import stringWidth from 'string-width';
 import { describe, expect, it } from 'vitest';
 import {
   detectLocaleLang,
@@ -8,6 +9,7 @@ import {
   normalizeLang,
   resolveLang,
 } from '@/core/i18n';
+import { BADGE_COLUMN_WIDTH } from '@/core/layout';
 
 describe('detectLocaleLang', () => {
   it.each([
@@ -78,6 +80,19 @@ describe('message catalogs', () => {
     const jaKeys = keyPaths(messages.ja as unknown as Record<string, unknown>);
     const enKeys = keyPaths(messages.en as unknown as Record<string, unknown>);
     expect(jaKeys).toEqual(enKeys);
+  });
+
+  // 一覧のバッジ列は固定幅（`BADGE_COLUMN_WIDTH`）。溢れる文言を入れると
+  // `truncate-end` で切れて読めず、折り返させれば 1 セッション = 1 行を前提にした
+  // クリック判定がズレる（英語の 'Awaiting permission' が実際に 19 セルあった）。
+  it.each(LANGS)('%s のバッジは一覧の列幅に収まる', (lang: Lang) => {
+    const b = messages[lang].badge;
+    const labels = Object.values(b).map((v) =>
+      typeof v === 'function' ? (v as (a: number, t: number) => string)(12, 34) : v,
+    );
+    for (const label of labels) {
+      expect(stringWidth(label), label).toBeLessThanOrEqual(BADGE_COLUMN_WIDTH);
+    }
   });
 
   it.each(LANGS)('%s renders dynamic strings without leftover placeholders', (lang: Lang) => {

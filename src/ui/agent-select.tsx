@@ -131,7 +131,11 @@ export const AgentSelect: FC<{
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>{mode === 'session' ? m.agent.warning : m.agent.defaultHint}</Text>
-        <Text dimColor>{onLogin ? `${m.agent.help} ・ ${m.agent.loginKey}` : m.agent.help}</Text>
+        {/* 区切りは `theme.ts` の記号を使う（全角の `・` を直書きすると英語 UI に
+            混ざる。ヒント行の区切りは他の画面と同じ `·`）。 */}
+        <Text dimColor>
+          {onLogin ? `${m.agent.help} ${glyph.dot} ${m.agent.loginKey}` : m.agent.help}
+        </Text>
       </Box>
     </Box>
   );
