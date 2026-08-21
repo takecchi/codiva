@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { handoffInstruction, lastUserInstruction, MAX_HANDOFF_FIELD_CHARS } from './agent-handoff';
+import {
+  handoffInstruction,
+  handoffTranscript,
+  lastUserInstruction,
+  MAX_HANDOFF_FIELD_CHARS,
+  MAX_HANDOFF_TRANSCRIPT_CHARS,
+} from './agent-handoff';
 import type { LogEntry } from './types';
 
 const entry = (seq: number, kind: LogEntry['kind'], text: string): LogEntry => ({
@@ -37,11 +43,21 @@ describe('handoffInstruction', () => {
       branch: 'codiva/add-login',
       task: 'ログイン画面を作る',
       lastInstruction: 'テストも書いて',
+      messages: [
+        entry(1, 'user', 'HogeHoge'),
+        entry(2, 'assistant_text', 'HogeHoge への回答'),
+        entry(3, 'user', 'FugaFuga'),
+        entry(4, 'assistant_text', 'FugaFuga への回答'),
+      ],
     });
     expect(text).toContain('taking over this session from Claude');
     expect(text).toContain('- Branch: codiva/add-login');
     expect(text).toContain('- Original task: ログイン画面を作る');
     expect(text).toContain('- Most recent instruction: テストも書いて');
+    expect(text).toContain('User:\nHogeHoge');
+    expect(text).toContain('Assistant:\nHogeHoge への回答');
+    expect(text).toContain('User:\nFugaFuga');
+    expect(text).toContain('Assistant:\nFugaFuga への回答');
     // 作業ツリーを自分で確かめてから続けさせる（要約を信じさせない）。
     expect(text).toContain('git status');
   });
@@ -64,5 +80,29 @@ describe('handoffInstruction', () => {
     });
     expect(text).toContain(`- Original task: ${'あ'.repeat(MAX_HANDOFF_FIELD_CHARS)}…`);
     expect(text).toContain('- Most recent instruction: 複数 行の 指示');
+  });
+});
+
+describe('handoffTranscript', () => {
+  it('会話以外のログ行を含めない', () => {
+    const text = handoffTranscript([
+      entry(1, 'user', '依頼'),
+      entry(2, 'tool_use', 'Bash(git status)'),
+      entry(3, 'tool_result', 'large output'),
+      entry(4, 'assistant_text', '回答'),
+      entry(5, 'system', 'completed'),
+    ]);
+    expect(text).toBe('User:\n依頼\n\nAssistant:\n回答');
+  });
+
+  it('上限を超えたら新しい会話を優先して省略を明示する', () => {
+    const text = handoffTranscript([
+      entry(1, 'user', 'old'.repeat(MAX_HANDOFF_TRANSCRIPT_CHARS / 3)),
+      entry(2, 'assistant_text', 'middle'.repeat(MAX_HANDOFF_TRANSCRIPT_CHARS / 3)),
+      entry(3, 'user', 'latest'),
+    ]);
+    expect(text).toContain('Earlier conversation omitted');
+    expect(text).toContain('User:\nlatest');
+    expect(text).not.toContain('oldoldold');
   });
 });

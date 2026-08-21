@@ -43,6 +43,22 @@ export type PermissionPolicy = (
 const defaultPolicy: PermissionPolicy = (toolName) =>
   toolName === 'AskUserQuestion' ? 'ask' : 'allow';
 
+/** Attach a provider-switch handoff to exactly the first prompt the new run consumes. */
+async function* withHandoff(
+  prompt: AsyncIterable<string>,
+  handoff: string | undefined,
+): AsyncIterable<string> {
+  let pending = handoff;
+  for await (const text of prompt) {
+    if (pending) {
+      yield `${pending}\n\n# Current instruction after the switch\n\n${text}`;
+      pending = undefined;
+    } else {
+      yield text;
+    }
+  }
+}
+
 /** Per-session knobs forwarded to the SDK query (sourced from the config file). */
 export interface SessionOptions {
   model?: string;
@@ -247,6 +263,7 @@ export class Session {
       branch: this.state.branch,
       task: this.state.prompt,
       lastInstruction: lastUserInstruction(this.state.messages),
+      messages: this.state.messages,
     });
     // 走っているターンを畳んでからでないと、2 本のストリームが同じ worktree を
     // 触ることになる。保留中の許可も解決しておく（未応答の tool_use で終わる
@@ -556,21 +573,19 @@ export class Session {
       const resume = this.attribution
         ? this.state.sdkSessionId
         : (this.deps.resume ?? this.state.sdkSessionId);
-      // worktree の環境説明（symlink 共有の注意書き）とリポジトリ追加指示をまとめた
-      // systemPrompt。どちらも無ければ undefined で、その場合は渡さない。
-      // 引き継ぎの説明は**この 1 回だけ**載せる（切替直後の最初の run）。ここで
-      // 落としておかないと、通信断からの再起動でも「前任者から引き継いだ」と
-      // 言い続けることになる。
+      // 引き継ぎは切替後の最初のユーザープロンプトにだけ添える。systemPrompt では
+      // ないのは、resume 済み Codex thread など provider によっては再開時の
+      // systemPrompt を読まないため。画面のログには元の入力だけを積んであるので、
+      // この内部添付がユーザー発言として二重表示されることはない。
       const handoff = this.handoff;
       this.handoff = undefined;
       const systemPrompt = composeSystemPrompt({
         ignoredFiles: opts?.ignoredFiles,
         repoPrompt: opts?.appendSystemPrompt,
-        handoff,
       });
       this.run = this.adapter.open({
         cwd: this.state.worktreePath,
-        prompt: this.inputQueue,
+        prompt: withHandoff(this.inputQueue, handoff),
         resume,
         options: {
           model,

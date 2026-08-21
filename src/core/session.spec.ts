@@ -952,6 +952,7 @@ describe('Session.setAgent', () => {
               seen.push(text);
               // provider が会話 id を発行したことにする（切替の往復で resume される）。
               yield { kind: 'session_started', sessionId: `${id}-thread` } as const;
+              yield { kind: 'assistant_text', text: `${id} answered: ${text}` } as const;
             }
           },
         };
@@ -973,7 +974,8 @@ describe('Session.setAgent', () => {
     await tick();
 
     // 切替前のストリームは畳まれているので、古いエージェントには届かない。
-    expect(b.seen).toEqual(['now you']);
+    expect(b.seen).toHaveLength(1);
+    expect(b.seen[0]).toContain('# Current instruction after the switch\n\nnow you');
     expect(a.seen).toEqual(['do the thing']);
     expect(session.getState().agent).toBe('codex');
   });
@@ -993,15 +995,17 @@ describe('Session.setAgent', () => {
     session.send('now you');
     await tick();
 
-    const briefing = b.systemPrompts[0];
+    const briefing = b.seen[0];
     expect(briefing).toContain('taking over this session from claude');
     expect(briefing).toContain('- Branch: codiva/t');
     expect(briefing).toContain('- Original task: do the thing');
+    expect(briefing).toContain('User:\ndo the thing');
+    expect(briefing).toContain('Assistant:\nclaude answered: do the thing');
 
     // 2 回目のターン（同じエージェント）には持ち越さない — 引き継ぎは済んでいる。
     session.send('and this');
     await tick();
-    expect(b.systemPrompts.slice(1).every((p) => p === undefined)).toBe(true);
+    expect(b.seen[1]).toBe('and this');
   });
 
   it('resumes the previous conversation when switching back', async () => {
@@ -1021,7 +1025,10 @@ describe('Session.setAgent', () => {
     // 2 回目の Claude は自分が発行した id で resume する（別 provider の id は渡さない）。
     expect(a.resumes).toEqual([undefined, 'claude-thread']);
     expect(b.resumes).toEqual([undefined]);
-    expect(a.seen).toEqual(['do the thing', 'back to claude']);
+    expect(a.seen[0]).toBe('do the thing');
+    expect(a.seen[1]).toContain('User (codex):\nto codex');
+    expect(a.seen[1]).toContain('Assistant (codex):\ncodex answered: to codex');
+    expect(a.seen[1]).toContain('# Current instruction after the switch\n\nback to claude');
   });
 
   it('stops the in-flight turn and hands queued follow-ups to the NEW agent', async () => {
