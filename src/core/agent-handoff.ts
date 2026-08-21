@@ -65,6 +65,59 @@ function utf8Length(text: string): number {
   return UTF8.encode(text).length;
 }
 
+/** 会話履歴ブロックの開始・終了タグ（{@link fitHandoff} が削る範囲の目印）。 */
+const HISTORY_OPEN = '<conversation-history>';
+const HISTORY_CLOSE = '</conversation-history>';
+
+/**
+ * 組み立て済みの引き継ぎを、指定バイト数（UTF-8）に収める（純粋）。
+ *
+ * なぜ要るか: {@link MAX_HANDOFF_TRANSCRIPT_BYTES} は**会話だけ**の予算で、Codex は
+ * systemPrompt（`.codiva/prompt.md` は無制限）とユーザーの指示文まで**同じ argv 1 本**に
+ * 載せる。合計が Linux の `MAX_ARG_STRLEN`（131,072 バイト）を超えると `spawn` が
+ * `E2BIG` で落ち、Codex アダプタは `thread.started` を見るまで引き継ぎを持ち続けるので
+ * **以後どのターンも同じ理由で落ち続けてセッションが詰む**。
+ *
+ * 削るのは**会話履歴の古い側だけ**（見出し・箇条書き・続け方の指示は残す）。ユーザーの
+ * 指示文や systemPrompt は削らない — そちらを黙って切ると指示の意味が変わる。
+ * 会話を全部落としても収まらないときは undefined（= 引き継ぎ無しで送る）。
+ */
+export function fitHandoff(handoff: string, budgetBytes: number): string | undefined {
+  if (utf8Length(handoff) <= budgetBytes) {
+    return handoff;
+  }
+  const open = handoff.indexOf(`${HISTORY_OPEN}\n`);
+  const close = handoff.indexOf(`\n${HISTORY_CLOSE}`);
+  if (open === -1 || close === -1 || close < open) {
+    return undefined;
+  }
+  const head = handoff.slice(0, open + HISTORY_OPEN.length + 1);
+  const tail = handoff.slice(close);
+  const fixed = utf8Length(head) + utf8Length(tail);
+  const turns = handoff.slice(open + HISTORY_OPEN.length + 1, close).split('\n\n');
+  // 新しい側から詰め直す（切替直後に効くのは直近の文脈）。
+  const kept: string[] = [];
+  let bytes = fixed + utf8Length(OMITTED_MARKER) + SEPARATOR_BYTES;
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const turn = turns[i];
+    if (turn === undefined) {
+      continue;
+    }
+    const size = utf8Length(turn) + (kept.length === 0 ? 0 : SEPARATOR_BYTES);
+    if (bytes + size > budgetBytes) {
+      break;
+    }
+    kept.unshift(turn);
+    bytes += size;
+  }
+  if (kept.length === 0) {
+    // 1 ターンも入らない = 会話を載せる余地が無い。引き継ぎ自体を諦める
+    // （黙って壊れるより、渡せなかったことをはっきりさせる）。
+    return undefined;
+  }
+  return `${head}${[OMITTED_MARKER, ...kept].join('\n\n')}${tail}`;
+}
+
 export interface HandoffInput {
   /** 引き継ぐ側の表示名（切替前のエージェント）。 */
   from: string;
@@ -104,7 +157,12 @@ export function stripHandoff(text: string): string {
     return text;
   }
   const marker = `\n\n${CURRENT_INSTRUCTION_HEADING}\n\n`;
-  const at = text.indexOf(marker);
+  // **最後の**境目で切る。`attachHandoff` はこの見出しを最上位の区切りとして
+  // 末尾に 1 回だけ置くが、引き継ぎの本文には会話ログ（= 任意のユーザー・
+  // アシスタント発話）がそのまま入るので、同じ行が中に現れることがある。
+  // `indexOf` だとそこで切ってしまい、**引き継ぎの残骸がユーザー発言として**
+  // ログに載る（それが `lastUserInstruction` に拾われ、次の切替で入れ子に写る）。
+  const at = text.lastIndexOf(marker);
   return at === -1 ? text : text.slice(at + marker.length);
 }
 
@@ -234,9 +292,9 @@ export function handoffInstruction(input: HandoffInput): string | undefined {
       'the switch, some of it may already be in your own context — repeated lines are not new',
       'instructions.',
       '',
-      '<conversation-history>',
+      HISTORY_OPEN,
       transcript,
-      '</conversation-history>',
+      HISTORY_CLOSE,
     );
   }
   lines.push(

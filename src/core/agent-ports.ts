@@ -117,6 +117,16 @@ export interface AgentRunRequest {
    * 解決するまでエージェントはブロックされてよい。
    */
   requestPermission: (request: Omit<PermissionRequest, 'id'>) => Promise<PermissionDecision>;
+  /**
+   * `options.handoff` を **provider へ実際に渡した**という報告（省略可）。
+   *
+   * 引き継ぎは 1 回きりなので、`Session` はこれが来るまで持ち続ける。渡す前に run が
+   * 死んだ経路（CLI 未導入・未ログイン・起動中の `Ctrl+C`・spawn 失敗）で落としてしまうと、
+   * ログインし直して送り直しても**切替の文脈が二度と渡らない**。アダプタは
+   * 「CLI が受け取った」と言える点でだけ呼ぶ（Claude なら SDK がそのメッセージを
+   * 取り出したとき、Codex なら `thread.started`、Grok なら `session/prompt` の応答）。
+   */
+  onHandoffDelivered?: () => void;
   abortController: AbortController;
 }
 

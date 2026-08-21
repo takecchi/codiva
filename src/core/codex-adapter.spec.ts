@@ -215,6 +215,35 @@ describe('createCodexAdapter turn loop', () => {
     await done;
   });
 
+  // 指示文は systemPrompt と引き継ぎもろとも **argv 1 本**として渡る。Linux の
+  // `MAX_ARG_STRLEN`（131,072 バイト）を超えると `spawn` が E2BIG で落ち、
+  // `thread.started` が来ないので引き継ぎが解除されず**以後のターンも同じ理由で
+  // 落ち続ける**（= セッションが詰む）。収まらない引き継ぎは削って、削ったことを残す。
+  it('argv の上限を超えるときは引き継ぎを削って通す', async () => {
+    const codex = makeFakeCodex();
+    const adapter = createCodexAdapter({ spawn: codex.spawn });
+    const options: AgentRunOptions = {
+      // 巨大な `.codiva/prompt.md` を持つリポジトリ。
+      systemPrompt: 'S'.repeat(130_000),
+      handoff:
+        '# Session handover (codiva)\n\n<conversation-history>\nUser:\nold\n</conversation-history>',
+    };
+    const { prompts, events, done } = drive(adapter, { options });
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    const sent = codex.requests[0]?.prompt ?? '';
+    expect(new TextEncoder().encode(sent).length).toBeLessThanOrEqual(131_072);
+    // 削ったのは引き継ぎだけ（ユーザーの指示と systemPrompt はそのまま）。
+    expect(sent).not.toContain('Session handover');
+    expect(sent.endsWith('go')).toBe(true);
+    expect(events.some((e) => e.kind === 'notice' && /handover skipped/.test(e.text))).toBe(true);
+
+    codex.at(0).end();
+    prompts.close();
+    await done;
+  });
+
   it('prepends the systemPrompt to the first prompt only', async () => {
     const codex = makeFakeCodex();
     const adapter = createCodexAdapter({ spawn: codex.spawn });
@@ -343,6 +372,32 @@ describe('createCodexAdapter completion fallback', () => {
       kind: 'turn_stopped',
       cause: 'failed',
       detail: 'codex exited with code 127',
+    });
+  });
+
+  // `failed` は**終端**（`STATUS_META.failed.resumable === false`）なので、再開できる
+  // 死に方をそこへ落とすと `codex exec resume <thread_id>` で続けられるのに導線が
+  // 消える。スレッド id が分かっているクラッシュ（Rust の panic = exit 101、
+  // 外からの SIGKILL = code null）は resumable な `connection` に倒す。
+  it('スレッドが分かっているクラッシュは再開可能な停止にする', async () => {
+    const codex = makeFakeCodex([
+      { code: 101, stderr: "thread 'main' panicked at src/lib.rs:1:1" },
+    ]);
+    const adapter = createCodexAdapter({ spawn: codex.spawn });
+    const { prompts, events, done } = drive(adapter);
+
+    prompts.push('go');
+    await waitFor(() => codex.requests.length === 1, 'the spawn');
+    codex.at(0).emit({ type: 'thread.started', thread_id: 'th-1' });
+    await waitFor(() => events.some((e) => e.kind === 'session_started'), 'thread.started');
+    codex.at(0).end();
+
+    prompts.close();
+    await done;
+    expect(events.at(-1)).toMatchObject({
+      kind: 'turn_stopped',
+      cause: 'connection',
+      detail: "thread 'main' panicked at src/lib.rs:1:1",
     });
   });
 });

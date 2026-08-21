@@ -28,20 +28,37 @@ import type {
 } from './types';
 import type { IgnoredFilesMode } from './worktree';
 
-/** Decide whether a tool runs automatically or is escalated to the user. */
+/**
+ * Decide whether a tool runs automatically or is escalated to the user.
+ *
+ * `kind` は「ツール実行の許可」か「ユーザーへの質問」か（アダプタが正規化した値）。
+ * **ツール名で質問を見分けてはいけない** — `AskUserQuestion` は Claude の名前で、
+ * Grok は `_x.ai/ask_user_question` を、他の provider はまた別の名前を使う。
+ */
 export type PermissionPolicy = (
   toolName: string,
   input: Record<string, unknown>,
+  kind?: PermissionRequest['kind'],
 ) => 'allow' | 'ask';
 
 /**
  * Default policy: run everything automatically so sessions are autonomous.
- * AskUserQuestion is always escalated — it *is* the "ask the user" channel.
+ * 質問（`kind: 'question'`）は常にユーザーへ上げる — それ*が*「ユーザーに聞く」経路で、
+ * 自動 allow すると**空の回答で「承諾した」と返してしまう**（provider には
+ * 「ユーザーは答えなかった」と同じに見え、質問が黙って無視される）。
  * (Phase 1 showed even Write reaches canUseTool under acceptEdits, so relying on
  * permissionMode alone would stall autonomy; we auto-allow here instead.)
  */
-const defaultPolicy: PermissionPolicy = (toolName) =>
-  toolName === 'AskUserQuestion' ? 'ask' : 'allow';
+const defaultPolicy: PermissionPolicy = (toolName, _input, kind) =>
+  isQuestion(toolName, kind) ? 'ask' : 'allow';
+
+/**
+ * 質問かどうか。`kind` を第一の根拠にし、`kind` を持たない古い呼び出し元のために
+ * Claude のツール名も見る（provider 固有の名前をここに増やさない）。
+ */
+export function isQuestion(toolName: string, kind?: PermissionRequest['kind']): boolean {
+  return kind === 'question' || toolName === 'AskUserQuestion';
+}
 
 /** Per-session knobs forwarded to the SDK query (sourced from the config file). */
 export interface SessionOptions {
@@ -135,6 +152,22 @@ export class Session {
    */
   private handoff?: string;
   private run?: AgentRun;
+  /**
+   * 走っている run の**世代**。`setAgent()` で 1 つ上がる。
+   *
+   * なぜ要るか: `setAgent()` はキューを閉じて `this.run` の参照を捨てるが、consume の
+   * `for await` は**そのイテレータを掴んだまま**なので、古い provider が遅れて出す
+   * イベントがまだ届く。`applyAgentEvent` に渡す帰属（`this.attribution`）は既に切替先へ
+   * 変わっているため、そのまま畳むと
+   * - 遅れて届いた `session_started`（Claude の `system/init` は起動に 1〜3 秒かかる）で
+   *   **前任者の resume id が切替先の id として保存される** → 次のターンで
+   *   `codex exec resume <claude の uuid>` を投げて必ず失敗し、`agentSessions` にも
+   *   `state.json` にも焼き付く（往復切替しても直らない）。
+   * - 古いターンの `turn_completed` で切替済みのセッションが `completed` になり、
+   *   auto-PR と完了通知まで走る。
+   * 世代が変わった run のイベントは**畳まずに読み捨てて**ループを閉じる。
+   */
+  private epoch = 0;
   /**
    * 未応答の許可要求の**待ち行列**（先頭 = いま UI に出ているもの）。
    *
@@ -276,6 +309,9 @@ export class Session {
     }
     this.restartAfterSwitch = this.consuming;
     this.run = undefined;
+    // 世代を上げる。畳んだ run が遅れて出すイベントは、これで「古い世代のもの」と
+    // 分かるので畳まずに読み捨てる（詳細は {@link epoch}）。
+    this.epoch += 1;
     // 畳んだのが**進行中のターン**なら、状態も「止まった」ことにする。`agent_switched`
     // は status を動かさないので、これが無いと積み残しが無いときに `running`（や応答
     // できない許可待ち）のまま張り付く — ストリームはもう無いので誰も先へ進めない。
@@ -404,8 +440,18 @@ export class Session {
       return;
     }
     this.dispatch({ kind: 'interrupted', error: USER_INTERRUPT_DETAIL, at: this.now() });
+    // **まだ始まっていないターンは投げない**（Grok アダプタが立ち上げ中の中断で
+    // 指示ごと捨てるのと同じ理由）。エージェント切替の直後は、畳んだループが終わるまで
+    // 新しい run が立たない予約状態（`restartAfterSwitch`）で、ここに `this.run` は無い。
+    // 予約を消さないと、`Ctrl+C` で `interrupted` にした直後に古いループの `finally` が
+    // 新しいエージェントを起こしてしまい、**切替後の最初の指示だけ中断できない**。
+    if (!this.run) {
+      this.restartAfterSwitch = false;
+      this.inputQueue.drain();
+      return;
+    }
     try {
-      await this.run?.interrupt?.();
+      await this.run.interrupt?.();
     } catch {
       // best-effort: サブプロセスがもう居ない transport への write は reject する
       // （setModel と同じ）。中断できなかった場合もストリームは生きているので、
@@ -521,7 +567,7 @@ export class Session {
    * ので、ここは codiva 自身のポリシー（`core/run-mode.ts`）だけを見る。
    */
   private requestPermission = (req: Omit<PermissionRequest, 'id'>): Promise<PermissionDecision> => {
-    if (this.policy(req.toolName, req.input) === 'allow') {
+    if (this.policy(req.toolName, req.input, req.kind) === 'allow') {
       return Promise.resolve({ behavior: 'allow', input: req.input });
     }
     this.reqSeq += 1;
@@ -539,6 +585,9 @@ export class Session {
   };
 
   private async consume(): Promise<void> {
+    // この run の世代。`setAgent()` が上げたら、ここから先のイベントは
+    // 「切替前の provider の残響」なので畳まない（詳細は {@link epoch}）。
+    const epoch = this.epoch;
     try {
       const opts = this.deps.options;
       // A per-session /model override wins over the configured default.
@@ -565,13 +614,17 @@ export class Session {
       // 画面のログには元の入力だけを積むので、この内部添付が二重表示されることはない。
       // CLI のトランスクリプトには**ユーザー発言として**残るが、復元は
       // `stripHandoff` を通るので詳細ビューにも `lastUserInstruction` にも漏れない。
+      //
+      // **ここで捨てない**。1 回きりの引き継ぎなので、`open()` の時点で落とすと
+      // provider へ渡る前に run が死んだ経路（CLI 未導入・未ログイン・起動直後の
+      // `Ctrl+C`）で黙って消える（ログインし直して送り直しても、もう引き継がれない）。
+      // 落とすのは**アダプタが「確かに渡した」と言ったとき**だけ（`onHandoffDelivered`）。
       const handoff = this.handoff;
-      this.handoff = undefined;
       const systemPrompt = composeSystemPrompt({
         ignoredFiles: opts?.ignoredFiles,
         repoPrompt: opts?.appendSystemPrompt,
       });
-      this.run = this.adapter.open({
+      const run = this.adapter.open({
         cwd: this.state.worktreePath,
         prompt: this.inputQueue,
         resume,
@@ -583,10 +636,24 @@ export class Session {
           systemPrompt,
           handoff,
         },
+        // 引き継ぎが provider へ渡ったという報告。**世代が変わっていたら無視する** —
+        // 切替後の `this.handoff` は次のエージェント向けの別物なので、畳んだ run の
+        // 遅れた報告でそれを消してはいけない。
+        onHandoffDelivered: () => {
+          if (epoch === this.epoch) {
+            this.handoff = undefined;
+          }
+        },
         requestPermission: this.requestPermission,
         abortController: this.abortController,
       });
-      for await (const event of this.run) {
+      this.run = run;
+      for await (const event of run) {
+        // 切替で畳んだ run の残響。**畳まずに抜ける**（`break` で run.return() が走り、
+        // 古いストリームも閉じる）。
+        if (epoch !== this.epoch) {
+          break;
+        }
         // Account-wide subscription usage is surfaced out-of-band (it isn't
         // per-session state) so the manager can aggregate it for the banner.
         if (event.kind === 'usage') {
@@ -596,7 +663,10 @@ export class Session {
         this.commit(applyAgentEvent(this.state, event, this.now(), this.attribution));
       }
     } catch (err) {
-      if (!this.abortController.signal.aborted) {
+      // 世代が変わっていれば、投げたのは切替前の provider（もう関係ない）。
+      // その失敗を今のエージェントの失敗として記録すると、切替直後のセッションが
+      // 身に覚えのないエラーで `failed` になる。
+      if (!this.abortController.signal.aborted && epoch === this.epoch) {
         const error = errorMessage(err);
         // 文言から分類するのはアダプタの仕事（provider ごとに言い回しが違う）。
         // 認証切れが最優先なのは、CLI の認証エラーがタイムアウトに*言及する*ことが
@@ -638,9 +708,14 @@ export class Session {
       // ここで新しいエージェントを起こして拾い直す。
       const switched = this.restartAfterSwitch;
       this.restartAfterSwitch = false;
+      const stale = epoch !== this.epoch;
       if (switched && this.inputQueue.pending > 0) {
         this.ensureConsuming();
-      } else if (!this.abortController.signal.aborted && isInterruptible(this.state.status)) {
+      } else if (
+        !stale &&
+        !this.abortController.signal.aborted &&
+        isInterruptible(this.state.status)
+      ) {
         // **最後の砦**: ストリームが終端イベント（`turn_completed` / `turn_stopped`）を
         // 出さずに終わった。streaming input mode ではプロンプト源を閉じるまで終わらない
         // のが正常なので、ここに来るのは想定外の終了（CLI が黙って落ちた等）。状態機械

@@ -68,11 +68,19 @@ function toUserMessage(text: string): SDKUserMessage {
 async function* toSdkPrompt(
   prompt: AsyncIterable<string>,
   handoff?: string,
+  onHandoffDelivered?: () => void,
 ): AsyncIterable<SDKUserMessage> {
   let pending = handoff;
   for await (const text of prompt) {
     yield toUserMessage(attachHandoff(text, pending));
-    pending = undefined;
+    // **`yield` の**後**で落とす**。async generator の続きが走るのは消費側（SDK）が
+    // 次を要求したとき = 今のメッセージを取り出したときなので、ここまで来れば
+    // 「確かに渡した」と言える。起動に失敗して query が throw する経路では
+    // ここへ来ないため、引き継ぎは `Session` に残り次の run で渡し直される。
+    if (pending !== undefined) {
+      pending = undefined;
+      onHandoffDelivered?.();
+    }
   }
 }
 
@@ -135,7 +143,7 @@ export function createClaudeAdapter(deps: {
 
       const opts = request.options;
       const handle = deps.queryFn({
-        prompt: toSdkPrompt(request.prompt, request.options.handoff),
+        prompt: toSdkPrompt(request.prompt, request.options.handoff, request.onHandoffDelivered),
         options: {
           cwd: request.cwd,
           permissionMode: opts.permissionMode ?? 'acceptEdits',

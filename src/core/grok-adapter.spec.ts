@@ -439,6 +439,33 @@ describe('createGrokAdapter', () => {
       });
     });
 
+    // `kind` は optional。CLI が名前を変えた・落としたときに「1 番目の選択肢」へ
+    // 落ちると、実データの先頭は `allow-once` なので**拒否したのに実行される**。
+    it('拒否できる選択肢が見当たらなければ cancelled で返す（allow に化けさせない）', async () => {
+      const grok = makeFakeGrok();
+      const { harness } = run(grok.spawn);
+      harness.prompts.push('rm it');
+      const proc = await grok.at(0);
+      await handshake(proc);
+      proc.emit({
+        jsonrpc: '2.0',
+        id: 906,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'sess-1',
+          toolCall: { toolCallId: 'c1', rawInput: {} },
+          // `kind` の無い（= CLI 側の語彙が変わった）選択肢。先頭は実行系。
+          options: [{ optionId: 'allow-once' }, { optionId: 'reject-once' }],
+        },
+      });
+      await waitFor(() => harness.permissions.length === 1, 'permission dialog');
+      harness.permissions[0]?.resolve({ behavior: 'deny', message: 'no' });
+      await waitFor(() => proc.sent.some((m) => m.id === 906), 'permission reply');
+      expect(proc.sent.find((m) => m.id === 906)?.result).toEqual({
+        outcome: { outcome: 'cancelled' },
+      });
+    });
+
     it('質問は QuestionSpec へ写り、回答は質問文をキーにしたマップで返す', async () => {
       const grok = makeFakeGrok();
       const { harness } = run(grok.spawn);
@@ -622,6 +649,62 @@ describe('createGrokAdapter', () => {
       await handshake(await grok.at(1), { sessionId: 'sess-2' });
       const second = await grok.at(1);
       await waitFor(() => second.find('session/prompt') !== undefined, 'prompt on the new process');
+    });
+
+    // 未応答要求の待ち行列は**接続ごと**に持つ。1 本にまとめていた頃は、死んだ
+    // プロセスの後片付け（stdout が閉じたときに待ち人を全部起こす処理）が
+    // **次のプロセスの** `initialize` まで「1 本目の stderr」で失敗させ、健全な
+    // プロセスを殺していた（実プロセスの SIGTERM は stdout が閉じるまで少し遅れる）。
+    it('死んだプロセスの後片付けが次のプロセスの要求を巻き込まない', async () => {
+      const procs: FakeProcess[] = [];
+      const spawn: GrokSpawn = () => {
+        const fake = makeFakeProcess();
+        procs.push(fake);
+        // kill しても stdout が閉じるのは少し後（= 実プロセスと同じタイミング）。
+        return {
+          [Symbol.asyncIterator]: () => fake.proc[Symbol.asyncIterator](),
+          send: (message: unknown) => fake.proc.send(message),
+          kill: () => {
+            setTimeout(() => fake.proc.kill(), 5);
+          },
+          result: () => fake.proc.result(),
+        };
+      };
+      const { harness } = run(spawn);
+      harness.prompts.push('one');
+      harness.prompts.push('two');
+
+      await waitFor(() => procs.length > 0, 'first process');
+      const first = procs[0];
+      if (!first) {
+        throw new Error('no first process');
+      }
+      first.setExit({ code: 1, stderr: 'first process stderr' });
+      await waitFor(() => first.find('initialize') !== undefined, 'initialize');
+      first.reply('initialize', { protocolVersion: 1 });
+      await waitFor(() => first.find('session/new') !== undefined, 'session/new');
+      first.replyError('session/new', {
+        code: -32000,
+        message: 'Authentication required',
+        data: 'no auth method id provided',
+      });
+
+      // 2 本目が起きる（1 本目の stdout はこの後で閉じる）。
+      await waitFor(() => procs.length > 1, 'second process');
+      const second = procs[1];
+      if (!second) {
+        throw new Error('no second process');
+      }
+      await waitFor(() => second.find('initialize') !== undefined, 'initialize on #2');
+      await new Promise((r) => setTimeout(r, 20)); // 1 本目の後片付けを通す
+      await handshake(second, { sessionId: 'sess-2' });
+      await waitFor(() => second.find('session/prompt') !== undefined, 'prompt on #2');
+
+      // 2 本目は生きたまま。止まったのは 1 本目のターンだけ。
+      expect(second.wasKilled()).toBe(false);
+      const stops = harness.events.filter((e) => e.kind === 'turn_stopped');
+      expect(stops).toHaveLength(1);
+      expect(stops[0]).toMatchObject({ cause: 'auth' });
     });
 
     it('ターンの最中にプロセスが死んだら、stderr を理由にして再開可能な停止にする', async () => {

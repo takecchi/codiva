@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   attachHandoff,
+  fitHandoff,
   handoffInstruction,
   handoffTranscript,
   lastUserInstruction,
@@ -177,6 +178,54 @@ describe('handoffTranscript', () => {
   });
 });
 
+describe('fitHandoff', () => {
+  /** 会話をたっぷり載せた引き継ぎ（Codex の argv 上限の検証用）。 */
+  const briefing = (): string => {
+    const messages = Array.from({ length: 30 }, (_, i) =>
+      entry(i + 1, i % 2 === 0 ? 'user' : 'assistant_text', `turn${i} ${'x'.repeat(3000)}`),
+    );
+    const text = handoffInstruction({ from: 'Claude', branch: 'codiva/t', messages });
+    if (!text) {
+      throw new Error('fixture');
+    }
+    return text;
+  };
+
+  it('予算に収まっているものはそのまま返す', () => {
+    const text = briefing();
+    expect(fitHandoff(text, bytes(text))).toBe(text);
+  });
+
+  // Codex は systemPrompt（`.codiva/prompt.md` は無制限）とユーザーの指示文まで
+  // **同じ argv 1 本**に載せる。合計が MAX_ARG_STRLEN を超えると spawn が E2BIG で
+  // 落ち、`thread.started` が来ないので引き継ぎが解除されず**毎ターン落ち続ける**。
+  it('予算を超えたら会話の古い側から削って収める', () => {
+    const text = briefing();
+    const budget = Math.floor(bytes(text) / 2);
+    const fitted = fitHandoff(text, budget);
+    expect(fitted).toBeDefined();
+    expect(bytes(fitted ?? '')).toBeLessThanOrEqual(budget);
+    // 見出し・箇条書き・続け方の指示は残す。
+    expect(fitted).toContain('# Session handover (codiva)');
+    expect(fitted).toContain('- Branch: codiva/t');
+    expect(fitted).toContain('inspect the working tree yourself');
+    // 直近の会話は残り、古い会話は落ちて省略が明示される。
+    expect(fitted).toContain('turn29');
+    expect(fitted).not.toContain('turn0 ');
+    expect(fitted).toContain('Older conversation omitted');
+  });
+
+  it('会話を 1 ターンも載せられなければ諦める（undefined）', () => {
+    expect(fitHandoff(briefing(), 100)).toBeUndefined();
+  });
+
+  it('会話ブロックの無い引き継ぎは削りようがない（undefined）', () => {
+    const text = handoffInstruction({ from: 'Claude', branch: 'codiva/t' });
+    expect(text).toBeDefined();
+    expect(fitHandoff(text ?? '', 10)).toBeUndefined();
+  });
+});
+
 describe('attachHandoff / stripHandoff', () => {
   it('引き継ぎが無ければ素通し', () => {
     expect(attachHandoff('やって', undefined)).toBe('やって');
@@ -203,5 +252,26 @@ describe('attachHandoff / stripHandoff', () => {
   it('見出しで始まらない入力は触らない（ユーザーの本文を削らない）', () => {
     const text = '# Current instruction after the switch\n\nこれは普通の指示';
     expect(stripHandoff(text)).toBe(text);
+  });
+
+  // 引き継ぎの本文には会話ログがそのまま入るので、境目の見出しと同じ行が**中に**
+  // 現れうる。最初の一致で切ると引き継ぎの残骸がユーザー発言として復元され、
+  // それが `lastUserInstruction` に拾われて次の切替で入れ子に写る。
+  it('会話ログの中に境目と同じ行があっても、最後の境目で切る', () => {
+    const handoff = handoffInstruction({
+      from: 'Claude',
+      task: '最初の指示',
+      messages: [
+        entry(1, 'user', '最初の指示'),
+        // エージェントが見出しをそのまま書き写した（引用した）ケース。
+        entry(
+          2,
+          'assistant_text',
+          'こう書きました:\n\n# Current instruction after the switch\n\nおわり',
+        ),
+      ],
+    });
+    const sent = attachHandoff('次はこれ', handoff);
+    expect(stripHandoff(sent)).toBe('次はこれ');
   });
 });

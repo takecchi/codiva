@@ -1,5 +1,5 @@
 import type { AgentEvent } from './agent-events';
-import { attachHandoff } from './agent-handoff';
+import { attachHandoff, fitHandoff } from './agent-handoff';
 import type {
   AgentAdapter,
   AgentAvailability,
@@ -104,6 +104,25 @@ export const CODEX_CAPABILITIES: AgentCapabilities = {
  */
 function withSystemPrompt(prompt: string, systemPrompt: string | undefined): string {
   return systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
+}
+
+/**
+ * 指示文 1 本（= argv の 1 引数）に載せてよい最大バイト数。
+ *
+ * Linux の `execve` は引数 1 本あたり `MAX_ARG_STRLEN`（32 ページ = 131,072 バイト）で
+ * 打ち切り、超えると `E2BIG` で**起動そのもの**が失敗する（macOS には per-arg の
+ * 上限が無いので手元では再現しない）。余白は引き継ぎの境目の見出しなど数百バイトぶん。
+ */
+const MAX_PROMPT_BYTES = 128_000;
+
+/** `attachHandoff` が挟む境目（見出し + 空行）ぶんの概算バイト数。 */
+const MARKER_BYTES = 64;
+
+const UTF8 = new TextEncoder();
+
+/** UTF-8 のバイト長（argv に載る実サイズ）。 */
+function utf8Length(text: string): number {
+  return UTF8.encode(text).length;
 }
 
 /** `AgentAdapter` を Codex 用に組み立てる。`spawn` は DI（テストはフェイクを注入）。 */
@@ -242,10 +261,33 @@ export function createCodexAdapter(deps: {
               // 付かず、次のターンは**新しいスレッド**として始まる。latch していると
               // そこで前置されず、systemPrompt を一度も渡せないセッションになる
               // （symlink 共有の注意書きが落ちると、リンク越しに元リポジトリを壊しうる）。
-              const userPrompt = attachHandoff(text, handoff);
-              const prompt = threadId
-                ? userPrompt
-                : withSystemPrompt(userPrompt, request.options.systemPrompt);
+              const systemPrompt = threadId ? undefined : request.options.systemPrompt;
+
+              // **argv 1 本の上限に収める**。指示文は systemPrompt と引き継ぎもろとも
+              // 1 つの引数として渡るので（`utils/codex.ts` の `codexArgs`）、超えると
+              // `spawn` が `E2BIG` で落ちる。しかも引き継ぎの解除点は `thread.started`
+              // なので、落ちるとスレッドが付かず**以後のターンも同じ理由で落ち続ける**
+              // （= セッションが詰む）。削るのは引き継ぎの会話履歴だけで、ユーザーの
+              // 指示文と systemPrompt は削らない。
+              const overhead =
+                utf8Length(text) + (systemPrompt ? utf8Length(systemPrompt) + 7 : 0) + MARKER_BYTES;
+              const fitted =
+                handoff === undefined
+                  ? undefined
+                  : fitHandoff(handoff, Math.max(0, MAX_PROMPT_BYTES - overhead));
+              if (handoff !== undefined && fitted === undefined) {
+                // 会話を 1 ターンも載せられない（巨大な `.codiva/prompt.md` / 長文の指示）。
+                // 黙って捨てず 1 行残す。引き継ぎはここで諦める（持ち続けても毎ターン
+                // 同じ理由で落とすだけ）。
+                yield {
+                  kind: 'notice',
+                  text: 'handover skipped: the prompt would exceed the argument size limit',
+                };
+                handoff = undefined;
+                request.onHandoffDelivered?.();
+              }
+              const userPrompt = attachHandoff(text, fitted);
+              const prompt = withSystemPrompt(userPrompt, systemPrompt);
 
               const proc = deps.spawn({
                 cwd: request.cwd,
@@ -276,7 +318,12 @@ export function createCodexAdapter(deps: {
                     // 既存スレッドへ戻る場合もここを通る（実測: codex 0.147 系。同じ
                     // thread_id が返る）。ここが唯一の解除点なので、出さなくなったら
                     // 引き継ぎが毎ターン前置され続ける。
-                    handoff = undefined;
+                    if (handoff !== undefined) {
+                      handoff = undefined;
+                      // `Session` 側も同じ条件で落とす（渡る前に run が死んだら
+                      // 次の run で渡し直せるように、持ち主は Session のまま）。
+                      request.onHandoffDelivered?.();
+                    }
                     probeDuringTurn(event.thread_id);
                   } else if (event.type === 'turn.completed' || event.type === 'turn.failed') {
                     sawTerminal = true;
@@ -301,9 +348,20 @@ export function createCodexAdapter(deps: {
               if (!interrupted && !request.abortController.signal.aborted && !sawTerminal) {
                 const { code, stderr } = proc.result();
                 const detail = stderr.trim() || `codex exited with code ${code ?? 'null'}`;
+                // **終端イベントを出さずに死んだプロセスは `failed` に落とさない。**
+                // Rust の panic（exit 101）や外からの SIGKILL（code null）は
+                // どの分類パターンにも当たらないので `failed` = **終端**になり、
+                // `codex exec resume <thread_id>` で続けられるのに再開の導線が消える。
+                // スレッド id が分かっているなら resumable な `connection` に倒す
+                // （Grok アダプタが `EXITED_CODE` でやっているのと同じ床）。
+                const cause = classifyCodexError(detail);
                 yield code === 0
                   ? { kind: 'turn_completed', text: '' }
-                  : { kind: 'turn_stopped', cause: classifyCodexError(detail), detail };
+                  : {
+                      kind: 'turn_stopped',
+                      cause: cause === 'failed' && threadId ? 'connection' : cause,
+                      detail,
+                    };
               }
 
               // 問い合わせの回収は**終端イベントを流したあと**。`model_resolved` は
