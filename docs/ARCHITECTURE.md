@@ -65,7 +65,7 @@ codiva/
 │   │   ├── agent-events.ts    # AgentEvent の語彙 + applyAgentEvent()（全 provider 共通の畳み込み・純粋）
 │   │   ├── agent-capabilities.ts # capability による UI 縮退の判定（不明なら縮退しない・showsAccountInfo）
 │   │   ├── agent-display.ts   # 「どのセッションが何で走っているか」の判定（sessionAgentId / usesMultipleAgents）
-│   │   ├── agent-handoff.ts   # 切替先へ渡す状況説明（英語固定・systemPrompt に 1 回だけ載る）
+│   │   ├── agent-handoff.ts   # 切替先へ渡す状況説明 + 会話ログの写し（英語固定・切替後の最初の指示に 1 回だけ載る）
 │   │   ├── claude-adapter.ts  # Claude 用 AgentAdapter（query() の組み立て・canUseTool の写像）
 │   │   ├── claude-parse.ts    # parseClaudeMessage()（SDK メッセージ形状の解釈を集約・純粋）
 │   │   ├── claude-errors.ts   # Claude CLI の失敗分類（文言/typed kind/HTTP status → AgentStopCause）
@@ -243,9 +243,10 @@ Claude のログインは env / 資格情報ファイルで分かるときだけ
 
 | 引き継がれるもの | 引き継がれないもの |
 |---|---|
-| worktree・ブランチ・作業ツリーの内容 | モデル側の会話文脈（provider ごとに別のトランスクリプト） |
+| worktree・ブランチ・作業ツリーの内容 | provider 固有のセッションそのもの（各 CLI が別のトランスクリプトを持つ） |
 | codiva 側のログ（`messages`）・タイトル・PR・稼働時間 | `sdkSessionId`（切替先の `agentSessions` に無ければ undefined ＝新しい会話） |
-| `agentSessions`（provider ごとの resume id） | `streamingText`（前のエージェントの途中表示） |
+| 会話の中身（`messages` の user / assistant_text を写して渡す ⇒ 下記の引き継ぎ） | `streamingText`（前のエージェントの途中表示） |
+| `agentSessions`（provider ごとの resume id） | ツール実行・system / error のログ行（量が大きく、作業ツリーを見れば足りる） |
 | セッションの状態（`SessionStatus`）| `model`（解決済みモデルは provider ごとに別物。次のターンが埋める） |
 
 戻ってきたときに続きから再開できるよう、`agentSessions: Partial<Record<AgentId, string>>` に
@@ -267,18 +268,38 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
   セッションのログ行の形を変えないため（切替を使っていないユーザーには何も増えない）。
   詳細ビューはこの帰属が変わる境界に区切り行（`── ここから Codex ──`）を 1 本挿む
   （行の挿入は `core/scroll.ts` の `logLines(…, dividerFor)`、文言はカタログ + アダプタの表示名）。
-- **引き継ぎの状況説明を 1 回だけ渡す**（`core/agent-handoff.ts` の `handoffInstruction`）。
-  切替先は前の会話を持たないので、何も渡さないと「途中まで作業された作業ツリー」を白紙から
-  見ることになり、済んだ作業をやり直したり直前の指示を無視したりする。ブランチ・最初の指示・
-  直前の指示を並べ、**続ける前に自分で `git status` / `git diff` を読む**よう促す文を
-  `AgentRunOptions.systemPrompt`（`composeSystemPrompt` の最後の節）に載せる。
+- **引き継ぎを 1 回だけ渡す**（`core/agent-handoff.ts` の `handoffInstruction`）。切替先は
+  provider 固有の会話を持てないので、何も渡さないと「途中まで作業された作業ツリー」を白紙から
+  見ることになり、済んだ作業をやり直したり直前の指示を無視したりする。渡すのは
+  ブランチ・最初の指示・直前の指示に加えて、**codiva 側のログから写した会話そのもの**
+  （`handoffTranscript` = `user` / `assistant_text` だけ。ツール実行・system 行は落とす）と、
+  **続ける前に自分で `git status` / `git diff` を読む**よう促す文。
+  - **`AgentRunOptions.handoff` で渡し、アダプタが切替後の最初のユーザープロンプトに前置する**
+    （`attachHandoff`）。**systemPrompt には載せない** — `codex exec resume` のように再開時に
+    systemPrompt を読み直さない provider があり、往復切替でだけ引き継ぎが消える。
+    アダプタを増やすときは `request.options.handoff` の扱いを必ず実装する（番人は 3 つの
+    `*-adapter.spec.ts`）。
   - **使い捨て**にする（`Session` が次の `open()` で消費する）。常設にすると、引き継ぎが済んだ
     あとのターンや通信断からの再起動でも「前任者から引き継いだ」と言い続けることになる。
+    ただし**アダプタ側では「実際に provider へ渡るまで」持つ** — 立ち上げ前に中断された
+    ターン（Grok）や `thread.started` 前に落ちたターン（Codex）で捨てると、1 回きりの
+    引き継ぎを空振りで使い切ってしまう。
   - **キューへ指示として積まない**。積むと切替直後に「状況を読むだけのターン」が 1 本走り、
     provider のプロセスを無駄に立てる（ユーザーが次の指示を出すまで何も起こらないのが正しい）。
-  - 各項目は 1 行に畳んで `MAX_HANDOFF_FIELD_CHARS` で切る（指示文はファイルを丸ごと貼った
-    ものになりうるので、systemPrompt が本文より大きくなるのを防ぐ）。AI 向けの文字列なので
-    i18n カタログには置かない（英語固定。`SHARED_IGNORED_FILES_NOTICE` と同じ扱い）。
+  - 各項目は 1 行に畳んで `MAX_HANDOFF_FIELD_CHARS` で切り、会話は
+    **`MAX_HANDOFF_TRANSCRIPT_BYTES` = UTF-8 バイトの予算**で新しい方から詰める（切ったことは
+    1 行で明示する）。**文字数ではなくバイト数**なのは、Codex が指示文を argv で渡すため
+    （Linux の `MAX_ARG_STRLEN` = 131,072 バイト。日本語なら文字数の 3 倍になる。
+    docs/TECH_NOTES.md 参照）。
+  - **往復切替では重複を許す**。切替先が自分のスレッドを resume できるときはそのぶん文脈が
+    重なるが、resume が失敗した・圧縮で落ちた場合に「足りない」方が害が大きいので全部渡し、
+    重複が新しい指示ではないことは引き継ぎ文の中で断る。
+  - 引き継ぎは provider には**ユーザーメッセージ**として届くので CLI のトランスクリプトにも
+    そう残る。ログ復元（`core/transcript.ts`）は `stripHandoff` を通し、ユーザーが実際に
+    打った指示だけを積む（通さないと詳細ビューに巨大な引き継ぎが「ユーザー発言」として並び、
+    `lastUserInstruction` もそれを拾って次の引き継ぎが入れ子になる）。
+  - AI 向けの文字列なので i18n カタログには置かない（英語固定。`SHARED_IGNORED_FILES_NOTICE`
+    と同じ扱い）。
 
 ### 5. Claude 専用機能は capability で optional 化する
 

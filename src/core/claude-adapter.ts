@@ -7,6 +7,7 @@ import type {
   SettingSource,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEvent } from './agent-events';
+import { attachHandoff } from './agent-handoff';
 import type {
   AgentAdapter,
   AgentAvailability,
@@ -64,9 +65,14 @@ function toUserMessage(text: string): SDKUserMessage {
   return { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null };
 }
 
-async function* toSdkPrompt(prompt: AsyncIterable<string>): AsyncIterable<SDKUserMessage> {
+async function* toSdkPrompt(
+  prompt: AsyncIterable<string>,
+  handoff?: string,
+): AsyncIterable<SDKUserMessage> {
+  let pending = handoff;
   for await (const text of prompt) {
-    yield toUserMessage(text);
+    yield toUserMessage(attachHandoff(text, pending));
+    pending = undefined;
   }
 }
 
@@ -129,7 +135,7 @@ export function createClaudeAdapter(deps: {
 
       const opts = request.options;
       const handle = deps.queryFn({
-        prompt: toSdkPrompt(request.prompt),
+        prompt: toSdkPrompt(request.prompt, request.options.handoff),
         options: {
           cwd: request.cwd,
           permissionMode: opts.permissionMode ?? 'acceptEdits',

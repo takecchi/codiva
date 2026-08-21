@@ -128,9 +128,10 @@ export class Session {
    */
   private attribution?: AgentId;
   /**
-   * 切替直後の 1 回だけ systemPrompt に載せる引き継ぎの状況説明
-   * （`core/agent-handoff.ts`）。**使い捨て**にするのは、引き継ぎが済んだ以降の
-   * ターンでも「前任者から引き継いだ」と言い続けないため。
+   * 切替直後の 1 回だけ渡す引き継ぎ（`core/agent-handoff.ts`）。`AgentRunOptions.handoff`
+   * として次の `open()` が消費し、アダプタが最初のユーザープロンプトに前置する。
+   * **使い捨て**にするのは、引き継ぎが済んだ以降のターンでも「前任者から引き継いだ」と
+   * 言い続けないため。
    */
   private handoff?: string;
   private run?: AgentRun;
@@ -247,6 +248,7 @@ export class Session {
       branch: this.state.branch,
       task: this.state.prompt,
       lastInstruction: lastUserInstruction(this.state.messages),
+      messages: this.state.messages,
     });
     // 走っているターンを畳んでからでないと、2 本のストリームが同じ worktree を
     // 触ることになる。保留中の許可も解決しておく（未応答の tool_use で終わる
@@ -556,17 +558,18 @@ export class Session {
       const resume = this.attribution
         ? this.state.sdkSessionId
         : (this.deps.resume ?? this.state.sdkSessionId);
-      // worktree の環境説明（symlink 共有の注意書き）とリポジトリ追加指示をまとめた
-      // systemPrompt。どちらも無ければ undefined で、その場合は渡さない。
-      // 引き継ぎの説明は**この 1 回だけ**載せる（切替直後の最初の run）。ここで
-      // 落としておかないと、通信断からの再起動でも「前任者から引き継いだ」と
-      // 言い続けることになる。
+      // 引き継ぎは切替後の最初のユーザープロンプトにだけ添える（前置はアダプタの仕事 =
+      // `attachHandoff`）。systemPrompt に載せないのは、resume 済みの Codex thread など
+      // provider によっては再開時に systemPrompt を読み直さないため。
+      //
+      // 画面のログには元の入力だけを積むので、この内部添付が二重表示されることはない。
+      // CLI のトランスクリプトには**ユーザー発言として**残るが、復元は
+      // `stripHandoff` を通るので詳細ビューにも `lastUserInstruction` にも漏れない。
       const handoff = this.handoff;
       this.handoff = undefined;
       const systemPrompt = composeSystemPrompt({
         ignoredFiles: opts?.ignoredFiles,
         repoPrompt: opts?.appendSystemPrompt,
-        handoff,
       });
       this.run = this.adapter.open({
         cwd: this.state.worktreePath,
@@ -578,6 +581,7 @@ export class Session {
           permissionMode: opts?.permissionMode,
           maxBudgetUsd: opts?.maxBudgetUsd,
           systemPrompt,
+          handoff,
         },
         requestPermission: this.requestPermission,
         abortController: this.abortController,

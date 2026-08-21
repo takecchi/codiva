@@ -1,3 +1,4 @@
+import { stripHandoff } from './agent-handoff';
 import { summarizeToolUse, toolResultSummary } from './claude-parse';
 import { capLogEntries, clipLogText, MAX_LOG_ENTRIES } from './log-buffer';
 import type { LogEntry } from './types';
@@ -72,7 +73,7 @@ function appendUserLine(out: History, content: unknown, timestamp: number | unde
   // A plain string is the prompt the user typed; block arrays carry either
   // typed text blocks or tool_result blocks (summarized like the live reducer).
   if (typeof content === 'string') {
-    const text = content.trim();
+    const text = stripHandoff(content).trim();
     if (text.length > 0) {
       out.push({ kind: 'user', text, timestamp });
     }
@@ -87,7 +88,7 @@ function appendUserLine(out: History, content: unknown, timestamp: number | unde
     }
     const block = raw as TranscriptContentBlock;
     if (block.type === 'text' && typeof block.text === 'string') {
-      const text = block.text.trim();
+      const text = stripHandoff(block.text).trim();
       if (text.length > 0) {
         out.push({ kind: 'user', text, timestamp });
       }

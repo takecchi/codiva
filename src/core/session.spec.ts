@@ -938,6 +938,7 @@ describe('Session.setAgent', () => {
     const seen: string[] = [];
     const resumes: (string | undefined)[] = [];
     const systemPrompts: (string | undefined)[] = [];
+    const handoffs: (string | undefined)[] = [];
     const adapter: AgentAdapter = {
       id,
       displayName: id,
@@ -946,18 +947,20 @@ describe('Session.setAgent', () => {
       open(request: AgentRunRequest) {
         resumes.push(request.resume);
         systemPrompts.push(request.options.systemPrompt);
+        handoffs.push(request.options.handoff);
         return {
           async *[Symbol.asyncIterator]() {
             for await (const text of request.prompt) {
               seen.push(text);
               // provider が会話 id を発行したことにする（切替の往復で resume される）。
               yield { kind: 'session_started', sessionId: `${id}-thread` } as const;
+              yield { kind: 'assistant_text', text: `${id} answered: ${text}` } as const;
             }
           },
         };
       },
     };
-    return { adapter, seen, resumes, systemPrompts };
+    return { adapter, seen, resumes, systemPrompts, handoffs };
   }
 
   it('routes the next instruction to the new agent, not the old one', async () => {
@@ -979,29 +982,61 @@ describe('Session.setAgent', () => {
   });
 
   it('hands the new agent a handover briefing on the first run only', async () => {
-    // 切替先は前の会話を持たない（各 CLI が自分のトランスクリプトを持つ）ので、
-    // worktree の状況を systemPrompt で 1 回だけ渡す（`core/agent-handoff.ts`）。
+    // 切替先は provider 固有の会話を引き継げない（各 CLI が自分のトランスクリプトを
+    // 持つ）ので、codiva 側のログを `AgentRunOptions.handoff` で 1 回だけ渡す
+    // （`core/agent-handoff.ts`。systemPrompt には載せない — resume したスレッドに
+    // systemPrompt を渡し直さない provider があるため）。
     const a = recorder('claude');
     const b = recorder('codex');
     const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
     session.start();
     await tick();
     // 切替前は引き継ぎの説明を渡さない。
+    expect(a.handoffs).toEqual([undefined]);
     expect(a.systemPrompts).toEqual([undefined]);
 
     session.setAgent(b.adapter);
     session.send('now you');
     await tick();
 
-    const briefing = b.systemPrompts[0];
+    const briefing = b.handoffs[0];
     expect(briefing).toContain('taking over this session from claude');
     expect(briefing).toContain('- Branch: codiva/t');
     expect(briefing).toContain('- Original task: do the thing');
+    // 会話そのもの（ユーザー・アシスタント双方）が載っているのがこの PR の眼目。
+    expect(briefing).toContain('User:\ndo the thing');
+    expect(briefing).toContain('Assistant:\nclaude answered: do the thing');
+    // 引き継ぎは systemPrompt には混ぜない（役割を分けておく）。
+    expect(b.systemPrompts).toEqual([undefined]);
 
     // 2 回目のターン（同じエージェント）には持ち越さない — 引き継ぎは済んでいる。
     session.send('and this');
     await tick();
-    expect(b.systemPrompts.slice(1).every((p) => p === undefined)).toBe(true);
+    expect(b.handoffs.slice(1).every((p) => p === undefined)).toBe(true);
+  });
+
+  it('carries the other agent conversation back on a round trip', async () => {
+    const a = recorder('claude');
+    const b = recorder('codex');
+    const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+
+    session.setAgent(b.adapter);
+    session.send('to codex');
+    await tick();
+    session.setAgent(a.adapter);
+    session.send('back to claude');
+    await tick();
+
+    // Claude へ戻るときの引き継ぎには、Codex 側でのやり取りも載る。帰属が付くのは
+    // **エージェントの発言だけ**（ユーザーの指示は誰が受けても「ユーザー」なので、
+    // `user_input` は `reduce` を通り attribution を刻まない）。
+    const briefing = a.handoffs[1];
+    expect(briefing).toContain('User:\nto codex');
+    expect(briefing).toContain('Assistant (codex):\ncodex answered: to codex');
+    // 自分（Claude）が切替前に話したぶんも、帰属なしでそのまま載る。
+    expect(briefing).toContain('Assistant:\nclaude answered: do the thing');
   });
 
   it('resumes the previous conversation when switching back', async () => {

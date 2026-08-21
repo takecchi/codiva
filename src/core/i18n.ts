@@ -200,8 +200,9 @@ export interface Messages {
     /** ダイアログ下部の操作ヒント */
     help: string;
     /**
-     * 切替の注意書き。モデル側の文脈は provider をまたげない（各 CLI が自分の
-     * トランスクリプトを持つ）ので、引き継がれるのは worktree と codiva のログだけ。
+     * 切替の注意書き。provider 固有のセッションはまたげない（各 CLI が自分の
+     * トランスクリプトを持つ）が、codiva が持っている会話ログは切替先へ写す
+     * （`core/agent-handoff.ts`）。worktree はそのまま共有される。
      */
     warning: string;
     /** 今このセッションを駆動している行に付ける印（詳細ビュー） */
@@ -656,7 +657,7 @@ const ja: Messages = {
   agent: {
     title: 'エージェントを選択',
     help: '↑↓: 選択 ・ Enter: 決定 ・ Esc: キャンセル',
-    warning: '会話の文脈は引き継がれません（worktree の変更とログはそのまま）',
+    warning: '会話ログを切替先に引き継ぎます（worktree の変更もそのまま）',
     current: '使用中',
     currentDefault: '既定',
     defaultHint: '以降の新規セッションに適用されます',
@@ -957,7 +958,7 @@ const en: Messages = {
   agent: {
     title: 'Select agent',
     help: '↑↓: select · Enter: confirm · Esc: cancel',
-    warning: 'The conversation context does not carry over (worktree changes and log stay)',
+    warning: 'The conversation log is handed to the new agent (worktree changes stay too)',
     current: 'in use',
     currentDefault: 'default',
     defaultHint: 'Applies to new sessions from now on',

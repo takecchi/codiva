@@ -96,6 +96,8 @@ export interface AgentRunOptions {
   maxBudgetUsd?: number;
   /** worktree の環境説明 + リポジトリ追加指示（`core/system-prompt.ts`）。 */
   systemPrompt?: string;
+  /** `/agent` 切替後の最初の provider 向け指示にだけ添える会話の引き継ぎ。 */
+  handoff?: string;
 }
 
 /** `AgentAdapter.open` への入力。 */

@@ -95,30 +95,27 @@ never write into the main repository's working tree, where those shared targets
 live.`;
 
 /**
- * worktree の環境説明・リポジトリ追加指示・引き継ぎの状況説明から systemPrompt を
- * 組み立てる。
+ * worktree の環境説明とリポジトリ追加指示から systemPrompt を組み立てる。
  *
- * 順序は「環境説明 → リポジトリ追加指示 → 引き継ぎ」。前者は前提条件の説明、次は著者が
- * 書いた常設の指示、最後がこのターン限りの状況（`core/agent-handoff.ts`）で、
- * より具体的で今すぐ効くものを後ろに置く。
+ * 順序は「環境説明 → リポジトリ追加指示」。前者は前提条件の説明、後者は著者が書いた
+ * 常設の指示で、より具体的なものを後ろに置く。
  *
  * `ignoredFiles` は合成レイヤが `resolveIgnoredFilesMode(config)` の結果を渡す。
  * 未指定（テストや直接構築）は注意書きを載せない —— 実体が共有されているかどうかを
  * 知らないまま「共有されている」と告げる方が危険なため。
  *
- * `handoff` は `/agent` でエージェントを切り替えた**直後の 1 回だけ**渡される
- * （`Session` が使い捨てで保持する）。常設にすると、引き継ぎが済んだあとのターンでも
- * 「前任者から引き継いだ」と言い続けることになる。
+ * **エージェント切替の引き継ぎ（`core/agent-handoff.ts`）はここには載らない。**
+ * あれは `AgentRunOptions.handoff` として渡り、各アダプタが切替後の最初のユーザー
+ * プロンプトに前置する — resume したスレッドに systemPrompt を渡し直さない provider
+ * （`codex exec resume`）にも確実に届ける必要があるため。
  */
 export function composeSystemPrompt(parts: {
   ignoredFiles?: IgnoredFilesMode;
   repoPrompt?: string;
-  handoff?: string;
 }): string | undefined {
   const sections = [
     parts.ignoredFiles === 'symlink' ? SHARED_IGNORED_FILES_NOTICE : undefined,
     parts.repoPrompt,
-    parts.handoff,
   ].filter((section): section is string => section !== undefined && section.length > 0);
   return sections.length > 0 ? sections.join('\n\n') : undefined;
 }

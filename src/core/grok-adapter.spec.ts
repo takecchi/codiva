@@ -230,6 +230,31 @@ describe('createGrokAdapter', () => {
       expect(harness.events[1]).toEqual({ kind: 'model_resolved', model: 'grok-4.5' });
     });
 
+    // `/agent` の引き継ぎは systemPrompt（`_meta.rules`）ではなく最初のユーザープロンプトに
+    // 載る。session/resume には rules を渡し直さないので、そこでも確実に届く。
+    it('引き継ぎは切替後の最初のプロンプトにだけ前置する', async () => {
+      const grok = makeFakeGrok();
+      const { harness } = run(grok.spawn, { options: { handoff: 'HANDOVER' } });
+      harness.prompts.push('now you');
+      const proc = await grok.at(0);
+      await handshake(proc);
+
+      await waitFor(() => proc.find('session/prompt') !== undefined, 'first prompt');
+      expect(proc.find('session/prompt')?.params?.prompt).toEqual([
+        { type: 'text', text: 'HANDOVER\n\n# Current instruction after the switch\n\nnow you' },
+      ]);
+      proc.reply('session/prompt', { stopReason: 'end_turn' });
+      await waitFor(() => harness.events.some((e) => e.kind === 'turn_completed'), 'first turn');
+
+      harness.prompts.push('and this');
+      await waitFor(
+        () => proc.sent.filter((m) => m.method === 'session/prompt').length === 2,
+        'second prompt',
+      );
+      const second = proc.sent.filter((m) => m.method === 'session/prompt')[1];
+      expect(second?.params?.prompt).toEqual([{ type: 'text', text: 'and this' }]);
+    });
+
     it('2 ターン目は同じプロセスを使い回す（1 ターン 1 プロセスではない）', async () => {
       const grok = makeFakeGrok();
       const { harness } = run(grok.spawn);
