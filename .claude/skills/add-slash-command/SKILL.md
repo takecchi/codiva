@@ -63,7 +63,7 @@ const commands = useCommandRunner(
 
 ## 5. ドキュメント
 
-- ユーザー可視なので `README.md` のコマンド説明を更新する。
+- ユーザー可視なので `README.ja.md`（原本）と `README.md`（英語版）のコマンド説明を**両方**更新する。
 - キー操作やフッタヒントが変わるなら `docs/ARCHITECTURE.md` の UI 節も直す。
 
 ## チェックリスト
@@ -72,5 +72,5 @@ const commands = useCommandRunner(
 - [ ] `Messages['command']` の ja / en 両方
 - [ ] 実装するビューの `useCommandRunner` ハンドラ（＋必要なら `describeOverrides`）
 - [ ] `commands.spec.ts` + `tests/commands.test.tsx`
-- [ ] README（＋必要なら docs/）
+- [ ] README（`README.ja.md` + `README.md` の両方。＋必要なら docs/）
 - [ ] `npm run lint` / `npm run typecheck` / `npm test`

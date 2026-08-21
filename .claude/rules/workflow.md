@@ -28,7 +28,8 @@ CI（`.github/workflows/ci.yml`）は push / PR で `lint → typecheck → test
 | `docs/PRD.md` | 要件・受け入れシナリオ（歴史的資料寄り） | 要件が変わったとき |
 | `docs/TASKS.md` / `docs/REFACTORING.md` | Phase 単位の作業計画と DoD | 進捗に合わせてチェックボックス更新 |
 | `docs/RELEASE.md` | npm 配信手順（Trusted Publishing） | 配信フローが変わったとき |
-| `README.md` | **利用者向け**の説明（設定・使い方） | ユーザー可視の挙動・設定が変わったとき |
+| `README.ja.md` | **利用者向け**の説明（設定・使い方）の**原本**（日本語） | ユーザー可視の挙動・設定が変わったとき |
+| `README.md` | 同じ内容の**英語版**（npm / GitHub の顔） | `README.ja.md` を直したら**必ず対で**更新 |
 
 - **ドキュメントと実装が乖離したら、docs/ を先に直してから実装する。**
 - Phase 作業（TASKS.md / REFACTORING.md）は Phase 順に進め、**DoD を満たしてから次へ**。
@@ -56,7 +57,7 @@ CI（`.github/workflows/ci.yml`）は push / PR で `lint → typecheck → test
 - [ ] `core/i18n.ts` の **ja と en 両方**（片方だけ足すと型エラー / `i18n.spec.ts` で落ちる）
 - [ ] 対応する co-located `*.spec.ts` と、必要なら `tests/*.test.tsx`
 - [ ] `docs/ARCHITECTURE.md`（責務・状態機械を変えたとき）
-- [ ] `README.md`（ユーザー可視の設定・キー操作・コマンドを変えたとき）
+- [ ] `README.ja.md` と `README.md`（**両方**。ユーザー可視の設定・キー操作・コマンドを変えたとき）
 - [ ] `docs/TASKS.md` のチェックボックス / 実績メモ
 
 ## 動作確認
