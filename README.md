@@ -1,364 +1,355 @@
 # codiva
 
-> 対象の Git リポジトリで起動し、指示ごとに独立した git worktree 上でコーディングエージェント（Claude Code / Codex / Grok）のセッションを並列実行する TUI アプリ。
+> A TUI app you launch inside a Git repository. Every instruction you type starts a coding-agent session (Claude Code / Codex / Grok) on its own isolated git worktree, and they all run in parallel.
 
 [![npm version](https://img.shields.io/npm/v/codiva.svg)](https://www.npmjs.com/package/codiva)
 [![CI](https://github.com/takecchi/codiva/actions/workflows/ci.yml/badge.svg)](https://github.com/takecchi/codiva/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-`codiva` は、自然文で指示を投げるたびに独立した git worktree + ブランチ上でコーディングエージェントのセッションをバックグラウンド起動し、複数タスクを並列に進行させるターミナル UI です。「指示を次々投げるだけで、並列に実装が進む」体験を目指しています。
+**日本語のドキュメントは [README.ja.md](./README.ja.md) にあります。**
 
-**エージェントは Claude Code 専用ではありません。** 次の 3 つから選べます（一覧の `/agent` で切り替え。詳しくは「[エージェントを選ぶ・切り替える](#エージェントを選ぶ切り替えるagent)」）。
+`codiva` is a terminal UI that spins up a coding-agent session on a fresh git worktree + branch every time you type a plain-language instruction, so several tasks make progress at the same time. The goal is simple: *keep throwing instructions at it and watch the work happen in parallel.*
 
-| エージェント | 起動するもの |
+**It is not Claude Code only.** You can pick any of these three (switch with `/agent` in the session list — see [Choosing and switching agents](#choosing-and-switching-agents-agent)):
+
+| Agent | What it launches |
 |---|---|
-| **Claude Code** | [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)（`claude` CLI） |
-| **Codex** | OpenAI の `codex` CLI |
-| **Grok** | xAI の `grok` CLI |
+| **Claude Code** | [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) (the `claude` CLI) |
+| **Codex** | OpenAI's `codex` CLI |
+| **Grok** | xAI's `grok` CLI |
 
-新規セッションの既定を選ぶこともできますし、セッションごとに途中で切り替えることもできます（worktree・作業ツリー・PR はそのまま引き継がれます）。エージェントごとに使える機能の差（許可ダイアログ・コスト表示など）は後述の制約表にまとめてあります。
+You can choose the default for new sessions, and you can also switch a running session mid-flight (the worktree, working tree and PR all carry over). Where agents differ in what they support (permission dialogs, cost display, …) is spelled out in the capability table below.
 
-## 特徴
+## Features
 
-- **並列セッション** — 指示ごとに worktree（`.codiva/worktrees/<slug>`）とブランチ（`codiva/<slug>`）を自動生成。互いのファイル変更が干渉しない。
-- **エージェントを選べる** — Claude Code / **Codex**（`codex` CLI）/ **Grok**（xAI の `grok` CLI）に対応。一覧の `/agent` で新規セッションの既定を選び（自動で保存）、詳細ビューの `/agent` でそのセッションを途中から切り替えられる。導入・ログイン状態も `/agent` に表示され、`/login` で codiva の中からサインインできる。
-- **リアルタイム進捗** — 一覧画面で全セッションの状態（`実行中` / `Step 4/7` / `質問あり` / `許可待ち` / `完了` / `失敗`）と経過時間を表示。
-- **ノンブロッキング投入** — 指示を投げても即座に次の指示を入力できる。
-- **許可応答・追加指示** — 詳細ビューでツール使用の許可 / 拒否、稼働中セッションへの追加指示ができる。
-- **マージ or 破棄** — 完了セッションの diff stat を確認し、ベースブランチへマージ、または worktree ごと破棄。
-- **リポジトリ追加指示** — `.codiva/prompt.md` に書いた指示（例:「作業完了時に PR を出す」）を全セッションに自動注入。一覧画面の `/prompt` コマンドから TUI 内で編集できる。
-- **プラン / 使用状況の表示**（Claude のとき） — 一覧画面のヘッダに claude.ai のプラン種別（Pro / Max / Team / Enterprise）と使用リミット枠（使用率・リセットまでの残り時間）を表示。既定エージェントが Codex / Grok のときは、報告されないので表示しません。
-- **現在ブランチの表示** — ヘッダに対象リポジトリがチェックアウトしているブランチ（= 新しいセッションの分岐元・マージ先）を表示。別ターミナルで切り替えても数秒で追従します。
-- **学習データ利用の警告**（Claude のとき） — claude.ai の「Help improve our AI models」（モデル学習へのデータ提供）が ON のときだけ、起動時のヘッダに注意行を出す。
-- **アップデート通知** — 起動時に npm の最新版を確認し、新しいバージョンがあればヘッダに 1 行表示。`/update` コマンドで確認の上その場で更新できる。
-- **キーボード完結** — マウス不要。入力欄・ヘッダ・セッション詳細のログはドラッグで範囲選択してコピーもできます（ログは画面外へドラッグすると自動スクロールしながら選択が続きます）。ログ内の URL はクリックでブラウザで開けます。
-- **日本語 / 英語 UI** — `~/.codiva/config.json` または `CODIVA_LANG` で切替。
+- **Parallel sessions** — every instruction gets its own worktree (`.codiva/worktrees/<slug>`) and branch (`codiva/<slug>`), so file edits never collide.
+- **Pick your agent** — Claude Code / **Codex** (`codex` CLI) / **Grok** (xAI's `grok` CLI). Use `/agent` in the list to choose the default for new sessions (saved automatically), and `/agent` in the detail view to switch an existing session mid-flight. Install and login status is shown in `/agent`, and `/login` lets you sign in from inside codiva.
+- **Live progress** — the list view shows every session's state (`Running` / `Step 4/7` / `Question` / `Awaiting permission` / `Completed` / `Failed`) and elapsed time.
+- **Non-blocking submission** — you can type the next instruction the instant you submit one.
+- **Permission replies and follow-ups** — approve/deny tool use and send follow-up instructions to a running session from the detail view.
+- **Merge or discard** — review the diff stat of a finished session, then merge it into the base branch or throw the whole worktree away.
+- **Repo-wide instructions** — anything written in `.codiva/prompt.md` (e.g. "open a PR when you're done") is injected into every session. Editable inside the TUI via `/prompt`.
+- **Plan / usage display** (Claude only) — the list header shows your claude.ai plan tier (Pro / Max / Team / Enterprise) and usage limit windows (percentage used, time until reset). Codex / Grok don't report these, so nothing is shown while one of them is the default agent.
+- **Current branch** — the header shows the branch the target repository has checked out (i.e. where new sessions branch from and merge back to). It catches up within seconds even if you switch branches in another terminal.
+- **Training-data warning** (Claude only) — a notice line appears in the startup header only when claude.ai's "Help improve our AI models" setting is ON.
+- **Update notification** — codiva checks npm for a newer version at startup and shows one line in the header if there is one. `/update` upgrades in place after a confirmation.
+- **Keyboard-first** — the mouse is optional. You can still drag-select and copy from the input, the header and the session log (dragging past the edge of the log auto-scrolls while the selection keeps growing). URLs in the log open in your browser on click.
+- **Japanese / English UI** — switch via `~/.codiva/config.json` or `CODIVA_LANG`.
 
-## 動作要件
+## Requirements
 
 - Node.js **>= 20**
-- **`claude` / `codex` / `grok` の CLI が 1 つ以上**インストール・ログイン済みであること（下記「エージェントを選ぶ・切り替える」）。
-  どれも無くても codiva は起動でき、`/login` で codiva の中からサインインできます。
-- 対象が Git リポジトリで、コミットが 1 つ以上あること
+- **At least one of the `claude` / `codex` / `grok` CLIs** installed and logged in (see [Choosing and switching agents](#choosing-and-switching-agents-agent)).
+  codiva starts even with none of them installed, and `/login` lets you sign in from inside codiva.
+- The target directory is a Git repository with at least one commit
 
-## インストール
+## Installation
 
 ```bash
 npm install -g codiva
 ```
 
-一度きり試すだけなら:
+Just want to try it once:
 
 ```bash
 npx codiva
 ```
 
-### アップデート
+### Updating
 
-起動時に npm レジストリを 1 回だけ確認し、新しいバージョンがあればバナーに `↑ 新しいバージョン v0.3.0 が利用できます · /update で更新` と表示します（最新のときや確認できなかったときは何も表示しません）。
+At startup codiva queries the npm registry exactly once and, if a newer version exists, shows `↑ v0.3.0 is available · run /update` in the banner (nothing is shown when you're up to date or the check failed).
 
-`/update` を実行すると最新版を確認し直し、更新があれば実行するコマンドを提示して `y` / `n` を尋ねます。`y` で codiva がそのまま `npm install` を実行し、完了後に再起動を促します。
+Running `/update` re-checks for the latest version and, if there is an update, prints the command it would run and asks `y` / `n`. On `y` codiva runs `npm install` itself and then asks you to restart.
 
-- グローバルインストール（`npm install -g codiva`）→ `npm install -g codiva@latest` を実行します（実行前に稼働中セッションがあれば警告します）
-- `npx codiva` → インストールが無いので何もしません（次回の `npx` で最新が使われます）
-- それ以外（プロジェクトのローカル依存 / volta などのツールマネージャ配下 / Windows / 判別できない配置）→ **codiva からは実行せず**、実行すべきコマンドの提示だけを行います
+- Global install (`npm install -g codiva`) → runs `npm install -g codiva@latest` (you get a warning first if sessions are still running)
+- `npx codiva` → nothing to update, so nothing happens (the next `npx` picks up the latest)
+- Anything else (a project-local dependency / under a tool manager like volta / Windows / an install layout codiva can't identify) → codiva **does not run anything** and only shows you the command to run
 
-codiva 側から実行しない範囲を広く取っているのは意図的です。ローカル依存の更新は利用者のリポジトリの `package.json` と lockfile を書き換え、`node_modules`（既定で各 worktree にシンボリックリンクされています）を作り直してしまいます。また判別できない配置に `npm install -g` すると、実際に入っている場所とは別の場所へインストールして環境を壊しかねません。誤検出のコストを「自動化されないだけ」に抑えています。
+The set of layouts codiva refuses to handle is deliberately wide. Updating a local dependency rewrites your repository's `package.json` and lockfile and rebuilds `node_modules` (which is symlinked into every worktree by default). And running `npm install -g` against an unidentified layout could install to somewhere other than where codiva actually lives and break your environment. The cost of a misdetection is capped at "you have to run one command yourself".
 
-確認の通信は `https://registry.npmjs.org/codiva/latest` への 1 リクエスト（約 2.3KB・3 秒でタイムアウト）だけで、送るのはパッケージ名のみです。バージョンや利用状況は送信しません。オフラインでも起動は一切ブロックされません。`~/.codiva/config.json` の `"updateCheck": false` でこの通信を完全に止められます。
+The check is a single request to `https://registry.npmjs.org/codiva/latest` (~2.3 KB, 3-second timeout) and the only thing sent is the package name — no version, no telemetry. Startup is never blocked, even offline. Set `"updateCheck": false` in `~/.codiva/config.json` to disable the request entirely.
 
-## 使い方
+## Usage
 
-対象リポジトリのルートで起動します。
+Launch it from the root of the target repository.
 
 ```bash
 cd path/to/your-repo
 codiva
 ```
 
-1. 入力欄に指示（例:「ログイン機能を実装してください」）を入力して Enter。新しいセッションが作成され、すぐ次の指示を入力できます。
-2. 一覧で各セッションの進捗をリアルタイムに確認します。
-3. セッションを選ぶと詳細ビューに入り、ログ閲覧・追加指示・許可応答ができます。
-4. 完了したら diff stat を確認し、マージまたは破棄します。
+1. Type an instruction (e.g. "implement the login flow") and hit Enter. A new session is created and you can immediately type the next one.
+2. Watch each session's progress in the list view.
+3. Select a session to open the detail view, where you can read the log, send follow-ups and answer permission requests.
+4. When it's done, review the diff stat and merge or discard.
 
-> worktree ディレクトリ `.codiva/` には `*` の 1 行だけを書いた `.codiva/.gitignore` が自動生成され、`.codiva/` 以下がまるごと git から見えなくなります（除外ファイル自身も `*` に一致するので自己完結します）。対象リポジトリの `.gitignore` も `.git/` の中も書き換えません。
+> codiva writes a `.codiva/.gitignore` containing a single `*` line, which hides everything under `.codiva/` from git (the ignore file matches `*` itself, so it's self-contained). Your repository's `.gitignore` and the contents of `.git/` are never touched.
 
-### 入力欄
+### The input field
 
-長い指示は画面幅で**自動的に折り返され**、打った文字が切り捨てられずに全部見えます（空白があれば単語の途中で切りません）。入力が縦に伸びるのは 8 行までで、それを超えるとカーソル位置に合わせて内部スクロールします。
+Long instructions **wrap automatically** at the terminal width, so nothing you type is truncated out of view (words aren't broken mid-word when there's whitespace to break at). The field grows to 8 rows and then scrolls internally to follow the caret.
 
-#### キー操作
+#### Keys
 
-すべての入力欄（一覧のコンポーザ、詳細ビューの追加指示欄、`/prompt` エディタ、質問ダイアログの
-「自分で入力する」欄）で共通です。実装も 1 つなので、場所によって挙動が変わることはありません。
+These are identical in every input field (the list composer, the follow-up field in the detail view, the `/prompt` editor, and the free-text field in question dialogs). There's a single implementation, so behaviour never differs by location.
 
-| キー | 動作 |
+| Key | Action |
 |---|---|
-| `Enter` | 送信（先頭が `/` のときはコマンド実行） |
-| `Shift+Enter` | 改行（効かない端末では行末に `\` を置いて `Enter`） |
-| `Ctrl+U` | **書きかけを全消し**（キャレット位置に関係なく入力欄を空にする） |
-| `←→` | キャレット移動 |
-| `↑↓` | キャレット移動（**見えている行** = 折り返し後の行の単位で動く）。上端/下端でさらに押すと**入力履歴**（一覧のコンポーザのみ） |
-| `Backspace` | 1文字削除 |
+| `Enter` | Submit (runs a command when the text starts with `/`) |
+| `Shift+Enter` | Newline (on terminals where that doesn't reach the app, end the line with `\` and press `Enter`) |
+| `Ctrl+U` | **Clear the draft** (empties the field regardless of caret position) |
+| `←→` | Move the caret |
+| `↑↓` | Move the caret (by **visual row**, i.e. after wrapping). Pressing again at the top/bottom row walks the **input history** (list composer only) |
+| `Backspace` | Delete one character |
 
-#### 入力履歴（一覧のコンポーザ）
+#### Input history (list composer)
 
-一覧画面の入力欄では、shell と同じように `↑` で**さっき送った指示**を呼び戻せます（直近 50 件。同じ指示の連投は 1 件にまとめます）。
+In the list view's input field, `↑` recalls **instructions you already sent**, like a shell (last 50; repeated identical instructions collapse into one).
 
-- `↑` は「キャレットが最上段の行にあるとき」だけ履歴になります。複数行を書いている途中では通常のキャレット移動が優先されるので、書きかけが履歴に化けることはありません。
-- `↓` は新しい方へ戻り、最新を越えると**辿り始めたときの書きかけ**が復帰します（履歴を覗いただけで書きかけを失いません）。
-- 呼び戻したテキストはそのまま編集できます（キャレットは末尾）。`Ctrl+U` で捨てられます。
-- 詳細ビューの追加指示欄では `↑↓` はログのスクロールなので、履歴は一覧のコンポーザだけの機能です。
+- `↑` only becomes history when the caret is on the top row. While you're writing a multi-line draft, normal caret movement wins, so a draft never turns into history behind your back.
+- `↓` walks back toward the newest entry, and going past the newest restores **the draft you had when you started browsing** (peeking at history never costs you your draft).
+- Recalled text is fully editable (the caret lands at the end). `Ctrl+U` throws it away.
+- In the detail view's follow-up field `↑↓` scroll the log, so history is a list-composer-only feature.
 
-> macOS の `Cmd+Delete` は端末がアプリへ送らない（kitty keyboard protocol を有効にした端末でしか `super` 修飾が届かない）ため、全消しは `Ctrl+U` に割り当てています。`Cmd+Delete` で使いたい場合は端末側で `Ctrl+U`（`\x15`）へ割り当ててください。Ghostty なら設定ファイルに次の 1 行を足します。
+> macOS's `Cmd+Delete` never reaches the app (the `super` modifier only arrives on terminals with the kitty keyboard protocol enabled), which is why "clear all" is bound to `Ctrl+U`. To use `Cmd+Delete`, map it to `Ctrl+U` (`\x15`) in your terminal. On Ghostty, add this one line to your config:
 >
 > ```
 > keybind = super+backspace=text:\x15
 > ```
 
-### 一覧のフォーカス移動（`Tab`）と質問への回答
+### Focus movement in the list (`Tab`) and answering questions
 
-一覧画面のフォーカスは `Tab` で **入力欄 → 質問/許可ダイアログ → セッション一覧 → 入力欄** と回ります（`Esc` はどこからでも入力欄へ戻ります）。ダイアログは選択中のセッションが**質問・許可を待っているときだけ**この輪に入ります。
+In the list view, `Tab` cycles focus **input field → question/permission dialog → session list → input field** (`Esc` returns to the input field from anywhere). The dialog only joins the cycle when the selected session is **actually waiting on a question or a permission request**.
 
-| ゾーン | `↑↓` の動作 | 主なキー |
+| Zone | What `↑↓` does | Main keys |
 |---|---|---|
-| 入力欄 | キャレット移動 / 入力履歴 | `Enter` 送信 |
-| ダイアログ | ダイアログの選択肢 | `Enter` 決定 ・ `Space` トグル（複数選択） ・ `y`/`n`（ツール許可） |
-| セッション一覧 | **セッションの選択** | `Enter`/`→` 詳細 ・ `m`/`d`/`x` ・ `p` |
+| Input field | Caret movement / input history | `Enter` submit |
+| Dialog | Move through the dialog's choices | `Enter` confirm · `Space` toggle (multi-select) · `y`/`n` (tool permission) |
+| Session list | **Select a session** | `Enter`/`→` detail · `m`/`d`/`x` · `p` |
 
-- **質問・許可を待っている行を選ぶと、ダイアログがそのままキーを持ちます**（`↑↓` での移動でも、行のクリックでも）。回答は待たせている用事なので、そこに辿り着くのに `Tab` を余分に押す必要はありません。
-- そこから**一覧へ戻る（= `↑↓` で別のセッションへ切り替える）出口は `Tab`** です。一覧ゾーンではダイアログは表示されたまま（内容は読めます）ですが、キーは受け取りません。
-- **ダイアログの選択肢はクリックでも選べます**（`Enter` で決定 — 一覧の行をクリックして `Enter` で詳細を開くのと同じ関係です）。ラベルの折り返し行や説明の行をクリックしても、その選択肢が選ばれます。一覧ゾーンで「表示だけ」になっているダイアログも、選択肢をクリックすればそのまま回答へ戻れます。
-  - クリックで許可（`y`）や決定が確定することはありません。ツール許可の `y`/`n` は必ずキーで押します。
-- 回答の途中（何問目か・チェック済みの選択肢・書きかけの自由記述）は `Tab` で往復しても、選択肢をクリックして「自分で入力する」に戻っても保持されます。
-- 回答し終えるとフォーカスは入力欄へ戻るので、次の質問が来ても**タイピング中のキーを奪われません**（`Tab` 1 回でまた回答できます）。
+- **Selecting a row that's waiting on a question or permission hands the keys straight to the dialog** (whether you got there with `↑↓` or by clicking the row). Answering is what's blocking progress, so you shouldn't have to press `Tab` to reach it.
+- **`Tab` is the way back to the list** (i.e. to switching sessions with `↑↓`). In the list zone the dialog stays visible — you can still read it — but it doesn't receive keys.
+- **Dialog choices are clickable too** (confirm with `Enter` — the same relationship as clicking a list row and pressing `Enter` to open the detail view). Clicking a wrapped label line or a description line selects that choice as well. Even a dialog that's "display only" in the list zone will hand focus back to answering when you click a choice.
+  - A click never confirms a permission (`y`) or a choice. `y`/`n` for tool permissions always require a key.
+- Partial answers (which question you're on, which boxes are checked, a half-written free-text answer) survive `Tab` round-trips and clicking back into "write your own".
+- Once you've answered, focus returns to the input field, so the next incoming question **doesn't steal your keystrokes** (one `Tab` gets you back to answering).
 
-> **日本語 IME をオンにしたままでも `Space` でチェックを切り替えられます。** macOS の日本語入力では、かな入力中の `Space` は**全角スペース**として（`Shift+Space` のときだけ半角スペースとして）アプリに届きます。codiva は全角スペースも `Space` キーとして扱うので、チェックのために IME を切ったり `Shift` を足したりする必要はありません（ツール許可の `y`/`n` のような英字キーは IME が変換に吸ってしまうため、そちらは IME を切ってから押してください）。
+> **`Space` toggles checkboxes even with a Japanese IME turned on.** With macOS Japanese input, `Space` during kana composition arrives as a **full-width space** (only `Shift+Space` arrives as a half-width one). codiva treats the full-width space as the `Space` key, so you don't have to disable the IME or add `Shift` just to tick a box. (Letter keys such as `y`/`n` for tool permissions get swallowed by IME conversion, so turn the IME off for those.)
 
-### 詳細ビューのフォーカス移動（`Tab`）— 回答する前にログを遡る
+### Focus movement in the detail view (`Tab`) — read back before you answer
 
-セッション詳細で**質問・許可のダイアログが出ている間**も、`Tab` で **ダイアログ ⇄ 会話ログ** を行き来できます。質問だけを見せられて「何の話か分からないまま答える」ことがないように、背景を読み返してから回答するための切り替えです。
+**While a question or permission dialog is up** in the session detail view, `Tab` moves between **the dialog and the conversation log**. It exists so you're never shown a question in isolation and forced to answer without knowing what it's about.
 
-| ゾーン | `↑↓` / `PgUp` `PgDn` の動作 | 主なキー |
+| Zone | What `↑↓` / `PgUp` `PgDn` do | Main keys |
 |---|---|---|
-| ダイアログ（既定） | ダイアログの選択肢 | `Enter` 決定 ・ `Space` トグル ・ `y`/`n`（ツール許可） |
-| 会話ログ | **ログのスクロール** | `Tab` 回答へ戻る ・ `Esc` ダイアログへ |
+| Dialog (default) | Move through the dialog's choices | `Enter` confirm · `Space` toggle · `y`/`n` (tool permission) |
+| Conversation log | **Scroll the log** | `Tab` back to answering · `Esc` to the dialog |
 
-- ダイアログが出ると**まずダイアログにフォーカスが当たります**（回答は待たせている用事なので、そこへ辿り着くために `Tab` を押す必要はありません）。ログを遡りたくなったら `Tab` を 1 回押してください。
-- ログゾーンでもダイアログは**表示されたまま**（内容は読めます）で、キーだけを受け取りません。回答へ戻るのは `Tab`・`Esc`・**ダイアログのクリック**のどれでも構いません。
-- 回答の途中（何問目か・チェック済みの選択肢・書きかけの自由記述）は往復しても保持されます。
-- ログゾーンでは**ドラッグでの範囲選択・URL のクリック**も普段どおり使えます（ホイールでのスクロールはどちらのゾーンでも効きます）。
-- 回答し終えるとフォーカスはダイアログ側に戻るので、次の質問もそのまま答えられます。
-- `Ctrl+C`（中断）はどちらのゾーンでも効きます。
-- **ダイアログは会話ログを潰しません**。選択肢が多い・説明が長いときは、ダイアログ側の高さに上限を設けて**選択肢が内部スクロール**します（隠れている件数は `↑ 他 3 件` のように表示され、`↑↓` でカーソルを送るとついてきます）。以前は選択肢の数だけダイアログが縦に伸び、24 行程度の端末では**ログが 1 行も見えない**状態になっていました。一覧画面のダイアログも同じようにセッション行の席を残します。
+- When a dialog appears **focus lands on the dialog first** (answering is what's blocking progress, so you don't press `Tab` to get there). Press `Tab` once when you want to read back.
+- In the log zone the dialog **stays on screen** — only the keys go elsewhere. `Tab`, `Esc` or **clicking the dialog** all get you back to answering.
+- Partial answers (question index, checked boxes, half-written free text) survive the round-trip.
+- **Drag-selection and clicking URLs work as usual** in the log zone (wheel scrolling works in both zones).
+- Once you've answered, focus returns to the dialog side so you can answer the next question right away.
+- `Ctrl+C` (interrupt) works in both zones.
+- **The dialog never crushes the log.** When there are many choices or long descriptions, the dialog gets a height cap and **the choices scroll internally** (hidden entries are shown as `↑ 3 more` and follow your cursor as you move with `↑↓`). Previously the dialog grew one row per choice, and on a ~24-row terminal **not a single log line was visible**. The list view's dialog reserves room for session rows the same way.
 
-### ログの読み方・スクロール
+### Reading and scrolling the log
 
-セッション詳細のログでは、エージェントの応答が**返ってきたぶんだけ下に伸びていきます**（1 行が書き換わり続けるのではなく、チャットと同じように読み進められます）。
+In the session detail log, the agent's response **grows downward as it arrives** (rather than a single line being rewritten), so you can read it like a chat.
 
-- **一番下にいるときだけ追従します。** `↑`/`PgUp`/ホイールで過去ログへ戻っている間は、応答が伸びても表示は 1 行も動きません（読んでいる途中で流されない）。画面下に「過去ログを表示中 — 最新まで N 行」と出るので、`↓`/`PgDn` で末尾へ戻ればまた追従します。
-- 書きかけのあいだは装飾（太字・見出しなど）が付かないプレーンな表示で、ターンが完了した時点で整形された本文に置き換わります。
+- **It only follows the tail while you're at the bottom.** While you're back in history via `↑`/`PgUp`/wheel, the view doesn't move a single line even as the response grows (you never get swept along mid-read). "Viewing history — N lines to latest" appears at the bottom of the screen; `↓`/`PgDn` returns to the tail and resumes following.
+- While text is still streaming it's rendered plain (no bold, no headings); it's replaced with the formatted body the moment the turn completes.
 
-### 実行中の作業を中断する（`Ctrl+C`）
+### Interrupting work in progress (`Ctrl+C`)
 
-セッション詳細ビューで `Ctrl+C` を押すと、**そのセッションが今やっているターンを中断**します（Claude Code の `Ctrl+C` と同じ操作です）。codiva 自体は終了しません。
+Pressing `Ctrl+C` in the session detail view **interrupts the turn that session is currently running** (the same gesture as `Ctrl+C` in Claude Code). codiva itself does not exit.
 
-- 中断したセッションは**失敗ではなく「中断」**として残るので、`Ctrl+R`（または追加指示を送る）で**同じ会話の続き**から再開できます。worktree・ブランチ・書きかけのコードはそのままです。
-- **許可待ち / 質問待ちのダイアログが出ている間も効きます**。ダイアログの `n`（拒否）は「そのツール 1 回を断る」だけで作業は続くので、「この作業自体をやめたい」ときは `Ctrl+C` を使ってください。
-- 入力欄にフォーカスがあっても効きます（書きかけを消したいだけなら `Ctrl+U`）。実行中は画面下に案内が出ます。
-- 中断ではなくセッションを**捨てたい**ときは `d`（破棄）/ `x`（削除）です。一覧ビューでは `Ctrl+C` は何もしません（誤爆を避けるため、中断は詳細ビューだけの操作です）。
+- An interrupted session is kept as **"interrupted", not "failed"**, so `Ctrl+R` (or just sending a follow-up) resumes **the same conversation**. The worktree, branch and work-in-progress code are untouched.
+- **It works while a permission or question dialog is up too.** The dialog's `n` (deny) only refuses that one tool call and work continues, so use `Ctrl+C` when you want to stop *the work itself*.
+- It works while the input field has focus (use `Ctrl+U` if you only want to clear a draft). A hint appears at the bottom of the screen while a turn is running.
+- If you want to **throw the session away** rather than interrupt it, use `d` (discard) / `x` (remove). In the list view `Ctrl+C` does nothing — interrupting is a detail-view-only action, to avoid misfires.
 
-### テキストのコピー
+### Copying text
 
-**すべての入力欄**（一覧のコンポーザ・詳細の追加指示欄・`/prompt` のリポジトリ指示エディタ・質問ダイアログの自由記述欄）と、ヘッダ（ワードマーク / プラン / モデル / ブランチ / cwd）・**セッション詳細のログ**は、**ドラッグで範囲選択して離すとクリップボードへコピー**されます（OSC 52 なので SSH 越しでも動きます）。ヘッダの cwd 行をドラッグすれば、いま作業しているパスをそのまま貼り付けられます。ヘッダのドラッグは入力中のフォーカスや一覧の選択行を動かしません。
+**Every input field** (the list composer, the detail view's follow-up field, the `/prompt` repo-instruction editor, the free-text field in question dialogs), the header (wordmark / plan / model / branch / cwd) and **the session detail log** support **drag to select, release to copy to the clipboard** (via OSC 52, so it works over SSH too). Drag the header's cwd line to paste the path you're working in. Dragging in the header never moves typing focus or the selected row in the list.
 
-- **ログは画面に収まらない範囲も選択できます**。選択したまま可視域の外（上端より上 / 下端より下）へドラッグすると、その向きへ自動スクロールしながら選択が伸び続けます。マウスを止めていてもスクロールは続き、ボタンを離した時点で選択した範囲だけがコピーされます。
-- コピーされるのは**画面に見えているとおり**の文字列です（折り返した位置が改行になり、`•` などの行頭記号や継続行の字下げも含みます）。
-- 選択のハイライトは反転表示され、何かキーを押すと解除されます。
-- 端末ネイティブの選択（画面のどこでも選べる代わりにアプリ側の機能が使えない）は **Shift+ドラッグ**、または設定 `"mouse": false` でマウス捕捉を無効化して使えます。
+- **You can select beyond what fits on screen in the log.** Keep dragging past the visible area (above the top / below the bottom) and the log auto-scrolls in that direction while the selection keeps growing. Scrolling continues even if you hold the mouse still, and only the selected range is copied when you release.
+- What gets copied is **exactly what you see** (wrap points become newlines, and line prefixes like `•` and continuation indents are included).
+- The selection is highlighted in reverse video and cleared by any keypress.
+- Native terminal selection (select anywhere, but no app-side features) is available with **Shift+drag**, or by disabling mouse capture with `"mouse": false`.
 
-### ログ内の URL を開く
+### Opening URLs in the log
 
-セッション詳細のログに出てくる URL は**下線付きで表示され、クリックするとブラウザで開きます**（ドラッグせずに押して離したときだけ開くので、範囲選択の操作とは競合しません）。
+URLs in the session detail log are **underlined and open in your browser on click** (only a press-and-release without dragging opens them, so it doesn't conflict with drag-selection).
 
-- 対象は `http(s)` の URL です。Markdown のリンク（`[ラベル](URL)`）はラベルの部分をクリックするとリンク先へ飛びます。
-- 折り返しで URL が 2 行に分かれていても、**どちらの行をクリックしても URL 全体**が開きます。
-- **Cmd+クリック（端末のリンク機能）ではなく、普通のクリックです。** codiva は全画面のあいだ端末のマウスレポートを有効にしており、この状態では端末側のリンク検出が無効になる端末があるためです（Ghostty はマウス捕捉中はリンクのホバー・クリックを一切扱いません。SGR マウスレポートには Cmd/Super を表すビットもありません）。そこで codiva 自身がクリックを受け取って開くようにしてあり、どの端末でも同じ操作で動きます。
-- 併せて **OSC 8 ハイパーリンク**も出力しているので、対応端末（iTerm2 / GNOME Terminal / Windows Terminal など）では端末側の Cmd+クリック / Ctrl+クリックも使えます。Ghostty / kitty / WezTerm では端末側のリンク機能は **Shift を足した Shift+Cmd+クリック**（Linux は Shift+Ctrl+クリック）で使えます（Shift がマウス捕捉のバイパスキーになっているため）。非対応の端末はこのエスケープを無視するだけで、表示は変わりません。
+- `http(s)` URLs are recognized. For Markdown links (`[label](URL)`), clicking the label follows the link.
+- Even when wrapping splits a URL across two lines, **clicking either line opens the whole URL**.
+- **This is a plain click, not Cmd+click (the terminal's own link handling).** While codiva is full-screen it enables the terminal's mouse reporting, and some terminals disable their own link detection in that state (Ghostty ignores link hover and clicks entirely while the mouse is captured; SGR mouse reports have no bit for Cmd/Super either). So codiva takes the click itself and opens the URL, which behaves the same on every terminal.
+- codiva also emits **OSC 8 hyperlinks**, so on terminals that support them (iTerm2 / GNOME Terminal / Windows Terminal, …) the terminal's own Cmd+click / Ctrl+click works too. On Ghostty / kitty / WezTerm, add Shift — **Shift+Cmd+click** (Shift+Ctrl+click on Linux) — because Shift is the mouse-capture bypass key. Terminals that don't support the escape simply ignore it and the display is unchanged.
 
-### GitHub の PR ステータス表示
+### GitHub PR status
 
-一覧の各行の右端に、そのセッションのブランチに対応する PR の状態が出ます（`gh` コマンドを 20 秒ごとに実行して検知。クリック / `p` でブラウザで開けます）。
+The right edge of each list row shows the state of the PR for that session's branch (detected by running `gh` every 20 seconds; click or press `p` to open it in a browser).
 
-| 表示 | 意味 |
+| Display | Meaning |
 |---|---|
-| `⋯` | 確認中（1 回目の問い合わせが完了していない） |
-| （空） | このブランチに PR は無い |
-| `⋯ #12` | PR あり。**状態を確認中**（再起動直後など） |
-| `? #12` | PR あり。**状態を確認できなかった**（レート制限 / オフライン / `gh` 未認証） |
-| `✓ #12` | マージ可能（チェックも通っている） |
-| `● #12` | **チェック実行中** |
-| `✗ #12` | **チェック失敗**、またはコンフリクトでマージ不可 |
-| `⑂ #12` | マージ済み |
-| `⊘ #12` | **マージされずにクローズされた**（立て直しの対象外。後述） |
-| `✓ #12 +2` | **PR が全部で 3 本**ある（後述） |
-| `?` | **確認できなかった**（GitHub の API レート制限 / オフライン / `gh` 未認証） |
+| `⋯` | Checking (the first query hasn't finished) |
+| (blank) | No PR for this branch |
+| `⋯ #12` | PR exists, **state being checked** (e.g. right after a restart) |
+| `? #12` | PR exists, **state could not be checked** (rate limit / offline / `gh` not authenticated) |
+| `✓ #12` | Mergeable (checks are green too) |
+| `● #12` | **Checks running** |
+| `✗ #12` | **Checks failed**, or not mergeable due to conflicts |
+| `⑂ #12` | Merged |
+| `⊘ #12` | **Closed without merging** (not a recovery target — see below) |
+| `✓ #12 +2` | **3 PRs in total** (see below) |
+| `?` | **Could not be checked** (GitHub API rate limit / offline / `gh` not authenticated) |
 
-番号が薄い表示（`#12`）のときは draft PR です。`gh` が入っていない環境では PR 欄は常に空になります。
+A dimmed number (`#12`) means a draft PR. On machines without `gh` the PR column is always empty.
 
-#### 1 セッションから複数 PR が出たとき
+#### When one session produces several PRs
 
-セッションが自分で別ブランチを切って `gh pr create` すると、1 セッションに複数の PR が紐づきます。このとき一覧は `#12 +2`（代表の番号 + 残りの件数）と表示し、**全件は詳細ビュー（Enter）の `PR 3 件: ✓ #12 · #13 · #14` の行**に出ます。
+When a session cuts its own branch and runs `gh pr create`, several PRs end up attached to one session. The list then shows `#12 +2` (the primary number plus the remaining count), and **the full set appears in the detail view (Enter) on the `3 PRs: ✓ #12 · #13 · #14` line**.
 
-- 代表として出るのは**セッションのブランチ（`codiva/<slug>`）の PR** です。クリック / `p` で開くのもこの PR で、グリフ（`✓` / `✗` / `●`）もこの PR の状態です。ブランチに PR が無い場合は、セッションが最後に作った PR が代表になります。
-- 代表になった PR は、head ブランチが worktree に残っていなくても（別リポジトリの PR でも）**その PR の URL で問い合わせて状態を追います**（グリフが付きます）。代表以外（`+n` に畳まれているもの）は追跡対象外なので、詳細ビューでも番号のみです。
-- 逆に、**GitHub が「そんな PR は無い」と答えた参照は一覧から消えます**（URL の誤検知や、PR ごと消えた場合）。レート制限やオフラインで「確認できなかった」ときは消えません（`?` が出るだけです）。
-- 検知は `gh pr create` を実行したときのコマンド出力（PR の URL）からです。`gh pr list` や `gh pr view` で他の PR を眺めただけのものは数えません（`gh pr create … || gh pr list …` のように読み取り系と混ざったコマンドも、誤検出を避けるため数えません）。検知した番号は保存されるので、再起動しても `+n` は残ります。
-- 逆に、**codiva が起動していない間に作られた PR や、この機能より前に作られた PR は `+n` に出ません**（コマンド出力は一度きりで、後からブランチ名で引き直せないため）。セッションブランチの PR は従来どおり `gh` で検知します。
-- 複数 PR の行があるときは PR 列を少し広げるため、狭い端末（80 桁前後）ではブランチ列が省かれることがあります。
+- The primary is **the PR for the session's branch (`codiva/<slug>`)**. That's what click / `p` opens, and the glyph (`✓` / `✗` / `●`) is that PR's state. If the branch has no PR, the last PR the session created becomes primary.
+- Once a PR is primary, codiva **queries it by URL and tracks its state** even when its head branch isn't checked out in the worktree (including PRs in another repository), so it gets a glyph. Non-primary PRs (folded into `+n`) aren't tracked, so the detail view shows just their numbers.
+- Conversely, **a reference GitHub answers "no such PR" for disappears from the list** (a misdetected URL, or a PR that was deleted). It is *not* dropped when the state merely "couldn't be checked" due to rate limiting or being offline (you just get `?`).
+- Detection comes from the command output (the PR URL) of a `gh pr create` run. Merely looking at other PRs with `gh pr list` or `gh pr view` doesn't count (nor do commands that mix reads in, like `gh pr create … || gh pr list …`, to avoid false positives). Detected numbers are persisted, so `+n` survives a restart.
+- Conversely, **PRs created while codiva wasn't running, or before this feature existed, don't show up in `+n`** (the command output happens once and can't be re-derived from a branch name later). PRs on the session branch are still detected via `gh` as always.
+- Rows with multiple PRs widen the PR column slightly, so on narrow terminals (~80 columns) the branch column may be dropped.
 
-PR の**番号**と**状態**は別に扱います。番号はブランチに対して不変なので保存され、次回起動時にはすぐ `#12` が出ます（状態のグリフは最初のポーリングで付きます）。状態だけが取得できなかった場合も番号は消えず、代わりに `⋯`（確認中）/ `?`（確認できず）がグリフの位置に出ます。
+A PR's **number** and its **state** are handled separately. The number is immutable for a branch, so it's persisted and `#12` appears immediately on the next launch (the state glyph arrives with the first poll). When only the state can't be fetched, the number stays and `⋯` (checking) / `?` (unknown) takes the glyph's place.
 
-`?` が出るときは `gh auth status` や `gh api rate_limit` を確認してください。とくに GitHub の API レート制限（GraphQL は 1 時間あたり 5000）はセッション自身の `gh` 実行とも共有なので、大量に並列作業していると枯れることがあります。この状態を検知したら codiva は 5 分間ポーリングを止めて回復を待ちます。**確認できなかった間も直前に検知した PR 番号・状態は表示したままにします**（消えて見えないほうが混乱するため）。
+When you see `?`, check `gh auth status` and `gh api rate_limit`. GitHub's API rate limit in particular (GraphQL: 5000/hour) is shared with the `gh` calls your sessions make themselves, so heavy parallel work can exhaust it. On detecting this, codiva pauses polling for 5 minutes to let it recover. **The last known PR number and state stay on screen throughout** (vanishing would be more confusing).
 
-### 詰まった PR を立て直す（コンフリクト取り込み / CI 修正）
+### Recovering a stuck PR (base merges / CI fixes)
 
-PR がコンフリクト（`✗`）になったり CI が落ちたりしたとき、1 件ずつ worktree に入って直さなくて済むようにしています。
+When a PR conflicts (`✗`) or CI goes red, you shouldn't have to enter each worktree by hand to fix it.
 
-| 操作 | 何をするか |
+| Action | What it does |
 |---|---|
-| `/sync` | 選択中（詳細ビューではそのセッションの）worktree に**ベースブランチを取り込む** |
-| `/fix-ci` | 選択中のセッションに、**落ちた CI を直すよう指示する** |
-| `Ctrl+F`（= `/recover`） | 詰まっている**全セッション**をまとめて立て直す（件数を見せて `y` / `n` 確認） |
+| `/sync` | **Merges the base branch into** the selected session's worktree (the current session's, in the detail view) |
+| `/fix-ci` | **Asks the selected session to fix the failing CI** |
+| `Ctrl+F` (= `/recover`) | Recovers **every stuck session** at once (shows the count and asks `y` / `n`) |
 
-`Ctrl+F` はフォーカスに関係なく効きます。詰まっている行があるあいだは一覧に案内行が出ます。
+`Ctrl+F` works regardless of focus. While there are stuck rows, a hint line appears in the list.
 
-**`/sync` の挙動**（`git fetch origin <base>` → `git merge`）:
+**What `/sync` does** (`git fetch origin <base>` → `git merge`):
 
-| 状況 | 結果 |
+| Situation | Result |
 |---|---|
-| すでにベースを含んでいる | 何もしない |
-| きれいにマージできた | マージして **push まで済ませる**（セッションは起こさない = トークンを使わない） |
-| **競合した** | `git merge --abort` せず**競合を worktree に残したまま**、競合ファイル一覧を添えてセッションに解決を依頼する |
-| **未コミットの変更がある** | マージを試みず、コミット/退避してから取り込むようセッションに依頼する（書きかけと混ざるのを防ぐ） |
+| Base is already included | Nothing happens |
+| Merged cleanly | Merges and **pushes** (the session isn't woken — no tokens spent) |
+| **Conflicted** | Does *not* `git merge --abort`; **leaves the conflict in the worktree** and asks the session to resolve it, with the conflicting file list attached |
+| **Uncommitted changes present** | Doesn't attempt the merge; asks the session to commit/stash first, then take the base in (so it can't get mixed into work in progress) |
 
-競合の解決を codiva が `-X ours` のような指定で勝手に片付けることはありません（コードを無言で捨てるため）。判断はセッション（AI）が行い、判断できない場合は質問するよう指示しています。
+codiva never resolves conflicts on its own with things like `-X ours` (that would silently discard code). The session (the AI) decides, and is instructed to ask when it can't.
 
-**マージされずにクローズされた PR（`⊘`）は立て直しません。** コンフリクトや CI 失敗と違って「詰まっている」のではなく**終わっている**（人が閉じた判断）ためです。`Ctrl+F` の対象にも入らず、`autoSync` / `autoFixCi` を有効にしていても取り込みや CI 修正の指示は飛びません（閉じた PR にトークンを使わないため）。作業を続けたい場合は GitHub 側で PR を再オープンしてください（次のポーリングで状態のグリフが戻ります）。
+**PRs closed without merging (`⊘`) are not recovered.** Unlike a conflict or a red CI, they aren't *stuck* — they're **done** (a human decided to close them). They're excluded from `Ctrl+F`, and even with `autoSync` / `autoFixCi` enabled no base-merge or CI-fix instruction is sent (no tokens on closed PRs). To continue the work, reopen the PR on GitHub (the state glyph comes back on the next poll).
 
-**`/fix-ci` の挙動**: PR ステータスと同じ 1 回の `gh pr view` に含まれる情報から**落ちたチェック名と URL** を取り出し（追加の API 呼び出しはしません）、それを添えて「`gh run view --log-failed` でログを見て原因を直し、push する」よう指示します。ログの取得と修正はセッション自身が行います。
+**What `/fix-ci` does**: it pulls **the failing check names and URLs** out of the very same `gh pr view` call that backs the PR status (no extra API calls) and attaches them to an instruction to "read the logs with `gh run view --log-failed`, fix the cause and push". Fetching the logs and making the fix is the session's own job.
 
-**自動化**（既定は無効。手動コマンドは設定に関係なく使えます）:
+**Automation** (off by default; the manual commands work regardless of these settings):
 
 ```json
 { "autoSync": true, "autoFixCi": true }
 ```
 
-- `autoSync`: PR がコンフリクトと分かったら自動でベースを取り込む。
-- `autoFixCi`: チェックが赤くなったら自動で修正を依頼する。
-- どちらも**セッションが手を止めているとき**（完了・失敗・中断など）だけ動きます。作業中に指示を割り込ませることも、作業中の worktree で `git merge` を走らせることもありません（手動の `/sync` も同じです）。
-- 自動の依頼は 1 セッション・1 種類あたり **2 回まで**です。回数が戻るのは PR が**実際に緑になった**（またはマージされた）ときだけで、push 直後の「チェック実行中」では戻りません（直らない修正を push し続けると永久にターンが回ってしまうため）。
-- 既定を無効にしているのは、依頼が発生した時点でターンが回る = 課金が走るためです。
+- `autoSync`: merge the base in automatically once a PR is found to be conflicting.
+- `autoFixCi`: ask for a fix automatically when checks go red.
+- Both only fire **while a session is idle** (completed, failed, interrupted, …). They never interrupt work in progress, and never run `git merge` in a worktree that's being worked on (the manual `/sync` behaves the same).
+- Automatic requests are limited to **2 per session per kind**. The count only resets when the PR **actually goes green** (or gets merged) — not on "checks running" right after a push (otherwise a fix that never works would loop turns forever).
+- The default is off because a request means a turn runs, which means you get billed.
 
-### 問い合わせの頻度（セッションが増えても重くならない）
+### Query frequency (more sessions doesn't mean more load)
 
-20 秒ごとに全セッションへ問い合わせるのはやめて、次のようにしています。
+Instead of querying every session every 20 seconds, codiva does this:
 
-- **状態ごとに再取得の間隔を変える** — チェック実行中は 20 秒、GitHub がマージ可否を計算中なら 60 秒、落ち着いた PR は 3 分。**マージ済みの PR と破棄・マージ済みセッションは二度と問い合わせません**。それ以外の間はキャッシュした値をそのまま表示します。
-- **まとめて 1 回に畳む** — 同じタイミングで 3 件以上を確認する必要があるときは、`gh pr list` 1 回で全部取得してローカルで突き合わせます。セッションが 10 個あっても API 呼び出しは 1 回です。
-- **枯れたら止まる** — レート制限・未認証を検知したら 5 分間ポーリングを停止します。
+- **Refresh intervals depend on state** — 20 seconds while checks are running, 60 seconds while GitHub is computing mergeability, 3 minutes for a settled PR. **Merged PRs and discarded/merged sessions are never queried again.** In between, the cached value is displayed as-is.
+- **Batched into one call** — when 3 or more sessions need checking in the same cycle, a single `gh pr list` fetches everything and it's matched up locally. Ten sessions still means one API call.
+- **Backs off when exhausted** — on detecting a rate limit or missing authentication, polling stops for 5 minutes.
 
-### プラン / 使用状況の表示（既定エージェントが Claude のとき）
+### Plan / usage display (when the default agent is Claude)
 
-一覧画面のヘッダ（バナー）に、ログイン中の claude.ai プランと使用リミット枠が出ます（Codex / Grok はこれらを報告しないため、既定をそちらにしている間は出ません）。
+The list view's header (banner) shows the claude.ai plan you're logged into and your usage limit windows (Codex / Grok don't report these, so nothing appears while one of them is the default).
 
 ```
-Codiva v0.3.1   3 セッション
-プラン: Claude Max   モデル: claude-sonnet-5   ブランチ: main
+Codiva v0.3.1   3 sessions
+Plan: Claude Max   Model: claude-sonnet-5   Branch: main
 /Users/you/projects/your-repo
 
-使用状況
-  現在のセッション  ████████░░░░░░░░░░░░  42%  2時間45分後にリセット
-  今週              ██████████████████░░  88%  3日0時間後にリセット
+Usage
+  Current session   ████████░░░░░░░░░░░░  42%  resets in 2h 45m
+  This week         ██████████████████░░  88%  resets in 3d 0h
 ```
 
-- 全枠（5時間枠・週次枠・追加利用枠）が**ゲージ + 使用率 + 残り時間**で並びます。プラン名・組織名と
-  **対象リポジトリの現在ブランチ**は、モデル名と同じ行（`プラン: Claude Max   モデル: sonnet   ブランチ: main`）
-  に出ます（ブランチは新しいセッションの分岐元・マージ先。別ターミナルで `git switch` しても数秒で追従し、
-  detached HEAD のときは表示しません）。
-- 更新は2系統: 稼働中セッションはターン開始ごとに Claude から届く最新値、待機中は **5分ごとの自動取得**
-  （どちらも Claude への問い合わせだけで推論は走らないため、トークン消費・課金はありません）。
-  リセットまでの残り時間はカウントダウンします。
-- 使用率（`%`）は Claude が返さないプランもあります。その場合はゲージを出さず残り時間だけを表示します
-  （0% と誤読させないため）。
-- API キー / Bedrock / Vertex 利用時はサブスク制限が無いため、この表示は出ません。
-- **ヘッダは「次に動くエージェント」の説明**です。`/agent` で既定を Codex / Grok に切り替えると、
-  エージェント名・プラン・モデル・使用状況が揃って切り替わります（どちらもプランや使用状況を
-  報告しないので、その間はプラン行とゲージが消え、モデルは `モデル: CLI 既定` に戻ります）。
-  claude.ai への 5 分ごとの自動取得もその間は止まり、既定を Claude へ戻すと再開します。
-- 画面下部のステータスバーはモード表示（`⏵⏵ 自動モード`）と操作ヒントだけです。プラン / 使用状況は
-  ヘッダに集約しています（詳細ビューで見たいときは Esc で一覧へ戻ります）。
+- Every window (5-hour, weekly, extra usage) is listed as a **gauge + percentage + time remaining**. The plan name, organization name and **the target repository's current branch** appear on the same line as the model (`Plan: Claude Max   Model: sonnet   Branch: main`). The branch is where new sessions branch from and merge back to; it catches up within seconds even if you `git switch` in another terminal, and is hidden on a detached HEAD.
+- Updates come from two sources: running sessions get the latest values Claude sends at the start of each turn, and idle ones get an **automatic fetch every 5 minutes** (both are queries to Claude that run no inference, so there's no token usage or billing). Time-to-reset counts down.
+- Some plans don't get a percentage (`%`) back from Claude. In that case the gauge is omitted and only the time remaining is shown (so 0% isn't misread).
+- With an API key / Bedrock / Vertex there is no subscription limit, so this display doesn't appear.
+- **The header describes "the agent that will run next".** Switch the default to Codex / Grok with `/agent` and the agent name, plan, model and usage all switch together (neither reports a plan or usage, so the plan line and gauges disappear and the model falls back to `Model: CLI default`). The 5-minute claude.ai fetch also stops while that's the case, and resumes when you switch the default back to Claude.
+- The status bar at the bottom only carries the mode indicator (`⏵⏵ auto mode`) and key hints. Plan / usage live in the header (press Esc to return to the list if you want to see them from the detail view).
 
-### エージェントを選ぶ・切り替える（`/agent`）
+### Choosing and switching agents (`/agent`)
 
-セッションを動かすエージェントは **Claude Code**（`claude` CLI / Claude Agent SDK）・**Codex**（OpenAI の `codex` CLI）・**Grok**（xAI の `grok` CLI）から選べます。既定は Claude ですが、Claude が入っていない環境でも Codex / Grok だけで使えます。
+Sessions can be driven by **Claude Code** (the `claude` CLI / Claude Agent SDK), **Codex** (OpenAI's `codex` CLI) or **Grok** (xAI's `grok` CLI). Claude is the default, but codiva is perfectly usable with only Codex / Grok installed.
 
-1. 使いたい CLI をインストールしてログインを済ませる（`claude` → `claude auth login` / `codex` → `codex login` / `grok` → `grok login`。Grok は `curl -fsSL https://x.ai/cli/install.sh | bash` で入り、`XAI_API_KEY` でも動きます）。**codiva はこれらの CLI を同梱しません** — `git` や `gh` と同じく、あなたの環境に入っているコマンドを起動します（使わない人にまで大きなバイナリを配らないため）。認証も codiva は一切触りません。
-2. **一覧で `/agent` と入力**し、使いたいエージェントを選ぶだけで新規セッションの既定になります（設定ファイルの手編集は不要 — 選ぶと `~/.codiva/config.json` に保存されます。もちろん `"agent": "codex"` / `"agent": "grok"` を直接書いても構いません）。ダイアログには各エージェントの**導入・ログイン状態**（`使用できます` / `未ログイン` / `未導入`）が並びます。
-3. すでに動いているセッションを途中で切り替えるなら、詳細ビュー（一覧で `Enter`）で **`/agent`** を選びます。切替は**次の指示から**効きます。
+1. Install the CLI you want and log in (`claude` → `claude auth login` / `codex` → `codex login` / `grok` → `grok login`. Grok installs via `curl -fsSL https://x.ai/cli/install.sh | bash` and also works with `XAI_API_KEY`). **codiva does not bundle these CLIs** — like `git` and `gh`, it launches the commands installed on your machine (so users who don't need a provider aren't shipped a large binary). codiva never touches their credentials either.
+2. **Type `/agent` in the list** and pick an agent; that's it — it becomes the default for new sessions (no hand-editing config: your choice is saved to `~/.codiva/config.json`. Writing `"agent": "codex"` / `"agent": "grok"` yourself works too). The dialog lists each agent's **install and login status** (`Ready` / `Not signed in` / `Not installed`).
+3. To switch an already-running session, open the detail view (`Enter` from the list) and pick **`/agent`** there. The switch takes effect **from the next instruction**.
 
-`claude` も `codex` も `grok` も入っていない状態でも codiva は起動します。その場合は一覧に「コーディングエージェントが見つかりません」と出るので、案内どおりどれかを入れてログインしてください。
+codiva starts even with none of `claude`, `codex` or `grok` installed. In that case the list says "No coding agent found" — follow the instructions to install one and log in.
 
-**サインインは codiva の中でできます。** 一覧・詳細で **`/login`** と入力する（または `/agent` のダイアログで対象を選んで `l`）と、`codex login` / `claude auth login` / `grok login --device-auth` を裏で起動し、**認証 URL とワンタイムコードをダイアログに表示**します（URL は自動でブラウザでも開きます）。ブラウザでサインインを終えると自動で状態が更新されます（Esc で中止）。端末を明け渡さないので、他のセッションはそのまま動き続けます。
+**You can sign in from inside codiva.** Type **`/login`** in the list or detail view (or select a target in the `/agent` dialog and press `l`) and codiva launches `codex login` / `claude auth login` / `grok login --device-auth` in the background, **showing the auth URL and one-time code in a dialog** (the URL is also opened in your browser automatically). Finish signing in there and the status updates on its own (`Esc` aborts). The terminal is never handed over, so other sessions keep running.
 
-`/agent` で切り替えたとき、引き継がれるもの / 引き継がれないものは次のとおりです。
+Here's what does and doesn't carry over when you switch with `/agent`:
 
-| 引き継がれる | 引き継がれない |
+| Carries over | Does not carry over |
 |---|---|
-| worktree・ブランチ・作業ツリーの内容、codiva 上のログ・タイトル・PR | **会話の文脈**（各 CLI がそれぞれ自分の記録を持つため） |
+| The worktree, branch and working tree contents; codiva's log, title and PRs | **The conversation context** (each CLI keeps its own transcript) |
 
-一度使ったエージェントの会話 id はセッションごとに保存されるので、Claude → Codex → Claude と戻したときは**元の会話の続き**から再開します（codiva を再起動しても同じです）。
+The conversation id of each agent you've used is stored per session, so going Claude → Codex → Claude resumes **the original conversation** where it left off (this survives restarting codiva too).
 
-会話の文脈は渡せませんが、**切替先には「引き継ぎの覚書」を 1 回だけ渡します** — ブランチ名・そのセッションの最初の指示・直前の指示と、「続ける前に `git status` / `git diff` で作業ツリーの状態を自分で確かめること」を伝えるので、済んだ作業をやり直したり直前の指示を無視したりしにくくなります（切替直後に余分なターンは走りません。次にあなたが指示を送ったときに一緒に渡ります）。
+The context can't be transferred, but **the incoming agent gets a one-time handoff note** — the branch name, the session's first instruction, the most recent instruction, and a reminder to "verify the state of the working tree yourself with `git status` / `git diff` before continuing" — which makes it much less likely to redo finished work or ignore your last instruction. (No extra turn runs at switch time; the note rides along with the next instruction you send.)
 
-**どのセッションが何で走っているかは画面で分かります。**
+**You can always see what each session is running on.**
 
-- ヘッダに `エージェント: Claude` として**新規セッションの既定**が出ます。
-- 一覧の行には、**複数のエージェントが混ざっているときだけ**エージェント名の列が出ます（全部同じならヘッダと重複するだけなので、その幅はタイトルやブランチ名に回します）。
-- 詳細ビューの入力欄には `Claude に追加の指示を入力…` のように相手の名前が出ます。
-- 途中で切り替えたセッションの会話ログには `── ここから Codex ──` の区切りが入り、どこからが別のエージェントの発言か分かります。
+- The header shows `Agent: Claude` — **the default for new sessions**.
+- List rows get an agent-name column **only when several agents are in play** (if they're all the same it just duplicates the header, so that width goes to titles and branch names instead).
+- The detail view's input field names the recipient, e.g. `Send a follow-up to Claude…`.
+- The conversation log of a switched session gets a `── Codex from here ──` divider, so you can tell which agent said what.
 
-#### エージェントごとの機能差
+#### Capability differences between agents
 
-worktree の分離・並列実行・追加指示・中断（`Ctrl+C`）・マージ / 破棄・PR 自動化（`/sync` / `/fix-ci`）・デスクトップ通知・リポジトリ追加指示（`.codiva/prompt.md`）・`/model` は**どのエージェントでも同じように使えます**。違うのは次の 4 点だけです。
+Worktree isolation, parallel execution, follow-ups, interrupting (`Ctrl+C`), merge / discard, PR automation (`/sync` / `/fix-ci`), desktop notifications, repo-wide instructions (`.codiva/prompt.md`) and `/model` all **work the same on every agent**. Only these four things differ.
 
 | | Claude Code | Codex | Grok |
 |---|---|---|---|
-| ツール使用の許可 / 質問ダイアログ | ✅ | ❌（サンドボックスで代替） | ✅ |
-| コスト表示（ヘッダの合計金額） | ✅ | ❌ | ❌ |
-| プラン / 使用状況ゲージ | ✅ | ❌ | ❌ |
-| 再起動後のログ復元 | ✅ | ❌（会話の再開自体は可） | ❌（同） |
+| Tool permission / question dialogs | ✅ | ❌ (sandbox instead) | ✅ |
+| Cost display (total in the header) | ✅ | ❌ | ❌ |
+| Plan / usage gauges | ✅ | ❌ | ❌ |
+| Log restoration after a restart | ✅ | ❌ (resuming the conversation still works) | ❌ (same) |
 
-**Codex セッションの制約**（Claude セッションとの違い）:
+**Codex session limitations** (differences from a Claude session):
 
-- **ツール使用の許可を尋ねません。** `codex exec` の JSON 出力モードは承認要求を CLI 内部で自動的に拒否してしまい、codiva 側へ上げる手段がありません。そこで codiva は「それらしい許可ダイアログ」を出さず、**サンドボックスを唯一の安全弁**にしています（設定 `codexSandbox`。既定の `workspace-write` では書き込みがセッションの worktree 内に限定されます）。`質問あり` の状態にもなりません。
-- **コストを表示しません。** Codex はターン終了時にトークン数しか返さず、金額もアカウント全体の使用状況も運びません。ヘッダの合計コストには Codex のセッションを数えません（Claude ぶんだけの金額を「全体」として出さないため）。プラン表示と使用状況ゲージは Claude のアカウントの話なので、**`/agent` で既定を Codex にしている間はヘッダに出ません**（取得もしません）。
-- **フッタのモード表示が `確認モード (非対応)` になります。** 許可を尋ねられないので、`確認モード` のままだと「待っていれば聞かれる」と読めてしまうためです（`shift+tab` の切替そのものは効きます）。
-- **再起動後にログが復元されません**（セッションの続きを再開すること自体はできます）。ログの再構築は Claude CLI の記録ファイルを読む仕組みで、Codex の記録は形式が異なるためです。
-- `/model` の選択肢は Codex 側のモデル一覧（`codex debug models`）になります。一覧を取得できない環境では「デフォルト」だけになります（推測でモデル名を並べません）。`/agent` で provider を切り替えると、互換性のない切替前のモデル指定は CLI 既定へ戻ります。Codex は実行イベントにモデル名を含めないため、`/model` で明示したモデル名をセッション一覧に表示します。
+- **It doesn't ask for tool permission.** `codex exec`'s JSON output mode auto-rejects approval requests inside the CLI, with no way to surface them to codiva. So rather than fake a plausible-looking permission dialog, codiva makes **the sandbox the only safety valve** (setting `codexSandbox`; the default `workspace-write` confines writes to the session's worktree). Codex sessions also never enter the `Question` state.
+- **It doesn't display cost.** Codex only returns token counts at the end of a turn — no amounts, no account-wide usage. Codex sessions are excluded from the header's total cost (so a Claude-only figure isn't presented as "everything"). The plan display and usage gauges are about your Claude account, so **they don't appear in the header while Codex is the default** (and nothing is fetched either).
+- **The footer's mode indicator reads `confirm mode (unsupported)`.** Since nothing can be asked, a plain `confirm mode` would read as "wait and you'll be asked" (the `shift+tab` toggle itself still works).
+- **The log isn't restored after a restart** (resuming the session itself does work). Log reconstruction reads the Claude CLI's transcript files, and Codex's transcripts use a different format.
+- `/model` lists Codex's own models (`codex debug models`). On machines where that list can't be fetched you only get "default" (codiva doesn't guess model names). Switching provider with `/agent` resets an incompatible model selection to the CLI default. Codex doesn't include the model name in its execution events, so the list shows whatever model you set explicitly with `/model`.
 
-**Grok セッションの制約**（Claude セッションとの違い）:
+**Grok session limitations** (differences from a Claude session):
 
-- **ツール使用の許可と質問はそのまま届きます。** Codex と違い、Grok は許可要求（`許可待ち`）と質問（`質問あり`）を codiva の双方向のやり取りで上げてくるので、いつもどおりダイアログで応答できます。
-- **コストを表示しません。** Grok はターンの終わりにトークン数しか返さず、金額もアカウント全体の使用状況も運びません。ヘッダの合計コストには Grok のセッションを数えず、プラン表示と使用状況ゲージ（Claude のアカウントの話）も既定を Grok にしている間は出ません。
-- **再起動後にログが復元されません**（セッションの続きを再開すること自体はできます）。ログの再構築は Claude CLI の記録ファイルを読む仕組みで、Grok の記録は形式が異なるためです。
-- `/model` の選択肢は Grok 側のモデル一覧になります。一覧を取得できない環境では「デフォルト」だけになります（推測でモデル名を並べません）。`/agent` で provider を切り替えると、互換性のない切替前のモデル指定は CLI 既定へ戻ります。Codex と違い Grok は**実際に動いているモデル名を自分で教えてくれる**ので、`/model` で明示していなくてもセッション一覧にモデル名が出ます。
+- **Tool permissions and questions come through normally.** Unlike Codex, Grok surfaces permission requests (`Awaiting permission`) and questions (`Question`) over codiva's bidirectional channel, so you answer them in dialogs as usual.
+- **It doesn't display cost.** Grok only returns token counts at the end of a turn — no amounts, no account-wide usage. Grok sessions are excluded from the header's total cost, and the plan display and usage gauges (which are about your Claude account) don't appear while Grok is the default.
+- **The log isn't restored after a restart** (resuming the session itself does work). Log reconstruction reads the Claude CLI's transcript files, and Grok's transcripts use a different format.
+- `/model` lists Grok's own models. On machines where that list can't be fetched you only get "default" (codiva doesn't guess model names). Switching provider with `/agent` resets an incompatible model selection to the CLI default. Unlike Codex, Grok **tells you which model is actually running**, so the session list shows a model name even when you didn't set one with `/model`.
 
-## 設定
+## Configuration
 
-ON/OFF の項目は TUI から切り替えられます（一覧画面で `/config`。上記「設定を画面から変える」）。以下はファイルを直接書く場合の全項目です。
+The on/off settings can be toggled from the TUI (`/config` in the list view — see [Changing settings from the UI](#changing-settings-from-the-ui-config)). Below is the full set of keys for editing the file directly.
 
-`~/.codiva/config.json`（任意）:
+`~/.codiva/config.json` (optional):
 
 ```json
 {
@@ -368,204 +359,206 @@ ON/OFF の項目は TUI から切り替えられます（一覧画面で `/confi
 }
 ```
 
-- `language`: `"ja"` / `"en"` / `"auto"`（OS ロケール準拠）。環境変数 `CODIVA_LANG`（`ja` / `en`）が最優先です。
-- `updateCheck`: 起動時に npm の最新バージョンを確認するか。既定 `true`。`false` にすると起動時の通信をやめ、`/update` も「確認できませんでした」になります。
-- `ignoredFiles`: セッション用 worktree を作るとき、`.gitignore` された未追跡ファイル（`node_modules/` や `.env` など）をどう引き継ぐか。git worktree は追跡対象しか引き継がないため、これがないと依存の再インストールや環境変数の再設定が必要になります。既定 `"symlink"`。
-  - `"symlink"`（既定）: リポジトリルートへシンボリックリンクを張るだけ。複製コストがゼロで即起動できます。実体を共有するので、**その旨と「書き込む前にリンクを切る」手順をセッション（AI）にも伝えます**（下記）。
-  - `"copy"`: リポジトリルートから実体を複製します。worktree が完全に独立し作業が絶対に重複しませんが、`node_modules/` が巨大だとコピーが重くなります。
-  - `"none"`: 何も引き継ぎません（依存や環境変数はセッション側で用意し直す）。
-  - 非推奨の `copyIgnored`（真偽値）も後方互換で解釈します（`true`→`copy` 相当、`false`→`none` 相当）。`ignoredFiles` があればそちらが優先されます。
-  - **ビルド生成物・キャッシュは引き継ぎません**（`.next/` `.nuxt/` `.svelte-kit/` `.turbo/` `.vite/` `.cache/` `dist/` `build/` `out/` `coverage/` `target/` `__pycache__/` `*.tsbuildinfo` など）。生成物なのでセッション側で作り直せますし、共有すると壊れるためです（下記）。
-- `ignoredFilesExclude`: 上の除外リストに足す／打ち消すパターンの配列。既定の**後ろ**に足され、最後に一致したパターンが勝ちます。`/` を含まないパターンはパスの最終セグメントに一致するので、`apps/web/.next/` のようなネストした場所にも効きます。`*` 前置は接尾一致（`*.log`）。
+- `language`: `"ja"` / `"en"` / `"auto"` (follow the OS locale). The `CODIVA_LANG` environment variable (`ja` / `en`) takes precedence over everything.
+- `updateCheck`: whether to check npm for the latest version at startup. Default `true`. Setting it to `false` stops the startup request and makes `/update` report "could not check".
+- `ignoredFiles`: how `.gitignore`d untracked files (`node_modules/`, `.env`, …) are carried into a session's worktree. `git worktree` only carries tracked files, so without this you'd have to reinstall dependencies and re-create env files. Default `"symlink"`.
+  - `"symlink"` (default): just symlink to the repository root. Zero copy cost, instant startup. Because the real files are shared, **codiva also tells the session about it, along with the "detach the link before writing" procedure** (see below).
+  - `"copy"`: copy the real files from the repository root. The worktree becomes fully independent and work can never collide, but a huge `node_modules/` makes the copy slow.
+  - `"none"`: carry nothing over (the session re-creates dependencies and env files itself).
+  - The deprecated boolean `copyIgnored` is still understood for backward compatibility (`true` → like `copy`, `false` → like `none`). `ignoredFiles` wins if both are present.
+  - **Build output and caches are never carried over** (`.next/` `.nuxt/` `.svelte-kit/` `.turbo/` `.vite/` `.cache/` `dist/` `build/` `out/` `coverage/` `target/` `__pycache__/` `*.tsbuildinfo`, …). They're generated, so the session can rebuild them, and sharing them breaks things (see below).
+- `ignoredFilesExclude`: an array of patterns to add to — or cancel out of — the exclusion list above. It's appended **after** the defaults, and the last matching pattern wins. A pattern without `/` matches the final path segment, so it also catches nested locations like `apps/web/.next/`. A leading `*` matches a suffix (`*.log`).
   ```json
   { "ignoredFilesExclude": ["!dist", ".venv", "*.sqlite"] }
   ```
-  この例は「`dist/` は引き継ぐ（既定の除外を打ち消す）／`.venv/` と `*.sqlite` は引き継がない」になります。
-- `notifications`: 質問・許可要求・完了などのタイミングでデスクトップ通知を出すか。既定 `true`（`false` で無効化）。
-- `privacyWarning`: 学習データ利用が ON のときヘッダに注意行を出すか。既定 `true`。`false` にすると判定自体を行いません（下記）。
-- `autoSync`: PR がコンフリクトになったら自動でベースブランチを取り込むか。既定 `false`（上記）。
-- `autoFixCi`: PR の CI が落ちたら自動でセッションに修正を依頼するか。既定 `false`（上記）。
-- `crashLog`: 予期せず終了したときに `~/.codiva/logs/` へクラッシュログを残すか。既定 `true`（下記）。`false` にするとファイルは書かず、理由の表示と端末の復元だけを行います。
-- `agent`: 新しいセッションを既定でどのエージェントで動かすか。`"claude"`（既定）/ `"codex"` / `"grok"`。**一覧の `/agent` で選ぶとここへ自動保存**されるので、通常は手で書く必要はありません。セッションごとの途中切替は詳細ビューの `/agent` です（上記）。
-- `claudeSettingSources`: Claude セッションが読み込む設定ファイルの層の配列。`"user"`（`~/.claude/settings.json`）/ `"project"`（`<repo>/.claude/settings.json`）/ `"local"`（`<repo>/.claude/settings.local.json`）。既定は `["project"]` で、`"project"` は指定しなくても必ず含まれます（対象リポジトリの CLAUDE.md はこの層でしか読まれないため）。
+  This example means "do carry `dist/` over (cancelling the default exclusion), and don't carry `.venv/` or `*.sqlite`".
+- `notifications`: whether to show desktop notifications on questions, permission requests, completion and so on. Default `true` (`false` disables them).
+- `privacyWarning`: whether to show the header notice when training-data usage is ON. Default `true`. Setting it to `false` skips the detection entirely (see below).
+- `autoSync`: whether to merge the base branch in automatically when a PR conflicts. Default `false` (see above).
+- `autoFixCi`: whether to ask the session to fix CI automatically when it fails. Default `false` (see above).
+- `crashLog`: whether to write a crash log to `~/.codiva/logs/` on an unexpected exit. Default `true` (see below). With `false` no file is written; codiva still prints the reason and restores the terminal.
+- `agent`: which agent new sessions use by default. `"claude"` (default) / `"codex"` / `"grok"`. **Choosing one via `/agent` in the list saves it here**, so you normally don't write it by hand. Per-session switching is `/agent` in the detail view (see above).
+- `claudeSettingSources`: an array of the settings layers a Claude session loads. `"user"` (`~/.claude/settings.json`) / `"project"` (`<repo>/.claude/settings.json`) / `"local"` (`<repo>/.claude/settings.local.json`). The default is `["project"]`, and `"project"` is always included whether you list it or not (the target repository's CLAUDE.md is only read through that layer).
   ```json
   { "claudeSettingSources": ["user", "project", "local"] }
   ```
-  **Claude Code のプラグインを codiva のセッションでも使いたいときは `"user"` を足してください。** `claude plugin install` で入れたプラグインの有効化（`enabledPlugins`）は `~/.claude/settings.json` に書かれるので、既定のままではプラグインの skill / コマンド / サブエージェント / hook / MCP サーバが一切ロードされません。副作用として、その層の**ほかの設定（hooks・permissions・statusLine など）もセッションに載ります**。既定を `["project"]` にしているのはそのためで、セッションは手元ではなく worktree で自動的に走るため、手元の Claude Code 用の設定を黙って持ち込まない側に倒しています。
-- `codexSandbox`: Codex セッションのサンドボックス。`"read-only"` / `"workspace-write"`（既定）/ `"danger-full-access"`。Codex はツール使用の許可を尋ねられないため、**ここが Codex セッションに対する唯一の安全弁**です。既定の `workspace-write` は「読み取りは全体・書き込みはセッションの worktree 内だけ」です。
-- `codexNetworkAccess`: `codexSandbox` が `"workspace-write"` のときネットワークアクセスを許可するか。既定 `true`。Codex 自身の既定は遮断ですが、それだと `npm install` や `gh` が失敗して大半の作業が完了しないため codiva 側では開けています（塞ぎたいときは `false`）。
+  **Add `"user"` if you want your Claude Code plugins to work in codiva sessions too.** Plugin activation (`enabledPlugins`) for anything installed with `claude plugin install` is written to `~/.claude/settings.json`, so with the default, none of a plugin's skills / commands / subagents / hooks / MCP servers get loaded. The side effect is that **the rest of that layer (hooks, permissions, statusLine, …) also loads into your sessions**. That's why the default is `["project"]`: sessions run unattended in a worktree rather than in front of you, so codiva errs on the side of not silently importing your local Claude Code setup.
+- `codexSandbox`: the sandbox for Codex sessions. `"read-only"` / `"workspace-write"` (default) / `"danger-full-access"`. Because Codex can't ask for tool permission, **this is the only safety valve for Codex sessions**. The default `workspace-write` means "read anything, write only inside the session's worktree".
+- `codexNetworkAccess`: whether to allow network access when `codexSandbox` is `"workspace-write"`. Default `true`. Codex's own default is to block it, but that makes `npm install` and `gh` fail and most work never finishes, so codiva opens it (set `false` to close it).
 
-### シンボリックリンクの共有と「必要になったら切り離す」
+### Shared symlinks and "detach when you need to"
 
-`ignoredFiles: "symlink"`（既定）では、`node_modules/` や `.env` のような `.gitignore` 済みパスは**元リポジトリの実体を指すリンク**です。読むだけなら問題ありませんが、そこへ**書き込む**操作（依存の追加・更新、ビルドやコード生成、キャッシュの削除など）はリンク越しに実体を書き換えるため、メインのチェックアウトや**並行して動いているほかのセッション**に波及します。
+With `ignoredFiles: "symlink"` (the default), `.gitignore`d paths such as `node_modules/` and `.env` are **links pointing at the originals in the main repository**. Reading through them is fine, but **writing** (adding or updating dependencies, building, code generation, clearing caches, …) rewrites the shared originals through the link, which propagates to your main checkout and to **other sessions running in parallel**.
 
-そこで codiva は、このモードのときだけセッションの systemPrompt に次の内容を載せます。
+So in this mode — and only this mode — codiva adds the following to each session's systemPrompt:
 
-- この worktree の ignore 済みパスは元リポジトリへのシンボリックリンクで、実体は共有物であること
-- 読むのは安全だが、**書き込む前にそのパスだけリンクを切って worktree 専用の実体を作る**こと（現在の内容をコピーする / 依存の再インストールやクリーンビルドで作り直す、のどちらでもよい）
-- リンクを消すときに `rm -rf <path>/` や `<path>/*`（末尾スラッシュ・グロブ）を使うと**共有先の中身を消してしまう**こと
-- `.gitignore` の `node_modules/` のような**末尾スラッシュのパターンは symlink にマッチしない**ため、リンクが untracked として現れること（`git add -A` するとリンク自体がコミットされてしまうので、パス指定でステージする）
-- 実際に書き込むパスだけを切り離し、**触らない作業では何もしなくてよい**こと
+- that the ignored paths in this worktree are symlinks into the main repository and the targets are shared
+- that reading is safe, but **before writing you must detach that one path and give the worktree its own copy** (either by copying the current contents, or by regenerating it with a fresh install / clean build)
+- that removing the link with `rm -rf <path>/` or `<path>/*` (trailing slash, globs) **deletes the shared contents**
+- that `.gitignore` patterns like `node_modules/` **don't match a symlink** because of the trailing slash, so the links show up as untracked (`git add -A` would commit the link itself, so stage by path)
+- that only the paths actually being written to need detaching, and **tasks that don't write need nothing at all**
 
-言語やツールチェインに依存しない書き方（「symlink かどうかで判定する」）にしてあるので、`node_modules` を持たないプロジェクトでも同じように機能します。codiva 側が先回りしてリンクを張り替えることはしません（何が書き込み対象になるかは指示内容次第で、全部コピーすると symlink モードの利点が消えるため）。
+The wording is language- and toolchain-agnostic ("check whether it's a symlink"), so it works the same in projects that have no `node_modules`. codiva never pre-emptively replaces the links itself (what will be written depends on the instruction, and copying everything would defeat the point of symlink mode).
 
-はじめから完全に独立させたい場合は `"copy"`、自分で用意し直したい場合は `"none"` を使ってください。
+Use `"copy"` if you want full independence from the start, or `"none"` if you'd rather set things up yourself.
 
-### ビルド生成物は引き継がない（開発サーバのフリーズ対策）
+### Build output isn't carried over (dev-server freeze prevention)
 
-`.gitignore` されたパスのうち、**ビルド生成物と各種キャッシュ**（`.next/` / `dist/` / `target/` / `coverage/` / `*.tsbuildinfo` など）は `"symlink"` / `"copy"` のどちらでも引き継ぎません。理由は 2 つです。
+Among `.gitignore`d paths, **build output and caches** (`.next/`, `dist/`, `target/`, `coverage/`, `*.tsbuildinfo`, …) are never carried over, in either `"symlink"` or `"copy"` mode. Two reasons:
 
-- **共有すると壊れます。** 元リポジトリと複数の worktree で同時に開発サーバやビルドを走らせると、同じ実体へ並行して書き込むことになります。
-- **worktree はリポジトリ配下（`.codiva/worktrees/<slug>`）にあります。** そのため、プロジェクトルートから再帰的にファイル監視する開発サーバ（Next.js / Turbopack など）からは、**自分が書き込み続けているディレクトリが worktree の数だけ別経路として見えます**。変更通知が何重にも跳ね返って CPU・メモリ・ファイルディスクリプタを食い潰し、OS ごとフリーズすることがあります（[#81](https://github.com/takecchi/codiva/issues/81)）。
+- **Sharing them breaks things.** Running dev servers or builds in the main repository and several worktrees at once means concurrent writes to the same files.
+- **Worktrees live inside the repository** (`.codiva/worktrees/<slug>`). So to a dev server that watches recursively from the project root (Next.js / Turbopack, …), **the directory it keeps writing to appears once per worktree as a separate path**. Change notifications echo back many times over, eating CPU, memory and file descriptors — sometimes freezing the whole OS ([#81](https://github.com/takecchi/codiva/issues/81)).
 
-生成物はセッション側で作り直せるので、引き継がないのが安全な既定です。判定はディレクトリ名のリストなので、プロジェクト固有の生成物があれば `ignoredFilesExclude` に足してください（逆に共有したいものは `"!dist"` のように打ち消せます）。
+Generated files can be rebuilt by the session, so not carrying them is the safe default. Detection is a list of directory names, so add your project's own build output to `ignoredFilesExclude` (or cancel an exclusion with `"!dist"` if you do want to share something).
 
-**既存のセッション worktree に残っているリンクは起動時に自動で外します**（以前のバージョンで作った worktree にも効きます）。外すのは**シンボリックリンクだけ**なので、リンク先（元リポジトリの中身）と、worktree 内に実体として存在するビルド結果には触りません。
+**Links left over in existing session worktrees are removed automatically at startup** (this also fixes worktrees created by older versions). Only **symlinks** are removed, so the link targets (the contents of the main repository) and any real build output inside the worktree are untouched.
 
-なお、監視対象そのものを減らしたい場合は、対象プロジェクト側で `.codiva` を開発サーバの監視除外設定に追加するのが確実です（git から隠す方は codiva が `.codiva/.gitignore` を置いて自動で済ませます。対象リポジトリの `.gitignore` は書き換えません）。
+If you want to reduce what's being watched in the first place, the reliable fix is adding `.codiva` to your dev server's watch-ignore config on the project side. (Hiding it from git is handled for you: codiva drops in `.codiva/.gitignore`. Your repository's `.gitignore` is never modified.)
 
-### デスクトップ通知
+### Desktop notifications
 
-セッションが「質問あり」「許可要求」「完了」「失敗」などの状態に変わったタイミングで通知します（同じ状態が続いている間は鳴りません）。
+codiva notifies you when a session changes to states like "question", "permission request", "completed" or "failed" (it stays quiet while a state persists).
 
-通知は可能なかぎり**ターミナル自身に出させます**（Ghostty / WezTerm / foot / iTerm2 / kitty の通知エスケープシーケンスを利用）。そのため通知をクリックすると codiva を動かしているターミナルが前面に来ます。tmux 内でも動きますが、`set -g allow-passthrough on` が必要です。SSH 越しの場合、`TERM` から判別できる Ghostty / kitty / foot と、`LC_TERMINAL` を転送する iTerm2 では手元のターミナルに通知が出ます。
+Notifications are emitted **by the terminal itself** whenever possible (using the notification escape sequences of Ghostty / WezTerm / foot / iTerm2 / kitty). That means clicking a notification brings the terminal running codiva to the front. It works inside tmux too, but requires `set -g allow-passthrough on`. Over SSH, notifications reach your local terminal for Ghostty / kitty / foot (identifiable from `TERM`) and for iTerm2 (which forwards `LC_TERMINAL`).
 
-上記に該当しないターミナル（macOS 標準の Terminal.app、Windows Terminal など）では OS のコマンド（macOS は `osascript`、Linux は `notify-send`）にフォールバックします。**macOS のこのフォールバック経路では通知が「スクリプトエディタ」名義になり、クリックするとスクリプトエディタが開きます**（`osascript` から出した通知の仕様上の制約です）。ターミナル側の通知設定（Ghostty の `desktop-notifications` など）を無効にしている場合も通知は出ません。
+On terminals not covered above (macOS's built-in Terminal.app, Windows Terminal, …) codiva falls back to an OS command (`osascript` on macOS, `notify-send` on Linux). **On the macOS fallback path notifications are attributed to "Script Editor", and clicking one opens Script Editor** — an inherent limitation of notifications posted via `osascript`. Notifications also won't appear if you've disabled them on the terminal side (e.g. Ghostty's `desktop-notifications`).
 
-### 学習データ利用（モデル学習へのデータ提供）の警告
+### The training-data usage warning
 
-claude.ai の設定「**Help improve our AI models**」が ON のアカウントでは、Claude Code / codiva 経由の会話も Anthropic のモデル改善に使われることがあります。codiva は並列セッションで大量のコードを流すため、**ON と判定できたときだけ**起動時ヘッダに注意行を出します。
+On accounts where claude.ai's "**Help improve our AI models**" setting is ON, conversations through Claude Code / codiva may be used to improve Anthropic's models. Because codiva pushes a lot of code through parallel sessions, it shows a notice line in the startup header — **but only when it can determine that the setting is ON**.
 
 ```
-⚠ 学習データ利用が ON です（会話がモデル改善に使われる場合があります）
-  変更: https://claude.ai/settings/data-privacy-controls
+⚠ Training-data usage is ON (conversations may be used to improve models)
+  Change it: https://claude.ai/settings/data-privacy-controls
 ```
 
-- 設定を変えるのは上記 URL（または Claude Code の `/privacy-settings`）です。**codiva はアカウント設定を書き換えません**（読み取りのみ）。
-- 判定は「`~/.claude.json` のキャッシュ → Claude Code と同じ API へ問い合わせ」の順で、起動を待たせません。判定できないとき（未ログイン・`ANTHROPIC_API_KEY` などの API 利用・オフライン・仕様変更）は**何も表示しません**。
-- 設定を OFF に変えたあとは、次の起動で警告が消えます（キャッシュが ON でも API で確認し直すため）。
-- 問い合わせには Claude Code の OAuth トークン（macOS は Keychain の `Claude Code-credentials`、それ以外は `~/.claude/.credentials.json`）を読み取り専用で使います。これが嫌な場合は `"privacyWarning": false` にすると、Keychain もネットワークも一切触りません。
+- Change the setting at that URL (or with Claude Code's `/privacy-settings`). **codiva never modifies your account settings** (read-only).
+- Detection goes "cache in `~/.claude.json` → query the same API Claude Code uses", in that order, and never delays startup. When it can't tell (not signed in, API usage such as `ANTHROPIC_API_KEY`, offline, an upstream change) **nothing is shown**.
+- After you turn the setting off, the warning is gone on the next launch (the API is re-checked even if the cache still says ON).
+- The query uses Claude Code's OAuth token read-only (the `Claude Code-credentials` Keychain entry on macOS, `~/.claude/.credentials.json` elsewhere). If you'd rather it didn't, set `"privacyWarning": false` and codiva touches neither the Keychain nor the network.
 
-### リポジトリ追加指示（`.codiva/prompt.md`）
+### Repo-wide instructions (`.codiva/prompt.md`)
 
-対象リポジトリの `.codiva/prompt.md` に書いた内容は、そのリポジトリで起動する全セッションの systemPrompt に自動注入されます。「作業が終わったらテストを実行し PR を出す」など、リポジトリ固有のワークフローをチームで共有できます（`CLAUDE.md` とは独立に併用可能。ファイルが無ければ無指示で従来どおり）。
+Whatever you write in the target repository's `.codiva/prompt.md` is injected into the systemPrompt of every session started in that repository. It lets a team share repository-specific workflow ("run the tests and open a PR when you're done", …) — usable alongside `CLAUDE.md`, independently of it. With no such file, nothing is injected and behaviour is unchanged.
 
-ファイルを直接編集するほか、一覧画面のコンポーザで **`/prompt`** と入力すると TUI 内エディタが開きます（現在の内容をシード。`Enter` で保存、`Shift+Enter` で改行、`Esc` で取消、空で保存すると削除）。保存内容は**以降の新規セッション**に反映されます（稼働中のセッションは起動時の指示を維持）。
+Besides editing the file directly, typing **`/prompt`** in the list view's composer opens an in-TUI editor seeded with the current contents (`Enter` saves, `Shift+Enter` inserts a newline, `Esc` cancels, saving an empty buffer deletes the file). Saved content applies to **subsequently created sessions** (running sessions keep the instructions they started with).
 
-利用できるスラッシュコマンドは、コンポーザで `/` を入力するとパレット表示されます（`/prompt`・`/config`・`/model`・`/agent`（一覧=既定の選択 / 詳細=そのセッションの切替）・`/login`（codiva 内でサインイン）・`/sync`・`/fix-ci`・`/recover`・`/remove`・`/clear`・`/update`・`/help` など）。端末が低くて一覧が入り切らないときは末尾が「他 N 件」に畳まれるので、続けて文字を打って絞り込んでください（全件は `/help`）。
+Type `/` in the composer to see the available slash commands in a palette (`/prompt`, `/config`, `/model`, `/agent` (list = pick the default / detail = switch that session), `/login` (sign in from inside codiva), `/sync`, `/fix-ci`, `/recover`, `/remove`, `/clear`, `/update`, `/help`, …). On a short terminal the tail folds into "N more", so keep typing to narrow it down (`/help` shows everything).
 
-### 設定を画面から変える（`/config`）
+### Changing settings from the UI (`/config`)
 
-一覧画面のコンポーザで **`/config`**（別名 `/settings`）と入力すると、`~/.codiva/config.json` の ON/OFF 項目を切り替えるダイアログが開きます。
+Typing **`/config`** (alias `/settings`) in the list view's composer opens a dialog for toggling the on/off keys in `~/.codiva/config.json`.
 
-| キー | 動作 |
+| Key | Action |
 |---|---|
-| `↑` `↓` | 項目を選ぶ（選んだ項目の説明が下に 1 行出ます） |
-| `Enter` / `Space` | その項目の ON / OFF を切り替える（`[x]` / `[ ]`）。日本語 IME をオンにしたままの `Space`（全角スペース）でも切り替わります |
-| `Esc` | 閉じる |
+| `↑` `↓` | Select an item (a one-line description of the selected item appears below) |
+| `Enter` / `Space` | Toggle it on / off (`[x]` / `[ ]`). A `Space` typed with a Japanese IME on (full-width space) toggles too |
+| `Esc` | Close |
 
-切り替えは**その場で `~/.codiva/config.json` に保存**されます（キャンセルはありません。既定値に戻した項目はキーごと消えるので、設定ファイルは「既定から変えたものだけ」に保たれます）。ただしこれらの設定は起動時に読まれてセッションや端末の設定に焼き込まれるため、**反映は次回の起動から**です（ダイアログにもその旨が出ます）。
+Toggles are **saved to `~/.codiva/config.json` immediately** (there's no cancel; items returned to their default value have their key removed, so the config file only ever holds what you changed from the defaults). These settings are read at startup and baked into sessions and terminal setup, though, so **they take effect on the next launch** (the dialog says so as well).
 
-出てくる項目は、デスクトップ通知 / マウス操作 / origin 追従 / PR 自動作成 / コンフリクトの自動取り込み / CI 失敗の自動修正依頼 / Claude Code のプラグイン読み込み / 学習データ利用の警告 / 起動時の更新確認 / クラッシュログ / Codex のネットワーク許可の 11 項目です。多肢選択の設定（`language`・`ignoredFiles`・`codexSandbox` など）は画面に出ないので、設定ファイルを直接編集してください（`model` と既定エージェントは `/model`・`/agent` から変えられます）。
+The items shown are: desktop notifications / mouse support / follow origin / auto-create PRs / auto base-merge on conflict / auto CI-fix requests / Claude Code plugin loading / the training-data warning / the startup update check / crash logs / Codex network access — 11 in total. Multiple-choice settings (`language`, `ignoredFiles`, `codexSandbox`, …) aren't in the dialog, so edit the config file for those (`model` and the default agent are changed via `/model` and `/agent`).
 
-### セッションを消す（`x` / `/remove` / `/clear`）
+### Removing sessions (`x` / `/remove` / `/clear`)
 
-一覧に残っているセッションは、次の 3 通りで片付けられます（いずれも `y` / `n` の確認を挟みます）。
+There are three ways to clean up sessions still in the list (all of them ask `y` / `n` first).
 
-| 操作 | 対象 | 何が消えるか |
+| Action | Target | What's removed |
 |---|---|---|
-| `d`（破棄） | 選択中の 1 件 | worktree とブランチ。**行は「破棄」として一覧に残ります**（再起動すると消えます） |
-| `x`（= `/remove`） | 選択中の 1 件 | worktree とブランチ＋**一覧の行そのもの**。記録ごと消えます |
-| `/clear` | 終了済みの**全件**（完了・中断・失敗など。実行中は対象外） | 各セッションの worktree とブランチ＋一覧の行。件数を確認してから実行します |
+| `d` (discard) | The selected session | The worktree and branch. **The row stays in the list as "discarded"** (it's gone after a restart) |
+| `x` (= `/remove`) | The selected session | The worktree and branch **plus the list row itself**. The record goes too |
+| `/clear` | **Every** finished session (completed, interrupted, failed, …; running ones are skipped) | Each session's worktree and branch plus its list row. Shows the count before running |
 
-`x` は詳細ビューでも使えます（`Tab` で操作パネルへ切り替え）。削除するとそのセッションは開けなくなるので、自動的に一覧へ戻ります。
+`x` also works in the detail view (`Tab` over to the action panel). Since a removed session can no longer be opened, you're returned to the list automatically.
 
-**`x` を使うのは、過去の PR に紐づくセッションを片付けたいとき**です。`d`（破棄）だと行が「破棄」として残り、そのブランチの PR がコンフリクトしていたり CI が落ちていたりすると `Ctrl+F`（一括立て直し）の候補として出続けます。`x` は行ごと消すので、一括操作の対象からも完全に外れます。
+**Reach for `x` when you want to clean up sessions tied to old PRs.** With `d` (discard) the row stays as "discarded", and if that branch's PR is conflicting or its CI is failing it keeps showing up as a candidate for `Ctrl+F` (bulk recovery). `x` removes the row entirely, so it's fully out of scope for bulk actions.
 
-いずれもローカルの worktree とブランチを消すだけで、**push 済みのリモートブランチと GitHub 上の PR には触りません**（PR を閉じたい場合は GitHub 側で操作してください）。未コミットの変更が残っていても削除は強制実行されるため、残したい作業があるときは先にコミットしてください。
+All three only delete the local worktree and branch — **pushed remote branches and PRs on GitHub are untouched** (close the PR on GitHub if you want that). Deletion is forced even with uncommitted changes present, so commit anything you want to keep first.
 
-スラッシュを打ち忘れても、**その画面で使えるコマンド名と完全に一致する入力**（`exit` / `help` など）はそのコマンドとして実行されます。実行されるときはコマンドパレットに出るので、`Enter` の前に何が起きるか分かります。`exit の挙動を直して` のように後ろに文字が続く場合、また `?`・`changes` のような別名は通常の指示として扱うので、指示が誤ってコマンドになることはありません。
+Even if you forget the slash, **input that exactly matches a command name available on that screen** (`exit`, `help`, …) runs as that command. When it will, the command palette shows it, so you know what `Enter` is about to do. Anything with trailing text (`fix how exit behaves`) and aliases like `?` or `changes` are treated as ordinary instructions, so an instruction never turns into a command by accident.
 
-**`/exit`** は画面によって意味が変わります。一覧画面では codiva を終了し、セッション詳細画面では**詳細を閉じて一覧へ戻ります**（`Esc` と同じ）。詳細を見ている途中に `/exit` を打ってアプリごと落ちてしまうことがないようにしています。
+**`/exit` means different things on different screens.** In the list view it quits codiva; in the session detail view it **closes the detail view and returns to the list** (same as `Esc`), so you can't accidentally kill the app by typing `/exit` while reading a session.
 
-## トラブルシューティング
+## Troubleshooting
 
-### 終了後にスクロールすると大量の文字が入力される
+### Scrolling after exit types a flood of characters
 
-codiva は全画面表示のあいだ、端末の**マウスレポート**（クリック・ドラッグの通知）を有効にしています。
-通常の終了時には必ず無効化しますが、codiva が**強制終了**した場合（メモリ不足による abort や
-`kill -9` など、プロセスに何の実行機会も残らない死に方）は無効化が走らず、端末が有効なままになります。
-この状態でスクロールすると端末がマウスの位置情報を送り続け、シェルには `[<64;12;5M` のような
-文字列が大量に入力されたように見えます。
+While full-screen, codiva enables the terminal's **mouse reporting** (click and drag notifications).
+It always disables it on a normal exit, but if codiva is **killed outright** (an out-of-memory abort,
+`kill -9`, or any death that leaves the process no chance to run code), the disable never happens and
+the terminal stays in that mode. Scrolling then makes the terminal keep sending mouse positions, which
+the shell sees as a flood of input like `[<64;12;5M`.
 
-復旧するには次のどちらかを実行してください（どちらも安全で、何度実行しても構いません）。
+Run either of these to recover (both are safe and can be repeated):
 
 ```bash
-codiva --reset-terminal   # 端末モード（マウス捕捉・代替スクリーン・カーソル）を戻す
-reset                     # 端末全体をリセットする汎用コマンド
+codiva --reset-terminal   # restore terminal modes (mouse capture, alternate screen, cursor)
+reset                     # the generic full terminal reset
 ```
 
-codiva は**次回の起動時にも自動でマウスレポートを無効化してから**画面を作るので、
-そのまま codiva を立ち上げ直しても直ります。
+codiva also **disables mouse reporting automatically at the next startup** before drawing anything,
+so simply relaunching codiva fixes it too.
 
-### 突然終了した原因を調べる
+### Investigating a sudden exit
 
-codiva は全画面（代替スクリーン）で描画しているため、異常終了時のエラーは画面を抜けた瞬間に
-消えてしまいます。そこで終了理由を `~/.codiva/logs/` に残します。
+Because codiva draws on the alternate screen, errors from an abnormal exit vanish the moment it
+leaves that screen. So the reason is written to `~/.codiva/logs/`.
 
-| ファイル | 内容 |
+| File | Contents |
 |---|---|
-| `crash-<日時>-<pid>.log` | codiva 自身が書くレポート（種別・エラーメッセージ・スタックトレース・バージョン・端末・**メモリ使用量**・セッションのステータス内訳）。最新 20 件を保持 |
-| `report.<日時>.<pid>....json` | Node の診断レポート。**メモリ不足（ヒープ枯渇）やネイティブのクラッシュ**では JavaScript が一切動けないため、上のログは残りません。その場合はこちらだけが出ます |
+| `crash-<timestamp>-<pid>.log` | The report codiva writes itself (kind, error message, stack trace, version, terminal, **memory usage**, session status breakdown). The 20 most recent are kept |
+| `report.<timestamp>.<pid>....json` | Node's diagnostic report. On **out-of-memory (heap exhaustion) or a native crash** no JavaScript can run, so the log above isn't written and only this one appears |
 
-- 予期せぬ終了のときは、ターミナルにも同じ内容とログのパスを表示します（画面を戻したあとに出すので消えません）。
-- `SIGTERM` / `SIGHUP` で終了した場合も `kind: signal` として記録します（「落ちた」のか「終了させられた」のかの切り分け用）。
-- 不要であれば設定の `"crashLog": false` で出力を止められます。
-- 不具合として報告いただけると助かります → [Issues](https://github.com/takecchi/codiva/issues)。`crash-*.log` に含まれるのは上記の技術情報だけで、指示内容やコードは含みません。
-  - `report.*.json`（Node が書くもの）は環境変数も含み得ます。codiva は除外できる Node（23.3 以降）では自動で除外しますが、**それより古い Node では環境変数（`ANTHROPIC_API_KEY` など）が入る**ので、共有する前に中身を確認してください。
+- On an unexpected exit the same content and the log path are also printed to the terminal (after restoring the screen, so it doesn't disappear).
+- Exits via `SIGTERM` / `SIGHUP` are recorded as `kind: signal` too (to distinguish "it crashed" from "it was told to quit").
+- Set `"crashLog": false` in the config to stop writing them.
+- Reporting problems is very welcome → [Issues](https://github.com/takecchi/codiva/issues). `crash-*.log` contains only the technical information listed above — no instructions and no code.
+  - `report.*.json` (written by Node) may include environment variables. codiva excludes them automatically on Node versions that support it (23.3+), but **older Node versions do include env vars such as `ANTHROPIC_API_KEY`**, so check the contents before sharing.
 
-### 長時間動かすとメモリ使用量が増え続ける（0.3.9 で修正）
+### Memory usage grows over long runs (fixed in 0.3.9)
 
-0.3.8 以前は、**描画するたびに解放されないメモリが残る**不具合がありました（1 日弱で Node 既定の
-ヒープ上限 ~4GB に達し、`Allocation failed - JavaScript heap out of memory` で突然終了します。
-この落ち方では `crash-*.log` は残らず `report.*.json` だけが出ます）。原因は React が
-開発ビルドで動いており、描画ごとに計測エントリ（`performance.measure`）を積んでいたことでした。
-0.3.9 で製品ビルドに切り替え（描画も約 2.5 倍高速になりました）、加えて計測エントリを定期的に
-捨てるようにしています。
+Up to 0.3.8 there was a bug where **every render left memory that was never freed** (in a little under a
+day it reached Node's default ~4GB heap limit and exited abruptly with
+`Allocation failed - JavaScript heap out of memory`. That kind of death leaves no `crash-*.log`, only
+`report.*.json`). The cause was React running in its development build, which accumulates measurement
+entries (`performance.measure`) on every render. 0.3.9 switches to the production build (which also made
+rendering about 2.5× faster) and additionally discards measurement entries periodically.
 
-もし 0.3.9 以降でも増え続ける場合は、`~/.codiva/logs/report.*.json` を添えて
-[Issues](https://github.com/takecchi/codiva/issues) へご報告ください。
+If usage still grows on 0.3.9 or later, please report it at
+[Issues](https://github.com/takecchi/codiva/issues) with `~/.codiva/logs/report.*.json` attached.
 
-### 詳細ログの古い行が消える
+### Old lines disappear from the detail log
 
-セッション詳細のログは**直近 2000 件 / 合計 40 万文字**までを保持し、それより古い行は落とします
-（1 件が極端に長い場合も途中で切り、末尾に `…` を付けます）。長時間動かしたセッションのログを
-無制限に抱えると codiva 自身がメモリ不足で落ちるためで、会話の完全な記録は各エージェントの CLI 側
-（Claude Code なら `~/.claude/projects/`）に残っています。
+The session detail log keeps **the most recent 2,000 entries / 400,000 characters total** and drops
+anything older (a single extremely long entry is truncated with a trailing `…`). Holding an unbounded
+log from a long-running session would make codiva itself run out of memory, and the complete record of
+the conversation lives in each agent's own CLI (`~/.claude/projects/` for Claude Code).
 
-なお、この上限に達したログを**上へスクロールして読んでいる最中に新しい行が追記される**と、
-古い行が落ちたぶん表示位置が少し新しい方へ動きます（範囲選択は安全のため解除されます）。
+Note that when new lines are appended **while you're scrolled up reading** a log that has hit this
+limit, the view shifts slightly toward the newer end by however many lines were dropped (and any
+selection is cleared, for safety).
 
-## 開発
+## Development
 
 ```bash
-npm run dev        # tsx で TUI 起動（開発）
-npm test           # vitest（coverage 付き）
+npm run dev        # start the TUI with tsx (development)
+npm test           # vitest (with coverage)
 npm run lint       # biome check
 npm run typecheck  # tsc --noEmit
-npm run build      # tsup → dist/index.js（起動シム）+ dist/main-<hash>.js（本体）
+npm run build      # tsup → dist/index.js (launcher shim) + dist/main-<hash>.js (the app)
 ```
 
-設計ドキュメントは [`docs/`](./docs) を参照してください（[PRD](./docs/PRD.md) / [ARCHITECTURE](./docs/ARCHITECTURE.md) / [TECH_NOTES](./docs/TECH_NOTES.md)）。
+See [`docs/`](./docs) for design documents ([PRD](./docs/PRD.md) / [ARCHITECTURE](./docs/ARCHITECTURE.md) / [TECH_NOTES](./docs/TECH_NOTES.md)).
 
-コーディング規約は [`.claude/rules/`](./.claude/rules)（レイヤ構成・命名・i18n・Ink・セッションドメイン・SDK 連携・git/IO・テスト）、
-スラッシュコマンド追加などの定型作業の手順は [`.claude/skills/`](./.claude/skills) にまとめてあります。
-全体の索引と「やりたいこと → 触るファイル」の地図は [`CLAUDE.md`](./CLAUDE.md) にあります。
+Coding conventions live in [`.claude/rules/`](./.claude/rules) (layering, naming, i18n, Ink, the session domain, SDK integration, git/IO, testing), and step-by-step procedures for routine work such as adding a slash command are in [`.claude/skills/`](./.claude/skills).
+The overall index and the "what I want to do → which file to touch" map is in [`CLAUDE.md`](./CLAUDE.md).
 
-## リリース
+> The documentation is authored in Japanese first; [README.ja.md](./README.ja.md) is the source of truth, and `docs/` and `.claude/` are Japanese-only for now.
 
-npm への配信は **npm Trusted Publishing（OIDC）** を利用し、GitHub Actions からトークンレスで行います。GitHub 上で Release を publish するだけで、バージョン同期・npm 配信・main へのバージョン更新コミットが自動実行されます。初回の手順・GitHub / npm の設定は [`docs/RELEASE.md`](./docs/RELEASE.md) を参照してください。
+## Releases
 
-## ライセンス
+Publishing to npm uses **npm Trusted Publishing (OIDC)** and happens tokenlessly from GitHub Actions. Publishing a Release on GitHub is enough to run version syncing, the npm publish and the version-bump commit to main automatically. See [`docs/RELEASE.md`](./docs/RELEASE.md) for the first-time setup on GitHub and npm.
+
+## License
 
 [MIT](./LICENSE)

@@ -75,7 +75,7 @@ export interface CodivaConfig {
 
 ## 5. ドキュメント
 
-- **ユーザー可視なら `README.md`「設定」節を更新**（既定値と選択肢の意味まで書く）。
+- **ユーザー可視なら `README.ja.md` と `README.md` の「設定」節を更新**（既定値と選択肢の意味まで書く。日本語が原本・英語は対で必ず更新）。
 - 設計判断（なぜその既定か）は `docs/ARCHITECTURE.md`、SDK options に関わるなら
   `docs/TECH_NOTES.md` の Options 節。
 
@@ -85,5 +85,5 @@ export interface CodivaConfig {
 - [ ] 合成ルート（`index.tsx` / `bootstrap/*`）での配線
 - [ ] TUI から変える場合: manager の get/set + `onXChange` + マージ保存 + コマンド
 - [ ] `core/config.spec.ts`（テーブル）＋関連 spec
-- [ ] README の設定表（ユーザー可視なら必須）
+- [ ] README の設定表（`README.ja.md` + `README.md` の両方。ユーザー可視なら必須）
 - [ ] `npm run lint` / `npm run typecheck` / `npm test`
