@@ -3029,8 +3029,8 @@ describe('App detail view (/agent)', () => {
     expect(frame).toContain('エージェントを選択');
     expect(frame).toContain('Claude');
     expect(frame).toContain('Codex');
-    // 文脈が引き継がれないことを必ず伝える（切替の唯一の副作用）。
-    expect(frame).toContain('会話の文脈は引き継がれません');
+    // 何が引き継がれるのかを必ず伝える（切替の唯一の副作用）。
+    expect(frame).toContain('会話ログを切替先に引き継ぎます');
 
     stdin.write('\x1b[B'); // ↓ → Codex
     await flush();

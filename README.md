@@ -310,7 +310,7 @@ Here's what does and doesn't carry over when you switch with `/agent`:
 
 The conversation id of each agent you've used is stored per session, so going Claude → Codex → Claude resumes **the original conversation** where it left off (this survives restarting codiva too).
 
-The provider-native context can't be transferred directly, so **codiva copies the retained user and assistant conversation into a one-time handoff** for the incoming agent. It also includes the branch name, the first and most recent instructions, and a reminder to verify the working tree with `git status` / `git diff`. The newest conversation is prioritized and an omission marker is shown if the handoff reaches its 80,000-character safety limit. No extra turn runs at switch time; the handoff rides along with the next instruction you send.
+The provider-native context can't be transferred directly, so **codiva copies the retained user and assistant conversation into a one-time handoff** for the incoming agent. It also includes the branch name, the first and most recent instructions, and a reminder to verify the working tree with `git status` / `git diff`. Tool-execution logs are left out (they're bulky, and the working tree tells the same story). The newest conversation is prioritized, and an omission marker is shown if the handoff reaches its safety limit. No extra turn runs at switch time; the handoff rides along with the next instruction you send.
 
 **You can always see what each session is running on.**
 

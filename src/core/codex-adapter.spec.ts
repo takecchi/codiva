@@ -164,6 +164,57 @@ describe('createCodexAdapter turn loop', () => {
     expect(events.filter((e) => e.kind === 'turn_completed')).toHaveLength(2);
   });
 
+  // `/agent` の引き継ぎは systemPrompt ではなく**最初のユーザープロンプト**に載る
+  // （`codex exec resume` は再開したスレッドに systemPrompt を渡し直さないため）。
+  it('prepends the handoff to the first prompt only', async () => {
+    const codex = makeFakeCodex();
+    const adapter = createCodexAdapter({ spawn: codex.spawn });
+    const options: AgentRunOptions = { handoff: '# Session handover (codiva)' };
+    // 往復切替: Codex は既に自分のスレッドを持っている（systemPrompt は前置されない）。
+    const { prompts, events, done } = drive(adapter, { options, resume: 'th-old' });
+
+    prompts.push('now you');
+    await waitFor(() => codex.requests.length === 1, 'the first spawn');
+    expect(codex.requests[0]?.prompt).toBe(
+      '# Session handover (codiva)\n\n# Current instruction after the switch\n\nnow you',
+    );
+    codex.at(0).emit(threadStarted('th-old'));
+    codex.at(0).emit(turnCompleted);
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_completed'), 'the first turn to end');
+
+    prompts.push('and this');
+    await waitFor(() => codex.requests.length === 2, 'the second spawn');
+    expect(codex.requests[1]?.prompt).toBe('and this');
+
+    codex.at(1).end();
+    prompts.close();
+    await done;
+  });
+
+  // 初回のターンが `thread.started` より前に落ちる（未導入 / 未ログイン / 不正な --model）と
+  // 次のターンは**新しいスレッド**として始まる。そこで引き継ぎを落としていると、切替の
+  // 文脈を一度も渡せないセッションになる（systemPrompt の前置と同じ理由で latch しない）。
+  it('keeps the handoff when the first turn dies before the thread starts', async () => {
+    const codex = makeFakeCodex([{ code: 1, stderr: 'not logged in' }]);
+    const adapter = createCodexAdapter({ spawn: codex.spawn });
+    const options: AgentRunOptions = { handoff: 'HANDOVER' };
+    const { prompts, events, done } = drive(adapter, { options });
+
+    prompts.push('now you');
+    await waitFor(() => codex.requests.length === 1, 'the first spawn');
+    codex.at(0).end();
+    await waitFor(() => events.some((e) => e.kind === 'turn_stopped'), 'the failed turn');
+
+    prompts.push('try again');
+    await waitFor(() => codex.requests.length === 2, 'the second spawn');
+    expect(codex.requests[1]?.prompt).toContain('HANDOVER');
+
+    codex.at(1).end();
+    prompts.close();
+    await done;
+  });
+
   it('prepends the systemPrompt to the first prompt only', async () => {
     const codex = makeFakeCodex();
     const adapter = createCodexAdapter({ spawn: codex.spawn });

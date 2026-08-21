@@ -1296,7 +1296,7 @@ zsh: abort      codiva
 - [x] `Ctrl+C` の縮退: `interrupt` を持たない provider では中断のヒント行を出さない
 - [x] `/agent` コマンド（`add-slash-command` skill の手順で追加）: **詳細ビュー**から駆動エージェントを
       切り替える（`ui/agent-select.tsx`。`ModelSelect` と同じ単一選択モーダル）。確認は挟まず、
-      ダイアログ内に「会話の文脈は引き継がれません」の注意書きを常時出す
+      ダイアログ内に「何が引き継がれるか」の注意書きを常時出す（`m.agent.warning`）
 - [x] 設定 `~/.codiva/config.json` に既定エージェント `agent`（`add-config-option` skill の手順。
       Codex 用の `codexSandbox` / `codexNetworkAccess` も同時に追加）
 - [x] **一覧ビューの `/agent`** = 新規セッションの既定を選ぶ（`AgentSelect` の `mode:'default'`）。
@@ -1335,14 +1335,24 @@ zsh: abort      codiva
       **色付き出力の ANSI を剥がしてから URL/コードを拾う**（実測: 拾えず → 修正）。
       完了後 `refreshAgents` で状態を再判定
 - [x] **引き継ぎプロンプトの生成**: `core/agent-handoff.ts`（`handoffInstruction` /
-      `lastUserInstruction`・純粋・英語固定 = AI 向け文字列なので i18n 対象外）。ブランチ・
-      最初の指示・直前の指示を並べ、**続ける前に自分で `git status` / `git diff` を読む**よう
-      促す。渡し方は `AgentRunOptions.systemPrompt`（`composeSystemPrompt` の最後の節）で、
-      `Session` が**使い捨て**で持ち次の `open()` で消費する。
+      `handoffTranscript` / `attachHandoff` / `stripHandoff` / `lastUserInstruction`・純粋・
+      英語固定 = AI 向け文字列なので i18n 対象外）。ブランチ・最初の指示・直前の指示に加えて
+      **codiva 側のログから写した会話**（`user` / `assistant_text`）を並べ、**続ける前に自分で
+      `git status` / `git diff` を読む**よう促す。渡し方は `AgentRunOptions.handoff` で、
+      `Session` が**使い捨て**で持ち次の `open()` で消費し、アダプタが切替後の最初のユーザー
+      プロンプトに前置する（`attachHandoff`）。
+      - **systemPrompt には載せない** — `codex exec resume` のように再開時に systemPrompt を
+        読み直さない provider があり、往復切替でだけ引き継ぎが消える
       - キューへ指示として積まない（積むと切替直後に「状況を読むだけのターン」が 1 本走り、
         provider のプロセスを無駄に立てる）
       - 常設にしない（引き継ぎ後のターンや通信断からの再起動でも「前任者から引き継いだ」と
-        言い続けてしまう）。各項目は 1 行に畳んで `MAX_HANDOFF_FIELD_CHARS` で切る
+        言い続けてしまう）。各項目は 1 行に畳んで `MAX_HANDOFF_FIELD_CHARS` で切り、会話は
+        `MAX_HANDOFF_TRANSCRIPT_BYTES`（**UTF-8 バイト**。Codex の argv 上限のため）で
+        新しい方から詰めて省略を明示する
+      - アダプタ側では「provider へ実際に渡るまで」持つ（中断で捨てたターンや `thread.started`
+        前に落ちたターンで捨てると、1 回きりの引き継ぎを空振りで使い切る）
+      - 復元は `stripHandoff` を通す（引き継ぎは CLI のトランスクリプトにユーザー発言として
+        残るため、通さないと詳細ビューと `lastUserInstruction` に漏れて入れ子になる）
 - [x] i18n: `AgentLabel` を `DEFAULT_AGENT_LABEL` 固定ではなく**セッションのエージェント**から
       引くよう配線（`agentLabelOf()` + `SessionManager.getSessionAgentLabel()`）。認証切れの案内は
       一覧・詳細・デスクトップ通知の 3 経路すべてで駆動中の provider を出す — Codex のセッションに

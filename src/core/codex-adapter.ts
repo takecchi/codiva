@@ -270,6 +270,12 @@ export function createCodexAdapter(deps: {
                   }
                   if (event.type === 'thread.started') {
                     threadId = event.thread_id;
+                    // 引き継ぎは CLI が確かに受け取ったときだけ落とす（systemPrompt の
+                    // 前置と同じ理由 = 初回のターンが起動前に落ちたら次で渡し直す）。
+                    // **`codex exec resume` も `thread.started` を出す**ので、往復切替で
+                    // 既存スレッドへ戻る場合もここを通る（実測: codex 0.147 系。同じ
+                    // thread_id が返る）。ここが唯一の解除点なので、出さなくなったら
+                    // 引き継ぎが毎ターン前置され続ける。
                     handoff = undefined;
                     probeDuringTurn(event.thread_id);
                   } else if (event.type === 'turn.completed' || event.type === 'turn.failed') {

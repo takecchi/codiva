@@ -128,9 +128,10 @@ export class Session {
    */
   private attribution?: AgentId;
   /**
-   * 切替直後の 1 回だけ systemPrompt に載せる引き継ぎの状況説明
-   * （`core/agent-handoff.ts`）。**使い捨て**にするのは、引き継ぎが済んだ以降の
-   * ターンでも「前任者から引き継いだ」と言い続けないため。
+   * 切替直後の 1 回だけ渡す引き継ぎ（`core/agent-handoff.ts`）。`AgentRunOptions.handoff`
+   * として次の `open()` が消費し、アダプタが最初のユーザープロンプトに前置する。
+   * **使い捨て**にするのは、引き継ぎが済んだ以降のターンでも「前任者から引き継いだ」と
+   * 言い続けないため。
    */
   private handoff?: string;
   private run?: AgentRun;
@@ -557,10 +558,13 @@ export class Session {
       const resume = this.attribution
         ? this.state.sdkSessionId
         : (this.deps.resume ?? this.state.sdkSessionId);
-      // 引き継ぎは切替後の最初のユーザープロンプトにだけ添える。systemPrompt では
-      // ないのは、resume 済み Codex thread など provider によっては再開時の
-      // systemPrompt を読まないため。画面のログには元の入力だけを積んであるので、
-      // この内部添付がユーザー発言として二重表示されることはない。
+      // 引き継ぎは切替後の最初のユーザープロンプトにだけ添える（前置はアダプタの仕事 =
+      // `attachHandoff`）。systemPrompt に載せないのは、resume 済みの Codex thread など
+      // provider によっては再開時に systemPrompt を読み直さないため。
+      //
+      // 画面のログには元の入力だけを積むので、この内部添付が二重表示されることはない。
+      // CLI のトランスクリプトには**ユーザー発言として**残るが、復元は
+      // `stripHandoff` を通るので詳細ビューにも `lastUserInstruction` にも漏れない。
       const handoff = this.handoff;
       this.handoff = undefined;
       const systemPrompt = composeSystemPrompt({

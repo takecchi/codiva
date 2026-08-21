@@ -930,6 +930,15 @@ codex exec --json --skip-git-repo-check
   `resume <id> -- <prompt>` の形でも同じに効く（実測で確認済み）。
 - `resume` はサブコマンド（`codex exec [OPTIONS] resume <id> <prompt>`）だが、オプションは global
   なので前に置ける。プロンプトは**必ず最後の位置引数**。
+- **`resume` でも `thread.started` は出る**（実測 0.148.0。同じ `thread_id` が返る）。
+  1 ターン目の頭にだけ何かを前置したいとき（systemPrompt / エージェント切替の引き継ぎ）は、
+  このイベントを「CLI がプロンプトを受け取った」合図として使ってよい。
+- **プロンプトは argv で渡るので実サイズに上限がある**。Linux の `execve` は引数 1 本あたり
+  `MAX_ARG_STRLEN`（32 ページ = 131,072 バイト）を超えると `E2BIG` で失敗する
+  （`ulimit` では上げられないカーネル定数。macOS は per-arg 上限が無く合計 1 MiB なので
+  **手元では再現しない**）。日本語は 1 文字 3 バイトなので「文字数」で予算を組むと 3 倍
+  外す。systemPrompt とエージェント切替の引き継ぎを前置するときは、**UTF-8 バイト**で
+  予算を持つこと（`MAX_HANDOFF_TRANSCRIPT_BYTES`）。
 - **stdin は `'ignore'` で開く**。プロンプトを引数で渡していても、パイプされた stdin があると
   codex は追加入力として読もうとして `Reading additional input from stdin...` と出したままブロックする。
 - **stdout = JSONL、stderr = ログ**（`2026-…Z ERROR codex_login::auth::manager: …` のような tracing 行）。

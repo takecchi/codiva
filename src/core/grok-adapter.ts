@@ -448,8 +448,13 @@ export function createGrokAdapter(deps: {
         }
       };
 
-      /** 1 ターン。`session/prompt` の応答が終わりを告げる。 */
-      const runTurn = async (text: string): Promise<void> => {
+      /**
+       * 1 ターン。`session/prompt` の応答が終わりを告げる。
+       *
+       * 戻り値は「そのターンを実際に投げたか」。中断で捨てたターンと投げたターンを
+       * 呼び出し側が区別できないと、1 回きりの引き継ぎを空振りで使い切ってしまう。
+       */
+      const runTurn = async (text: string): Promise<boolean> => {
         // **中断されたターンは始めない**。`Ctrl+C` はセッションの立ち上げ
         // （`initialize` → `session/new` / `session/resume`）の最中にも押せる。そこで
         // 送る `session/cancel` は「今走っているターン」向けの通知なので空振りし、
@@ -457,7 +462,7 @@ export function createGrokAdapter(deps: {
         // エージェントだけが worktree を書き換え続ける**。指示ごと捨てるのが正しい
         // （ユーザーは止めたのだから、やり直すときは改めて送る）。
         if (interrupted || request.abortController.signal.aborted) {
-          return;
+          return false;
         }
         turnInFlight = true;
         try {
@@ -465,6 +470,7 @@ export function createGrokAdapter(deps: {
         } finally {
           turnInFlight = false;
         }
+        return true;
       };
 
       /** `session/prompt` の 1 往復。 */
@@ -548,9 +554,14 @@ export function createGrokAdapter(deps: {
                 continue;
               }
             }
-            const prompt = attachHandoff(text, handoff);
-            handoff = undefined;
-            await runTurn(prompt);
+            // 引き継ぎを落とすのは**ターンを実際に投げたときだけ**。`runTurn` は
+            // 立ち上げ中に `Ctrl+C` された指示を丸ごと捨てるので、ここで無条件に
+            // 落とすと切替の文脈だけが黙って消える（`Session` 側の使い捨ては
+            // `open()` の時点で済んでいるので、二度と渡らない）。
+            const sent = await runTurn(attachHandoff(text, handoff));
+            if (sent) {
+              handoff = undefined;
+            }
           }
         } catch (error: unknown) {
           // **`finally` で閉じる前に積む**。閉じたキューへの push は黙って捨てられる

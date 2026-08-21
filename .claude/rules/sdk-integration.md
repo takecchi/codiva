@@ -181,7 +181,20 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
   載る。**`'project'` は必ず含める**）、
   `includePartialMessages: true`（ストリーミングプレビュー用）。**この既定を組み立てるのはアダプタ**で、
   `Session` は provider 非依存の `AgentRunOptions`（model / effort / permissionMode / maxBudgetUsd /
-  systemPrompt）しか渡さない。各項目をどう解釈するか（無視も可）はアダプタの裁量。
+  systemPrompt / handoff）しか渡さない。各項目をどう解釈するか（無視も可）はアダプタの裁量。
+- **`handoff`（`/agent` の引き継ぎ）だけは「無視も可」ではない。** これは `core/agent-handoff.ts`
+  が組み立てた**1 回きり**の文字列で、アダプタが `attachHandoff(text, handoff)` で
+  **切替後の最初のユーザープロンプトに前置する**のが契約。`systemPrompt` に混ぜてはいけない
+  （`codex exec resume` のように再開時に systemPrompt を読み直さない provider があり、
+  往復切替でだけ引き継ぎが消える）。守ること 2 つ:
+  - **落とすのは「provider へ実際に渡った」と確認できたときだけ**。立ち上げ中に中断された
+    ターン（Grok の `runTurn` が捨てる経路）や `thread.started` の前に落ちたターン（Codex）で
+    無条件に落とすと、1 回きりの引き継ぎを空振りで使い切って**切替の文脈が黙って消える**
+    （`Session` 側の使い捨ては `open()` の時点で済んでいるので二度と来ない）。
+  - **大きさは UTF-8 バイトで見積もる**。Codex は指示文を argv で渡すので Linux の
+    `MAX_ARG_STRLEN`（131,072 バイト）に当たると起動そのものが `E2BIG` で落ちる
+    （日本語は 1 文字 3 バイト = 文字数の 3 倍。macOS では再現しない）。
+    予算は `MAX_HANDOFF_TRANSCRIPT_BYTES`。
 - `systemPrompt` は**純粋な `core/system-prompt.ts` の `composeSystemPrompt()` で組み立てる**
   （`session.ts` に文言や結合順を書かない）。要素は「worktree の環境説明（`ignoredFiles: 'symlink'`
   のときだけ載る共有 symlink の注意書き）」→「`<repo>/.codiva/prompt.md` の内容」の順で、
