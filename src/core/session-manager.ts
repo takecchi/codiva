@@ -251,6 +251,10 @@ export class SessionManager {
   /**
    * Set the default model for sessions created from now on (via /model). Already
    * running sessions keep the model they started with. Persists via onModelChange.
+   *
+   * 購読者へ通知するのは、これがヘッダに出ている値だから（`useDefaultModel`）。
+   * 通知しないと `/model` やエージェント切替（既定モデルを CLI 既定へ戻す）のあとも
+   * 起動時の値が残り、実際に使われるモデルと食い違って見える。
    */
   setModel(model: string | undefined): void {
     if (this.options.model === model) {
@@ -258,6 +262,7 @@ export class SessionManager {
     }
     this.options = { ...this.options, model };
     this.deps.onModelChange?.(model);
+    this.store.notify();
   }
 
   /** The repo-wide instructions appended to new sessions' systemPrompt (undefined → none). */
@@ -641,6 +646,10 @@ export class SessionManager {
     if (opts?.persist !== false) {
       this.deps.onDefaultAgentChange?.(agentId);
     }
+    // ヘッダの「エージェント / プラン / モデル / 使用状況」はこの値で出し分けるので
+    // 通知する（`useDefaultAgent`）。`setModel` も notify するが、既にモデル未設定
+    // だった場合はそちらが no-op なので、ここで必ず 1 回起こす。
+    this.store.notify();
     return true;
   }
 

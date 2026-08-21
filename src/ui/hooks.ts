@@ -83,6 +83,36 @@ export function useSessions(manager: SessionManager): SessionState[] {
   );
 }
 
+/**
+ * 新規セッションの既定エージェント（`/agent` で選ぶもの）を購読する。
+ *
+ * ヘッダのアカウント節（エージェント名 / プラン / モデル / 使用状況）はこの値で
+ * 出し分けるので、`manager.getDefaultAgentId()` を描画中に直接読むのではなく購読に
+ * 載せる — 直読みだと「同じ操作でたまたま view の state も動くから再描画される」に
+ * 頼ることになり、UI を経由しない変更（起動時の自動選択 = 導入済みのエージェントへ
+ * 寄せる `setDefaultAgent(…, { persist: false })`）が画面に出ないことがある。
+ */
+export function useDefaultAgent(manager: SessionManager): AgentId | undefined {
+  return useSyncExternalStore(
+    (onChange) => manager.subscribe(onChange),
+    () => manager.getDefaultAgentId(),
+    () => manager.getDefaultAgentId(),
+  );
+}
+
+/**
+ * 新規セッションの既定モデル（`/model` で選ぶもの。エージェント切替で CLI 既定へ戻る）を
+ * 購読する。ヘッダのモデル行はここから引く（起動時の設定値を prop で配ると、切替後も
+ * 前の provider のモデル名が残る）。
+ */
+export function useDefaultModel(manager: SessionManager): string | undefined {
+  return useSyncExternalStore(
+    (onChange) => manager.subscribe(onChange),
+    () => manager.getModel(),
+    () => manager.getModel(),
+  );
+}
+
 /** Subscribe to the manager's global tool-approval mode (auto ⇄ confirm). */
 export function useRunMode(manager: SessionManager): RunMode {
   return useSyncExternalStore(

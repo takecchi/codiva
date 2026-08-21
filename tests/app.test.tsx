@@ -3084,12 +3084,13 @@ describe('App list view (/agent default + availability)', () => {
     id: AgentId,
     displayName: string,
     availability?: { installed: boolean; loggedIn: boolean | 'unknown' },
+    capabilities = NO_CAPABILITIES,
   ): AgentAdapter {
     return {
       id,
       displayName,
       loginCommand: id,
-      capabilities: NO_CAPABILITIES,
+      capabilities,
       open: () => ({
         async *[Symbol.asyncIterator]() {
           // フェイクはイベントを流さない（配線だけを見る）。
@@ -3187,6 +3188,65 @@ describe('App list view (/agent default + availability)', () => {
     // （非同期なので静止まで待つ）。
     await settle(() => lastFrame() ?? '');
     expect(stripAnsi(lastFrame() ?? '')).toContain('コーディングエージェントが見つかりません');
+  });
+
+  /**
+   * ヘッダのアカウント節は「次に動くエージェント」の説明。`/agent` で既定を切り替えたら
+   * エージェント名・プラン・モデル・使用状況が**揃って**入れ替わる（かつてはプランと
+   * ゲージが Claude のまま残り、モデル欄は起動時の設定値が居座っていた）。
+   */
+  it('/agent で既定を切り替えるとヘッダのプラン / モデル / 使用状況も入れ替わる', async () => {
+    const reportsUsage = { ...NO_CAPABILITIES, usage: true, setModel: true };
+    const claude = fakeAdapter(
+      'claude',
+      'Claude',
+      { installed: true, loggedIn: true },
+      reportsUsage,
+    );
+    const codex = fakeAdapter('codex', 'Codex', { installed: true, loggedIn: true });
+    const manager = new SessionManager({
+      worktrees,
+      agents: { claude, codex },
+      agent: claude,
+      now: () => 0,
+    });
+    manager.setModel('claude-opus-4-8');
+    // 起動時の probe（usage-poller → applyUsage）で入る claude.ai のプランと枠。
+    manager.applyUsage({
+      account: { plan: 'Claude Team' },
+      usage: {
+        limitsAvailable: true,
+        windows: [{ type: 'five_hour', utilization: 50, resetsAt: 45 * 60_000 }],
+      },
+    });
+    const { app, stdin, lastFrame } = renderFullscreen(<App manager={manager} />, 24, 120);
+    await settle(() => lastFrame() ?? '');
+    const before = stripAnsi(lastFrame() ?? '');
+    expect(before).toContain('プラン: Claude Team');
+    expect(before).toContain('エージェント: Claude');
+    expect(before).toContain('モデル: claude-opus-4-8');
+    expect(before).toContain('使用状況');
+    expect(before).toContain('50%');
+
+    stdin.write('/agent');
+    await flush();
+    stdin.write('\r'); // コマンド実行 → 既定エージェントの選択ダイアログ
+    await settle(() => lastFrame() ?? '');
+    stdin.write('\x1b[B'); // ↓ → Codex
+    await flush();
+    stdin.write('\r'); // 確定
+    await settle(() => lastFrame() ?? '');
+
+    const after = stripAnsi(lastFrame() ?? '');
+    expect(after).toContain('エージェント: Codex');
+    // Codex は claude.ai のプランも使用状況も報告しない（`usage` capability なし）。
+    expect(after).not.toContain('プラン: Claude Team');
+    expect(after).not.toContain('使用状況');
+    expect(after).not.toContain('50%');
+    // モデルは CLI 既定へ戻る（provider をまたいでモデル名を持ち回らない）。
+    expect(after).toContain(`モデル: ${messages.ja.banner.defaultModel}`);
+    expect(after).not.toContain('claude-opus-4-8');
+    app.unmount();
   });
 
   it('does not show the setup hint when an agent is installed', async () => {

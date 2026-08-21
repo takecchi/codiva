@@ -1313,13 +1313,15 @@ zsh: abort      codiva
       `agent.noneInstalled` の 1 行を出す（`noAgentInstalled` が全件未導入で確定したときだけ）
 - [x] **残りの capability 縮退**: 判定を純粋な `core/agent-capabilities.ts` に集約
       （`supportsCapability` = **不明なら縮退しない** / `capabilityLookup` / `agentSupports` /
-      `showsAccountUsage`）。「数字が 0 だから自然に消える」偶然に頼るのをやめ、明示的な分岐にした:
+      `showsAccountInfo`）。「数字が 0 だから自然に消える」偶然に頼るのをやめ、明示的な分岐にした:
       - `cost`: `totalCostUsd(states, reportsCost)` が報告しない provider を合計から外す
         （混在時に「Claude ぶんの合計」を全体として出さない）
-      - `usage`: 一覧が `showsAccountUsage`（既定エージェント or `archived` でないセッションの
-        どれかが `usage` を報告するか）でゲージを出し分け、**同じ純関数**を
-        `bootstrap/usage-poller.ts` の `enabled` にも渡す = 出さないゲージのために 5 分ごとの
-        `claude` probe を立てない
+      - `usage`: 一覧が `showsAccountInfo`（**既定エージェント**が `usage` を報告するか）で
+        プラン名とゲージを出し分け、**同じ純関数**を `bootstrap/usage-poller.ts` の `enabled`
+        にも渡す = 出さないゲージのために 5 分ごとの `claude` probe を立てない
+        （当初は「既定 or `archived` でないセッションのどれか」で判定していたが、それだと
+        `/agent` で Codex へ切り替えても Claude のプランと枠が残り、ヘッダの読み方が項目ごとに
+        食い違ったので**既定エージェントだけ**に狭めた）
       - `permissions`: フッタの確認モード表示を `confirmSupported` で `確認モード (非対応)` に
         差し替える（Codex では原理的に聞かれないのに「確認モード」と言い切っていた =
         「待っていれば聞かれる」と読める嘘）。ダイアログ自体は偽装も抑止もしない

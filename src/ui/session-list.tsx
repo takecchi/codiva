@@ -49,7 +49,7 @@ import {
   rowLineAtPoint,
   type SessionManager,
   sessionAgentId,
-  showsAccountUsage,
+  showsAccountInfo,
   showsAgentColumn,
   showsBranchColumn,
   type TrainingOptIn,
@@ -76,6 +76,8 @@ import {
   useBoxHeight,
   useClock,
   useCommandRunner,
+  useDefaultAgent,
+  useDefaultModel,
   useDragSelection,
   useInputHistory,
   useLifecycleAction,
@@ -148,7 +150,6 @@ export const SessionList: FC<{
    * 未解決）なら表示しない。
    */
   branch?: string;
-  model?: string;
   /** `/model` の選択肢（Claude Code のカタログ）。undefined は取得中。 */
   models?: readonly ModelOption[];
   /**
@@ -201,7 +202,6 @@ export const SessionList: FC<{
   onQuit,
   cwd,
   branch,
-  model,
   models,
   modelsByAgent,
   version,
@@ -227,7 +227,11 @@ export const SessionList: FC<{
   const agents = useMemo(() => manager.listAgents(), [manager]);
   const capabilities = useMemo(() => capabilityLookup(agents), [agents]);
   const agentNames = useMemo(() => new Map(agents.map((a) => [a.id, a.displayName])), [agents]);
-  const defaultAgent = manager.getDefaultAgentId();
+  // 新規セッションの既定（`/agent`）と、そのエージェントの既定モデル（`/model`）。
+  // どちらもヘッダに出ている値なので購読で読む — 切替の瞬間に、エージェント名・プラン・
+  // モデル・使用状況が揃って新しいエージェントのものへ入れ替わる。
+  const defaultAgent = useDefaultAgent(manager);
+  const model = useDefaultModel(manager);
   const now = useClock(1000);
   // 端末幅は PR セル（行末の固定幅列）のクリック当たり判定に、端末高は一覧の
   // 内部スクロール（収まる行数の算出）に使う。いずれもリサイズ追従。
@@ -598,10 +602,11 @@ export const SessionList: FC<{
     }
   };
 
-  // 使用状況ゲージ（アカウント全体の枠）は `usage` を報告する provider を使っている
-  // ときだけ出す。Codex / Grok だけで作業している人に Claude の枠を出しても読みようが
-  // なく（埋めているのは別のツール）、5 分ごとの probe サブプロセスも無駄になる。
-  const showUsage = showsAccountUsage({ sessions, defaultAgent, capabilities });
+  // アカウント節（プラン名 + 使用状況ゲージ）は、`usage` を報告するエージェントが
+  // 新規セッションの既定になっているときだけ出す。ヘッダは「次に動くエージェント」の
+  // 説明なので、`/agent` で Codex / Grok に切り替えたらプランも枠も一緒に引っ込む
+  // （どちらも同じ 1 回の probe が運ぶので判定も 1 つ。取得側も同じ関数を通す）。
+  const showAccount = showsAccountInfo({ defaultAgent, capabilities });
 
   // ヘッダの表示行。描画（Banner）と当たり判定（bannerCaretAt）で同じ配列を使う —
   // 行 index = 表示行という前提を共有しているので、片方だけ差し替えると選択がズレる。
@@ -615,7 +620,9 @@ export const SessionList: FC<{
     // 金額を報告しない provider のセッションは合計に数えない（`cost` capability）。
     // 混ぜたときに「Claude ぶんの合計」を全体のコストとして出さないため。
     totalCostUsd: totalCostUsd(sessions, (agent) => agentSupports(capabilities, agent, 'cost')),
-    account,
+    // プラン名は claude.ai のアカウントの話なので、それを報告しないエージェントが
+    // 既定のときは出さない（Codex を選んでいる人に Claude のプランを見せない）。
+    account: showAccount ? account : undefined,
     updateLatest: updateInfo?.latest,
   });
   const headerText = bannerText(headerLines);
@@ -1030,7 +1037,7 @@ export const SessionList: FC<{
         <Banner
           lines={headerLines}
           selection={headerSel.selection}
-          usage={showUsage ? rateLimits : undefined}
+          usage={showAccount ? rateLimits : undefined}
           now={now}
           textRef={headerRef}
           trainingOptIn={trainingOptIn}
@@ -1200,10 +1207,10 @@ export const SessionList: FC<{
 
       {modelSelect ? (
         <ModelSelect
-          current={manager.getModel()}
-          models={modelsByAgent?.[manager.getDefaultAgentId() ?? 'claude'] ?? models}
-          onSelect={(model) => {
-            manager.setModel(model);
+          current={model}
+          models={modelsByAgent?.[defaultAgent ?? 'claude'] ?? models}
+          onSelect={(next) => {
+            manager.setModel(next);
             setModelSelect(false);
           }}
           onCancel={() => setModelSelect(false)}
@@ -1223,7 +1230,7 @@ export const SessionList: FC<{
       ) : agentSelect ? (
         <AgentSelect
           mode="default"
-          current={manager.getDefaultAgentId()}
+          current={defaultAgent}
           agents={agentChoices}
           onSelect={(agent) => {
             setAgentSelect(false);

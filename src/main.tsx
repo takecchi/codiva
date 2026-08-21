@@ -11,7 +11,7 @@ import {
   resolveIgnoredFilesMode,
   resolveLang,
   type SessionManager,
-  showsAccountUsage,
+  showsAccountInfo,
   summarizeStatuses,
 } from '@/core';
 import {
@@ -195,11 +195,11 @@ async function main(): Promise<void> {
   const stopUsagePolling = startUsagePolling({
     fetch: () => fetchUsageSnapshot(claudeQuery, { cwd: repoRoot, signal: probeAbort.signal }),
     apply: (snapshot) => manager.applyUsage(snapshot),
-    // ゲージを出さない構成（Codex / Grok だけで作業している）では probe も立てない。
-    // 判定は一覧の表示条件と**同じ純関数**を通す（表示と取得が食い違わないように）。
+    // プランもゲージも出さない構成（既定エージェントが Codex / Grok）では probe も
+    // 立てない。判定は一覧の表示条件と**同じ純関数**を通す（表示と取得が食い違わない
+    // ように）。既定を Claude へ戻せば次の poll から再開する。
     enabled: () =>
-      showsAccountUsage({
-        sessions: manager.getSnapshot(),
+      showsAccountInfo({
         defaultAgent: manager.getDefaultAgentId(),
         capabilities: capabilityLookup(manager.listAgents()),
       }),
@@ -269,7 +269,6 @@ async function main(): Promise<void> {
     <App
       manager={manager}
       cwd={repoRoot}
-      model={config.model}
       version={appVersion}
       messages={t}
       modelCatalog={modelCatalog}

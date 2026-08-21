@@ -63,7 +63,7 @@ codiva/
 │   │   ├── status-reducer.ts  # reduce(state, CodivaEvent): SessionState（codiva 起点のイベント・純関数）
 │   │   ├── agent-ports.ts     # エージェントの DI 境界（AgentAdapter/AgentRun/AgentCapabilities/PermissionDecision・leaf）
 │   │   ├── agent-events.ts    # AgentEvent の語彙 + applyAgentEvent()（全 provider 共通の畳み込み・純粋）
-│   │   ├── agent-capabilities.ts # capability による UI 縮退の判定（不明なら縮退しない・showsAccountUsage）
+│   │   ├── agent-capabilities.ts # capability による UI 縮退の判定（不明なら縮退しない・showsAccountInfo）
 │   │   ├── agent-display.ts   # 「どのセッションが何で走っているか」の判定（sessionAgentId / usesMultipleAgents）
 │   │   ├── agent-handoff.ts   # 切替先へ渡す状況説明（英語固定・systemPrompt に 1 回だけ載る）
 │   │   ├── claude-adapter.ts  # Claude 用 AgentAdapter（query() の組み立て・canUseTool の写像）
@@ -319,7 +319,7 @@ provider が増えてもビュー側の分岐は増えない（未登録のエ�
 エージェント名は固有名詞なので翻訳しない（モデル名と同じ i18n の例外）。
 
 縮退の判定は**純粋な `core/agent-capabilities.ts`** に寄せてある（`supportsCapability` /
-`capabilityLookup` / `agentSupports` / `showsAccountUsage`）。要点は 2 つ:
+`capabilityLookup` / `agentSupports` / `showsAccountInfo`）。要点は 2 つ:
 
 - **capability が分からないときは縮退しない**（`supportsCapability(undefined, …) === true`）。
   未登録の provider・`agent` を持たない古いセッションで機能を隠すと、動くはずの操作が黙って
@@ -333,7 +333,7 @@ provider が増えてもビュー側の分岐は増えない（未登録のエ�
 | `/model` のダイアログ | `setModel` / `modelCatalog` | `ui/session-detail.tsx` | 開かずに理由を出す・選択肢を provider 別に出し分け |
 | `Ctrl+C` のヒント | `interrupt` | `ui/session-detail.tsx` | ヒント行を出さない |
 | 合計コスト（ヘッダ） | `cost` | `core/cost.ts` の `totalCostUsd(states, reportsCost)` | 報告しない provider のセッションを合計に数えない |
-| 使用状況ゲージ（ヘッダ） | `usage` | `showsAccountUsage`（一覧の表示 + `bootstrap/usage-poller.ts` の `enabled`） | 使っていなければ**出さないし取りにも行かない**（5 分ごとの probe を立てない） |
+| プラン名 + 使用状況ゲージ（ヘッダ） | `usage` | `showsAccountInfo`（一覧の表示 + `bootstrap/usage-poller.ts` の `enabled`） | **既定エージェント**が報告しなければ**出さないし取りにも行かない**（5 分ごとの probe を立てない） |
 | 確認モードのフッタ表示 | `permissions` | `ui/status-footer.tsx` の `confirmSupported` | `確認モード (非対応)` に差し替える（下記） |
 | トランスクリプト復元 | `transcript` | `bootstrap/restore-sessions.ts` | その provider のセッションでは読みにも行かない |
 | 認証切れの文言 | —（`AgentLabel`） | 一覧・詳細・通知 | 駆動中の provider のコマンド名を出す |
@@ -343,12 +343,21 @@ provider が増えてもビュー側の分岐は増えない（未登録のエ�
 「待っていれば聞かれる」と読めてしまっていた（ツールは確認なしに実行される）。ダイアログを
 偽装しないのと同じ理由で、**モード表示の側を正直にする**。
 
-**使用状況ゲージを消す判定**（`showsAccountUsage`）は「新規セッションの既定エージェント、または
-`archived` でないセッションのどれかが `usage` を報告する」。ゲージが表しているのは
-その provider のアカウントの消費で、Codex / Grok だけで作業している人には読みようがない
-（`archived` を数えないのは、乗り換えた人のヘッダにマージ済みのセッション 1 件で残り続けるのを
-避けるため）。**表示と取得は同じ純関数を通す**ので、出していないゲージのために
-`claude` のサブプロセスが立つことはない。
+**ヘッダは「次に動くエージェント」の説明**にする。エージェント名・プラン名・モデル・使用状況は
+1 つのアカウントの話として同じ場所に並んでいるので、`/agent` で既定を切り替えたら**4 つ揃って**
+入れ替わる。判定は `showsAccountInfo`（= 既定エージェントが `usage` を報告するか）1 本で、
+プラン名も枠も**同じ 1 回の probe**（`utils/usage-probe.ts`）が運ぶので分けていない。
+**表示と取得は同じ純関数を通す**ので、出していないゲージのために `claude` のサブプロセスが
+立つことはない（既定を Claude へ戻せば次の poll から再開する）。
+
+- かつては「既定エージェント **or** `archived` でないセッションのどれかが報告する」で判定して
+  いたため、Codex / Grok に切り替えても Claude のプランとゲージが残っていた。稼働中の Claude
+  セッションの消費が覗けるという利点はあったが、ヘッダの読み方（= 既定エージェントの説明）が
+  項目ごとに食い違うほうが害が大きいと判断して、**既定エージェントだけ**を見る形に狭めた。
+- モデル欄と既定エージェントは **manager の購読**で読む（`ui/hooks.ts` の `useDefaultModel` /
+  `useDefaultAgent`。`setModel` / `setDefaultAgent` が `store.notify()` する）。起動時の設定値を
+  prop で配っていたときは、`/model` やエージェント切替（既定モデルを CLI 既定へ戻す）のあとも
+  前の値が居座って、実際に使われるモデルと食い違って見えていた。
 
 ### 6. Codex アダプタ: 1 ターン = 1 プロセス
 

@@ -29,7 +29,6 @@ type View = { mode: 'list' } | { mode: 'detail'; id: string };
 export const App: FC<{
   manager: SessionManager;
   cwd?: string;
-  model?: string;
   /** アプリのバージョン（package.json 由来）。ヘッダのワードマーク右に表示。 */
   version?: string;
   messages?: Messages;
@@ -90,7 +89,6 @@ export const App: FC<{
 }> = ({
   manager,
   cwd,
-  model,
   version,
   // 既定は ja。main.tsx が解決済みカタログを注入する。
   messages = catalogs.ja,
@@ -178,7 +176,6 @@ export const App: FC<{
             onQuit={quit}
             cwd={cwd}
             branch={branch}
-            model={model}
             models={models}
             modelsByAgent={modelsByAgent}
             version={version}
