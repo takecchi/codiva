@@ -41,7 +41,11 @@ export const ProgressBadge: FC<{ state: SessionState }> = ({ state }) => {
   const m = useMessages();
   const { label, color } = badgeFor(state, m);
   return (
-    <Text color={color} bold>
+    // **`truncate-end` は必須**（`PrCell` と同じ理由）。一覧の列は固定幅（12 セル）で、
+    // 折り返すと 1 セッションが 2 行になり「1 セッション = 1 行」を前提にした
+    // `rowLineAtPoint` 以降のクリックが全部ズレる（英語の `Awaiting permission` は
+    // 19 セルあるので実際に溢れる。日本語は 12 セルに収まっていたので気付けなかった）。
+    <Text color={color} bold wrap="truncate-end">
       {label}
     </Text>
   );

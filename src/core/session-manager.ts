@@ -379,14 +379,22 @@ export class SessionManager {
     const id = String(this.seq);
     const title = makeTitle(prompt);
     const startedAt = this.now();
-    const placeholder = initialState({
-      id,
-      title,
-      prompt,
-      branch: `codiva/${makeSlug(prompt)}`,
-      worktreePath: '',
-      startedAt,
-    });
+    // **どのエージェントで走るのかを最初から載せる。** worktree を作っている間の
+    // 行は `agent` 無しだと `sessionAgentId` の既定（`'claude'`）として表示されるので、
+    // 既定が Codex / Grok のときに「準備中 / Claude」と嘘の名前が出るうえ、他の行と
+    // 値が食い違って `usesMultipleAgents` が立ち、**エージェント列が一瞬現れて
+    // 一覧全体が組み直される**（準備が済むと消える）。
+    const placeholder = {
+      ...initialState({
+        id,
+        title,
+        prompt,
+        branch: `codiva/${makeSlug(prompt)}`,
+        worktreePath: '',
+        startedAt,
+      }),
+      agent: this.getDefaultAgentId(),
+    };
     this.store.append(id, placeholder);
     this.deps.onPersist?.();
     void this.provision(id, prompt, title, startedAt);

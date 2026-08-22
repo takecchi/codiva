@@ -31,7 +31,10 @@ describe('badgeFor', () => {
     expect(badgeFor({ ...base, status: 'completed' }, m).label).toBe('Completed');
     expect(badgeFor({ ...base, status: 'interrupted' }, m).label).toBe('Interrupted');
     expect(badgeFor({ ...base, status: 'rate_limited' }, m).label).toBe('Rate limited');
-    expect(badgeFor({ ...base, status: 'needs_login' }, m).label).toBe('Login required');
+    // 一覧のバッジ列は 12 セル固定なので、英語も 12 セル以内の語を選ぶ
+    // （番人は `i18n.spec.ts`）。
+    expect(badgeFor({ ...base, status: 'needs_login' }, m).label).toBe('Login needed');
+    expect(badgeFor({ ...base, status: 'awaiting_permission' }, m).label).toBe('Permission');
   });
   it('shows Step n/m when a running session has progress', () => {
     const s: SessionState = { ...base, status: 'running', progress: { done: 4, total: 7 } };

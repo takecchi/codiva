@@ -1378,6 +1378,53 @@ zsh: abort      codiva
 
 ---
 
+## Phase D の後追い修正（マージ後レビューで見つけた不具合）
+
+`/agent`（エージェント切替）と会話引き継ぎを入れたあと、切替まわり・provider アダプタ・
+一覧の描画を通しでレビューして見つかった実害のあるものを直した。
+
+- [x] **切替で畳んだ run のイベントを畳み込まない**（`Session` の世代カウンタ `epoch`）。
+      遅れて届く `session_started` で前任者の resume id が切替先の id として保存され、
+      以後 `codex exec resume <claude の uuid>` を投げ続けていた（`state.json` にも焼き付く）。
+      古いターンの `turn_completed` で completed → auto-PR まで走る経路も同時に消えた
+- [x] **未使用の provider へ切り替えたセッションが `state.json` から消えるのを修正**。
+      `agent_switched` は `sdkSessionId` を undefined にするので、保存条件が
+      「現在の id があること」だと切替直後に終了したセッションが丸ごと落ちていた
+      → 条件を「**どこかに** resume 用の id がある」に変更（読み込み側も同じ）
+- [x] **引き継ぎは「provider へ渡った」と報告されたときだけ落とす**
+      （`AgentRunRequest.onHandoffDelivered`）。`Session` が `open()` で捨てていたため、
+      未ログインの CLI へ切り替えて失敗 → ログインして送り直す経路で引き継ぎが消えていた。
+      Grok は「プロセス死で届かなかったターン」を渡した扱いにしていたのも直した
+- [x] **Codex の argv 上限に収める**（`fitHandoff`）。`MAX_HANDOFF_TRANSCRIPT_BYTES` は会話ぶんの
+      予算で、systemPrompt（`.codiva/prompt.md` は無制限）と指示文を足すと `MAX_ARG_STRLEN` を
+      超えうる。超えると `thread.started` が来ず引き継ぎも解除されないので**毎ターン落ち続ける**
+- [x] **切替直後の `Ctrl+C` が効かないのを修正**（予約された再起動を取り消す）
+- [x] `stripHandoff` は**最後の**境目で切る（会話ログに同じ見出しが混ざると残骸が
+      ユーザー発言として復元され、次の切替で入れ子になる）
+- [x] **質問の判定を `kind` に統一**（`isQuestion`）。ツール名で見ていたので Grok の
+      `_x.ai/ask_user_question` が既定（auto）モードで自動 allow され、**空の回答で「承諾」を
+      返して質問が一度もダイアログに出ていなかった**
+- [x] Grok: 未応答要求の待ち行列を**接続ごと**に持つ（死んだプロセスの後片付けが次の
+      プロセスの `initialize` を失敗させ、健全なプロセスを殺していた）。readLoop が異常終了
+      したときに子を殺す（同じ worktree に 2 本目が立つ）。拒否の選択肢が見つからないときは
+      `cancelled` に倒す（`options[0]` = `allow-once` へ落ちて**拒否が実行に化ける**）。
+      プロセス死の判定を JSON-RPC の code ではなく接続のフラグで行う（`-32000` は Grok 自身も使う）。
+      `GROK_HOME=""` で `auth.json` を相対パスで読んでいたのも修正
+- [x] Codex: スレッド id が分かっているクラッシュ（panic / SIGKILL）を `failed`（終端）ではなく
+      resumable な `connection` に倒す。`reasoning` / `agent_message` / `command_execution` の
+      受理ガードに、パーサが無条件に読むフィールドを追加（TypeError でターンごと死ぬ経路）
+- [x] 一覧: **バッジ列の溢れで行のクリック判定がズレるのを修正**（`truncate-end` +
+      英語文言を 12 セル以内に + `i18n.spec.ts` の番人）。英語 UI で `awaiting_permission` の
+      行が 2 行に折り返し、以降のクリックが 1 行ずつズレて最後の行は選べなかった
+- [x] 一覧: 準備中（worktree 作成中）のセッションに既定エージェントを載せる（`Claude` と
+      嘘の名前が出て、エージェント列が一瞬現れて一覧が組み直されていた）
+- [x] 詳細: `/agent` で同じエージェントを選び直したときにエラーを出さない
+- [x] `/login` の未対応メッセージにエージェント名を差し込む / `/agent` のヒントの全角
+      区切りを `theme.ts` の記号に / ログインダイアログ表示中のフッタヒントを合わせる /
+      ダイアログのアンマウントでログインプロセスを畳む（孤児を残さない）
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

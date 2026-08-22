@@ -1,6 +1,6 @@
 import type { Options, PermissionResult, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it, vi } from 'vitest';
-import type { AgentAdapter, AgentRunRequest } from '@/core/agent-ports';
+import type { AgentAdapter, AgentRunRequest, PermissionDecision } from '@/core/agent-ports';
 import { NO_CAPABILITIES } from '@/core/agent-ports';
 import { AsyncQueue } from '@/core/async-queue';
 import type { QueryFn } from '@/core/claude-adapter';
@@ -765,6 +765,43 @@ describe('Session', () => {
     expect(result?.behavior).toBe('allow');
   });
 
+  it('escalates a provider question whatever the tool is called (default policy)', async () => {
+    // 質問の見分けを**ツール名**でやっていたので、Grok の `_x.ai/ask_user_question` は
+    // 既定（auto）モードで自動 allow されていた。`answers` の無い allow は provider には
+    // 「ユーザーは答えなかった」と同じなので、**質問が一度もダイアログに出ないまま
+    // 「承諾した」と返っていた**。判定は `kind`（アダプタが正規化した種別）で行う。
+    let decision: PermissionDecision | undefined;
+    const adapter: AgentAdapter = {
+      id: 'grok',
+      displayName: 'grok',
+      loginCommand: 'grok',
+      capabilities: NO_CAPABILITIES,
+      open: (request: AgentRunRequest) => ({
+        async *[Symbol.asyncIterator]() {
+          for await (const _text of request.prompt) {
+            decision = await request.requestPermission({
+              toolName: 'ask_user_question',
+              input: {},
+              kind: 'question',
+              questions: [{ question: 'どっち?', header: '', multiSelect: false, options: [] }],
+            });
+            yield { kind: 'turn_completed', text: '' } as const;
+          }
+        },
+      }),
+    };
+    const session = new Session({ agent: adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+    expect(session.getState().status).toBe('awaiting_input');
+    expect(decision).toBeUndefined();
+
+    session.answerPending({ 'どっち?': 'A' });
+    await tick();
+    expect(decision?.behavior).toBe('allow');
+    expect(decision?.input).toEqual({ answers: { 'どっち?': 'A' } });
+  });
+
   it('does not emit aborted when already completed', async () => {
     const fake = makeFakeQuery();
     const onChange = vi.fn();
@@ -1129,6 +1166,141 @@ describe('Session.setAgent', () => {
     await tick();
     expect(b.seen).toEqual(['now you']);
     expect(session.getState().status).toBe('running');
+  });
+
+  it('ignores events that the folded run emits after the switch', async () => {
+    // 切替前の provider は畳んだ**あと**にもイベントを出しうる（Claude の
+    // `system/init` は起動に 1〜3 秒かかるので、その間に `/agent` を押せる）。
+    // 帰属（`attribution`）はもう切替先なので、畳むと**前任者の resume id が
+    // 切替先の id として保存され**、次のターンで `codex exec resume <claude の uuid>` を
+    // 投げて必ず失敗する（`agentSessions` にも state.json にも焼き付くので往復しても
+    // 直らない）。古いターンの `turn_completed` で completed → auto-PR も走ってしまう。
+    const late = new AsyncQueue<string>();
+    const a: AgentAdapter = {
+      id: 'claude',
+      displayName: 'claude',
+      loginCommand: 'claude',
+      capabilities: NO_CAPABILITIES,
+      open: (request) => ({
+        async *[Symbol.asyncIterator]() {
+          for await (const _text of request.prompt) {
+            yield { kind: 'assistant_message' } as const;
+            for await (const id of late) {
+              // 切替後に届く init（= resume id の通知）と完了。
+              yield { kind: 'session_started', sessionId: id } as const;
+              yield { kind: 'turn_completed', text: 'done' } as const;
+            }
+          }
+        },
+      }),
+    };
+    const b = recorder('codex');
+    const session = new Session({ agent: a, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+
+    session.setAgent(b.adapter);
+    late.push('claude-thread');
+    late.close();
+    await tick();
+    await tick();
+
+    const state = session.getState();
+    expect(state.sdkSessionId).toBeUndefined();
+    expect(state.agentSessions?.codex).toBeUndefined();
+    // 古いターンの完了で completed（→ auto-PR / 完了通知）にならない。
+    expect(state.status).toBe('interrupted');
+  });
+
+  it('keeps the handover when the first run dies before delivering it', async () => {
+    // 引き継ぎは 1 回きりなので、`open()` の時点で落とすと「切替先の CLI が未ログイン」
+    // のような**渡る前に死ぬ**経路で黙って消える（ログインし直して送り直しても
+    // 二度と渡らない）。落とすのはアダプタが渡したと言ったときだけ。
+    const a = recorder('claude');
+    const handoffs: (string | undefined)[] = [];
+    const seen: string[] = [];
+    let failing = true;
+    const b: AgentAdapter = {
+      id: 'codex',
+      displayName: 'codex',
+      loginCommand: 'codex',
+      capabilities: NO_CAPABILITIES,
+      open: (request) => {
+        handoffs.push(request.options.handoff);
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (failing) {
+              // プロンプトを読む前に落ちる（未ログイン・CLI 未導入と同じ形）。
+              throw new Error('Not logged in');
+            }
+            for await (const text of request.prompt) {
+              seen.push(text);
+              // 実アダプタと同じ契約: 実際に渡したときだけ報告する。
+              request.onHandoffDelivered?.();
+              yield { kind: 'turn_completed', text: '' } as const;
+            }
+          },
+        };
+      },
+    };
+    const session = new Session({ agent: a.adapter, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+
+    session.setAgent(b);
+    session.send('now you');
+    await tick();
+    expect(handoffs[0]).toContain('taking over this session from claude');
+    expect(session.getState().status).toBe('failed');
+
+    // ログインし直して送り直す → 引き継ぎは**まだ生きている**（積み残しの指示も
+    // キューに残っているので、そのまま新しい run が拾う）。
+    failing = false;
+    session.send('retry');
+    await tick();
+    expect(seen).toEqual(['now you', 'retry']);
+    expect(handoffs[1]).toContain('taking over this session from claude');
+    // run は張り替わっていない（= 引き継ぎを渡し直した回数はこの 2 回だけ）。
+    expect(handoffs).toHaveLength(2);
+  });
+
+  it('lets Ctrl+C cancel the instruction queued right after a switch', async () => {
+    // 切替直後は「畳んだループが終わったら新しいエージェントを起こす」予約状態で、
+    // まだ run が無い。予約を消さないと `Ctrl+C` で `interrupted` にした直後に
+    // 新しいエージェントが起動してしまい、**切替後の最初の指示だけ中断できない**。
+    const held = new AsyncQueue<string>();
+    const a: AgentAdapter = {
+      id: 'claude',
+      displayName: 'claude',
+      loginCommand: 'claude',
+      capabilities: NO_CAPABILITIES,
+      open: (request) => ({
+        async *[Symbol.asyncIterator]() {
+          for await (const _text of request.prompt) {
+            yield { kind: 'assistant_message' } as const;
+            for await (const _ of held) {
+              // 中断されるまで返らない
+            }
+          }
+        },
+        interrupt: async () => {
+          held.close();
+        },
+      }),
+    };
+    const b = recorder('codex');
+    const session = new Session({ agent: a, input: INPUT, now: () => 0 });
+    session.start();
+    await tick();
+
+    session.setAgent(b.adapter);
+    session.send('now you');
+    await session.interrupt();
+    await tick();
+    await tick();
+
+    expect(b.seen).toEqual([]);
+    expect(session.getState().status).toBe('interrupted');
   });
 
   it('is a no-op when the agent is unchanged (keeps the running stream)', async () => {

@@ -28,7 +28,10 @@ export async function restoreSessions(manager: SessionManager, statePath: string
   // restored sessions. Sequentially, each text is collectable as soon as it has
   // been converted, and the (bounded) entries are all that stay.
   for (const p of persisted.sessions) {
-    if (!agentSupports(capabilities, p.agent, 'transcript')) {
+    // 現在の provider にまだ会話が無いセッション（切替直後に保存されたもの）は
+    // 読むトランスクリプトが無い。控え（`agentSessions`）の id は**別 provider の
+    // もの**なので代わりに読まない。
+    if (!agentSupports(capabilities, p.agent, 'transcript') || p.sdkSessionId === undefined) {
       continue;
     }
     const text = await loadTranscriptText(p.worktreePath, p.sdkSessionId);

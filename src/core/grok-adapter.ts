@@ -111,6 +111,29 @@ interface Pending {
 }
 
 /**
+ * 1 本の `grok agent stdio` 接続（プロセス + **その接続の**未応答要求）。
+ *
+ * `pending` を接続ごとに持つのが要点。1 つの Map を共有していると、死んだプロセスの
+ * 後片付け（stdout が閉じたときに待ち人を全部起こす処理）が**次のプロセスの**
+ * 未応答要求まで「プロセスが死んだ」エラーで解決してしまう — 実際に、1 本目の
+ * `session/new` が失敗して 2 本目を起こした直後に 1 本目の stdout が閉じると、
+ * 2 本目の `initialize` が 1 本目の stderr で失敗し、健全なプロセスまで殺していた。
+ * 送信も接続に紐づけて、古い readLoop の応答が新しいプロセスへ流れ込むのを防ぐ。
+ */
+interface GrokConn {
+  stream: GrokProcess;
+  pending: Map<number, Pending>;
+  /**
+   * このプロセスは死んだ（応答は codiva が合成したもの）。
+   *
+   * **`EXITED_CODE` で見分けない。** あれは JSON-RPC の実装定義レンジの値で、Grok 自身も
+   * 同じレンジを使う（実測: 未ログインの `session/new` が `-32000` を返す）。合成かどうかは
+   * ここで持つ（「指示が届いたか」「再開できる停止か」の判定がこれに乗っている）。
+   */
+  dead?: boolean;
+}
+
+/**
  * JSON-RPC のエラーを 1 本の文字列に。**両方を残す** — `message` は総称
  * （`Internal error` / `Authentication required`）、`data` に実際の理由が入るので、
  * 片方だけだと分類（`grokStopCause`）も画面の説明も情報を落とす。
@@ -171,14 +194,19 @@ function toGrokAnswers(input: Record<string, unknown> | undefined): Record<strin
  * なく**その要求が持ってきたもの**を使う（CLI が編集用・コマンド用で違う id を出す）。
  */
 function pickOption(params: GrokPermissionParams, allow: boolean): string | undefined {
-  const wanted = allow ? 'allow_once' : 'reject_once';
-  const fallback = allow ? 'allow_always' : 'reject_always';
   const options = params.options;
-  return (
-    options.find((o) => o.kind === wanted)?.optionId ??
-    options.find((o) => o.kind === fallback)?.optionId ??
-    options[0]?.optionId
-  );
+  const byKind = (kind: string): string | undefined =>
+    options.find((o) => o.kind === kind)?.optionId;
+  if (allow) {
+    // 許可は当てが外れても「1 番目 = 実行系」で概ね正しい（実データの先頭は
+    // `allow-once`）。
+    return byKind('allow_once') ?? byKind('allow_always') ?? options[0]?.optionId;
+  }
+  // **拒否は当てずっぽうで選ばない。** `kind` は optional なので、CLI が名前を変えたり
+  // 落としたりすると `options[0]` へ落ちるが、それは実データでは `allow-once` =
+  // **「n」を押したのにツールが実行される**。見つからなければ undefined を返し、
+  // 呼び出し側の `cancelled`（安全側）に倒す。
+  return byKind('reject_once') ?? byKind('reject_always');
 }
 
 /** `AgentAdapter` を Grok 用に組み立てる。`spawn` は DI（テストはフェイクを注入）。 */
@@ -206,8 +234,8 @@ export function createGrokAdapter(deps: {
     open(request: AgentRunRequest): AgentRun {
       const events = new AsyncQueue<AgentEvent>();
       const parser = createGrokParser();
-      const pending = new Map<number, Pending>();
-      let proc: GrokProcess | undefined;
+      /** いま担当している接続（プロセスが死ぬと undefined に戻り、次の指示で起こし直す）。 */
+      let conn: GrokConn | undefined;
       let sessionId = request.resume;
       let model = request.options.model;
       /** codiva 側から中断したか（そのターンの `cancelled` を静かに終わらせる）。 */
@@ -219,19 +247,21 @@ export function createGrokAdapter(deps: {
       let nextId = 1;
 
       const send = (message: unknown): void => {
-        proc?.send(message);
+        conn?.stream.send(message);
       };
 
-      /** 要求を 1 本投げて応答を待つ。プロセスが死んだら reject される。 */
+      /** 要求を 1 本投げて応答を待つ。プロセスが居なければ reject される。 */
       const rpc = (method: string, params: unknown): Promise<GrokReply> => {
         const id = nextId++;
         return new Promise<GrokReply>((resolve, reject) => {
-          if (!proc) {
+          const target = conn;
+          if (!target) {
             reject(new Error('grok agent is not running'));
             return;
           }
-          pending.set(id, { resolve });
-          send({ jsonrpc: '2.0', id, method, params });
+          // **その接続の**待ち行列に登録する（応答も同じ接続の readLoop が返す）。
+          target.pending.set(id, { resolve });
+          target.stream.send({ jsonrpc: '2.0', id, method, params });
         });
       };
 
@@ -239,13 +269,22 @@ export function createGrokAdapter(deps: {
         send({ jsonrpc: '2.0', method, params });
       };
 
-      /** 許可要求 → codiva のダイアログ → ACP の応答。 */
-      const answerPermission = async (id: number | string, raw: unknown): Promise<void> => {
+      /**
+       * 許可要求 → codiva のダイアログ → ACP の応答。
+       *
+       * `reply` は**要求が来た接続**へ返す関数（`send` のように「今の接続」へ送ると、
+       * ユーザーが答えている間にプロセスが入れ替わったとき別のプロセスへ流れ込む）。
+       */
+      const answerPermission = async (
+        reply: (message: unknown) => void,
+        id: number | string,
+        raw: unknown,
+      ): Promise<void> => {
         const params = toGrokPermissionParams(raw);
         if (!params) {
           // 選択肢が読めない要求には答えようがない。断って先へ進ませる（放置すると
           // エージェントが永久に待つ）。
-          send({ jsonrpc: '2.0', id, result: { outcome: { outcome: 'cancelled' } } });
+          reply({ jsonrpc: '2.0', id, result: { outcome: { outcome: 'cancelled' } } });
           return;
         }
         const tool = params.toolCall;
@@ -255,7 +294,7 @@ export function createGrokAdapter(deps: {
           kind: 'tool',
         });
         const optionId = pickOption(params, decision.behavior === 'allow');
-        send({
+        reply({
           jsonrpc: '2.0',
           id,
           result:
@@ -266,10 +305,14 @@ export function createGrokAdapter(deps: {
       };
 
       /** 質問要求 → codiva の質問ダイアログ → ACP の応答。 */
-      const answerQuestion = async (id: number | string, raw: unknown): Promise<void> => {
+      const answerQuestion = async (
+        reply: (message: unknown) => void,
+        id: number | string,
+        raw: unknown,
+      ): Promise<void> => {
         const params = toGrokQuestionParams(raw);
         if (!params) {
-          send({ jsonrpc: '2.0', id, result: { outcome: 'cancelled' } });
+          reply({ jsonrpc: '2.0', id, result: { outcome: 'cancelled' } });
           return;
         }
         const questions = toQuestionSpecs(params);
@@ -282,10 +325,10 @@ export function createGrokAdapter(deps: {
         if (decision.behavior !== 'allow') {
           // 断りは `cancelled`（`declined` という値は無い）。エージェントは
           // 「答えないので自分の判断で進めろ」と受け取る。
-          send({ jsonrpc: '2.0', id, result: { outcome: 'cancelled' } });
+          reply({ jsonrpc: '2.0', id, result: { outcome: 'cancelled' } });
           return;
         }
-        send({
+        reply({
           jsonrpc: '2.0',
           id,
           result: { outcome: 'accepted', answers: toGrokAnswers(decision.input) },
@@ -293,16 +336,18 @@ export function createGrokAdapter(deps: {
       };
 
       /** stdout を読み続け、通知はイベントへ、要求は応答へ回す。 */
-      const readLoop = async (stream: GrokProcess): Promise<void> => {
-        for await (const raw of stream) {
+      const readLoop = async (target: GrokConn): Promise<void> => {
+        // 応答は**この接続へ**返す（同じプロセスに向けて答える）。
+        const reply = (message: unknown): void => target.stream.send(message);
+        for await (const raw of target.stream) {
           const message = toGrokMessage(raw);
           if (!message) {
             continue;
           }
           if (message.kind === 'response' || message.kind === 'error') {
-            const waiter = pending.get(Number(message.id));
+            const waiter = target.pending.get(Number(message.id));
             if (waiter) {
-              pending.delete(Number(message.id));
+              target.pending.delete(Number(message.id));
               waiter.resolve(message);
             }
             continue;
@@ -311,20 +356,20 @@ export function createGrokAdapter(deps: {
             if (message.method === 'session/request_permission') {
               // 投げても**必ず答える**。放置するとエージェントは待ち続け、ターンが
               // 永久に終わらない（`awaiting_permission` のまま出口が無い）。
-              void answerPermission(message.id, message.params).catch(() => {
-                send({
+              void answerPermission(reply, message.id, message.params).catch(() => {
+                reply({
                   jsonrpc: '2.0',
                   id: message.id,
                   result: { outcome: { outcome: 'cancelled' } },
                 });
               });
             } else if (message.method === '_x.ai/ask_user_question') {
-              void answerQuestion(message.id, message.params).catch(() => {
-                send({ jsonrpc: '2.0', id: message.id, result: { outcome: 'cancelled' } });
+              void answerQuestion(reply, message.id, message.params).catch(() => {
+                reply({ jsonrpc: '2.0', id: message.id, result: { outcome: 'cancelled' } });
               });
             } else {
               // 知らない要求は「未実装」で返す。黙って捨てるとエージェントが待ち続ける。
-              send({
+              reply({
                 jsonrpc: '2.0',
                 id: message.id,
                 error: { code: -32601, message: 'Method not found' },
@@ -360,22 +405,30 @@ export function createGrokAdapter(deps: {
        */
       const start = async (): Promise<void> => {
         const stream = deps.spawn({ cwd: request.cwd, effort: request.options.effort });
-        proc = stream;
-        void readLoop(stream)
+        const target: GrokConn = { stream, pending: new Map() };
+        conn = target;
+        void readLoop(target)
           .catch(() => {})
           .finally(() => {
-            // プロセスが死んだら待っている要求を全部起こす（ぶら下がったままにしない）。
+            // **必ず殺す**。読み取りループは EOF 以外でも抜ける（stdout の `'error'` =
+            // 非同期イテレータの reject、パーサの throw）。そこで殺さないと `grok` が
+            // 生き残ったまま担当が空に戻り、次の指示で**同じ worktree に 2 本目**が
+            // 立って両方が書き込む（Codex 側は `finally { proc.kill() }` で守っている）。
+            stream.kill();
             // **今の担当が自分のときだけ**空に戻す — 起動に失敗して既に別のプロセスへ
-            // 差し替わっているとき（`fail()` 後の再起動）に、新しい方を殺してしまわない。
-            if (proc === stream) {
-              proc = undefined;
+            // 差し替わっているとき（`fail()` 後の再起動）に、新しい方を消してしまわない。
+            if (conn === target) {
+              conn = undefined;
             }
             // 理由は**プロセスから**取る（`grok agent exited` のような合成文言だと
             // 分類が効かず、一過性のクラッシュが `failed`（再開不可の終端）になる）。
+            target.dead = true;
             const { code, stderr } = stream.result();
             const detail = stderr.trim() || `grok agent exited with code ${code ?? 'null'}`;
-            for (const [id, waiter] of pending) {
-              pending.delete(id);
+            // 起こすのは**この接続の**待ち人だけ（共有していた頃は、死んだプロセスの
+            // 後片付けが次のプロセスの `initialize` まで失敗させていた）。
+            for (const [id, waiter] of target.pending) {
+              target.pending.delete(id);
               waiter.resolve({
                 kind: 'error',
                 id,
@@ -388,11 +441,11 @@ export function createGrokAdapter(deps: {
           .catch(() => {});
 
         // 立ち上げに失敗したら**自分で畳む**（起こしっぱなしの `grok` が worktree を
-        // 触り続けないように）。次のターンで起こし直せるよう `proc` は空に戻す。
+        // 触り続けないように）。次のターンで起こし直せるよう担当は空に戻す。
         const fail = (detail: string): never => {
           stream.kill();
-          if (proc === stream) {
-            proc = undefined;
+          if (conn === target) {
+            conn = undefined;
           }
           throw new Error(detail);
         };
@@ -451,8 +504,9 @@ export function createGrokAdapter(deps: {
       /**
        * 1 ターン。`session/prompt` の応答が終わりを告げる。
        *
-       * 戻り値は「そのターンを実際に投げたか」。中断で捨てたターンと投げたターンを
-       * 呼び出し側が区別できないと、1 回きりの引き継ぎを空振りで使い切ってしまう。
+       * 戻り値は「そのターンを**エージェントが実際に受け取ったか**」。中断で捨てた
+       * ターンや、プロセスが死んで届かなかったターンと区別できないと、1 回きりの
+       * 引き継ぎを空振りで使い切ってしまう。
        */
       const runTurn = async (text: string): Promise<boolean> => {
         // **中断されたターンは始めない**。`Ctrl+C` はセッションの立ち上げ
@@ -466,15 +520,19 @@ export function createGrokAdapter(deps: {
         }
         turnInFlight = true;
         try {
-          await runPrompt(text);
+          return await runPrompt(text);
         } finally {
           turnInFlight = false;
         }
-        return true;
       };
 
-      /** `session/prompt` の 1 往復。 */
-      const runPrompt = async (text: string): Promise<void> => {
+      /**
+       * `session/prompt` の 1 往復。戻り値は「エージェントが受け取ったか」
+       * （プロセスが死んで応答が合成エラーになった場合は false）。
+       */
+      const runPrompt = async (text: string): Promise<boolean> => {
+        // どのプロセスへ投げたかを覚えておく（応答が合成かどうかの判定に使う）。
+        const target = conn;
         const response = await rpc('session/prompt', {
           sessionId,
           prompt: [{ type: 'text', text }],
@@ -487,17 +545,20 @@ export function createGrokAdapter(deps: {
           const detail = errorText(response.error);
           if (interrupted || request.abortController.signal.aborted) {
             // 中断は Session 側で既に確定させてある（二重にログを出さない）。
-            return;
+            return false;
           }
           // プロセスが黙って死んだ（終端イベントも応答も無い）ときは、文言から
           // 何も読み取れなくても**再開できる中断**に倒す。`failed` は終端 =
           // 再開の導線が消えるので、一過性のクラッシュをそこへ落とさない。
+          const exited = target?.dead === true;
           const cause =
-            grokStopCause(detail, lastErrorType) === 'failed' && response.error.code === EXITED_CODE
+            grokStopCause(detail, lastErrorType) === 'failed' && exited
               ? 'connection'
               : grokStopCause(detail, lastErrorType);
           events.push({ kind: 'turn_stopped', cause, detail });
-          return;
+          // 応答が**合成された**エラー（プロセス死）なら、この指示はエージェントへ
+          // 届いていない。引き継ぎを落とさず次の run で渡し直す。
+          return !exited;
         }
         const result = response.result as GrokPromptResult | undefined;
         const model_ = result?._meta?.modelId;
@@ -514,13 +575,13 @@ export function createGrokAdapter(deps: {
               detail: 'turn cancelled by the agent',
             });
           }
-          return;
+          return true;
         }
         if (interrupted || request.abortController.signal.aborted) {
           // **中断が競り勝つ**。`Ctrl+C` と `end_turn` が同時に届くことがあり、
           // ここで完了にすると `interrupted` が `completed` に化けて auto-PR まで
           // 走ってしまう（ユーザーは止めたつもりでいる）。
-          return;
+          return true;
         }
         if (stop !== undefined && stop !== 'end_turn') {
           // `max_tokens` / `max_turn_requests` / `refusal`。失敗ではないので
@@ -528,6 +589,7 @@ export function createGrokAdapter(deps: {
           events.push({ kind: 'notice', text: `stopped: ${stop}` });
         }
         events.push({ kind: 'turn_completed', text: '' });
+        return true;
       };
 
       /** プロンプトの流れを 1 本のターン列として回す。 */
@@ -540,7 +602,7 @@ export function createGrokAdapter(deps: {
             }
             interrupted = false;
             lastErrorType = undefined;
-            if (!proc) {
+            if (!conn) {
               try {
                 await start();
               } catch (error) {
@@ -559,8 +621,11 @@ export function createGrokAdapter(deps: {
             // 落とすと切替の文脈だけが黙って消える（`Session` 側の使い捨ては
             // `open()` の時点で済んでいるので、二度と渡らない）。
             const sent = await runTurn(attachHandoff(text, handoff));
-            if (sent) {
+            if (sent && handoff !== undefined) {
               handoff = undefined;
+              // `Session` 側の使い捨てもここで初めて成立する（渡る前に死んだ run の
+              // ぶんは Session に残り、次の run で渡し直される）。
+              request.onHandoffDelivered?.();
             }
           }
         } catch (error: unknown) {
@@ -580,7 +645,7 @@ export function createGrokAdapter(deps: {
       };
 
       const abort = () => {
-        proc?.kill();
+        conn?.stream.kill();
         events.close();
       };
       request.abortController.signal.addEventListener('abort', abort, { once: true });
@@ -600,7 +665,7 @@ export function createGrokAdapter(deps: {
           } finally {
             request.abortController.signal.removeEventListener('abort', abort);
             // 消費側に捨てられたら CLI も畳む（worktree を触り続けさせない）。
-            proc?.kill();
+            conn?.stream.kill();
           }
         },
 
@@ -617,7 +682,7 @@ export function createGrokAdapter(deps: {
 
         setModel: async (next) => {
           model = next;
-          if (!sessionId || !proc || next === undefined) {
+          if (!sessionId || !conn || next === undefined) {
             // 「既定に戻す」は次のセッションから（ACP に「既定へ戻す」要求は無い）。
             return;
           }
