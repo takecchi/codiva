@@ -1561,6 +1561,32 @@ describe('App detail view (in-app connection)', () => {
     expect(lastFrame()).toContain('実装してほしいこと'); // list composer placeholder
   });
 
+  // `/` で始まってもコマンド名に一致しない入力は追加指示として送る（チャットできること）。
+  // かつては「不明なコマンド」で止まり、パスや見出しをセッションへ渡す手段が無かった。
+  it('sends slash text that matches no command as a follow-up instruction', async () => {
+    const { manager, out } = drivenManager();
+    const send = vi.spyOn(manager, 'send');
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('slash chat');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-slash' }));
+    await flush();
+
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // open detail
+    await flush();
+
+    stdin.write('/v3/chats です。');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(send).toHaveBeenCalledWith(expect.any(String), '/v3/chats です。');
+    expect(lastFrame()).toContain('追加の指示を入力'); // 詳細のまま（一覧へ戻らない）
+  });
+
   it('restores list selection and focus after returning from the detail view', async () => {
     const { manager, out } = drivenManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

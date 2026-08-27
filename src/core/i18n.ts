@@ -460,14 +460,15 @@ export interface Messages {
   command: {
     /** 入力中に出るコマンドパレットの見出し */
     paletteTitle: string;
-    /** 前方一致するコマンドが無いときの表示 */
+    /**
+     * 前方一致するコマンドが無いときの表示。コマンドに一致しないスラッシュ入力は
+     * **そのまま指示として送られる**ので、Enter で何が起きるかもここで伝える。
+     */
     paletteEmpty: string;
     /** 端末が低くて全件描けないときに畳んだ件数（n は隠れている数） */
     paletteMore: (n: number) => string;
     /** /help のヘルプ一覧の見出し */
     helpTitle: string;
-    /** 未知のコマンドを打ったときのエラー */
-    unknown: (name: string) => string;
     /** /help の説明 */
     help: string;
     /** /exit の説明（一覧ビュー = アプリ終了） */
@@ -810,10 +811,9 @@ const ja: Messages = {
   },
   command: {
     paletteTitle: 'コマンド',
-    paletteEmpty: '一致するコマンドがありません',
+    paletteEmpty: '一致するコマンドがありません（Enter でそのまま指示として送信します）',
     paletteMore: (n) => `他 ${n} 件（入力で絞り込めます）`,
     helpTitle: '利用可能なコマンド',
-    unknown: (name) => (name ? `不明なコマンド: /${name}` : '不明なコマンドです'),
     help: 'コマンド一覧を表示',
     exit: 'codiva を終了',
     exitDetail: '詳細を閉じて一覧へ戻る',
@@ -1110,10 +1110,9 @@ const en: Messages = {
   },
   command: {
     paletteTitle: 'Commands',
-    paletteEmpty: 'No matching command',
+    paletteEmpty: 'No matching command (Enter sends this as an instruction)',
     paletteMore: (n) => `+${n} more (keep typing to filter)`,
     helpTitle: 'Available commands',
-    unknown: (name) => (name ? `Unknown command: /${name}` : 'Unknown command'),
     help: 'Show available commands',
     exit: 'Quit codiva',
     exitDetail: 'Close the session view (back to the list)',

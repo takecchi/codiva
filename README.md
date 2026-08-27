@@ -477,6 +477,8 @@ All three only delete the local worktree and branch — **pushed remote branches
 
 Even if you forget the slash, **input that exactly matches a command name available on that screen** (`exit`, `help`, …) runs as that command. When it will, the command palette shows it, so you know what `Enter` is about to do. Anything with trailing text (`fix how exit behaves`) and aliases like `?` or `changes` are treated as ordinary instructions, so an instruction never turns into a command by accident.
 
+The other way round, **text that starts with `/` but matches no command name is sent as an ordinary instruction** (`/v3/chats please`, `put it in /tmp/foo`, …). The palette says "No matching command", so you can see before pressing `Enter` that it will go to the session rather than run a command. The flip side is that a mistyped command (`/modle`) is sent to the session too.
+
 **`/exit` means different things on different screens.** In the list view it quits codiva; in the session detail view it **closes the detail view and returns to the list** (same as `Esc`), so you can't accidentally kill the app by typing `/exit` while reading a session.
 
 ## Troubleshooting

@@ -21,8 +21,12 @@ export const COMMANDS: readonly CommandSpec[] = [
 ```
 
 - `name` は小文字（`parseCommand` が lowercase する）。
-- **別名（`aliases`）はパレットの前方一致にだけ効き、スラッシュ無しの昇格には効かない**
-  （`toCommandInput` は正式名のみ昇格。`?` や `changes` を打っても指示として送れる余地を残す設計）。
+- **別名（`aliases`）はパレットの前方一致とスラッシュ付きの実行に効き、スラッシュ無しの
+  昇格には効かない**（`toCommandInput` は正式名のみ昇格。`?` や `changes` を打っても
+  指示として送れる余地を残す設計）。
+- **レジストリに無い名前はコマンドではなく通常の指示**（`/v3/chats です。` を送れること）。
+  つまり `COMMANDS` に足すまでは `/newcmd` を打ってもセッションへ送られるだけなので、
+  「打ったのに何も起きない」ときはまずレジストリへの追加漏れを疑う。
 - `describe` は必ずカタログ関数で書く（文言直書き禁止）。
 
 ## 2. 文言を ja / en 両方に足す — `src/core/i18n.ts`
@@ -35,21 +39,23 @@ export const COMMANDS: readonly CommandSpec[] = [
 
 ## 3. ハンドラを配線する — `src/ui/session-list.tsx` / `src/ui/session-detail.tsx`
 
-各ビューは `useCommandRunner(handlers, setActionError, m.command.unknown)` に
+各ビューは `useCommandRunner(handlers, setActionError)` に
 **自分が実装するアクションだけ**を渡す。
 
 ```ts
 const commands = useCommandRunner(
   { exit: onQuit, help: () => setShowHelp(true), model: …, prompt: …, clear: … }, // 一覧
   setActionError,
-  m.command.unknown,
 );
 ```
 
 - **重要**: ハンドラを持たないビューでは、スラッシュ無しの入力を昇格させない（`clear` を
   詳細ビューで打っても無言に消えず、通常の指示として送られる）。この挙動は
-  `useCommandRunner` が担保しているので、`run` / `preview` を自前判定に置き換えない
+  `useCommandRunner` が担保しているので、`run` / `palette` を自前判定に置き換えない
   （パレットの予告と実際の動作を必ず一致させる）。
+- パレットの表示は `commands.palette(value)`（`null` = 出さない / `[]` = 「一致なし」を
+  出す）。**スラッシュ入力は候補ゼロでもパレットを出す** — 一致しない入力はそのまま
+  指示として送られるので、Enter の前にそれを伝えるため（`m.command.paletteEmpty`）。
 - ビュー固有の説明差し替えは `CommandPalette` の `describeOverrides`（キー = コマンド名）に渡す。
   詳細ビューの例: `useMemo(() => ({ exit: m.command.exitDetail }), [...])`。
 - 副作用の実体は core/manager 側のメソッドを呼ぶだけにする（UI にロジックを書かない）。
@@ -57,8 +63,10 @@ const commands = useCommandRunner(
 ## 4. テスト
 
 - `src/core/commands.spec.ts` … テーブルドリブンで追加（`parseCommand` / `findCommand` /
-  `matchCommands` / `toCommandInput` / `runCommand`）。別名の非昇格も明示的にケース化する。
-- `tests/commands.test.tsx` … UI 配線（パレット表示・前方一致・実行結果・未知コマンドのエラー）。
+  `matchCommands` / `toCommandInput` / `runCommand` / `resolveCommand`）。別名の非昇格も
+  明示的にケース化する。
+- `tests/commands.test.tsx` … UI 配線（パレット表示・前方一致・実行結果・**一致しない
+  スラッシュ入力が指示として送られること**）。
 - 既存の `tests/app.test.tsx` に該当シナリオがあるなら合わせて更新。
 
 ## 5. ドキュメント

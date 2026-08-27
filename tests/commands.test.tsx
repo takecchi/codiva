@@ -464,14 +464,19 @@ describe('slash commands', () => {
     app.unmount();
   });
 
-  it('reports an unknown command as an error', async () => {
+  // スラッシュ始まりでもコマンド名に一致しない入力は**通常の指示**として送る。
+  // 「不明なコマンド」で止めていた頃は `/v3/chats です。` のような文を送る手段が
+  // 一切なかった（チャットできない）。パレットは一致なしを予告するだけ。
+  it('sends slash text that matches no command as a normal instruction', async () => {
     const manager = makeManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);
-    stdin.write('/frobnicate');
+    stdin.write('/v3/chats です。');
     await flush();
+    expect(stripAnsi(lastFrame() ?? '')).toContain(messages.ja.command.paletteEmpty);
     stdin.write('\r');
     await flush();
-    expect(lastFrame() ?? '').toContain(messages.ja.command.unknown('frobnicate'));
-    expect(manager.getSnapshot()).toHaveLength(0);
+    const sessions = manager.getSnapshot();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.prompt).toBe('/v3/chats です。');
   });
 });

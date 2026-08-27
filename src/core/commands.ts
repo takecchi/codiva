@@ -1,7 +1,8 @@
 /**
  * スラッシュコマンドのレジストリと解析（純粋・I/O 非依存）。
  *
- * 入力欄の先頭が `/` のとき、通常の指示ではなくコマンドとして扱う。コマンドは
+ * 入力欄の先頭が `/` で、**かつ既知のコマンド名に一致する**ときだけコマンドとして扱う
+ * （一致しないスラッシュ始まりの文はそのまま指示として送る）。コマンドは
  * この 1 ファイルの `COMMANDS` に 1 エントリ足すだけで増やせる設計にしている:
  *   1. `CommandAction` に新しい動作を足す（UI 側が switch で受ける）
  *   2. `COMMANDS` に `{ name, action, describe }` を足す
@@ -67,25 +68,30 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: 'exit', action: 'exit', describe: (m) => m.command.exit },
 ];
 
-/** 先頭が `/` ならコマンド入力とみなす（引数の有無は問わない）。 */
+/** 先頭が `/` なら「コマンドとして打たれた」入力（実行できるかは別問題）。 */
 export function isCommandInput(value: string): boolean {
   return value.startsWith('/');
 }
 
 /**
- * スラッシュを打ち忘れた入力（`exit` など）をコマンド入力に正規化する。
+ * 入力を「実行するコマンド入力」に正規化する。コマンドでなければ null
+ * （呼び出し側は通常の指示として扱う）。
  *
- * `/` 付きならそのまま返す。`/` なしでも **コマンドの正式名と完全一致** するなら
- * `/name` 形式に直して返す。コマンドでなければ null（呼び出し側は通常の指示として扱う）。
- *
- * 完全一致に限るのが要点で、`exit したあとの挙動を直して` のように後続テキストが
- * ある入力は指示である可能性が高いため対象外。別名（`?` = help、`changes` = diff）も
- * 対象外にしている: `?` の 1 文字だけをセッションへ送りたいことは十分あり得るのに、
- * 昇格させるとその入力手段が失われる（正式名は `/` 無しでも意図が明らかなので許す）。
+ * - **`/` 付き**: `runCommand` が解決できるとき（= 既知の名前・別名に完全一致、または
+ *   `/` のみ）だけコマンド扱い。それ以外はそのまま指示として流す。`/v3/chats です。`
+ *   `/tmp/foo に置いて` のようにスラッシュで始まる普通の文はコマンドではないので、
+ *   「不明なコマンド」で止めると**その文をセッションへ送る手段が無くなる**（実際に
+ *   チャットできない不具合になった）。副作用として打ち間違い（`/modle`）も指示として
+ *   送られるが、送り先はエージェントなので取り返しがつく。
+ * - **`/` なし**: **正式名と完全一致**するときだけ `/name` へ昇格する。
+ *   完全一致に限るのが要点で、`exit したあとの挙動を直して` のように後続テキストが
+ *   ある入力は指示である可能性が高いため対象外。別名（`?` = help、`changes` = diff）も
+ *   対象外にしている: `?` の 1 文字だけをセッションへ送りたいことは十分あり得るのに、
+ *   昇格させるとその入力手段が失われる（正式名は `/` 無しでも意図が明らかなので許す）。
  */
 export function toCommandInput(value: string): string | null {
   if (isCommandInput(value)) {
-    return value;
+    return runCommand(value).kind === 'run' ? value : null;
   }
   const name = value.trim().toLowerCase();
   return COMMANDS.some((c) => c.name === name) ? `/${name}` : null;
@@ -142,7 +148,8 @@ export type CommandResult =
 
 /**
  * コマンド入力文字列を解決する。`/` のみ（名前が空）は help 扱いにして、誤爆で
- * unknown エラーを出さない。未知の名前は `unknown` を返し、UI がエラー表示する。
+ * 何も起きない状態にしない。未知の名前は `unknown` を返す — 呼び出し側
+ * （`toCommandInput`）はそれを「コマンドではない = 通常の指示」として扱う。
  */
 export function runCommand(value: string): CommandResult {
   const parsed = parseCommand(value);
@@ -157,4 +164,18 @@ export function runCommand(value: string): CommandResult {
   }
   const spec = findCommand(parsed.name);
   return spec ? { kind: 'run', command: spec } : { kind: 'unknown', name: parsed.name };
+}
+
+/**
+ * 入力（`/name …` でも裸の `exit` でも）を実行するコマンドへ解決する。コマンドで
+ * なければ null = 通常の指示。`toCommandInput` → `runCommand` の 2 段を 1 本にした
+ * 糖衣で、呼び出し側に「解決できない場合」の分岐を 2 度書かせないためにある。
+ */
+export function resolveCommand(value: string): CommandSpec | null {
+  const command = toCommandInput(value);
+  if (command === null) {
+    return null;
+  }
+  const result = runCommand(command);
+  return result.kind === 'run' ? result.command : null;
 }

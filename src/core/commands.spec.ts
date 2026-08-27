@@ -5,6 +5,7 @@ import {
   isCommandInput,
   matchCommands,
   parseCommand,
+  resolveCommand,
   runCommand,
   toCommandInput,
 } from './commands';
@@ -27,6 +28,14 @@ describe('toCommandInput', () => {
   it.each([
     ['/exit', '/exit'], // already a command input — passes through
     ['/help me now', '/help me now'],
+    ['/', '/'], // a bare slash is help (the palette lists everything)
+    ['/settings', '/settings'], // aliases run when typed with the slash
+    // スラッシュ始まりでもコマンド名に一致しなければ**通常の指示**（チャットできること）。
+    ['/v3/chats です。', null],
+    ['/tmp/foo に置いて', null],
+    ['/frobnicate', null],
+    ['/modle', null], // 打ち間違いもエラーにせず指示として送る（送れないほうが害が大きい）
+    ['/mod', null], // 前方一致はパレットに出るだけ。実行は完全一致のときだけ
     ['exit', '/exit'], // bare command name counts as the command
     ['EXIT', '/exit'], // case-insensitive
     ['  exit  ', '/exit'], // surrounding whitespace/newlines only
@@ -51,6 +60,37 @@ describe('toCommandInput', () => {
         expect(toCommandInput(alias)).toBeNull();
       }
     }
+  });
+
+  it('every name and alias runs when typed with a slash', () => {
+    for (const command of COMMANDS) {
+      for (const name of [command.name, ...(command.aliases ?? [])]) {
+        expect(toCommandInput(`/${name}`)).toBe(`/${name}`);
+      }
+    }
+  });
+});
+
+describe('resolveCommand', () => {
+  it.each([
+    ['/exit', 'exit'],
+    ['/settings', 'config'], // alias
+    ['/', 'help'], // bare slash
+    ['exit', 'exit'], // bare canonical name
+    ['/EXIT', 'exit'], // case-insensitive
+  ] as const)('%s → %s', (value, expected) => {
+    expect(resolveCommand(value)?.name).toBe(expected);
+  });
+
+  it.each([
+    '/v3/chats です。', // スラッシュ始まりの普通の文はコマンドではない
+    '/frobnicate',
+    '/mod', // 前方一致だけでは実行しない
+    '?', // 別名は昇格しない
+    'build the thing',
+    '',
+  ])('%o is a normal instruction', (value) => {
+    expect(resolveCommand(value)).toBeNull();
   });
 });
 
