@@ -27,7 +27,6 @@ import {
   logViewportRows,
   logWindow,
   type ModelOption,
-  matchCommands,
   paletteMaxRows,
   parseSgrMouse,
   resumeInstruction,
@@ -343,7 +342,6 @@ export const SessionDetail: FC<{
       // （ハンドラの無いコマンドは昇格しないので、打っても通常の指示として流れる）。
     },
     setActionError,
-    m.command.unknown,
   );
   // 詳細ビューの `/exit` は一覧へ戻る動作なので、パレット/ヘルプの説明も差し替える
   // （既定は「codiva を終了」= 一覧ビューの意味）。
@@ -795,8 +793,8 @@ export const SessionDetail: FC<{
           : panel === 'actions'
             ? m.detail.helpActions
             : m.detail.helpInput;
-  // コマンドとして解決される入力か（`/` 付き、または詳細で使える名前と完全一致）。
-  const commandPreview = commands.preview(buffer.value);
+  // パレットに出す候補（`/` 付きなら前方一致、裸の名前は詳細で実行できるときだけ）。
+  const paletteCommands = commands.palette(buffer.value);
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -1017,13 +1015,14 @@ export const SessionDetail: FC<{
           </DialogBox>
         ) : (
           <Box flexDirection="column">
-            {/* Enter の判定（`commands.preview`）と同じ条件で出す。スラッシュ無しの
-                `exit` でも確定前に何が起きるか見えるようにするため。**入力欄の計測 Box の
-                外**に置く（中に入れると実測した上端がずれてクリックが別の文字に当たる）。 */}
-            {commandPreview !== null ? (
+            {/* パレットは `commands.palette` が出す（`/` 付きは常に、裸の名前は実際に
+                実行されるときだけ）。確定前に何が起きるか見えるようにするため。
+                **入力欄の計測 Box の外**に置く（中に入れると実測した上端がずれて
+                クリックが別の文字に当たる）。 */}
+            {paletteCommands !== null ? (
               <CommandPalette
                 title={m.command.paletteTitle}
-                commands={matchCommands(commandPreview)}
+                commands={paletteCommands}
                 describeOverrides={commandDescribes}
                 maxRows={paletteMaxRows(rows, 'detail')}
               />
