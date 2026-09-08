@@ -54,12 +54,35 @@ export type LogKind =
   | 'system'
   | 'error';
 
+/**
+ * ツールの「意味」。provider ごとに実際のツール名は違う（Claude の `Read`、Codex の
+ * `file_read`、…）ので、アダプタがこの語彙へ正規化してから中立側へ渡す。
+ *
+ * ここ（`types.ts` = 依存を持たない leaf）に置いてあるのは、{@link LogEntry} が
+ * これを持つため。ログ行が「どの種類のツールだったか」を覚えていないと、詳細ビューが
+ * 連続したツール実行を「1 ファイルを読み込み・5 個のコマンドを実行」のように
+ * 畳めない（`core/log-collapse.ts`）。
+ *
+ * 分類は**まとめ行に出したい粒度**で切ってある: 読む / 書く / 走らせる / 探す は
+ * ユーザーが知りたい区別なので独立させ、それ以外は `other` に落とす。
+ */
+export type AgentToolKind = 'read' | 'edit' | 'shell' | 'search' | 'todo' | 'question' | 'other';
+
 /** A rendered line for the session detail log. */
 export interface LogEntry {
   seq: number;
   kind: LogKind;
   text: string;
   timestamp?: number;
+  /**
+   * `kind: 'tool_use'` の行が呼んだツールの種類。連続したツール実行を 1 行に畳む
+   * ときの内訳（`core/log-collapse.ts`）に使う。他の kind では undefined。
+   *
+   * 復元したログ（トランスクリプト）にも入る一方、この項目より前に作られた行や
+   * 種類を報告しない provider では undefined になり得るので、読む側は `'other'`
+   * 相当として扱えること。
+   */
+  tool?: AgentToolKind;
   /**
    * この行を出したエージェント。セッション途中で切り替えた（Claude → Codex）とき、
    * どこからが別のエージェントの発言かをログに残すためのもの。切替を使っていない

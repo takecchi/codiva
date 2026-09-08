@@ -3,6 +3,7 @@ import { clipStreamText } from './log-buffer';
 import {
   clearLogLinesCache,
   type DisplayLine,
+  type LogCollapse,
   type LogStatusRow,
   logLines,
   logStatusRow,
@@ -21,6 +22,90 @@ import type { LogEntry, LogKind } from './types';
 function entries(n: number): LogEntry[] {
   return Array.from({ length: n }, (_, i) => ({ seq: i, kind: 'assistant_text', text: `l${i}` }));
 }
+
+/** ツール実行のまとまりを含む会話ログ（末尾に非ツール行を置いて「settled」にする）。 */
+function toolLog(): LogEntry[] {
+  return [
+    { seq: 1, kind: 'user', text: 'go' },
+    { seq: 2, kind: 'tool_use', text: 'Read a.ts', tool: 'read' },
+    { seq: 3, kind: 'tool_result', text: '1 line' },
+    { seq: 4, kind: 'tool_use', text: 'Bash ls', tool: 'shell' },
+    { seq: 5, kind: 'tool_result', text: 'a.ts' },
+    { seq: 6, kind: 'assistant_text', text: 'done' },
+  ];
+}
+
+const COLLAPSE_ALL: LogCollapse = {
+  label: (run, expanded) => `${expanded ? 'v' : '>'} ${run.tools} tools`,
+  isExpanded: () => false,
+};
+
+describe('logLines (ツール実行のまとめ)', () => {
+  // UI の `LOG_PREFIX` と同じ形（core はグリフを持たないのでここで模す）。
+  const PREFIX: Partial<Record<LogKind, string>> = {
+    tool_use: '⏺ ',
+    tool_result: '  ⎿ ',
+    user: '> ',
+  };
+  const prefixFor = (kind: LogKind) => PREFIX[kind] ?? '';
+
+  it('collapse を渡さなければ従来どおり全行を出す', () => {
+    expect(logLines(toolLog(), 40, prefixFor).map((l) => l.text)).toEqual([
+      '> go',
+      '⏺ Read a.ts',
+      '  ⎿ 1 line',
+      '⏺ Bash ls',
+      '  ⎿ a.ts',
+      'done',
+    ]);
+  });
+
+  it('畳んだまとまりは見出し 1 行になり、行に group（= 先頭 seq）が付く', () => {
+    const rows = logLines(toolLog(), 40, prefixFor, undefined, COLLAPSE_ALL);
+    expect(rows.map((l) => l.text)).toEqual(['> go', '⏺ > 2 tools', 'done']);
+    expect(rows[1]).toMatchObject({ group: 2, kind: 'tool_use', key: '2:run:0' });
+    // まとめ行以外に group は付かない（クリックで誤って開閉しない）。
+    expect(rows[0]?.group).toBeUndefined();
+    expect(rows[2]?.group).toBeUndefined();
+  });
+
+  it('展開したまとまりは見出しの下に中身を出す（見出しは畳むための取っ手として残る）', () => {
+    const rows = logLines(toolLog(), 40, prefixFor, undefined, {
+      ...COLLAPSE_ALL,
+      isExpanded: (key) => key === 2,
+    });
+    expect(rows.map((l) => l.text)).toEqual([
+      '> go',
+      '⏺ v 2 tools',
+      '⏺ Read a.ts',
+      '  ⎿ 1 line',
+      '⏺ Bash ls',
+      '  ⎿ a.ts',
+      'done',
+    ]);
+  });
+
+  it('見出しも折り返し、継続行は prefix ぶん字下げして同じ group を指す', () => {
+    const rows = logLines(toolLog(), 8, prefixFor, undefined, {
+      ...COLLAPSE_ALL,
+      label: () => 'aaaa bbbb cccc',
+    });
+    const header = rows.filter((l) => l.group === 2);
+    expect(header.map((l) => l.text)).toEqual(['⏺ aaaa b', '  bbb cc', '  cc']);
+    expect(header.every((l) => l.group === 2)).toBe(true);
+  });
+
+  it('エージェント切替の区切り行はまとめ行の前にも入る', () => {
+    const log: LogEntry[] = [
+      { seq: 1, kind: 'tool_use', text: 'Bash a', tool: 'shell', agent: 'codex' },
+      { seq: 2, kind: 'tool_result', text: 'ok', agent: 'codex' },
+      { seq: 3, kind: 'tool_use', text: 'Bash b', tool: 'shell', agent: 'codex' },
+      { seq: 4, kind: 'assistant_text', text: 'done', agent: 'codex' },
+    ];
+    const rows = logLines(log, 40, prefixFor, (a) => `-- ${a} --`, COLLAPSE_ALL);
+    expect(rows.map((l) => l.text)).toEqual(['-- codex --', '⏺ > 2 tools', 'done']);
+  });
+});
 
 describe('logWindow (bottom / tail follow)', () => {
   it('returns everything when it fits, atBottom', () => {

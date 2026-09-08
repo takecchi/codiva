@@ -1,5 +1,5 @@
 import { stripHandoff } from './agent-handoff';
-import { summarizeToolUse, toolResultSummary } from './claude-parse';
+import { summarizeToolUse, toolKindOf, toolResultSummary } from './claude-parse';
 import { capLogEntries, clipLogText, MAX_LOG_ENTRIES } from './log-buffer';
 import type { LogEntry } from './types';
 
@@ -120,7 +120,14 @@ function appendAssistantLine(out: History, content: unknown, timestamp: number |
         block.input && typeof block.input === 'object'
           ? (block.input as Record<string, unknown>)
           : {};
-      out.push({ kind: 'tool_use', text: summarizeToolUse(block.name, input), timestamp });
+      out.push({
+        kind: 'tool_use',
+        text: summarizeToolUse(block.name, input),
+        timestamp,
+        // 種類まで復元する。これが無いと再起動後のログだけ「ツール実行のまとめ」の
+        // 内訳が全部「その他」になる（`core/log-collapse.ts`）。
+        tool: toolKindOf(block.name),
+      });
     }
     // thinking / other block types are not part of the visible log
   }

@@ -90,6 +90,7 @@ codiva/
 │   │   ├── privacy.ts        # 学習データ利用（grove）の判定（JSON→TrainingOptIn・純粋）
 │   │   ├── async-queue.ts / slug.ts / config.ts / cost.ts / notify.ts / persistence.ts / update.ts
 │   │   ├── choice-lines.ts    # 選択肢（ラベル + 説明）の折返し（純粋・表示幅ベース）
+│   │   ├── log-collapse.ts    # 連続したツール実行を 1 行に畳む判定と文言（純粋）
 │   │   ├── scroll.ts / text-buffer.ts / composer-layout.ts / layout.ts / mouse.ts / key-sequence.ts / model.ts / models.ts / transcript.ts
 │   │   ├── *.spec.ts          # 単体テストは実装の隣に co-located
 │   │   └── __fixtures__/      # サニタイズ済み実 SDK メッセージ（claude-parse テスト用）
@@ -189,8 +190,8 @@ JSON-RPC の双方向ストリーム）が、**違いはアダプタの中で吸
 `AgentEvent` は provider 非依存の語彙になるよう選んである:
 `session_started` / `assistant_message` / `assistant_text` / `tool_use` / `tool_result` /
 `stream_reset` / `stream_text` / `notice` / `task_started` / `task_settled` / `turn_completed` /
-`turn_stopped` / `usage`。ツール名は `AgentToolKind`（`edit` / `shell` / `todo` / `question` /
-`other`）へ、TODO 操作は `TodoOp`（`create` / `update` / `replace`）へ、失敗は `AgentStopCause`
+`turn_stopped` / `usage`。ツール名は `AgentToolKind`（`read` / `edit` / `shell` / `search` /
+`todo` / `question` / `other`。型は `core/types.ts` — ログ行 `LogEntry.tool` も持つため）へ、TODO 操作は `TodoOp`（`create` / `update` / `replace`）へ、失敗は `AgentStopCause`
 （`auth` / `rate_limit` / `connection` / `failed`）へ**アダプタ側で正規化してから**渡す
 （`turn_stopped.rollup` は「これは既に診断済みの停止の要約」の印で、2 回目の報告で分類を
 やり直して精度を落とさないためのもの）。
@@ -1441,6 +1442,59 @@ TUI は alt screen + マウスレポート（?1002/?1006）で動くため、異
   「kill された（端末を閉じた等）」を後から切り分けるため。
 - 設定 `crashLog: false` でファイル出力（自前レポート + 診断レポート）を止められる。
   理由の表示と端末の復元は設定に関係なく行う。
+
+## ツール実行のログを畳む（`Ctrl+O` / クリック / `/tools`）
+
+エージェントの作業ログは `⏺ Bash(…)` と `⎿ …` の 2 行組が延々と続くため、読みたいもの
+（アシスタントの説明とユーザーの指示）がツールの実況に埋もれる。**連続したツール実行を
+1 行のまとめ見出しへ畳む**ことで、会話の筋がそのまま読める表示にしている。
+
+```
+LogEntry[] ──[collapsibleRunAt]──▶ ToolRun ──[logLines(…, collapse)]──▶ 見出し 1 行（DisplayLine.group）
+                                     └─ counts ──[toolRunLabel + カタログ]──▶ 「1 ファイルを読み込み・5 個のコマンドを実行」
+```
+
+| 役割 | 場所 |
+|---|---|
+| どこが 1 まとまりか（純粋） | `core/log-collapse.ts` の `collapsibleRunAt` |
+| まとめ行の文言（純粋・語はカタログ） | `core/log-collapse.ts` の `toolRunLabel` + `m.detail.toolRun` |
+| 行への落とし込み | `core/scroll.ts` の `logLines(messages, width, prefixFor, dividerFor, collapse)` |
+| クリックの当たり判定 | `core/log-selection.ts` の `logGroupAt`（行に付いた `DisplayLine.group`） |
+| 展開状態・キー操作 | `ui/session-detail.tsx`（`grouping` / `openRuns` / `Ctrl+O` / `/tools`） |
+| ツールの種類 | `LogEntry.tool`（`AgentToolKind`。アダプタが正規化し、`applyAgentEvent` が行に載せる） |
+
+設計上の判断:
+
+- **畳むのは「終わったまとまり」だけ**。ログのいちばん後ろのまとまり（= いま動いている作業）は
+  畳まない。整理された表示より「何をしているか見えない」ほうが確実に不便なので、次の本文・
+  指示が届いて初めて畳む。判定は「後ろに非ツール行があるか」の 1 つだけで、状態を見ない
+  （`applyAgentEvent` の `status` に依存させると、復元したログで挙動が変わってしまう）。
+- **ツール呼び出しが 1 件のまとまりは畳まない**（`MIN_COLLAPSE_TOOLS`）。`Read src/core/scroll.ts` は
+  それ自体で読めるうえ、畳むとファイル名が消えて**情報が減るだけ**で行数も 2 → 1 にしかならない。
+- **まとめ見出しは展開中も出す**。畳むための取っ手が消えると、開いたら閉じられなくなる。
+  グリフ（`▸` / `▾`）は theme、語はカタログ、並べ方は core という普段どおりの分担。
+- **種類は行に持たせる**（`LogEntry.tool`）。まとめの内訳（読み込み / 編集 / コマンド / 検索）は
+  ツール名からしか作れないが、ツール名の知識はアダプタの外へ出せない。だから
+  `AgentToolKind` へ正規化した結果をログ行に残す（復元も `core/transcript.ts` が同じ写像を通す）。
+  種類を持たない行（古いログ・報告しない provider）は `other` として数える。
+- **メモ化を壊さない**。エントリの行は従来どおり `ENTRY_ROWS` にキャッシュされ、まとめ見出しだけが
+  毎回作り直される（1 まとまり 1 行の短い文字列なので誤差。逆にキャッシュへ入れると、まとまりが
+  伸びたときに古い行を返すか使い捨てのキーでキャッシュを汚すかのどちらかになる）。見出しの文字列は
+  件数が変わったときしか変わらないので、Ink の測定キャッシュにも溜まらない
+  （「React の dev ビルドとヒープ枯渇」節の制約を満たす）。
+- **開閉するときはアンカーを固定する**（`SessionDetail` の `beforeToggle`）。まとまりより**前**の
+  行数は開閉で変わらないので、末尾追従をやめて今の窓の終端に固定すれば押した見出しは同じ位置に
+  留まる。追従したままだと展開したぶんが下に伸びて見出しが画面の上へ流れていく。
+  行 index が動くので**選択は捨てる**（触っていない行がコピーされるのを防ぐ = ログのトリムと同じ理由）。
+- 既定は設定 `collapseToolLogs`（既定 true）。**`/config` の項目でこれだけがその場で効く**
+  （他は起動時にアダプタ等へ焼き込まれる）。`Ctrl+O` / `/tools` は一括の開閉で、
+  `Ctrl+C` と同じくフォーカス横断の chord にしてある — 許可待ちでログを読み返している最中こそ
+  「実際に何をしたのか」を開きたいため。
+
+あわせて**ユーザーの発言（`kind: 'user'`）には地の色**を付ける（`ui/theme.ts` の `logBackground`）。
+長いやり取りで「どこで自分が喋ったか」を、文字を読まずに探せるようにするため。背景が付くのは
+**文字のあるところだけ**で行末までは伸ばさない — 行いっぱいに伸ばすには行を空白で埋める必要があり、
+その空白が `DisplayLine.text` に入ると範囲選択のコピーに末尾の空白が混ざる。
 
 ## ログのメモリ上限（OOM 対策）
 

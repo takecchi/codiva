@@ -14,7 +14,7 @@
  * instead of a grab-bag of raw ANSI names scattered across components.
  */
 
-import type { MarkdownTone } from '@/core';
+import type { LogKind, MarkdownTone } from '@/core';
 
 /** Brand accent palette — identity, not state. */
 export const palette = {
@@ -77,6 +77,26 @@ export const logColor: Record<string, string | undefined> = {
 };
 
 /**
+ * 会話ログの行の**背景色**（kind ごと）。今のところ `user` だけが持つ。
+ *
+ * なぜ要るか: 詳細ビューのログは自分の指示・アシスタントの本文・ツールの実況が
+ * 縦に並ぶだけなので、長いやり取りだと「どこで自分が喋ったか」を探すのに全部
+ * 読み返すことになる。前景色（cyan）と `> ` だけでは、ツール実行の色付きの行に
+ * 埋もれて拾えない。地の色を変えると**文字を読まずに位置が分かる**（Claude Code の
+ * transcript も同じことをしている）。
+ *
+ * 背景が付くのは**文字のあるところだけ**（行末までは伸びない）。行いっぱいに
+ * 伸ばすには行を空白で埋める必要があり、その空白が `DisplayLine.text` に入ると
+ * 範囲選択のコピーに末尾の空白が混ざる — 見た目のために選択の中身を壊さない。
+ *
+ * 色はブランドの最も暗いニュートラル。明るい端末でも暗い端末でも「少し沈む帯」に
+ * 見え、cyan の前景と十分なコントラストが残る。
+ */
+export const logBackground: Partial<Record<LogKind, string>> = {
+  user: palette.ink,
+};
+
+/**
  * Colors for Markdown-rendered assistant text, keyed by the semantic `tone` a
  * span carries (see `core/markdown.ts`). `core` only names the role; the concrete
  * palette lives here so all color decisions stay in the theme. Spans with no tone
@@ -111,4 +131,8 @@ export const glyph = {
   prLoading: '⋯', // the `gh` PR lookup is in flight (nothing to show yet)
   prUnknown: '?', // the `gh` PR lookup failed — PR state is unknown, not absent
   update: '↑', // a newer version is available on npm
+  // 畳んだ / 開いたツール実行のまとめ行の取っ手（クリックで開閉）。小さい三角に
+  // してあるのは、ログの主役（`bullet` の ⏺）より弱く見せるため。
+  collapsed: '▸',
+  expanded: '▾',
 } as const;

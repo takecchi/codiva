@@ -6,6 +6,7 @@ import {
   logCaretAt,
   logEdgeAt,
   logEdgePoint,
+  logGroupAt,
   logLinkAt,
   logRowAt,
   logRowSelection,
@@ -23,6 +24,29 @@ const LINES: DisplayLine[] = ['alpha', 'bravo', '', 'delta', '日本語の行'].
 
 /** 可視域: 上端 y=5, 左端 x=2, 高さ 3, 文書の 1 行目から 3 行ぶんを描いている。 */
 const VIEW: LogViewport = { top: 5, left: 2, height: 3, firstRow: 1, rows: 3 };
+
+describe('logGroupAt', () => {
+  // 文書の 2 行目（VIEW の真ん中 = y:6）だけがツール実行のまとめ見出し。
+  const rows: DisplayLine[] = [
+    line('alpha', 0),
+    line('bravo', 1),
+    { key: '7:run:0', kind: 'tool_use', text: '▸ 2 tools', group: 7 },
+    line('delta', 3),
+  ];
+
+  it.each([
+    ['見出しの行を押した', 6, 7],
+    ['見出しではない行', 5, undefined],
+    ['可視域の外', 99, undefined],
+  ])('%s', (_label, y, expected) => {
+    expect(logGroupAt(rows, VIEW, y)).toBe(expected);
+  });
+
+  it('行末より右の余白でも当たる（行そのものが取っ手なので丸める）', () => {
+    // 桁は見ない = 行の右端をクリックしても開閉できる（`logLinkAt` との違い）。
+    expect(logGroupAt(rows, VIEW, 6)).toBe(7);
+  });
+});
 
 describe('compareLogPoints / normalizeLogSelection', () => {
   const cases: [LogPoint, LogPoint, number][] = [

@@ -6,6 +6,7 @@ import {
   type DisplayLine,
   isFullscreenViewport,
   LOG_EDGE_SCROLL_MS,
+  type LogCollapse,
   type LogEdge,
   type LogEntry,
   type LogKind,
@@ -17,6 +18,7 @@ import {
   logCaretAt,
   logEdgeAt,
   logEdgePoint,
+  logGroupAt,
   logLines,
   logLinkAt,
   logRowSelection,
@@ -57,6 +59,18 @@ export interface LogPaneOptions {
   prefixFor?: (kind: LogKind) => string;
   /** エージェント切替の区切り行。同じく参照を固定して渡す。 */
   divider?: (agent: AgentId) => string;
+  /**
+   * 連続したツール実行を 1 行に畳む設定（`core/log-collapse.ts`）。undefined なら畳まない。
+   * **開閉の state は view が持つ**（config 由来の一括切替 + 個別に開いてあるまとまり）ので、
+   * ここは「今どう畳むか」を渡すだけ。同じく参照を固定して渡す（`logLines` のメモ化の依存）。
+   */
+  collapse?: LogCollapse;
+  /**
+   * まとめ行がクリックされた（`ToolRun.key`）。**press では呼ばれず release で呼ばれる**
+   * （drag が来たら取り消す）ので、範囲選択のつもりの操作でログが組み変わらない。
+   * 呼ばれる直前に {@link LogPane.beforeToggle} 相当の下ごしらえは済んでいる。
+   */
+  onToggleGroup?: (key: number) => void;
   onCopy?: (text: string) => void;
   /**
    * ログ内の URL をブラウザで開く。**press では開かず release で開く**（ドラッグに
@@ -93,8 +107,14 @@ export interface LogPane {
   handleScrollKey: (key: Key) => boolean;
   /** 選択を捨てる（端の自動スクロールも止める）。 */
   clearSelection: () => void;
-  /** URL を開く保留を取り消す（コンポーザが press を取ったとき等）。 */
+  /** URL / まとめ行の開閉の保留を取り消す（コンポーザが press を取ったとき等）。 */
   clearPendingLink: () => void;
+  /**
+   * ログが組み変わる操作（まとめ行の一括開閉 = `Ctrl+O` / `/tools`）の前に呼ぶ。
+   * 末尾追従のままだと展開して増えたぶんが下に伸びて**押した見出しが画面の上へ流れる**
+   * ので、今の窓の終端でアンカーを固定する。選択は行 index が基準なので捨てる。
+   */
+  beforeToggle: () => void;
 }
 
 /**
@@ -107,7 +127,8 @@ export interface LogPane {
  * {@link LogPane.handleMouse} / {@link LogPane.handleScrollKey} を呼ぶ。
  */
 export function useLogPane(o: LogPaneOptions): LogPane {
-  const { entries, streamingText, width, fallbackRows, divider, onCopy, onOpenUrl } = o;
+  const { entries, streamingText, width, fallbackRows, divider, collapse, onCopy, onOpenUrl } = o;
+  const { onToggleGroup } = o;
   const prefixFor = o.prefixFor ?? DEFAULT_PREFIX;
   const { rows, columns } = useWindowSize();
   // ログの範囲選択。コンポーザとは別インスタンス（位置の基準が「文書の行 + 桁」で違う）。
@@ -120,6 +141,12 @@ export function useLogPane(o: LogPaneOptions): LogPane {
    * まとまって届いても順に読めるようにするため。
    */
   const pendingLinkRef = useRef<string | undefined>(undefined);
+  /**
+   * press した位置にあったツール実行まとめ行の key。URL とまったく同じ理由で
+   * **離すまで開閉しない**（範囲選択のつもりのドラッグでログが組み変わらないように）。
+   * まとめ行に URL は載らないので、この 2 つが同時に立つことはない。
+   */
+  const pendingGroupRef = useRef<number | undefined>(undefined);
   // ログ表示域の実測高さ。ここに描く行数の上限であり、スクロール1回の移動量の基準
   // でもある。見積りより実測を優先するのは、可視域より多く描くと Yoga が溢れた行を
   // 「上でクリップ」せず「縮小」してしまい、途中の行が虫食いで欠落するため。
@@ -148,8 +175,8 @@ export function useLogPane(o: LogPaneOptions): LogPane {
     : Math.max(1, rows);
 
   const entryRows = useMemo<DisplayLine[]>(
-    () => (entries ? logLines(entries, width, prefixFor, divider) : []),
-    [entries, width, prefixFor, divider],
+    () => (entries ? logLines(entries, width, prefixFor, divider, collapse) : []),
+    [entries, width, prefixFor, divider, collapse],
   );
   // ストリーミング中の本文は Markdown 整形とリンク検出をしない（途中テキストを整形すると
   // 毎デルタで全行の折り返しが変わり Ink のキャッシュが膨れる。`streamLines` の注記）。
@@ -184,6 +211,21 @@ export function useLogPane(o: LogPaneOptions): LogPane {
   const clearSelection = () => {
     logSel.clear();
     setEdge(undefined);
+  };
+
+  /**
+   * まとめ行を開閉する前に、見えている場所を動かさないための下ごしらえ。
+   *
+   * 末尾追従（`'bottom'`）のままだと、展開して増えたぶんが下に伸びて**押した見出しが
+   * 画面の上へ流れていく**（何を開いたのか見失う）。今の窓の終端で固定すれば、
+   * 見出しより前の行数は開閉で変わらないので見出しは同じ位置に留まる。
+   * 選択は行 index が基準なので、組み変わる前に捨てる。
+   */
+  const beforeToggle = () => {
+    if (anchorRef.current === 'bottom') {
+      setAnchor(win.hiddenAbove + cap);
+    }
+    clearSelection();
   };
 
   /**
@@ -326,6 +368,9 @@ export function useLogPane(o: LogPaneOptions): LogPane {
       // 中クリック（貼り付け）でブラウザを開くのは意図しない副作用になる。
       pendingLinkRef.current =
         view && mouse.button === 'left' ? logLinkAt(lines, view, mouse.x, mouse.y) : undefined;
+      // ツール実行のまとめ行も同じ扱い（押した時点では開閉しない）。
+      pendingGroupRef.current =
+        view && mouse.button === 'left' ? logGroupAt(lines, view, mouse.y) : undefined;
       const point = anchorAt(mouse.x, mouse.y);
       if (point) {
         logSel.begin(point);
@@ -335,8 +380,9 @@ export function useLogPane(o: LogPaneOptions): LogPane {
       return true;
     }
     if (mouse.kind === 'drag') {
-      // ドラッグになった = 範囲選択なので、リンクを開く候補は取り消す。
+      // ドラッグになった = 範囲選択なので、リンクを開く / 開閉する候補は取り消す。
       pendingLinkRef.current = undefined;
+      pendingGroupRef.current = undefined;
       if (logSel.dragging()) {
         handleDrag(mouse.x, mouse.y);
       }
@@ -350,6 +396,13 @@ export function useLogPane(o: LogPaneOptions): LogPane {
     pendingLinkRef.current = undefined;
     if (url !== undefined && onOpenUrl) {
       onOpenUrl(url);
+    }
+    // 同じくまとめ行の上で離した = 単なるクリック → 開閉する。
+    const group = pendingGroupRef.current;
+    pendingGroupRef.current = undefined;
+    if (group !== undefined && onToggleGroup) {
+      beforeToggle();
+      onToggleGroup(group);
     }
     return true;
   };
@@ -392,7 +445,9 @@ export function useLogPane(o: LogPaneOptions): LogPane {
     clearSelection,
     clearPendingLink: () => {
       pendingLinkRef.current = undefined;
+      pendingGroupRef.current = undefined;
     },
+    beforeToggle,
   };
 }
 

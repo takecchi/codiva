@@ -35,7 +35,6 @@ import {
   listViewportRows,
   type ModelOption,
   type MouseEvent,
-  matchCommands,
   needsAttention,
   noAgentInstalled,
   otherPrs,
@@ -464,7 +463,6 @@ export const SessionList: FC<{
       },
     },
     setActionError,
-    m.command.unknown,
   );
   // 選択中セッションが待っている決定（ツール許可 / 質問）。
   //
@@ -1002,9 +1000,9 @@ export const SessionList: FC<{
     composer.reset();
   });
 
-  // 入力がコマンドとして解決されるか（`/` 付き、または `exit` のような完全一致）。
-  // null なら通常の指示。Enter と同じ判定を使うのでパレットの内容が実行結果と一致する。
-  const commandPreview = commands.preview(buffer.value);
+  // パレットに出す候補（`/` 付きなら前方一致、裸の `exit` なら実行されるコマンド）。
+  // null ならパレットを出さない。空配列は「一致なし」= 指示として送られる予告。
+  const paletteCommands = commands.palette(buffer.value);
 
   const footerHint = modelSelect
     ? m.model.help
@@ -1299,14 +1297,14 @@ export const SessionList: FC<{
         />
       ) : (
         <Box flexDirection="column">
-          {/* パレットの出す条件は Enter の判定と同じ（`toCommandInput`）にする。
-              スラッシュ無しの `exit` が無言で終了しないよう、確定前に何が起きるかを見せる。
-              **入力欄の計測 Box の外**に置く: 中に入れると実測した上端がパレットの分だけ
-              ずれ、クリックが別の文字に当たる。 */}
-          {zone === 'composer' && commandPreview !== null ? (
+          {/* パレットは `commands.palette` が出す（`/` 付きは常に、裸の名前は実際に
+              実行されるときだけ）。スラッシュ無しの `exit` が無言で終了しないよう、
+              確定前に何が起きるかを見せるのが目的。**入力欄の計測 Box の外**に置く:
+              中に入れると実測した上端がパレットの分だけずれ、クリックが別の文字に当たる。 */}
+          {zone === 'composer' && paletteCommands !== null ? (
             <CommandPalette
               title={m.command.paletteTitle}
-              commands={matchCommands(commandPreview)}
+              commands={paletteCommands}
               maxRows={paletteMaxRows(termRows, 'list')}
             />
           ) : null}

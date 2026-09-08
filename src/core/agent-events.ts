@@ -21,6 +21,7 @@ import {
 import type {
   AgentId,
   AgentStopCause,
+  AgentToolKind,
   LogEntry,
   SessionState,
   SubagentOutcome,
@@ -49,9 +50,6 @@ import type {
  * 振る舞いを再実装しなくてよい。**セッション途中でエージェントを切り替えても**
  * （`Session.setAgent`）ログと状態は連続したままになる。
  */
-
-/** ツールの「意味」。provider ごとに実際のツール名は違うのでここへ正規化する。 */
-export type AgentToolKind = 'edit' | 'shell' | 'todo' | 'question' | 'other';
 
 /**
  * TODO リストへの操作。Claude の TaskCreate / TaskUpdate / TodoWrite のような
@@ -390,7 +388,15 @@ export function applyAgentEvent(
         prCreateToolIds,
         ...routeLogEntry(
           state,
-          { seq, kind: 'tool_use', text: event.summary, timestamp: event.timestamp, agent },
+          {
+            seq,
+            kind: 'tool_use',
+            text: event.summary,
+            timestamp: event.timestamp,
+            agent,
+            // 詳細ビューが連続したツール実行を畳むときの内訳に使う（`core/log-collapse.ts`）。
+            tool: event.tool,
+          },
           event.subagentRef,
         ),
       };

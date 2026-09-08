@@ -186,6 +186,14 @@ export interface CodivaConfig {
    */
   codexNetworkAccess?: boolean;
   /**
+   * セッション詳細の会話ログで、連続したツール実行を 1 行のまとめへ畳むか
+   * （`core/log-collapse.ts`）。未設定は有効（true）。
+   *
+   * ここが決めるのは**開いた直後の既定**だけで、`Ctrl+O` / `/tools` はいつでも
+   * 一括で開閉できる（畳んだ内容は取り出せなくなるわけではない）。
+   */
+  collapseToolLogs?: boolean;
+  /**
    * @deprecated `ignoredFiles` を使う。後方互換のためだけに残す:
    * `true`→`'copy'` 相当、`false`→`'none'` 相当として解釈される（`resolveIgnoredFilesMode`）。
    */
@@ -228,6 +236,7 @@ interface CodivaConfigJson {
   claudeSettingSources?: unknown;
   codexSandbox?: unknown;
   codexNetworkAccess?: unknown;
+  collapseToolLogs?: unknown;
   copyIgnored?: unknown;
 }
 
@@ -435,6 +444,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const codexNetworkAccess = toBoolean(raw.codexNetworkAccess);
   if (codexNetworkAccess !== undefined) {
     config.codexNetworkAccess = codexNetworkAccess;
+  }
+  const collapseToolLogs = toBoolean(raw.collapseToolLogs);
+  if (collapseToolLogs !== undefined) {
+    config.collapseToolLogs = collapseToolLogs;
   }
   const copyIgnored = toBoolean(raw.copyIgnored);
   if (copyIgnored !== undefined) {

@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentToolKind, TodoOp } from './agent-events';
+import type { AgentEvent, TodoOp } from './agent-events';
 import { GROK_RETRY_PREFIX } from './grok-errors';
 import type {
   GrokPlanEntry,
@@ -8,7 +8,7 @@ import type {
 } from './grok-events';
 import { MAX_LOG_ENTRY_CHARS } from './log-buffer';
 import { isPrCreateCommand, PR_DETECT_SCAN_CHARS } from './pr-detect';
-import type { TaskStatus } from './types';
+import type { AgentToolKind, TaskStatus } from './types';
 
 /**
  * Grok の ACP 通知（`core/grok-events.ts`）の**形**を知る唯一の場所。
@@ -72,6 +72,13 @@ function toolKindOf(info: GrokToolInfo | undefined): AgentToolKind {
       return 'edit';
     case 'ask_user':
       return 'question';
+    // 以下は ACP の `ToolKind` に定義されている値。フィクスチャでは未観測なので
+    // 「来たら正しく分類する」ぶんだけ書いてある（来なければ default の `other`）。
+    case 'read':
+      return 'read';
+    case 'search':
+    case 'fetch':
+      return 'search';
     default:
       return info?.name === 'todo_write' ? 'todo' : 'other';
   }

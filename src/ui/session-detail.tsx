@@ -14,9 +14,9 @@ import {
   isInterruptible,
   isResumable,
   isTerminalStatus,
+  type LogCollapse,
   logViewportRows,
   type ModelOption,
-  matchCommands,
   paletteMaxRows,
   parseSgrMouse,
   resumeInstruction,
@@ -25,6 +25,8 @@ import {
   subagentRow,
   subagentRowHit,
   subagentRowLabel,
+  type ToolRun,
+  toolRunLabel,
 } from '@/core';
 import { AgentSelect } from './agent-select';
 import { CommandPalette } from './command-palette';
@@ -105,11 +107,27 @@ export const SessionDetail: FC<{
    */
   onOpenUrl?: (url: string) => void;
   /**
+   * 連続したツール実行を既定で畳むか（`~/.codiva/config.json` の `collapseToolLogs`。
+   * 未指定は畳む）。ここが決めるのは**開いた直後の状態**だけで、`Ctrl+O` / `/tools`
+   * でいつでも一括の開閉ができる。
+   */
+  collapseTools?: boolean;
+  /**
    * サブエージェント専用のログ画面を開く（ログ下段の行をクリック / `/subagents`）。
    * 渡されなければその導線を出さない（合成ルートが View を持たない構成でも壊れない）。
    */
   onOpenSubagent?: (taskId: string) => void;
-}> = ({ manager, id, models, modelsByAgent, onBack, onCopy, onOpenUrl, onOpenSubagent }) => {
+}> = ({
+  manager,
+  id,
+  models,
+  modelsByAgent,
+  onBack,
+  onCopy,
+  onOpenUrl,
+  collapseTools,
+  onOpenSubagent,
+}) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -120,6 +138,13 @@ export const SessionDetail: FC<{
   const composer = useComposer({ onCopy });
   const { buffer, bufferRef } = composer;
   const composerWidth = composer.wrapWidth;
+  /**
+   * 連続したツール実行を畳むか（`Ctrl+O` / `/tools` で一括切替）。false のあいだは
+   * まとめ行そのものを出さない = 従来どおりの全部入りのログになる。
+   */
+  const [grouping, setGrouping] = useState(collapseTools !== false);
+  /** 個別に開いてあるまとまりの key（`ToolRun.key` = 先頭エントリの seq）。 */
+  const [openRuns, setOpenRuns] = useState<ReadonlySet<number>>(() => new Set());
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
   // 許可/質問ダイアログが出ているあいだのゾーン（`pending` のときだけ意味を持つ）。
   // 既定は `dialog`: 回答は待たせている用事なので、そこへ辿り着くのに Tab を踏ませない
@@ -188,149 +213,6 @@ export const SessionDetail: FC<{
     (agentId: AgentId) => m.agent.logDivider(agentNames.get(agentId) ?? agentId),
     [m, agentNames],
   );
-  /**
-   * 会話ログのビューポート 1 面ぶん（実測・スクロール・範囲選択・URL クリック・端の
-   * 自動スクロール）。サブエージェント詳細と**同じ** `useLogPane` を通すので、
-   * 「触っていない行がコピーされる」類の不具合が片方の画面だけで再発しない。
-   *
-   * 折返し幅はこのビューの横パディング（左右 1 セルずつ）を引いた値。ストリーミング中の
-   * 本文も同じ幅で折り返す（食い違うと確定した瞬間に行の割れ方が変わって画面が組み変わる）。
-   */
-  const pane = useLogPane({
-    entries: session?.messages,
-    streamingText: session?.streamingText,
-    width: Math.max(1, columns - 2),
-    fallbackRows: logViewportRows,
-    divider: agentDivider,
-    onCopy,
-    onOpenUrl,
-  });
-
-  // ── サブエージェント（ログ下段の 1 行 + 複数件の選択ダイアログ）─────────────
-  const subagents = session?.subagents;
-  // 走っているサブエージェントがある間だけ 1 秒ごとに再描画する（経過時間の表示）。
-  // provider が所要時間を報告していれば `subagentElapsedMs` がそれを使うので、
-  // 決着後は時計が止まる = 無条件の 1s タイマーを詳細ビューに持ち込まない。
-  const ticking = (subagents ?? []).some((run) => run.status === 'running');
-  const now = useClock(1000, ticking);
-  const subagentState = useMemo(() => subagentRow(subagents), [subagents]);
-  // ラベルは**表示幅に切って**受け取る（毎秒変わる文字列を切らずに `<Text>` へ渡すと
-  // Ink の上限なしキャッシュに積まれ続ける）。`width` はクリック当たり判定の右端。
-  const subagentLabel = useMemo(
-    () =>
-      subagentRowLabel(
-        subagentState,
-        m,
-        `${glyph.bullet} `,
-        Math.max(1, columns - 2),
-        ticking ? now : undefined,
-      ),
-    [subagentState, m, columns, ticking, now],
-  );
-  const subagentRef = useRef<DOMElement>(null);
-  const subagentBox = useAbsolutePosition(subagentRef);
-  const subagentHeight = useBoxHeight(subagentRef);
-  /**
-   * press した位置にあったサブエージェントの task id（`'pick'` = 複数件なので
-   * ダイアログを出す）。**離すまで開かない**ための保留で、drag が来たら取り消す
-   * （行の上からドラッグを始めただけで画面が変わらないように。URL と完全同型）。
-   */
-  const pendingSubagentRef = useRef<string | undefined>(undefined);
-  /**
-   * 複数件の選択ダイアログ。カーソルは index ではなく **task id** で持つ —
-   * 開いている最中に新しいサブエージェントが append されても、指している対象が
-   * 別物に化けない。
-   */
-  const [pick, setPick] = useState<string | undefined>(undefined);
-  const pickItems = useMemo(
-    () => subagentChoices(subagents ?? [], m, ticking ? now : undefined),
-    [subagents, m, ticking, now],
-  );
-  const pickIndex = Math.max(
-    0,
-    (subagents ?? []).findIndex((run) => run.id === pick),
-  );
-  const pickRef = useRef<DOMElement>(null);
-  const pickBox = useAbsolutePosition(pickRef);
-  const pickHeight = useBoxHeight(pickRef);
-  const picking = pick !== undefined;
-  // 折返し幅と表示ウィンドウは**ここで 1 度だけ**組み、描画（`SubagentPicker`）と
-  // クリックの逆算の両方に同じものを渡す。別々に計算すると押した行と当たった
-  // 選択肢がズレる（許可ダイアログと同じ約束）。
-  const pickWidth = dialogContentWidth(columns);
-  const pickHeights = useMemo(() => choiceRowHeights(pickItems, pickWidth), [pickItems, pickWidth]);
-  const pickView = useMemo(
-    // 見出し + ヒントの 2 行を残して選択肢に割り当てる。
-    () => choiceView(pickHeights, pickIndex, Math.max(1, dialogMaxRows(rows, 'detail') - 2)),
-    [pickHeights, pickIndex, rows],
-  );
-
-  /**
-   * サブエージェント行が**実際に描かれているか**。あの 1 行は認証・再開の案内と
-   * 同居していて、そちらが優先されると出ない（描いていない行のクリックを拾わない）。
-   */
-  // 関数にしてあるのは、`resumable` の宣言がこれより下にあるため（呼ばれるのは
-  // マウスイベントの時点なので初期化済み）。
-  const showsSubagentRow = (): boolean =>
-    status !== 'needs_login' && !resumable && subagentLabel !== undefined;
-
-  /**
-   * その 1 行に当たったか。実測できていない・行が出ていないあいだは判定しない
-   * （黙って別の場所を押したことにするより、押せないほうがよい）。
-   */
-  const subagentHit = (x: number, y: number): boolean =>
-    showsSubagentRow() &&
-    subagentBox !== undefined &&
-    subagentHeight !== undefined &&
-    subagentLabel !== undefined &&
-    subagentRowHit({ x, y }, subagentBox, subagentHeight, subagentLabel.width);
-
-  /**
-   * 選択ダイアログのクリック位置 → 選択肢 index。判定は**描いたウィンドウ**で行い、
-   * 上端のインジケータ 1 行ぶんずらす。縦に潰れている（実測 < 描いた行数）あいだは
-   * 当たり判定そのものをやめる。
-   */
-  const pickRowAt = (y: number): number | undefined => {
-    if (!pickBox) {
-      return undefined;
-    }
-    const visible = pickHeights.slice(pickView.start, pickView.end);
-    const drawn =
-      visible.reduce((sum, height) => sum + height, 0) +
-      (pickView.showAbove ? 1 : 0) +
-      (pickView.showBelow ? 1 : 0);
-    if (pickHeight !== undefined && pickHeight < drawn) {
-      return undefined;
-    }
-    const hit = choiceIndexAtRow(visible, y - pickBox.top - (pickView.showAbove ? 1 : 0));
-    return hit === undefined ? undefined : pickView.start + hit;
-  };
-
-  /** サブエージェントを開く（1 件なら直行、複数件なら選択ダイアログ）。 */
-  const openSubagents = () => {
-    const list = subagents ?? [];
-    if (!onOpenSubagent || list.length === 0) {
-      // 0 件は一過性の通知で伝える（黙って無反応にしない）。
-      recovery.setNotice(m.subagent.empty);
-      return;
-    }
-    const only = list.length === 1 ? list[0] : undefined;
-    if (only) {
-      onOpenSubagent(only.id);
-      return;
-    }
-    // 1 択のダイアログは出さない。複数件は代表を初期カーソルにして選ばせる。
-    setPick(subagentState.kind === 'idle' ? list.at(-1)?.id : subagentState.run.id);
-  };
-
-  // 対象が全部消えたらダイアログを閉じる（宙に浮いたカーソルを残さない）。
-  // 許可/質問が来たときも畳む — 回答は待たせている用事なので優先する（一覧・詳細が
-  // ゾーンを既定へ戻すのと同じ方針）。
-  useEffect(() => {
-    if (pick !== undefined && ((subagents ?? []).length === 0 || pending)) {
-      setPick(undefined);
-    }
-  }, [pick, subagents, pending]);
   // 進行中のターンがあるか（= Ctrl+C で中断できるか）。許可/質問待ちも対象
   // （ターンは生きていて回答待ちで止まっているだけ）。中断を持たない provider では
   // そもそも出さない。
@@ -428,6 +310,11 @@ export const SessionDetail: FC<{
       },
       // `/diff` toggles the changes summary (hidden by default for log room).
       diff: () => setShowChanges((v) => !v),
+      // `/tools` は Ctrl+O と同じ（キーを知らなくてもパレットから辿れるように置く）。
+      tools: () => toggleTools(),
+      // `/subagents` はサブエージェントの専用ログへ入る。**マウスを無効にしている
+      // 環境ではログ下段の行をクリックできない**ので、これがキーボードからの唯一の経路。
+      subagents: () => openSubagents(),
       // `/sync` merges the base branch into THIS session's worktree; a conflict is
       // left in place and handed to this very session to resolve.
       sync: () => {
@@ -445,21 +332,194 @@ export const SessionDetail: FC<{
         recovery.run(id, 'ci');
         pane.toBottom();
       },
-      // `/subagents` はサブエージェントの専用ログへ入る。**マウスを無効にしている
-      // 環境ではログ下段の行をクリックできない**ので、これがキーボードからの唯一の経路。
-      subagents: openSubagents,
       // `/remove` はこのセッションを記録ごと削除する（操作パネルの `x` と同じ確認へ）。
       remove: () => setConfirm('remove'),
       // `/recover` と `/clear` は複数セッションが対象なので詳細ビューには置かない
       // （ハンドラの無いコマンドは昇格しないので、打っても通常の指示として流れる）。
     },
     setActionError,
-    m.command.unknown,
   );
   // 詳細ビューの `/exit` は一覧へ戻る動作なので、パレット/ヘルプの説明も差し替える
   // （既定は「codiva を終了」= 一覧ビューの意味）。
   const commandDescribes = useMemo(() => ({ exit: m.command.exitDetail }), [m.command.exitDetail]);
 
+  // まとめ行の文言。グリフ（▸/▾）は theme、語はカタログ、並べ方は純粋な
+  // `toolRunLabel` が持つ。`logLines` のメモ化の依存に入るので useCallback で固定する。
+  const runLabel = useCallback(
+    (run: ToolRun, expanded: boolean) =>
+      `${expanded ? glyph.expanded : glyph.collapsed} ${toolRunLabel(run.counts, m)}`,
+    [m],
+  );
+  const collapse = useMemo<LogCollapse | undefined>(
+    () => (grouping ? { label: runLabel, isExpanded: (key) => openRuns.has(key) } : undefined),
+    [grouping, runLabel, openRuns],
+  );
+  /**
+   * 会話ログのビューポート 1 面ぶん（実測・スクロール・範囲選択・URL クリック・
+   * まとめ行の開閉・端の自動スクロール）。サブエージェント詳細と**同じ** `useLogPane` を
+   * 通すので、「触っていない行がコピーされる」類の不具合が片方の画面だけで再発しない。
+   *
+   * 折返し幅はこのビューの横パディング（左右 1 セルずつ）を引いた値。ストリーミング中の
+   * 本文も同じ幅で折り返す（食い違うと確定した瞬間に行の割れ方が変わって画面が組み変わる）。
+   *
+   * 畳み込みの**state はここ（view）が持ち**、機械（press で保留 → drag で取消 →
+   * release で開閉、アンカーの固定）は pane が持つ。
+   */
+  const pane = useLogPane({
+    entries: session?.messages,
+    streamingText: session?.streamingText,
+    width: Math.max(1, columns - 2),
+    fallbackRows: logViewportRows,
+    divider: agentDivider,
+    collapse,
+    onToggleGroup: (key) =>
+      setOpenRuns((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(key)) {
+          next.add(key);
+        }
+        return next;
+      }),
+    onCopy,
+    onOpenUrl,
+  });
+
+  /**
+   * ツール実行のまとめを一括で切り替える（`Ctrl+O` / `/tools`）。個別に開いてあった
+   * ぶんは捨てる — 「全部たたむ / 全部ひらく」の結果が押すたびに変わらないようにする。
+   */
+  const toggleTools = () => {
+    pane.beforeToggle();
+    setGrouping((on) => !on);
+    setOpenRuns(new Set());
+  };
+
+  // ── サブエージェント（ログ下段の 1 行 + 複数件の選択ダイアログ）─────────────
+  const subagents = session?.subagents;
+  // 走っているサブエージェントがある間だけ 1 秒ごとに再描画する（経過時間の表示）。
+  // provider が所要時間を報告していれば `subagentElapsedMs` がそれを使うので、
+  // 決着後は時計が止まる = 無条件の 1s タイマーを詳細ビューに持ち込まない。
+  const ticking = (subagents ?? []).some((run) => run.status === 'running');
+  const now = useClock(1000, ticking);
+  const subagentState = useMemo(() => subagentRow(subagents), [subagents]);
+  // ラベルは**表示幅に切って**受け取る（毎秒変わる文字列を切らずに `<Text>` へ渡すと
+  // Ink の上限なしキャッシュに積まれ続ける）。`width` はクリック当たり判定の右端。
+  const subagentLabel = useMemo(
+    () =>
+      subagentRowLabel(
+        subagentState,
+        m,
+        `${glyph.bullet} `,
+        Math.max(1, columns - 2),
+        ticking ? now : undefined,
+      ),
+    [subagentState, m, columns, ticking, now],
+  );
+  const subagentRef = useRef<DOMElement>(null);
+  const subagentBox = useAbsolutePosition(subagentRef);
+  const subagentHeight = useBoxHeight(subagentRef);
+  /**
+   * press した位置にあったサブエージェントの task id（`'pick'` = 複数件なので
+   * ダイアログを出す）。**離すまで開かない**ための保留で、drag が来たら取り消す
+   * （行の上からドラッグを始めただけで画面が変わらないように。URL と完全同型）。
+   */
+  const pendingSubagentRef = useRef<string | undefined>(undefined);
+  /**
+   * 複数件の選択ダイアログ。カーソルは index ではなく **task id** で持つ —
+   * 開いている最中に新しいサブエージェントが append されても、指している対象が
+   * 別物に化けない。
+   */
+  const [pick, setPick] = useState<string | undefined>(undefined);
+  const pickItems = useMemo(
+    () => subagentChoices(subagents ?? [], m, ticking ? now : undefined),
+    [subagents, m, ticking, now],
+  );
+  const pickIndex = Math.max(
+    0,
+    (subagents ?? []).findIndex((run) => run.id === pick),
+  );
+  const pickRef = useRef<DOMElement>(null);
+  const pickBox = useAbsolutePosition(pickRef);
+  const pickHeight = useBoxHeight(pickRef);
+  const picking = pick !== undefined;
+  // 折返し幅と表示ウィンドウは**ここで 1 度だけ**組み、描画（`SubagentPicker`）と
+  // クリックの逆算の両方に同じものを渡す。別々に計算すると押した行と当たった
+  // 選択肢がズレる（許可ダイアログと同じ約束）。
+  const pickWidth = dialogContentWidth(columns);
+  const pickHeights = useMemo(() => choiceRowHeights(pickItems, pickWidth), [pickItems, pickWidth]);
+  const pickView = useMemo(
+    // 見出し + ヒントの 2 行を残して選択肢に割り当てる。
+    () => choiceView(pickHeights, pickIndex, Math.max(1, dialogMaxRows(rows, 'detail') - 2)),
+    [pickHeights, pickIndex, rows],
+  );
+
+  /**
+   * サブエージェント行が**実際に描かれているか**。あの 1 行は認証・再開の案内と
+   * 同居していて、そちらが優先されると出ない（描いていない行のクリックを拾わない）。
+   *
+   * 関数にしてあるのは `resumable` の宣言がこれより下にあるため（呼ばれるのは
+   * マウスイベントの時点なので初期化済み）。
+   */
+  const showsSubagentRow = (): boolean =>
+    status !== 'needs_login' && !resumable && subagentLabel !== undefined;
+
+  /**
+   * その 1 行に当たったか。実測できていない・行が出ていないあいだは判定しない
+   * （黙って別の場所を押したことにするより、押せないほうがよい）。
+   */
+  const subagentHit = (x: number, y: number): boolean =>
+    showsSubagentRow() &&
+    subagentBox !== undefined &&
+    subagentHeight !== undefined &&
+    subagentLabel !== undefined &&
+    subagentRowHit({ x, y }, subagentBox, subagentHeight, subagentLabel.width);
+
+  /**
+   * 選択ダイアログのクリック位置 → 選択肢 index。判定は**描いたウィンドウ**で行い、
+   * 上端のインジケータ 1 行ぶんずらす。縦に潰れている（実測 < 描いた行数）あいだは
+   * 当たり判定そのものをやめる。
+   */
+  const pickRowAt = (y: number): number | undefined => {
+    if (!pickBox) {
+      return undefined;
+    }
+    const visible = pickHeights.slice(pickView.start, pickView.end);
+    const drawn =
+      visible.reduce((sum, height) => sum + height, 0) +
+      (pickView.showAbove ? 1 : 0) +
+      (pickView.showBelow ? 1 : 0);
+    if (pickHeight !== undefined && pickHeight < drawn) {
+      return undefined;
+    }
+    const hit = choiceIndexAtRow(visible, y - pickBox.top - (pickView.showAbove ? 1 : 0));
+    return hit === undefined ? undefined : pickView.start + hit;
+  };
+
+  /** サブエージェントを開く（1 件なら直行、複数件なら選択ダイアログ）。 */
+  const openSubagents = () => {
+    const list = subagents ?? [];
+    if (!onOpenSubagent || list.length === 0) {
+      // 0 件は一過性の通知で伝える（黙って無反応にしない）。
+      recovery.setNotice(m.subagent.empty);
+      return;
+    }
+    const only = list.length === 1 ? list[0] : undefined;
+    if (only) {
+      onOpenSubagent(only.id);
+      return;
+    }
+    // 1 択のダイアログは出さない。複数件は代表を初期カーソルにして選ばせる。
+    setPick(subagentState.kind === 'idle' ? list.at(-1)?.id : subagentState.run.id);
+  };
+
+  // 対象が全部消えたらダイアログを閉じる（宙に浮いたカーソルを残さない）。
+  // 許可/質問が来たときも畳む — 回答は待たせている用事なので優先する（一覧・詳細が
+  // ゾーンを既定へ戻すのと同じ方針）。
+  useEffect(() => {
+    if (pick !== undefined && ((subagents ?? []).length === 0 || pending)) {
+      setPick(undefined);
+    }
+  }, [pick, subagents, pending]);
   useInput((rawInput, rawKey) => {
     // SGR マウスレポートはキー入力より先に解釈する（レポート断片が生テキストとして
     // editText に流れ込み「スクロールしようとすると文字が入力される」のを防ぐ）。
@@ -487,8 +547,8 @@ export const SessionDetail: FC<{
         return;
       }
       // 押下の裁定順は**この view が持つ**（コンポーザ → サブエージェント行 → ログ）。
-      // ログ側の機械（選択・URL の保留・端の自動スクロール）は `useLogPane` の中で、
-      // サブエージェント詳細とまったく同じものが動く。
+      // ログ側の機械（選択・URL とまとめ行の保留・端の自動スクロール）は `useLogPane`
+      // の中で、サブエージェント詳細とまったく同じものが動く。
       if (mouse.kind === 'wheel') {
         pane.handleMouse(mouse);
       } else if (mouse.kind === 'press') {
@@ -620,9 +680,17 @@ export const SessionDetail: FC<{
       cancel();
       return;
     }
+    // Ctrl+O = ツール実行のまとめを一括で開閉（Claude Code と同じキー）。`Ctrl+C` と
+    // 同じくフォーカス横断の chord にしてある — 許可待ちでログを読み返している最中こそ
+    // 「実際に何をしたのか」を開きたいので、ダイアログのゾーンでも効かせる
+    // （ダイアログ側の useInput は ctrl chord を無視するので競合しない）。
+    if (key.ctrl && (input === 'o' || input === 'O')) {
+      toggleTools();
+      return;
+    }
     // サブエージェントの選択ダイアログ。**`pending` ガードより前**に置き、印字キーも
     // 含めて**全部飲む**（背後のコンポーザに文字が入らない = キーを持つモーダルを
-    // 増やさずに同じ効果を得る）。Esc は上で、Ctrl+C はさらに前で処理済み。
+    // 増やさずに同じ効果を得る）。Esc は上で、Ctrl+C / Ctrl+O はさらに前で処理済み。
     if (picking) {
       const list = subagents ?? [];
       if (key.upArrow || key.downArrow) {
@@ -656,8 +724,7 @@ export const SessionDetail: FC<{
       }
       // `log` ゾーン: ログのスクロールだけを受ける（回答は Tab / クリックで戻ってから）。
       pane.handleScrollKey(key);
-      // それ以外の印字キーはここでは何もしない（コンポーザはダイアログに場所を譲っていて
-      // 出ていない）。
+      // 印字キーはここでは何もしない（コンポーザはダイアログに場所を譲っていて出ていない）。
       return;
     }
     // Log scroll (terminal scrollback is disabled under the alt screen). The
@@ -751,19 +818,13 @@ export const SessionDetail: FC<{
           : panel === 'actions'
             ? m.detail.helpActions
             : m.detail.helpInput;
-  // コマンドとして解決される入力か（`/` 付き、または詳細で使える名前と完全一致）。
-  const commandPreview = commands.preview(buffer.value);
+  // パレットに出す候補（`/` 付きなら前方一致、裸の名前は詳細で実行できるときだけ）。
+  const paletteCommands = commands.palette(buffer.value);
 
   return (
     <Box flexDirection="column" flexGrow={1} padding={1}>
       {/*
        * ヘッダは持たない（要件: セッション詳細はコンテンツ + フッタのみ）。
-       * メッセージログの末尾ビューポートが上端いっぱいまで残り高さを占める。
-       * flexGrow で残りを占め、justifyContent="flex-end" + overflowY="hidden" で
-       * 「最新行が下端、溢れた古い行は上へクリップ」にする。<Static> はスクロール
-       * バック側に書くため全画面レイアウトでは画面外に消えてしまい使えない。
-       */}
-      {/*
        * 会話ログ + その直下の状態行（**常に 1 行**）。状態行が `<LogPane>` の中に
        * あるのは、あれが「ログの高さを状態で変えない」ための予約行だから — 離すと
        * 片方の画面で条件付きに戻されうる。この行がフッタとの間の余白も兼ねるので、
@@ -801,8 +862,8 @@ export const SessionDetail: FC<{
             ログ直下の状態行と同じ理由で**常に 1 行**にする（該当なしのときも空行）。
             ここはターンが終わるたびに出入りするので、条件付きにするとログが 1 行跳ねる。 */}
         {/* サブエージェントの実行状況もこの 1 行に**同居**させる（独立した行にすると
-            `dialogMaxRows` の引き算が 1 増え、24 行の端末で質問ダイアログの選択肢が
-            窓に入らなくなる。`core/layout.ts` の `DETAIL_CHROME_ROWS`）。
+            `DETAIL_CHROME_ROWS` の引き算が 1 増え、24 行の端末で質問ダイアログの選択肢が
+            窓に入らなくなる。`core/layout.ts`）。
             優先順位: 認証 → 再開 → サブエージェント → Ctrl+C → 空行。
             Ctrl+C より優先してよいのは、あれがフォーカス横断の chord で案内が無くても
             効くのに対し、「何が走っているか」はここでしか分からないから。逆に認証・再開は
@@ -960,13 +1021,14 @@ export const SessionDetail: FC<{
           </DialogBox>
         ) : (
           <Box flexDirection="column">
-            {/* Enter の判定（`commands.preview`）と同じ条件で出す。スラッシュ無しの
-                `exit` でも確定前に何が起きるか見えるようにするため。**入力欄の計測 Box の
-                外**に置く（中に入れると実測した上端がずれてクリックが別の文字に当たる）。 */}
-            {commandPreview !== null ? (
+            {/* パレットは `commands.palette` が出す（`/` 付きは常に、裸の名前は実際に
+                実行されるときだけ）。確定前に何が起きるか見えるようにするため。
+                **入力欄の計測 Box の外**に置く（中に入れると実測した上端がずれて
+                クリックが別の文字に当たる）。 */}
+            {paletteCommands !== null ? (
               <CommandPalette
                 title={m.command.paletteTitle}
-                commands={matchCommands(commandPreview)}
+                commands={paletteCommands}
                 describeOverrides={commandDescribes}
                 maxRows={paletteMaxRows(rows, 'detail')}
               />

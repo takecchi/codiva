@@ -14,6 +14,7 @@ import {
   type AgentId,
   COMPOSER_PREFIX_CELLS,
   type CommandAction,
+  type CommandSpec,
   type DisplayLine,
   emptyBuffer,
   emptyInputHistory,
@@ -26,6 +27,7 @@ import {
   logSelectionText,
   type Messages,
   type ModelOption,
+  matchCommands,
   normalizeLogSelection,
   normalizeSelection,
   type RateLimitWindow,
@@ -36,14 +38,13 @@ import {
   recordInput,
   recoveryNotice,
   resetHistoryBrowse,
-  runCommand,
+  resolveCommand,
   type SelectionRange,
   type SessionManager,
   type SessionState,
   selectionText,
   type TextBuffer,
   type TrainingOptIn,
-  toCommandInput,
   type UpdateCheck,
   type UpdateInfo,
 } from '@/core';
@@ -555,54 +556,57 @@ export interface CommandRunner {
    */
   run: (text: string) => boolean;
   /**
-   * The same resolution without side effects, for the palette: the normalized
-   * command input (`/name ...`) or null when the text is a normal instruction.
-   * Sharing it with `run` keeps the preview honest — whatever the palette shows
-   * is exactly what Enter will do.
+   * Rows for the palette above the composer, or null when no palette is shown.
+   * An empty array is NOT null: slash-prefixed text always opens the palette, so
+   * text that matches nothing (`/v3/chats です。`) says so instead of silently
+   * looking like a command — Enter will send it to the session as an instruction.
+   * Bare names only show up when this view actually runs them, keeping that
+   * preview honest.
    */
-  preview: (value: string) => string | null;
+  palette: (value: string) => CommandSpec[] | null;
 }
 
 /**
  * Resolve a command typed in a composer and dispatch its effect. Known actions
  * run the matching handler (a view supplies only the ones it implements — e.g.
- * `/diff` is detail-only); an unknown name surfaces via `onError`. Clears the
- * error on any recognized command. Shared by the list and detail composers.
+ * `/diff` is detail-only). Clears the action error on every recognized command.
+ * Shared by the list and detail composers.
  *
- * Slash-prefixed text is always a command (an unknown name becomes an error, not
- * a prompt). A bare command name (`exit`) counts as one too, but only when this
+ * Slash-prefixed text is a command **only when the name matches a known one**;
+ * anything else falls through to the session as an instruction (`/v3/chats です。`
+ * must be sendable — refusing it with "unknown command" left no way to say it at
+ * all). A bare command name (`exit`) counts as a command too, but only when this
  * view implements it — otherwise typing `clear` in the detail view would vanish
- * with no feedback at all instead of reaching the session as an instruction.
+ * with no feedback at all instead of reaching the session.
  */
 export function useCommandRunner(
   handlers: Partial<Record<CommandAction, () => void>>,
   onError: (message: string | undefined) => void,
-  unknownLabel: (name: string) => string,
 ): CommandRunner {
-  /** Command input this view would act on, or null → normal instruction. */
-  const resolve = (text: string): string | null => {
-    const command = toCommandInput(text);
-    if (command === null || isCommandInput(text)) {
-      return command;
+  /** The command this view would act on, or null → normal instruction. */
+  const resolve = (text: string): CommandSpec | null => {
+    const command = resolveCommand(text);
+    if (command === null) {
+      return null;
     }
-    const result = runCommand(command);
     // Bare names only resolve to commands this view implements.
-    return result.kind === 'run' && handlers[result.command.action] ? command : null;
+    return isCommandInput(text) || handlers[command.action] ? command : null;
   };
   return {
-    preview: resolve,
+    palette: (value: string) => {
+      if (isCommandInput(value)) {
+        return matchCommands(value);
+      }
+      const command = resolve(value);
+      return command ? [command] : null;
+    },
     run: (text: string) => {
       const command = resolve(text);
       if (command === null) {
         return false;
       }
-      const result = runCommand(command);
-      if (result.kind === 'unknown') {
-        onError(unknownLabel(result.name));
-        return true;
-      }
       onError(undefined);
-      handlers[result.command.action]?.();
+      handlers[command.action]?.();
       return true;
     },
   };

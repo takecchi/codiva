@@ -1,11 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import {
-  type AgentEvent,
-  type AgentToolKind,
-  applyAgentEvent,
-  type SubagentMeta,
-  type TodoOp,
-} from './agent-events';
+import { type AgentEvent, applyAgentEvent, type SubagentMeta, type TodoOp } from './agent-events';
 import {
   isAuthError,
   isAuthErrorKind,
@@ -21,6 +15,7 @@ import { USER_INTERRUPT_DETAIL } from './status-reducer';
 import type {
   AgentId,
   AgentStopCause,
+  AgentToolKind,
   SessionState,
   SubagentOutcome,
   SubagentUsage,
@@ -120,9 +115,16 @@ export function summarizeToolUse(name: string, input: Record<string, unknown>): 
   switch (name) {
     case 'Write':
     case 'Edit':
-      return `${name} ${inputText(input.file_path ?? input.path)}`.trim();
+    // 読み込みも「どのファイルか」まで出す。ツール名だけだと連続した `Read` が
+    // 見分けられず、畳んだ実行を展開しても中身が分からない。
+    case 'Read':
+    case 'NotebookEdit':
+      return `${name} ${inputText(input.file_path ?? input.path ?? input.notebook_path)}`.trim();
     case 'Bash':
       return `Bash ${inputText(input.command)}`.trim();
+    case 'Glob':
+    case 'Grep':
+      return `${name} ${inputText(input.pattern)}`.trim();
     case 'TaskCreate':
       return `TaskCreate "${inputText(input.subject)}"`;
     case 'TaskUpdate':
@@ -166,13 +168,26 @@ export function toolResultSummary(content: unknown): string {
   return firstLine(asStringHead(content, TOOL_RESULT_SUMMARY_CHARS));
 }
 
-/** Claude のツール名を provider 非依存の「意味」へ写す。 */
-function toolKindOf(name: string): AgentToolKind {
+/**
+ * Claude のツール名を provider 非依存の「意味」へ写す。`transcript.ts`（復元）とも
+ * 共有する — 復元したログ行にも種類が入らないと、再起動後だけ畳めなくなる。
+ */
+export function toolKindOf(name: string): AgentToolKind {
   switch (name) {
     case 'Write':
     case 'Edit':
+    case 'NotebookEdit':
       return 'edit';
+    case 'Read':
+      return 'read';
+    case 'Glob':
+    case 'Grep':
+    case 'WebSearch':
+    case 'WebFetch':
+      return 'search';
     case 'Bash':
+    case 'BashOutput':
+    case 'KillShell':
       return 'shell';
     case 'TaskCreate':
     case 'TaskUpdate':

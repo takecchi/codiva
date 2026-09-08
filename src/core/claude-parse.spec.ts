@@ -335,7 +335,7 @@ describe('applyClaudeMessage over synthetic SDK messages', () => {
     const texts = state.messages.map((m) => m.text);
     expect(texts).toContain('Edit x.ts');
     expect(texts).toContain('Bash ls');
-    expect(texts).toContain('Grep');
+    expect(texts).toContain('Grep foo');
   });
 
   it('running with empty assistant content flips status but adds no log', () => {
@@ -1138,7 +1138,9 @@ describe('summarizeToolUse', () => {
     ['Write', {}, 'Write'],
     ['TaskCreate', { subject: 'do it' }, 'TaskCreate "do it"'],
     ['TaskCreate', {}, 'TaskCreate ""'],
-    ['Grep', { pattern: 'x' }, 'Grep'],
+    ['Read', { file_path: '/tmp/c.ts' }, 'Read /tmp/c.ts'],
+    ['Grep', { pattern: 'x' }, 'Grep x'],
+    ['Glob', {}, 'Glob'],
   ])('%s → %s', (name, input, expected) => {
     expect(summarizeToolUse(name, input as Record<string, unknown>)).toBe(expected);
   });

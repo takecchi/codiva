@@ -160,6 +160,27 @@ In the session detail log, the agent's response **grows downward as it arrives**
 - **It only follows the tail while you're at the bottom.** While you're back in history via `↑`/`PgUp`/wheel, the view doesn't move a single line even as the response grows (you never get swept along mid-read). "Viewing history — N lines to latest" appears at the bottom of the screen; `↓`/`PgDn` returns to the tail and resumes following.
 - While text is still streaming it's rendered plain (no bold, no headings); it's replaced with the formatted body the moment the turn completes.
 
+### Folding tool-call lines (`Ctrl+O` / `/tools`)
+
+An agent's work log is mostly `⏺ Bash(…)` / `⎿ …` pairs, one after another, so **the actual conversation (its explanations and your instructions) drowns in tool chatter**. codiva **folds each run of consecutive tool calls into a single summary line**.
+
+```
+> Does release/stg work the same way?
+⏺ ▸ Read 3 files, ran 5 shell commands
+Yes, stg runs on the same settings.
+```
+
+- **One click opens it** (anywhere on the summary line). An open run is marked `▾` and its lines appear underneath; click again to fold it back.
+- **`Ctrl+O` folds/unfolds everything at once** (the same key as Claude Code). The **`/tools`** command in the palette does the same. Both work while a permission/question dialog is up.
+- **Work in progress is never folded.** The run at the very end of the log stays fully visible and is folded only once the next message or instruction arrives — you never lose sight of what the agent is doing right now.
+- **A run with a single tool call is not folded either.** One `Read src/core/scroll.ts` line reads fine on its own; folding it would only drop the file name.
+- Folding is display-only — nothing is lost. The summary breaks the run down by kind (reads / edits / shell commands / searches …).
+- To change the default, set `collapseToolLogs` to `false` in `~/.codiva/config.json` (or toggle it from `/config`). Even then, `Ctrl+O` folds everything whenever you want.
+
+### Spotting your own messages
+
+Your instructions in the log (the `>` lines) get a **background tint**, so when you scroll back through a long exchange you can see where you spoke without reading a word of it.
+
 ### Following subagents (`/subagents`)
 
 When the agent spawns a **subagent** (Claude Code's Task tool — delegating research or sub-tasks to a separate agent), the detail view shows one line about it below the log.
@@ -174,6 +195,7 @@ When the agent spawns a **subagent** (Claude Code's Task tool — delegating res
 - **Tools the subagent runs internally no longer mix into the parent log** — they are collected in its own log, and the parent log keeps a single line describing what was delegated.
 - Records stick around after a subagent finishes, so you can read back its result and what it did (up to 8 per session; they are dropped when codiva restarts).
 - The subagent log view has **no input field** — you cannot instruct a subagent directly. `Ctrl+C` there interrupts the *parent* session's turn.
+- The subagent log view supports the same **tool-run folding** (`Ctrl+O` / click), text selection and URL clicks as the detail view (there is one log implementation, so behaviour never diverges).
 - Only **Claude Code** reports subagents today (nothing appears with Codex / Grok).
 
 ### Interrupting work in progress (`Ctrl+C`)
@@ -401,6 +423,7 @@ The on/off settings can be toggled from the TUI (`/config` in the list view — 
   **Add `"user"` if you want your Claude Code plugins to work in codiva sessions too.** Plugin activation (`enabledPlugins`) for anything installed with `claude plugin install` is written to `~/.claude/settings.json`, so with the default, none of a plugin's skills / commands / subagents / hooks / MCP servers get loaded. The side effect is that **the rest of that layer (hooks, permissions, statusLine, …) also loads into your sessions**. That's why the default is `["project"]`: sessions run unattended in a worktree rather than in front of you, so codiva errs on the side of not silently importing your local Claude Code setup.
 - `codexSandbox`: the sandbox for Codex sessions. `"read-only"` / `"workspace-write"` (default) / `"danger-full-access"`. Because Codex can't ask for tool permission, **this is the only safety valve for Codex sessions**. The default `workspace-write` means "read anything, write only inside the session's worktree".
 - `codexNetworkAccess`: whether to allow network access when `codexSandbox` is `"workspace-write"`. Default `true`. Codex's own default is to block it, but that makes `npm install` and `gh` fail and most work never finishes, so codiva opens it (set `false` to close it).
+- `collapseToolLogs`: whether the session detail log folds runs of consecutive tool calls into a single summary line. Default `true`; set it to `false` to keep every line as before (either way, `Ctrl+O` / `/tools` toggles it on the spot).
 
 ### Shared symlinks and "detach when you need to"
 
@@ -492,6 +515,8 @@ There are three ways to clean up sessions still in the list (all of them ask `y`
 All three only delete the local worktree and branch — **pushed remote branches and PRs on GitHub are untouched** (close the PR on GitHub if you want that). Deletion is forced even with uncommitted changes present, so commit anything you want to keep first.
 
 Even if you forget the slash, **input that exactly matches a command name available on that screen** (`exit`, `help`, …) runs as that command. When it will, the command palette shows it, so you know what `Enter` is about to do. Anything with trailing text (`fix how exit behaves`) and aliases like `?` or `changes` are treated as ordinary instructions, so an instruction never turns into a command by accident.
+
+The other way round, **text that starts with `/` but matches no command name is sent as an ordinary instruction** (`/v3/chats please`, `put it in /tmp/foo`, …). The palette says "No matching command", so you can see before pressing `Enter` that it will go to the session rather than run a command. The flip side is that a mistyped command (`/modle`) is sent to the session too.
 
 **`/exit` means different things on different screens.** In the list view it quits codiva; in the session detail view it **closes the detail view and returns to the list** (same as `Esc`), so you can't accidentally kill the app by typing `/exit` while reading a session.
 

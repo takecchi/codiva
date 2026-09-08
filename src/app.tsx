@@ -188,6 +188,9 @@ export const App: FC<{
             onCopy={onCopy}
             onOpenUrl={onOpenUrl}
             onOpenSubagent={(taskId) => setView({ mode: 'subagent', id: view.id, taskId })}
+            // `/config` の変更がその場で効く唯一の項目（他は起動時に焼き込まれる）。
+            // 詳細ビューを開き直せば新しい既定で始まる。
+            collapseTools={config.collapseToolLogs !== false}
           />
         ) : (
           <SessionList
