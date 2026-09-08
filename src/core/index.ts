@@ -69,6 +69,7 @@ export * from './session-store';
 export * from './slug';
 export * from './status-meta';
 export * from './status-reducer';
+export * from './subagent-row';
 export * from './subagents';
 export * from './system-prompt';
 export * from './text-buffer';

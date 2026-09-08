@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
+import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { render as inkRender } from 'ink';
 import type { ReactElement } from 'react';
+import { AsyncQueue } from '@/core/async-queue';
+import type { QueryFn } from '@/core/claude-adapter';
 import { SessionManager } from '@/core/session-manager';
 import type { SessionHandle, WorktreeService } from '@/core/session-ports';
 import { initialState } from '@/core/status-reducer';
@@ -201,4 +204,36 @@ export function renderFullscreen(element: ReactElement, rows = 20, columns = 80)
     debug: true,
   });
   return { app, stdin, lastFrame: () => stdout.frames.at(-1) ?? '' };
+}
+
+/** Cast a hand-built object to `SDKMessage` (fixtures/synthetic stream messages). */
+export function asMsg(m: unknown): SDKMessage {
+  return m as SDKMessage;
+}
+
+/**
+ * 実 `Session` を回す manager と、そこへ流し込む SDK メッセージのキュー。
+ *
+ * `queryFn` はキューを yield するだけの generator で、テストは `out.push(...)` で
+ * ストリームを駆動する（ネットワークにも実 `claude` にも依存しない）。`interrupt` は
+ * 何もしない — 中断は状態側で先に確定するので、応答を待つ必要がない。
+ */
+export function drivenManager(extra?: Partial<WorktreeService>): {
+  manager: SessionManager;
+  out: AsyncQueue<SDKMessage>;
+} {
+  const out = new AsyncQueue<SDKMessage>();
+  const queryFn = (() => {
+    const gen = (async function* () {
+      yield* out;
+    })() as unknown as Query & { interrupt: () => Promise<void> };
+    gen.interrupt = async () => {};
+    return gen;
+  }) as unknown as QueryFn;
+  const manager = new SessionManager({
+    worktrees: { ...fakeWorktrees, ...extra },
+    queryFn,
+    now: () => 0,
+  });
+  return { manager, out };
 }

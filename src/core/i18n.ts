@@ -498,6 +498,47 @@ export interface Messages {
     recover: string;
     /** /config の説明 */
     config: string;
+    /** /subagents の説明 */
+    subagents: string;
+  };
+  /**
+   * サブエージェント（親のツール実行として走る別のエージェント）の実行状況。
+   * 詳細ビューのログ下段の 1 行・選択ダイアログ・専用ログ画面で使う。
+   *
+   * 経過時間・種別（`subagent_type`）・直近のツール名・タスク id は**データ**なので
+   * ここには置かない（`/model` のモデル名と同じ扱い）。
+   */
+  subagent: {
+    /** ログ下段の 1 行（1 件）。name は種別か説明 */
+    row: (name: string) => string;
+    /** ログ下段の 1 行（複数件を代表 + 残り件数に畳む） */
+    rowMany: (name: string, others: number) => string;
+    /** 状態ラベル: 走っている */
+    statusRunning: string;
+    /** 状態ラベル: 正常に終わった */
+    statusDone: string;
+    /** 状態ラベル: 失敗して終わった */
+    statusFailed: string;
+    /** 状態ラベル: 終わったが結果が分からない（中断・未知の status） */
+    statusStopped: string;
+    /** 複数件あるときの選択ダイアログの見出し */
+    pickerTitle: string;
+    /** 同ダイアログの操作ヒント */
+    pickerHelp: string;
+    /**
+     * 専用ログ画面のヘッダ。**ログ下段の 1 行（{@link row}）とは別の文言にする** —
+     * 同じ文字列だと「行が出ているだけ」と「画面が開いた」をテストでも目でも
+     * 区別できない。
+     */
+    title: (name: string) => string;
+    /** 専用ログ画面のフッタヒント */
+    help: string;
+    /** 対象の記録が残っていない（復元セッション・上限で落ちた） */
+    gone: string;
+    /** /subagents を打ったが 1 件も走っていない */
+    empty: string;
+    /** 専用ログがまだ 1 行も無い */
+    emptyLog: string;
   };
   /**
    * 設定ダイアログ（config-select.tsx。/config で開く）。項目のラベルと 1 行説明は
@@ -829,6 +870,22 @@ const ja: Messages = {
     fixCi: '失敗した CI をセッションに修正させる',
     recover: 'PR が詰まっているセッションをまとめて立て直す',
     config: '設定（ON/OFF）を変更する',
+    subagents: 'サブエージェントの実行状況を見る',
+  },
+  subagent: {
+    row: (name) => `サブエージェント: ${name}`,
+    rowMany: (name, others) => `サブエージェント: ${name} 他 ${others} 件`,
+    statusRunning: '実行中',
+    statusDone: '完了',
+    statusFailed: '失敗',
+    statusStopped: '中断',
+    pickerTitle: 'サブエージェントを選ぶ',
+    pickerHelp: '↑↓: 選択 ・ Enter: ログを開く ・ Esc: 閉じる',
+    title: (name) => `サブエージェントのログ: ${name}`,
+    help: 'Esc: セッションへ戻る ・ ↑↓/PgUp/PgDn: スクロール ・ Ctrl+C: 中断',
+    gone: 'このサブエージェントの記録は残っていません',
+    empty: 'このセッションではまだサブエージェントは実行されていません',
+    emptyLog: '（このサブエージェントのログはまだありません）',
   },
   config: {
     title: '設定',
@@ -1129,6 +1186,22 @@ const en: Messages = {
     fixCi: 'Ask the session to fix its failing CI checks',
     recover: 'Recover every session whose pull request is stuck',
     config: 'Change the on/off settings',
+    subagents: 'Inspect the subagents this session ran',
+  },
+  subagent: {
+    row: (name) => `Subagent: ${name}`,
+    rowMany: (name, others) => `Subagent: ${name} +${others} more`,
+    statusRunning: 'running',
+    statusDone: 'done',
+    statusFailed: 'failed',
+    statusStopped: 'stopped',
+    pickerTitle: 'Pick a subagent',
+    pickerHelp: '↑↓: move ・ Enter: open the log ・ Esc: close',
+    title: (name) => `Subagent log: ${name}`,
+    help: 'Esc: back to the session ・ ↑↓/PgUp/PgDn: scroll ・ Ctrl+C: interrupt',
+    gone: "This subagent's log is no longer available",
+    empty: 'No subagents have run in this session yet',
+    emptyLog: '(no log lines yet)',
   },
   config: {
     title: 'Settings',

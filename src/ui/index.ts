@@ -17,5 +17,7 @@ export * from './repo-prompt-editor';
 export * from './session-detail';
 export * from './session-list';
 export * from './status-footer';
+export * from './subagent-detail';
+export * from './subagent-picker';
 export * from './theme';
 export * from './update-dialog';

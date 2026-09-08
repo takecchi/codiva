@@ -308,13 +308,24 @@ export function useBranch(
   return branch;
 }
 
-/** A clock that ticks every `ms` so elapsed-time displays stay current. */
-export function useClock(ms = 1000): number {
+/**
+ * A clock that ticks every `ms` so elapsed-time displays stay current.
+ *
+ * `enabled: false` のあいだはタイマーを張らない（`useBranch` と同じ形）。**時間依存の
+ * 表示が実際に動いている画面でだけ**再描画したいため — 詳細ビューに無条件の 1 秒
+ * タイマーを持ち込むと、何も動いていないセッションを開いているだけでログ全体の
+ * 再描画が毎秒走る。
+ */
+export function useClock(ms = 1000, enabled = true): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
     const timer = setInterval(() => setNow(Date.now()), ms);
+    timer.unref?.();
     return () => clearInterval(timer);
-  }, [ms]);
+  }, [ms, enabled]);
   return now;
 }
 

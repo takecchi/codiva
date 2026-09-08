@@ -1,11 +1,15 @@
-import { Box, Text, useInput, useWindowSize } from 'ink';
-import { type FC, useCallback, useEffect, useMemo, useState } from 'react';
+import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
+import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type AgentId,
   agentLabelOf,
   COMMANDS,
+  choiceIndexAtRow,
+  choiceRowHeights,
+  choiceView,
   composerRowCount,
   type DiffStat,
+  dialogContentWidth,
   dialogMaxRows,
   isInterruptible,
   isResumable,
@@ -17,6 +21,10 @@ import {
   parseSgrMouse,
   resumeInstruction,
   type SessionManager,
+  subagentChoices,
+  subagentRow,
+  subagentRowHit,
+  subagentRowLabel,
 } from '@/core';
 import { AgentSelect } from './agent-select';
 import { CommandPalette } from './command-palette';
@@ -24,7 +32,10 @@ import { Composer, useComposer } from './composer';
 import { ConfirmPrompt } from './confirm-prompt';
 import { DialogBox } from './dialog-box';
 import {
+  useAbsolutePosition,
   useAgentAvailability,
+  useBoxHeight,
+  useClock,
   useCommandRunner,
   useLifecycleAction,
   useRecovery,
@@ -40,7 +51,8 @@ import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PrSummary } from './pr-cell';
 import { StatusFooter } from './status-footer';
-import { statusColor, theme } from './theme';
+import { SubagentPicker } from './subagent-picker';
+import { glyph, statusColor, theme } from './theme';
 
 /**
  * 許可/質問ダイアログが出ているあいだのフォーカスゾーン（Tab で往復）。
@@ -92,7 +104,12 @@ export const SessionDetail: FC<{
    * （OSC 8 は対応端末向けの上乗せ。`ui/log-line.tsx`）。
    */
   onOpenUrl?: (url: string) => void;
-}> = ({ manager, id, models, modelsByAgent, onBack, onCopy, onOpenUrl }) => {
+  /**
+   * サブエージェント専用のログ画面を開く（ログ下段の行をクリック / `/subagents`）。
+   * 渡されなければその導線を出さない（合成ルートが View を持たない構成でも壊れない）。
+   */
+  onOpenSubagent?: (taskId: string) => void;
+}> = ({ manager, id, models, modelsByAgent, onBack, onCopy, onOpenUrl, onOpenSubagent }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -188,6 +205,132 @@ export const SessionDetail: FC<{
     onCopy,
     onOpenUrl,
   });
+
+  // ── サブエージェント（ログ下段の 1 行 + 複数件の選択ダイアログ）─────────────
+  const subagents = session?.subagents;
+  // 走っているサブエージェントがある間だけ 1 秒ごとに再描画する（経過時間の表示）。
+  // provider が所要時間を報告していれば `subagentElapsedMs` がそれを使うので、
+  // 決着後は時計が止まる = 無条件の 1s タイマーを詳細ビューに持ち込まない。
+  const ticking = (subagents ?? []).some((run) => run.status === 'running');
+  const now = useClock(1000, ticking);
+  const subagentState = useMemo(() => subagentRow(subagents), [subagents]);
+  // ラベルは**表示幅に切って**受け取る（毎秒変わる文字列を切らずに `<Text>` へ渡すと
+  // Ink の上限なしキャッシュに積まれ続ける）。`width` はクリック当たり判定の右端。
+  const subagentLabel = useMemo(
+    () =>
+      subagentRowLabel(
+        subagentState,
+        m,
+        `${glyph.bullet} `,
+        Math.max(1, columns - 2),
+        ticking ? now : undefined,
+      ),
+    [subagentState, m, columns, ticking, now],
+  );
+  const subagentRef = useRef<DOMElement>(null);
+  const subagentBox = useAbsolutePosition(subagentRef);
+  const subagentHeight = useBoxHeight(subagentRef);
+  /**
+   * press した位置にあったサブエージェントの task id（`'pick'` = 複数件なので
+   * ダイアログを出す）。**離すまで開かない**ための保留で、drag が来たら取り消す
+   * （行の上からドラッグを始めただけで画面が変わらないように。URL と完全同型）。
+   */
+  const pendingSubagentRef = useRef<string | undefined>(undefined);
+  /**
+   * 複数件の選択ダイアログ。カーソルは index ではなく **task id** で持つ —
+   * 開いている最中に新しいサブエージェントが append されても、指している対象が
+   * 別物に化けない。
+   */
+  const [pick, setPick] = useState<string | undefined>(undefined);
+  const pickItems = useMemo(
+    () => subagentChoices(subagents ?? [], m, ticking ? now : undefined),
+    [subagents, m, ticking, now],
+  );
+  const pickIndex = Math.max(
+    0,
+    (subagents ?? []).findIndex((run) => run.id === pick),
+  );
+  const pickRef = useRef<DOMElement>(null);
+  const pickBox = useAbsolutePosition(pickRef);
+  const pickHeight = useBoxHeight(pickRef);
+  const picking = pick !== undefined;
+  // 折返し幅と表示ウィンドウは**ここで 1 度だけ**組み、描画（`SubagentPicker`）と
+  // クリックの逆算の両方に同じものを渡す。別々に計算すると押した行と当たった
+  // 選択肢がズレる（許可ダイアログと同じ約束）。
+  const pickWidth = dialogContentWidth(columns);
+  const pickHeights = useMemo(() => choiceRowHeights(pickItems, pickWidth), [pickItems, pickWidth]);
+  const pickView = useMemo(
+    // 見出し + ヒントの 2 行を残して選択肢に割り当てる。
+    () => choiceView(pickHeights, pickIndex, Math.max(1, dialogMaxRows(rows, 'detail') - 2)),
+    [pickHeights, pickIndex, rows],
+  );
+
+  /**
+   * サブエージェント行が**実際に描かれているか**。あの 1 行は認証・再開の案内と
+   * 同居していて、そちらが優先されると出ない（描いていない行のクリックを拾わない）。
+   */
+  // 関数にしてあるのは、`resumable` の宣言がこれより下にあるため（呼ばれるのは
+  // マウスイベントの時点なので初期化済み）。
+  const showsSubagentRow = (): boolean =>
+    status !== 'needs_login' && !resumable && subagentLabel !== undefined;
+
+  /**
+   * その 1 行に当たったか。実測できていない・行が出ていないあいだは判定しない
+   * （黙って別の場所を押したことにするより、押せないほうがよい）。
+   */
+  const subagentHit = (x: number, y: number): boolean =>
+    showsSubagentRow() &&
+    subagentBox !== undefined &&
+    subagentHeight !== undefined &&
+    subagentLabel !== undefined &&
+    subagentRowHit({ x, y }, subagentBox, subagentHeight, subagentLabel.width);
+
+  /**
+   * 選択ダイアログのクリック位置 → 選択肢 index。判定は**描いたウィンドウ**で行い、
+   * 上端のインジケータ 1 行ぶんずらす。縦に潰れている（実測 < 描いた行数）あいだは
+   * 当たり判定そのものをやめる。
+   */
+  const pickRowAt = (y: number): number | undefined => {
+    if (!pickBox) {
+      return undefined;
+    }
+    const visible = pickHeights.slice(pickView.start, pickView.end);
+    const drawn =
+      visible.reduce((sum, height) => sum + height, 0) +
+      (pickView.showAbove ? 1 : 0) +
+      (pickView.showBelow ? 1 : 0);
+    if (pickHeight !== undefined && pickHeight < drawn) {
+      return undefined;
+    }
+    const hit = choiceIndexAtRow(visible, y - pickBox.top - (pickView.showAbove ? 1 : 0));
+    return hit === undefined ? undefined : pickView.start + hit;
+  };
+
+  /** サブエージェントを開く（1 件なら直行、複数件なら選択ダイアログ）。 */
+  const openSubagents = () => {
+    const list = subagents ?? [];
+    if (!onOpenSubagent || list.length === 0) {
+      // 0 件は一過性の通知で伝える（黙って無反応にしない）。
+      recovery.setNotice(m.subagent.empty);
+      return;
+    }
+    const only = list.length === 1 ? list[0] : undefined;
+    if (only) {
+      onOpenSubagent(only.id);
+      return;
+    }
+    // 1 択のダイアログは出さない。複数件は代表を初期カーソルにして選ばせる。
+    setPick(subagentState.kind === 'idle' ? list.at(-1)?.id : subagentState.run.id);
+  };
+
+  // 対象が全部消えたらダイアログを閉じる（宙に浮いたカーソルを残さない）。
+  // 許可/質問が来たときも畳む — 回答は待たせている用事なので優先する（一覧・詳細が
+  // ゾーンを既定へ戻すのと同じ方針）。
+  useEffect(() => {
+    if (pick !== undefined && ((subagents ?? []).length === 0 || pending)) {
+      setPick(undefined);
+    }
+  }, [pick, subagents, pending]);
   // 進行中のターンがあるか（= Ctrl+C で中断できるか）。許可/質問待ちも対象
   // （ターンは生きていて回答待ちで止まっているだけ）。中断を持たない provider では
   // そもそも出さない。
@@ -302,6 +445,9 @@ export const SessionDetail: FC<{
         recovery.run(id, 'ci');
         pane.toBottom();
       },
+      // `/subagents` はサブエージェントの専用ログへ入る。**マウスを無効にしている
+      // 環境ではログ下段の行をクリックできない**ので、これがキーボードからの唯一の経路。
+      subagents: openSubagents,
       // `/remove` はこのセッションを記録ごと削除する（操作パネルの `x` と同じ確認へ）。
       remove: () => setConfirm('remove'),
       // `/recover` と `/clear` は複数セッションが対象なので詳細ビューには置かない
@@ -334,9 +480,15 @@ export const SessionDetail: FC<{
       if (dialogActive && mouse.kind !== 'wheel') {
         return;
       }
-      // 押下の裁定順は**この view が持つ**（コンポーザが先、扱われなかったぶんだけ
-      // ログへ落とす）。ログ側の機械（選択・URL の保留・端の自動スクロール）は
-      // `useLogPane` の中で、サブエージェント詳細とまったく同じものが動く。
+      // 選択ダイアログ表示中はホイールだけ通す（スクロールは副作用が無く、ログを
+      // 読み返す手段。許可ダイアログと同じ例外）。押下は下のカーソル移動で扱う。
+      if (picking && mouse.kind === 'wheel') {
+        pane.handleMouse(mouse);
+        return;
+      }
+      // 押下の裁定順は**この view が持つ**（コンポーザ → サブエージェント行 → ログ）。
+      // ログ側の機械（選択・URL の保留・端の自動スクロール）は `useLogPane` の中で、
+      // サブエージェント詳細とまったく同じものが動く。
       if (mouse.kind === 'wheel') {
         pane.handleMouse(mouse);
       } else if (mouse.kind === 'press') {
@@ -346,17 +498,59 @@ export const SessionDetail: FC<{
         if (composer.handleMouse(mouse)) {
           pane.clearPendingLink();
           pane.clearSelection();
+        } else if (picking) {
+          // ダイアログ内の押下は選択肢のカーソル移動だけ（**決定は Enter**）。
+          // 枠の外なら閉じる。どちらでも背後のログの選択は始めない。
+          const index = pickRowAt(mouse.y);
+          const target = index === undefined ? undefined : (subagents ?? [])[index];
+          if (target) {
+            setPick(target.id);
+          } else if (pickBox && mouse.y < pickBox.top) {
+            setPick(undefined);
+          }
+        } else if (
+          mouse.button === 'left' &&
+          !pending &&
+          subagentHit(mouse.x, mouse.y) &&
+          onOpenSubagent
+        ) {
+          // **押した時点では開かない**（drag で範囲選択を始めるつもりの操作で画面が
+          // 変わらないように）。左ボタン限定 = 右クリック（端末メニュー）・中クリック
+          // （貼り付け）で遷移しない。許可/質問待ちの間も遷移しない — アンマウントすると
+          // ダイアログの内部 state（何問目か・書きかけの自由記述）が捨てられる。
+          const list = subagents ?? [];
+          pendingSubagentRef.current = list.length === 1 ? list[0]?.id : 'pick';
+          pane.clearPendingLink();
+          pane.clearSelection();
         } else {
           pane.handleMouse(mouse);
         }
       } else if (mouse.kind === 'drag') {
-        // ドラッグになった = 範囲選択なので、リンクを開く候補は取り消す。
+        // ドラッグになった = 範囲選択なので、開く候補は取り消す。
+        pendingSubagentRef.current = undefined;
+        if (picking) {
+          return;
+        }
         if (composer.handleMouse(mouse)) {
           pane.clearPendingLink();
         } else {
           pane.handleMouse(mouse);
         }
       } else if (mouse.kind === 'release') {
+        // ドラッグにならずに離した = 単なるクリック → ここで開く（URL と同型）。
+        const target = pendingSubagentRef.current;
+        pendingSubagentRef.current = undefined;
+        if (target !== undefined) {
+          if (target === 'pick') {
+            openSubagents();
+          } else if (onOpenSubagent) {
+            onOpenSubagent(target);
+          }
+          return;
+        }
+        if (picking) {
+          return;
+        }
         // 離した時点で 1 回だけコピー（ドラッグごとに送らない）。ハイライトは残す。
         // アンカーの無い側は no-op なので、両方に release を渡して構わない。
         composer.handleMouse(mouse);
@@ -387,6 +581,11 @@ export const SessionDetail: FC<{
       return;
     }
     if (key.escape) {
+      // サブエージェントの選択ダイアログが最優先の出口（開いたものから順に閉じる）。
+      if (picking) {
+        setPick(undefined);
+        return;
+      }
       if (confirm) {
         setConfirm(null);
         return;
@@ -419,6 +618,29 @@ export const SessionDetail: FC<{
     // ターンは続く）。ダイアログ側の useInput は ctrl chord を無視するので競合しない。
     if (key.ctrl && (input === 'c' || input === 'C')) {
       cancel();
+      return;
+    }
+    // サブエージェントの選択ダイアログ。**`pending` ガードより前**に置き、印字キーも
+    // 含めて**全部飲む**（背後のコンポーザに文字が入らない = キーを持つモーダルを
+    // 増やさずに同じ効果を得る）。Esc は上で、Ctrl+C はさらに前で処理済み。
+    if (picking) {
+      const list = subagents ?? [];
+      if (key.upArrow || key.downArrow) {
+        const next = Math.min(
+          Math.max(0, pickIndex + (key.upArrow ? -1 : 1)),
+          Math.max(0, list.length - 1),
+        );
+        setPick(list[next]?.id);
+        return;
+      }
+      if (key.return) {
+        const target = list[pickIndex];
+        setPick(undefined);
+        if (target && onOpenSubagent) {
+          onOpenSubagent(target.id);
+        }
+        return;
+      }
       return;
     }
     if (pending) {
@@ -578,11 +800,28 @@ export const SessionDetail: FC<{
             高さ0に潰れて消える。縮む役は flexGrow のログ領域（内部スクロールで収まる）。
             ログ直下の状態行と同じ理由で**常に 1 行**にする（該当なしのときも空行）。
             ここはターンが終わるたびに出入りするので、条件付きにするとログが 1 行跳ねる。 */}
-        <Box flexShrink={0}>
+        {/* サブエージェントの実行状況もこの 1 行に**同居**させる（独立した行にすると
+            `dialogMaxRows` の引き算が 1 増え、24 行の端末で質問ダイアログの選択肢が
+            窓に入らなくなる。`core/layout.ts` の `DETAIL_CHROME_ROWS`）。
+            優先順位: 認証 → 再開 → サブエージェント → Ctrl+C → 空行。
+            Ctrl+C より優先してよいのは、あれがフォーカス横断の chord で案内が無くても
+            効くのに対し、「何が走っているか」はここでしか分からないから。逆に認証・再開は
+            行動を促す案内なので譲る（そのときサブエージェントは走っていない）。
+            計測 Box はこの 1 行だけを包む（クリック位置の逆算の原点）。
+            押せることは下線で示す（ログ内リンクと同じアフォーダンス）。 */}
+        <Box ref={subagentRef} flexShrink={0}>
           {status === 'needs_login' ? (
             <Text color={statusColor.needsLogin}>{m.auth.hint(agentLabelOf(agent))}</Text>
           ) : resumable ? (
             <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
+          ) : subagentLabel ? (
+            <Text
+              color={statusColor.running}
+              underline={onOpenSubagent !== undefined}
+              wrap="truncate-end"
+            >
+              {subagentLabel.text}
+            </Text>
           ) : interruptible ? (
             // 中断も Ctrl+R と同じフォーカス横断の chord なので、フッタではなく独立した
             // 行で案内する（フッタヒントは入力欄/操作パネルで切り替わってしまう）。
@@ -662,6 +901,16 @@ export const SessionDetail: FC<{
               pane.toBottom();
             }}
             onCancel={() => setModelSelect(false)}
+          />
+        ) : picking ? (
+          // 入力欄の位置に出す（許可ダイアログと同じ）= ログの席を削らない。
+          // キーは view の単一ハンドラが処理する（このコンポーネントは描くだけ）。
+          <SubagentPicker
+            items={pickItems}
+            view={pickView}
+            cursor={pickIndex}
+            width={pickWidth}
+            listRef={pickRef}
           />
         ) : pending ? (
           // `log` ゾーンでも**描いたまま**にする（質問文を読みながらログを遡れるように）。
