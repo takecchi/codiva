@@ -22,6 +22,7 @@ export type CommandAction =
   | 'agent'
   | 'login'
   | 'diff'
+  | 'tools'
   | 'prompt'
   | 'remove'
   | 'clear'
@@ -56,6 +57,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   // （多肢選択の項目は載せない。設定画面に出る一覧は `core/config-items.ts`）。
   { name: 'config', aliases: ['settings'], action: 'config', describe: (m) => m.command.config },
   { name: 'diff', aliases: ['changes'], action: 'diff', describe: (m) => m.command.diff },
+  // `/tools` は会話ログの中の「ツール実行のまとめ」を一括で開閉する（Ctrl+O と同じ）。
+  // 詳細ビュー専用（ハンドラを持たないビューでは昇格しないので通常の指示として流れる）。
+  { name: 'tools', action: 'tools', describe: (m) => m.command.tools },
   { name: 'sync', action: 'sync', describe: (m) => m.command.sync },
   // `fix-ci` はハイフン入り。`parseCommand` は最初の空白までを名前として取るので
   // そのまま完全一致で引ける（別名 `fixci` はハイフンを打ち忘れたとき用）。

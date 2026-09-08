@@ -258,7 +258,7 @@ describe('parseCodexEvent unit behaviour', () => {
         type: 'item.started',
         item: { id: 'i1', type: 'web_search', query: 'ink flexbox' },
       }),
-    ).toEqual([{ kind: 'tool_use', id: 'i1', summary: 'web_search ink flexbox', tool: 'other' }]);
+    ).toEqual([{ kind: 'tool_use', id: 'i1', summary: 'web_search ink flexbox', tool: 'search' }]);
     expect(
       parseCodexEvent({
         type: 'item.started',

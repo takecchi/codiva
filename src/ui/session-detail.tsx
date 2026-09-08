@@ -14,12 +14,14 @@ import {
   isResumable,
   isTerminalStatus,
   LOG_EDGE_SCROLL_MS,
+  type LogCollapse,
   type LogEdge,
   type LogPoint,
   type LogViewport,
   logCaretAt,
   logEdgeAt,
   logEdgePoint,
+  logGroupAt,
   logLines,
   logLinkAt,
   logRowSelection,
@@ -35,6 +37,8 @@ import {
   scrollDown,
   scrollUp,
   streamLines,
+  type ToolRun,
+  toolRunLabel,
   WHEEL_SCROLL_LINES,
 } from '@/core';
 import { AgentSelect } from './agent-select';
@@ -61,7 +65,7 @@ import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PrSummary } from './pr-cell';
 import { StatusFooter } from './status-footer';
-import { statusColor, theme } from './theme';
+import { glyph, statusColor, theme } from './theme';
 
 /**
  * 許可/質問ダイアログが出ているあいだのフォーカスゾーン（Tab で往復）。
@@ -113,7 +117,13 @@ export const SessionDetail: FC<{
    * （OSC 8 は対応端末向けの上乗せ。`ui/log-line.tsx`）。
    */
   onOpenUrl?: (url: string) => void;
-}> = ({ manager, id, models, modelsByAgent, onBack, onCopy, onOpenUrl }) => {
+  /**
+   * 連続したツール実行を既定で畳むか（`~/.codiva/config.json` の `collapseToolLogs`。
+   * 未指定は畳む）。ここが決めるのは**開いた直後の状態**だけで、`Ctrl+O` / `/tools`
+   * でいつでも一括の開閉ができる。
+   */
+  collapseTools?: boolean;
+}> = ({ manager, id, models, modelsByAgent, onBack, onCopy, onOpenUrl, collapseTools }) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -135,6 +145,18 @@ export const SessionDetail: FC<{
    * するため（`bufferRef` / `anchorRef` と同じ理由）。
    */
   const pendingLinkRef = useRef<string | undefined>(undefined);
+  /**
+   * press した位置にあったツール実行まとめ行の key。URL と同じ理由で**離すまで
+   * 開閉しない**（範囲選択のつもりのドラッグでログが組み変わらないように）。
+   */
+  const pendingGroupRef = useRef<number | undefined>(undefined);
+  /**
+   * 連続したツール実行を畳むか（`Ctrl+O` / `/tools` で一括切替）。false のあいだは
+   * まとめ行そのものを出さない = 従来どおりの全部入りのログになる。
+   */
+  const [grouping, setGrouping] = useState(collapseTools !== false);
+  /** 個別に開いてあるまとまりの key（`ToolRun.key` = 先頭エントリの seq）。 */
+  const [openRuns, setOpenRuns] = useState<ReadonlySet<number>>(() => new Set());
   // ログ表示域の実測高さ。ここに描く行数の上限であり、スクロール1回の移動量の基準
   // でもある。見積り（logViewportRows）より実測を優先するのは、可視域より多く描くと
   // Yoga が溢れた行を「上でクリップ」せず「縮小」してしまい、ログの途中の行が
@@ -319,6 +341,8 @@ export const SessionDetail: FC<{
       },
       // `/diff` toggles the changes summary (hidden by default for log room).
       diff: () => setShowChanges((v) => !v),
+      // `/tools` は Ctrl+O と同じ（キーを知らなくてもパレットから辿れるように置く）。
+      tools: () => toggleTools(),
       // `/sync` merges the base branch into THIS session's worktree; a conflict is
       // left in place and handed to this very session to resolve.
       sync: () => {
@@ -368,9 +392,23 @@ export const SessionDetail: FC<{
   const logCap = isFullscreenViewport(rows)
     ? Math.max(1, Math.floor(measuredLogRows ?? logViewportRows(rows)))
     : Math.max(1, rows);
+  // まとめ行の文言。グリフ（▸/▾）は theme、語はカタログ、並べ方は純粋な
+  // `toolRunLabel` が持つ。`logLines` のメモ化の依存に入るので useCallback で固定する。
+  const runLabel = useCallback(
+    (run: ToolRun, expanded: boolean) =>
+      `${expanded ? glyph.expanded : glyph.collapsed} ${toolRunLabel(run.counts, m)}`,
+    [m],
+  );
+  const collapse = useMemo<LogCollapse | undefined>(
+    () => (grouping ? { label: runLabel, isExpanded: (key) => openRuns.has(key) } : undefined),
+    [grouping, runLabel, openRuns],
+  );
   const entryRows = useMemo<DisplayLine[]>(
-    () => (messages ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind], agentDivider) : []),
-    [messages, logWidth, agentDivider],
+    () =>
+      messages
+        ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind], agentDivider, collapse)
+        : [],
+    [messages, logWidth, agentDivider, collapse],
   );
   // ストリーミング中の本文。**ログの末尾の行として**描くので、返ってきたぶんだけ
   // 下へ伸びていき、末尾にいなければ（アンカーが数値なら）視界は動かない。
@@ -410,6 +448,43 @@ export const SessionDetail: FC<{
   const clearLogSelection = () => {
     logSel.clear();
     setEdge(undefined);
+  };
+
+  /**
+   * まとめ行を開閉する前に、見えている場所を動かさないための下ごしらえ。
+   *
+   * 末尾追従（`'bottom'`）のままだと、展開して増えたぶんが下に伸びて**押した見出しが
+   * 画面の上へ流れていく**（何を開いたのか見失う）。今の窓の終端で固定すれば、
+   * 見出しより前の行数は開閉で変わらないので見出しは同じ位置に留まる。
+   * 選択は行 index が基準なので、組み変わる前に捨てる。
+   */
+  const beforeToggle = () => {
+    if (anchorRef.current === 'bottom') {
+      applyAnchor(win.hiddenAbove + logCap);
+    }
+    clearLogSelection();
+  };
+
+  /** まとめ行 1 つを開閉する（クリック）。 */
+  const toggleRun = (key: number) => {
+    beforeToggle();
+    setOpenRuns((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  /**
+   * ツール実行のまとめを一括で切り替える（`Ctrl+O` / `/tools`）。個別に開いてあった
+   * ぶんは捨てる — 「全部たたむ / 全部ひらく」の結果が押すたびに変わらないようにする。
+   */
+  const toggleTools = () => {
+    beforeToggle();
+    setGrouping((on) => !on);
+    setOpenRuns(new Set());
   };
 
   /**
@@ -567,6 +642,7 @@ export const SessionDetail: FC<{
         // 両方のハイライトを解除）。
         if (composer.handleMouse(mouse)) {
           pendingLinkRef.current = undefined;
+          pendingGroupRef.current = undefined;
           clearLogSelection();
         } else {
           setEdge(undefined);
@@ -578,6 +654,10 @@ export const SessionDetail: FC<{
             logView && mouse.button === 'left'
               ? logLinkAt(lines, logView, mouse.x, mouse.y)
               : undefined;
+          // ツール実行のまとめ行も同じ扱い（押した時点では開閉しない）。まとめ行に
+          // URL は載らないので、この 2 つが同時に立つことはない。
+          pendingGroupRef.current =
+            logView && mouse.button === 'left' ? logGroupAt(lines, logView, mouse.y) : undefined;
           const point = logAnchorAt(mouse.x, mouse.y);
           if (point) {
             logSel.begin(point);
@@ -586,8 +666,9 @@ export const SessionDetail: FC<{
           }
         }
       } else if (mouse.kind === 'drag') {
-        // ドラッグになった = 範囲選択なので、リンクを開く候補は取り消す。
+        // ドラッグになった = 範囲選択なので、リンクを開く / 開閉する候補は取り消す。
         pendingLinkRef.current = undefined;
+        pendingGroupRef.current = undefined;
         if (!composer.handleMouse(mouse) && logSel.dragging()) {
           handleLogDrag(mouse.x, mouse.y);
         }
@@ -603,6 +684,11 @@ export const SessionDetail: FC<{
         if (url !== undefined && onOpenUrl) {
           onOpenUrl(url);
         }
+        const group = pendingGroupRef.current;
+        pendingGroupRef.current = undefined;
+        if (group !== undefined) {
+          toggleRun(group);
+        }
       }
       return;
     }
@@ -615,6 +701,7 @@ export const SessionDetail: FC<{
     clearLogSelection();
     // press の release が届かないまま（端末外で離した等）保留が残るのを防ぐ。
     pendingLinkRef.current = undefined;
+    pendingGroupRef.current = undefined;
     // 立て直しの結果表示は次の操作で引っ込める（エラーと違い一過性の通知）。
     recovery.setNotice(undefined);
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
@@ -661,6 +748,14 @@ export const SessionDetail: FC<{
     // ターンは続く）。ダイアログ側の useInput は ctrl chord を無視するので競合しない。
     if (key.ctrl && (input === 'c' || input === 'C')) {
       cancel();
+      return;
+    }
+    // Ctrl+O = ツール実行のまとめを一括で開閉（Claude Code と同じキー）。`Ctrl+C` と
+    // 同じくフォーカス横断の chord にしてある — 許可待ちでログを読み返している最中こそ
+    // 「実際に何をしたのか」を開きたいので、ダイアログのゾーンでも効かせる
+    // （ダイアログ側の useInput は ctrl chord を無視するので競合しない）。
+    if (key.ctrl && (input === 'o' || input === 'O')) {
+      toggleTools();
       return;
     }
     if (pending) {

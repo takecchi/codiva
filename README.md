@@ -160,6 +160,27 @@ In the session detail log, the agent's response **grows downward as it arrives**
 - **It only follows the tail while you're at the bottom.** While you're back in history via `↑`/`PgUp`/wheel, the view doesn't move a single line even as the response grows (you never get swept along mid-read). "Viewing history — N lines to latest" appears at the bottom of the screen; `↓`/`PgDn` returns to the tail and resumes following.
 - While text is still streaming it's rendered plain (no bold, no headings); it's replaced with the formatted body the moment the turn completes.
 
+### Folding tool-call lines (`Ctrl+O` / `/tools`)
+
+An agent's work log is mostly `⏺ Bash(…)` / `⎿ …` pairs, one after another, so **the actual conversation (its explanations and your instructions) drowns in tool chatter**. codiva **folds each run of consecutive tool calls into a single summary line**.
+
+```
+> Does release/stg work the same way?
+⏺ ▸ Read 3 files, ran 5 shell commands
+Yes, stg runs on the same settings.
+```
+
+- **One click opens it** (anywhere on the summary line). An open run is marked `▾` and its lines appear underneath; click again to fold it back.
+- **`Ctrl+O` folds/unfolds everything at once** (the same key as Claude Code). The **`/tools`** command in the palette does the same. Both work while a permission/question dialog is up.
+- **Work in progress is never folded.** The run at the very end of the log stays fully visible and is folded only once the next message or instruction arrives — you never lose sight of what the agent is doing right now.
+- **A run with a single tool call is not folded either.** One `Read src/core/scroll.ts` line reads fine on its own; folding it would only drop the file name.
+- Folding is display-only — nothing is lost. The summary breaks the run down by kind (reads / edits / shell commands / searches …).
+- To change the default, set `collapseToolLogs` to `false` in `~/.codiva/config.json` (or toggle it from `/config`). Even then, `Ctrl+O` folds everything whenever you want.
+
+### Spotting your own messages
+
+Your instructions in the log (the `>` lines) get a **background tint**, so when you scroll back through a long exchange you can see where you spoke without reading a word of it.
+
 ### Interrupting work in progress (`Ctrl+C`)
 
 Pressing `Ctrl+C` in the session detail view **interrupts the turn that session is currently running** (the same gesture as `Ctrl+C` in Claude Code). codiva itself does not exit.
@@ -385,6 +406,7 @@ The on/off settings can be toggled from the TUI (`/config` in the list view — 
   **Add `"user"` if you want your Claude Code plugins to work in codiva sessions too.** Plugin activation (`enabledPlugins`) for anything installed with `claude plugin install` is written to `~/.claude/settings.json`, so with the default, none of a plugin's skills / commands / subagents / hooks / MCP servers get loaded. The side effect is that **the rest of that layer (hooks, permissions, statusLine, …) also loads into your sessions**. That's why the default is `["project"]`: sessions run unattended in a worktree rather than in front of you, so codiva errs on the side of not silently importing your local Claude Code setup.
 - `codexSandbox`: the sandbox for Codex sessions. `"read-only"` / `"workspace-write"` (default) / `"danger-full-access"`. Because Codex can't ask for tool permission, **this is the only safety valve for Codex sessions**. The default `workspace-write` means "read anything, write only inside the session's worktree".
 - `codexNetworkAccess`: whether to allow network access when `codexSandbox` is `"workspace-write"`. Default `true`. Codex's own default is to block it, but that makes `npm install` and `gh` fail and most work never finishes, so codiva opens it (set `false` to close it).
+- `collapseToolLogs`: whether the session detail log folds runs of consecutive tool calls into a single summary line. Default `true`; set it to `false` to keep every line as before (either way, `Ctrl+O` / `/tools` toggles it on the spot).
 
 ### Shared symlinks and "detach when you need to"
 

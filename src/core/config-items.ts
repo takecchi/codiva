@@ -26,7 +26,8 @@ export type ConfigToggleId =
   | 'privacyWarning'
   | 'updateCheck'
   | 'crashLog'
-  | 'codexNetworkAccess';
+  | 'codexNetworkAccess'
+  | 'collapseToolLogs';
 
 /**
  * 真偽値を持つ設定キー（`CodivaConfig` から導出）。設定の型が変わればここも変わるので、
@@ -173,6 +174,14 @@ export const CONFIG_TOGGLES: readonly ConfigToggle[] = [
     true,
     (m) => m.config.codexNetworkAccess,
     (m) => m.config.codexNetworkAccessHelp,
+  ),
+  // 唯一その場で効く項目（詳細ビューが購読値として読む）。他は起動時に焼き込まれる。
+  booleanToggle(
+    'collapseToolLogs',
+    'collapseToolLogs',
+    true,
+    (m) => m.config.collapseToolLogs,
+    (m) => m.config.collapseToolLogsHelp,
   ),
 ];
 

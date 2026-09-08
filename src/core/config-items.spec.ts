@@ -23,6 +23,7 @@ const ORDER: ConfigToggleId[] = [
   'updateCheck',
   'crashLog',
   'codexNetworkAccess',
+  'collapseToolLogs',
 ];
 
 describe('configToggleRows', () => {

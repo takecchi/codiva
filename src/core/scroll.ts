@@ -1,5 +1,6 @@
 import stringWidth from 'string-width';
 import { GRAPHEMES } from './graphemes';
+import { collapsibleRunAt, type ToolRun } from './log-collapse';
 import { type RichLine, type RichSpan, renderMarkdown } from './markdown';
 import { clamp } from './math';
 import type { AgentId, LogEntry, LogKind } from './types';
@@ -54,6 +55,16 @@ export interface DisplayLine {
    * 割れても各行が URL 全体を指す**ので、どちらの行をクリックしても同じ先へ飛べる。
    */
   links?: readonly LinkRange[];
+  /**
+   * この行が「連続したツール実行のまとめ」の見出しであることを示す印で、値は
+   * その `ToolRun.key`（= まとまりの先頭エントリの `seq`）。クリックすると
+   * そのまとまりが展開/折り畳みされる（当たり判定は `core/log-selection.ts` の
+   * `logGroupAt`）。undefined = 普通の行（大多数）。
+   *
+   * `links` と同じで「行に貼り付いた当たり判定の情報」なので、行の側に持たせる。
+   * 折り返して 2 行になったまとめ行はどちらの行も同じ key を指す。
+   */
+  group?: number;
 }
 
 /** LogKinds whose text is Markdown from the assistant and gets rich rendering. */
@@ -338,12 +349,17 @@ export function clearLogLinesCache(): void {
  * `dividerFor` を渡すと、`LogEntry.agent` が変わる境界に 1 行の区切りを挿む
  * （`/agent` でエージェントを切り替えたセッションで「どこからが誰の発言か」を出す）。
  * 文言は UI が持つ（カタログ + アダプタの表示名）ので、ここは行を差し込むだけ。
+ *
+ * `collapse` を渡すと、連続したツール実行（`core/log-collapse.ts`）を 1 行の
+ * まとめ見出しへ畳む。展開されているまとまりは見出しの**下に**中身をそのまま
+ * 描く（見出しは畳むための取っ手として残る）。
  */
 export function logLines(
   messages: readonly LogEntry[],
   width: number,
   prefixFor: (kind: LogKind) => string,
   dividerFor?: (agent: AgentId) => string,
+  collapse?: LogCollapse,
 ): DisplayLine[] {
   currentPass += 1;
   const out: DisplayLine[] = [];
@@ -351,7 +367,8 @@ export function logLines(
   // undefined → 'codex' の 1 回目も境界として拾える（切替を使っていないセッションでは
   // 全行 undefined = 区切りは 1 本も出ない）。
   let spoken: AgentId | undefined;
-  for (const entry of messages) {
+  /** その行を出す前に必要なら区切りを挿む（まとめ見出しでも同じ扱いにする）。 */
+  const divide = (entry: LogEntry): void => {
     if (dividerFor && entry.agent !== undefined && entry.agent !== spoken) {
       // 区切りはメモ化しない（1 行・境界の数だけ）。text は切替のたびに 1 種類しか
       // 増えないので、Ink の測定キャッシュにも溜まらない。
@@ -360,14 +377,79 @@ export function logLines(
     if (entry.agent !== undefined) {
       spoken = entry.agent;
     }
-    // Appended one at a time on purpose: `push(...rows)` passes every row as an
-    // argument, which overflows the stack for an entry that wrapped into tens of
-    // thousands of rows (a narrow terminal + a pasted file).
-    for (const row of cachedEntryLines(entry, width, prefixFor(entry.kind))) {
+  };
+  /** Appended one at a time on purpose — see {@link pushRows}. */
+  const pushRows = (rows: readonly DisplayLine[]): void => {
+    // `push(...rows)` passes every row as an argument, which overflows the stack
+    // for an entry that wrapped into tens of thousands of rows (a narrow terminal
+    // + a pasted file).
+    for (const row of rows) {
       out.push(row);
     }
+  };
+  let i = 0;
+  while (i < messages.length) {
+    const entry = messages[i];
+    if (!entry) {
+      i += 1;
+      continue;
+    }
+    const run = collapse ? collapsibleRunAt(messages, i) : undefined;
+    if (!run) {
+      divide(entry);
+      pushRows(cachedEntryLines(entry, width, prefixFor(entry.kind)));
+      i += 1;
+      continue;
+    }
+    // まとまりは 1 エージェント内で閉じている（`collapsibleRunAt` がそこで切る）ので、
+    // 区切りは先頭エントリで 1 回判定すれば足りる。
+    divide(entry);
+    const expanded = collapse?.isExpanded(run.key) ?? false;
+    pushRows(
+      runHeaderLines(run, width, prefixFor('tool_use'), collapse?.label(run, expanded) ?? ''),
+    );
+    if (expanded) {
+      for (let j = run.start; j < run.end; j += 1) {
+        const inner = messages[j];
+        if (inner) {
+          pushRows(cachedEntryLines(inner, width, prefixFor(inner.kind)));
+        }
+      }
+    }
+    i = run.end;
   }
   return out;
+}
+
+/**
+ * 連続したツール実行を畳む設定。文言（と ▸/▾ のグリフ）は UI が持ち、展開状態は
+ * 詳細ビューが持つので、`logLines` は「どこが畳めるか」と「どう並べるか」だけを知る。
+ */
+export interface LogCollapse {
+  /** まとめ見出しの文言。`expanded` で開閉のグリフを出し分ける。 */
+  label: (run: ToolRun, expanded: boolean) => string;
+  /** そのまとまり（`ToolRun.key`）が展開されているか。 */
+  isExpanded: (key: number) => boolean;
+}
+
+/**
+ * まとめ見出しの物理行。**メモ化しない** — エントリと違って毎回作り直されるが、
+ * 1 まとまりにつき 1 行の短い文字列なので展開のコストは無視できる。逆にキャッシュへ
+ * 入れると、まとまりが伸びるたびに（内容が変わったのに同じキーで）古い行を返して
+ * しまうか、使い捨てのキーでキャッシュを汚すかのどちらかになる。
+ *
+ * 文字列自体は追記では変わらない（件数が増えたときだけ変わる）ので、Ink の測定
+ * キャッシュにも溜まらない。
+ */
+function runHeaderLines(run: ToolRun, width: number, prefix: string, text: string): DisplayLine[] {
+  const indent = ' '.repeat(stringWidth(prefix));
+  const content = Math.max(1, width - stringWidth(prefix));
+  return wrapLogical(text, content).map((row, i) => ({
+    key: `${run.key}:run:${i}`,
+    kind: 'tool_use' as LogKind,
+    text: (i === 0 ? prefix : indent) + row,
+    group: run.key,
+  }));
 }
 
 /**

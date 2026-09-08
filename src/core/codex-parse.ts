@@ -111,7 +111,12 @@ function fromItemStarted(item: CodexItem): AgentEvent[] {
       ];
     case 'web_search':
       return [
-        { kind: 'tool_use', id: item.id, summary: clip(`web_search ${item.query}`), tool: 'other' },
+        {
+          kind: 'tool_use',
+          id: item.id,
+          summary: clip(`web_search ${item.query}`),
+          tool: 'search',
+        },
       ];
     case 'todo_list':
       return [todoEvent(item)];

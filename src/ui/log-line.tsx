@@ -11,7 +11,7 @@ import {
   type RowSelection,
   selectionSlices,
 } from '@/core';
-import { glyph, logColor, markdownColor } from './theme';
+import { glyph, logBackground, logColor, markdownColor } from './theme';
 
 /** Prefix/indent for each log kind — echoes Claude Code's transcript. Colors live in `logColor`. */
 export const LOG_PREFIX: Record<LogEntry['kind'], string> = {
@@ -116,16 +116,25 @@ export const LogLine: FC<{ line: DisplayLine; sel?: RowSelection }> = ({ line, s
     return <RichLogLine line={line} sel={sel} />;
   }
   const dim = LOG_DIM[line.kind];
+  // 地の色（今は user 行だけ）。前景色と違い「読まずに位置が分かる」印なので、
+  // 選択やリンクで細切れになっても**外側の <Text> にだけ**掛ける（各片に配ると
+  // 反転の片で二重に効く）。
+  const background = logBackground[line.kind];
   if (!sel && !line.links) {
     return (
-      <Text color={logColor[line.kind]} dimColor={dim} wrap="truncate-end">
+      <Text
+        color={logColor[line.kind]}
+        backgroundColor={background}
+        dimColor={dim}
+        wrap="truncate-end"
+      >
         {line.text}
       </Text>
     );
   }
   const parts = linkPieces([line.text], line.links);
   return (
-    <Text color={logColor[line.kind]} wrap="truncate-end">
+    <Text color={logColor[line.kind]} backgroundColor={background} wrap="truncate-end">
       {selectionSlices(
         parts.map((p) => p.text),
         sel,
