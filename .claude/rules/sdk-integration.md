@@ -284,6 +284,33 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
   あとに `running` へ戻って二度と終われない）。詳細は docs/ARCHITECTURE.md「完了ゲート」。
 - `activeTaskIds` / `deferredResult` / `streamingText` は transient で**永続しない**。
 
+## サブエージェントの「表示」はゲートと別物（`SessionState.subagents`）
+
+ユーザーが実行状況を追える（詳細ビューの 1 行 → 専用ログ画面）ようにするための表示用の記録で、
+`core/subagents.ts` が純粋なリスト操作を持つ。**完了ゲートとは意図的に二重管理**なので、
+次の 4 つを崩さない（理由は docs/ARCHITECTURE.md「完了ゲートと表示は意図的に二重管理」）。
+
+- **`subagents` から live set を導出しない。** 上限（`MAX_TRACKED_SUBAGENTS`）による追い出しが
+  生きたタスクをゲートから消せば早すぎる完了、`status` の分類ミスが「走っている」側に倒れれば
+  永久 `running`。ゲートは素の文字列集合 + レベル信号の自己修復のままにする。
+- **`tasks_changed` は表示を触らない。** あれが運ぶのは *live **background** tasks* の集合で、
+  実採取の前景 Task では一度も出ない。表示を REPLACE すると走っているものが終わって見える。
+- **`task_progress` はゲートを触らない。** 進捗はエッジでもレベル信号でもないので、これを起点に
+  ゲートへ積むと「進捗だけ来て決着が来ない」新しい wedge の経路になる。既存の記録が無ければ no-op。
+- **決着の成否をどう分類してもゲートは必ず解ける。** `task_settled` は `status` が何であれ出し、
+  未知の値・欠落は表示側で `stopped` に丸める。番人は `agent-events.spec.ts` の
+  **「表示用メタあり / なしで `activeTaskIds`・`deferredResult`・`status` の遷移が完全一致する」**表。
+
+ログ行の振り分けは**畳み込み側**（`routeLogEntry`）。parse は `parent_tool_use_id` を `subagentRef`
+として載せるだけで状態を持たない。**帰属先が引けなければ本体のログへ落とす**（未知の provider・
+未知の id でも行を捨てない = 従来どおりの見た目に degrade する）。ターン終端と CLI プロセスの
+起き直しでは**記録を残して「走っている印」だけ封じる**（`sealSubagents`。そのプロセスのタスクは
+二度と決着を報告しないので、封じないとスピナーが永久に回る）。
+
+`AgentCapabilities.subagents` は持っているが、**表示の可否をこれで決めない** — `/agent` で
+切り替えたセッションでも、そのセッションが実際に走らせたサブエージェントの履歴は残るべきなので、
+`state.subagents` が空かどうかで決める（capability を見るのは「これから起きること」を語る表示だけ）。
+
 ## レート制限情報
 
 - `rate_limit_event` の `rejected` はセッションを `rate_limited` にする（`turn_stopped` の

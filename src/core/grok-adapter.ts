@@ -85,6 +85,8 @@ export const GROK_CAPABILITIES: AgentCapabilities = {
   usage: false,
   cost: false,
   transcript: false,
+  // ACP にサブエージェントの概念が無い。
+  subagents: false,
 };
 
 /** ACP のプロトコル版（`initialize` で宣言する）。 */

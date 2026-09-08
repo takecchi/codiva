@@ -149,6 +149,10 @@ describe('matchCommands', () => {
     // `/re` は「立て直し」と「削除」の両方に当たる（レジストリ順で出す）。
     expect(matchCommands('/re').map((c) => c.name)).toEqual(['recover', 'remove']);
     expect(matchCommands('/rem').map((c) => c.name)).toEqual(['remove']);
+    expect(matchCommands('/su').map((c) => c.name)).toEqual(['subagents']);
+    // `/ag` は「エージェント切替」だけに当たる（`/subagents` に `agents` の別名を
+    // 付けると候補が曖昧になるので、意図的に別名なしにしてある）。
+    expect(matchCommands('/ag').map((c) => c.name)).toEqual(['agent']);
   });
   it('does not match the retired /quit alias', () => {
     expect(matchCommands('/q').map((c) => c.name)).toEqual([]);

@@ -45,6 +45,7 @@ export const CLAUDE_CAPABILITIES: AgentCapabilities = {
   usage: true,
   cost: true,
   transcript: true,
+  subagents: true,
 };
 
 /** AskUserQuestion の入力を UI が扱える {@link QuestionSpec} へ写す。 */

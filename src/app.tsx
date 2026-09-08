@@ -17,14 +17,24 @@ import {
   MessagesProvider,
   SessionDetail,
   SessionList,
+  SubagentDetail,
   useBranch,
   useModelCatalog,
   useTrainingOptIn,
   useUpdateCheck,
 } from '@/ui';
 
-/** どの画面を出しているか。詳細は対象セッション id を持つ。 */
-type View = { mode: 'list' } | { mode: 'detail'; id: string };
+/**
+ * どの画面を出しているか。詳細は対象セッション id を持ち、サブエージェント画面は
+ * さらにどのサブエージェントを見ているか（task id）を持つ。
+ *
+ * `subagent` が `id` を持つのは、あの画面が**親セッションのストアを購読する**ため
+ * （記録は `SessionState.subagents` にあり、Esc で戻る先もその詳細画面）。
+ */
+type View =
+  | { mode: 'list' }
+  | { mode: 'detail'; id: string }
+  | { mode: 'subagent'; id: string; taskId: string };
 
 export const App: FC<{
   manager: SessionManager;
@@ -158,7 +168,17 @@ export const App: FC<{
         height={fullscreen ? rows : undefined}
         overflow={fullscreen ? 'hidden' : undefined}
       >
-        {view.mode === 'detail' ? (
+        {view.mode === 'subagent' ? (
+          <SubagentDetail
+            manager={manager}
+            id={view.id}
+            taskId={view.taskId}
+            // Esc は**詳細へ**戻る（一覧まで飛ばない。開いた順に閉じる）。
+            onBack={() => setView({ mode: 'detail', id: view.id })}
+            onCopy={onCopy}
+            onOpenUrl={onOpenUrl}
+          />
+        ) : view.mode === 'detail' ? (
           <SessionDetail
             manager={manager}
             id={view.id}
@@ -167,6 +187,7 @@ export const App: FC<{
             onBack={() => setView({ mode: 'list' })}
             onCopy={onCopy}
             onOpenUrl={onOpenUrl}
+            onOpenSubagent={(taskId) => setView({ mode: 'subagent', id: view.id, taskId })}
             // `/config` の変更がその場で効く唯一の項目（他は起動時に焼き込まれる）。
             // 詳細ビューを開き直せば新しい既定で始まる。
             collapseTools={config.collapseToolLogs !== false}

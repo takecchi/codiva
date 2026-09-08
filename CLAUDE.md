@@ -75,11 +75,12 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | 詰まった PR の立て直し | `core/pr-recovery.ts`（判定・指示文・純粋）/ `SessionManager.recover()` / `utils/worktree-manager.ts` の `syncBase`（ベース取り込み）/ `ui/hooks.ts` の `useRecovery` |
 | 一覧画面 | `ui/session-list.tsx`（composer / list の2フォーカス） |
 | 詳細画面 | `ui/session-detail.tsx`（ログ + 追加指示 + 操作パネル） |
+| サブエージェントの実行状況 | `core/subagents.ts`（記録のリスト操作・純粋。**完了ゲートとは別物**）/ `core/subagent-row.ts`（下段 1 行の文言・当たり判定・ピッカーの選択肢・純粋）/ `ui/subagent-detail.tsx`（専用ログ画面。**入力欄なし**）/ `ui/subagent-picker.tsx`（複数件の選択）/ `core/agent-events.ts` の `routeLogEntry`（内部ログ行の振り分け） |
 | 表示幅・グラフェム | `core/graphemes.ts`（共有の分割器。折り返し・幅・クリック逆算で**同じ単位**を使う） |
 | 入力欄・キー処理 | `ui/composer.tsx`（**全入力欄の共通実装**。`useComposer` + `<Composer>`）/ `core/text-buffer.ts`（純粋モデル）/ `core/composer-layout.ts`（折り返し・表示行の幾何）/ `core/input-history.ts`（↑↓ の入力履歴）/ `ui/input.ts`（キー→操作）/ `ui/prompt-input.tsx`（描画のみ） |
-| ログ描画・スクロール | `core/scroll.ts`（`logLines` は**エントリ単位でメモ化**）/ `core/markdown.ts` / `core/ansi.ts` / `ui/log-line.tsx`（1 行の描画・kind ごとの地の色 `logBackground`） |
-| ツール実行のログを畳む（`Ctrl+O` / `/tools`）| `core/log-collapse.ts`（どこが 1 まとまりか = `collapsibleRunAt`・まとめ行の文言 = `toolRunLabel`・純粋）/ `core/scroll.ts` の `logLines(…, collapse)`（まとめ見出しの行を出す。`DisplayLine.group` が取っ手）/ `core/log-selection.ts` の `logGroupAt`（当たり判定）/ `ui/session-detail.tsx`（展開状態・クリック・Ctrl+O）/ 種類は `LogEntry.tool`（`AgentToolKind`）に載る |
-| ログの上限・メモリ | `core/log-buffer.ts`（件数/文字数の上限・`pushLogEntry` が唯一の追記経路） |
+| ログ描画・スクロール | `ui/log-pane.tsx`（`useLogPane` + `<LogPane>` = **会話ログを描く全画面の共通実装**）/ `core/scroll.ts`（`logLines` は**エントリ単位でメモ化**）/ `core/markdown.ts` / `core/ansi.ts` / `ui/log-line.tsx`（1 行の描画・kind ごとの地の色 `logBackground`） |
+| ツール実行のログを畳む（`Ctrl+O` / `/tools`）| `core/log-collapse.ts`（どこが 1 まとまりか = `collapsibleRunAt`・まとめ行の文言 = `toolRunLabel`・純粋）/ `core/scroll.ts` の `logLines(…, collapse)`（まとめ見出しの行を出す。`DisplayLine.group` が取っ手）/ `core/log-selection.ts` の `logGroupAt`（当たり判定）/ `ui/log-pane.tsx`（press→release の開閉・アンカー固定）/ `ui/session-detail.tsx`（展開状態・Ctrl+O）/ 種類は `LogEntry.tool`（`AgentToolKind`）に載る |
+| ログの上限・メモリ | `core/log-buffer.ts`（件数/文字数の上限・`pushLogEntry` が唯一の追記経路。予算は `LogLimits` で差し替え = サブエージェントは別枠） |
 | マウス・範囲選択 | `core/mouse.ts` / `core/list-hit.ts` / `core/text-selection.ts` / `core/log-selection.ts`（詳細ログの選択・端の自動スクロール） / `utils/mouse.ts` / `utils/clipboard.ts` |
 | ログ内 URL のクリック | `core/url.ts`（検出・範囲・OSC 8・純粋）/ `core/log-selection.ts` の `logLinkAt`（当たり判定）/ `utils/open-url.ts`（ブラウザ起動） |
 | 文言・言語 | `core/i18n.ts`（カタログ）/ `ui/i18n-context.tsx`（`useMessages`） |

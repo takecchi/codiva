@@ -92,6 +92,67 @@ export interface LogEntry {
 }
 
 /**
+ * サブエージェントの決着のしかた。**表示専用**（完了ゲートはこれを読まない）。
+ * `stopped` は「終わったが結果が分からない」で、未知の status・欠落もここへ丸める。
+ */
+export type SubagentOutcome = 'completed' | 'failed' | 'stopped';
+
+/** 走っているか / どう終わったか。 */
+export type SubagentStatus = 'running' | SubagentOutcome;
+
+/** provider が報告するサブエージェントの使用状況（報告しない provider があるので全部 optional）。 */
+export interface SubagentUsage {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+}
+
+/**
+ * サブエージェント（親のツール実行として走る別のエージェント）1 本の実行状況と、
+ * **そのサブエージェント専用のログ**。
+ *
+ * 完了ゲート（`SessionState.activeTaskIds`）とは**意図的に別物**にしてある。
+ * ゲートは「素の id 集合 + レベル信号による自己修復」という一番壊れにくい形で、
+ * そこへ上限付き・決着済みも保持するこの構造体を挟むと、追い出しが生きたタスクを
+ * ゲートから消したり（早すぎる完了）、status の分類ミスでゲートが永久に埋まったり
+ * （`running` の張り付き）する。寿命も違う — ゲートはターン終端で必ず捨てるが、
+ * こちらは**ターンをまたいで残す**（終わったあとに詳細ログを開けることが要件）。
+ *
+ * transient — 永続化しない（正本は `outputFile` と CLI のトランスクリプト）。
+ */
+export interface SubagentRun {
+  /** provider のタスク id。`SessionState.subagents` 内で一意なキー。 */
+  id: string;
+  /**
+   * 親側のツール実行 id。**内部ログ行の帰属キー**（provider の `parent_tool_use_id`
+   * と突き合わせる）。持たない provider・種別があるので optional。
+   */
+  toolUseId?: string;
+  /** 一覧に出す説明。**進行中に動的に更新される**（"Create report.txt" → "Writing report.txt"）。 */
+  description?: string;
+  /** 種別（Claude の `subagent_type`、無ければ `task_type`）。provider 非依存の自由文字列。 */
+  kind?: string;
+  /** 渡された指示（先頭 `SUBAGENT_PROMPT_CHARS` 文字だけ）。 */
+  prompt?: string;
+  status: SubagentStatus;
+  /** 直近に使ったツール名（進捗行の表示用）。 */
+  lastTool?: string;
+  usage?: SubagentUsage;
+  /** 決着時の要約。 */
+  summary?: string;
+  /** 全文の在り処（CLI が書いたファイル）。詳細ログの正本への導線。 */
+  outputFile?: string;
+  startedAt: number;
+  finishedAt?: number;
+  /**
+   * このサブエージェント専用のログ。予算は `SUBAGENT_LOG_LIMITS`（親とは別枠で桁を落とす）。
+   * **append-only** で、`messages[0].seq` が変わるのは上限で頭が落ちたときだけ
+   * （UI の範囲選択がその変化を見て選択を捨てる）。
+   */
+  messages: readonly LogEntry[];
+}
+
+/**
  * Merge state of a PR, shown as a glyph next to `#<number>`:
  *  - `merged`      — already merged (fork mark)
  *  - `closed`      — closed *without* being merged (the work was dropped)
@@ -355,6 +416,16 @@ export interface SessionState {
    * task settles. Transient; never persisted.
    */
   deferredResult?: { at: number; totalCostUsd?: number; resultText: string };
+  /**
+   * このセッションが走らせたサブエージェント（新しいものが末尾。**並べ替えない** —
+   * UI の代表選択とピッカーのカーソルが順序の安定に依存している）。**transient**。
+   *
+   * **完了ゲートではない**（ゲートは {@link SessionState.activeTaskIds}）。詳しくは
+   * {@link SubagentRun}。`MAX_TRACKED_SUBAGENTS` 本で打ち止めで、溢れたら「決着済みの
+   * うち最も古いもの」から落とす。ターン境界では落とさず、走っている印だけを封じる
+   * （そのプロセスのタスクは二度と決着を報告しないので、封じないとスピナーが永久に回る）。
+   */
+  subagents?: readonly SubagentRun[];
   /** Internal monotonic counter for LogEntry.seq; keeps the reducer pure. */
   logSeq: number;
 }

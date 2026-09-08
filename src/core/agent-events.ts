@@ -11,11 +11,21 @@ import {
   toNeedsLogin,
   toRateLimited,
 } from './status-reducer';
+import {
+  appendSubagentLog,
+  progressSubagent,
+  sealSubagents,
+  settleSubagent,
+  startSubagent,
+} from './subagents';
 import type {
   AgentId,
   AgentStopCause,
   AgentToolKind,
+  LogEntry,
   SessionState,
+  SubagentOutcome,
+  SubagentUsage,
   TaskStatus,
   TodoItem,
 } from './types';
@@ -53,6 +63,22 @@ export type TodoOp =
       items: readonly { subject: string; status: TaskStatus; activeForm?: string }[];
     };
 
+/**
+ * サブエージェントの**表示用**メタ。あってもなくても完了ゲートの挙動は変わらない
+ * （番人は `agent-events.spec.ts` の「メタあり/なしでゲートの遷移が一致する」表）。
+ */
+export interface SubagentMeta {
+  /**
+   * 親側のツール実行 id = **内部ログ行の帰属キー**。ログ 3 イベントの `subagentRef`
+   * と同じ文字列であることだけが契約（provider が何を入れるかは自由）。
+   */
+  toolUseId?: string;
+  description?: string;
+  /** 種別（自由文字列。Claude なら `subagent_type`）。 */
+  kind?: string;
+  prompt?: string;
+}
+
 /** provider 非依存の「エージェントに起きたこと」。 */
 export type AgentEvent =
   /** セッションが確立した（resume 用の id と解決済みモデルが分かる）。 */
@@ -73,7 +99,7 @@ export type AgentEvent =
    * 完了したセッションが `running` に巻き戻る。こちらは**モデル欄だけ**を触る。
    */
   | { kind: 'model_resolved'; model: string }
-  | { kind: 'assistant_text'; text: string; timestamp?: number }
+  | { kind: 'assistant_text'; text: string; timestamp?: number; subagentRef?: string }
   | {
       kind: 'tool_use';
       /** provider 側の tool_use id。`tool_result` との突き合わせに使う。 */
@@ -85,6 +111,7 @@ export type AgentEvent =
       /** PR 作成コマンド（`gh pr create`）だったか（`core/pr-detect.ts`）。 */
       prCreate?: boolean;
       timestamp?: number;
+      subagentRef?: string;
     }
   | {
       kind: 'tool_result';
@@ -96,6 +123,7 @@ export type AgentEvent =
        * 対応する tool_use が `prCreate` だったときだけ読まれる。
        */
       scanText?: string;
+      subagentRef?: string;
     }
   /** 新しいアシスタントメッセージが始まる — ストリーミングプレビューを白紙に戻す。 */
   | { kind: 'stream_reset' }
@@ -106,10 +134,41 @@ export type AgentEvent =
    * 同じ接頭辞なら**書き換える**（件数を増やさない）。
    */
   | { kind: 'notice'; text: string; coalesceKey?: string }
-  /** サブエージェント（Task）が走り始めた — 完了ゲートに積む。 */
-  | { kind: 'task_started'; taskId: string }
-  /** サブエージェントが片付いた — 全部片付いたら保留中の完了を確定する。 */
-  | { kind: 'task_settled'; taskId?: string }
+  /**
+   * サブエージェント（Task）が走り始めた — 完了ゲートに積む。
+   *
+   * `subagent` は**表示用**のメタで、渡さなければ従来どおりゲートだけが動く
+   * （= サブエージェントを報告しない provider は何も変えなくてよい）。
+   */
+  | { kind: 'task_started'; taskId: string; subagent?: SubagentMeta }
+  /**
+   * サブエージェントの進捗（**表示専用**）。
+   *
+   * 完了ゲートは**触らない**。進捗はエッジでもレベル信号でもないので、これを起点に
+   * ゲートへ積むと「進捗だけ来て決着が来ない」経路が新しい wedge になる（レベル信号の
+   * 自己修復も効かない）。既存の記録が無ければ何もしない。
+   */
+  | {
+      kind: 'task_progress';
+      taskId: string;
+      description?: string;
+      lastTool?: string;
+      usage?: SubagentUsage;
+    }
+  /**
+   * サブエージェントが片付いた — 全部片付いたら保留中の完了を確定する。
+   *
+   * `outcome` / `summary` / `outputFile` / `usage` は表示用の追加情報で、
+   * **省略されてもゲートは必ず解ける**（従来と同じ）。
+   */
+  | {
+      kind: 'task_settled';
+      taskId?: string;
+      outcome?: SubagentOutcome;
+      summary?: string;
+      outputFile?: string;
+      usage?: SubagentUsage;
+    }
   /**
    * **今生きているサブエージェントの全集合**（レベル信号）。`task_started` /
    * `task_settled` のエッジと違い、届いた集合で**丸ごと置き換える** — エッジを
@@ -173,6 +232,34 @@ function applyTodoOp(todos: TodoItem[], op: TodoOp): TodoItem[] {
     status: t.status,
     activeForm: t.activeForm,
   }));
+}
+
+/**
+ * ログ 1 行を「サブエージェント専用ログ」か「セッション本体のログ」へ積む。
+ *
+ * **帰属先が引けなければ本体へ落とす** — 未知の provider・未知の id でも従来どおりの
+ * 見た目に degrade するだけで、**行を捨てることはない**。
+ *
+ * `seq` は `state.logSeq` の**単一カウンタを共用**する。描画キーなので通し番号にして
+ * おくほうが安全で、本体側の seq に穴が空くのは構わない（単調増加であればよく、
+ * 上限で古い行が落ちても振り直さないのと同じ理屈）。
+ */
+function routeLogEntry(
+  state: SessionState,
+  entry: LogEntry,
+  ref: string | undefined,
+): Pick<SessionState, 'messages' | 'subagents' | 'logSeq'> {
+  if (ref !== undefined) {
+    const subagents = appendSubagentLog(state.subagents, ref, entry);
+    if (subagents !== undefined) {
+      return { messages: state.messages, subagents, logSeq: entry.seq };
+    }
+  }
+  return {
+    messages: pushLogEntry(state.messages, entry),
+    subagents: state.subagents,
+    logSeq: entry.seq,
+  };
 }
 
 /** `turn_completed` の畳み込み（サブエージェントが残っていれば保留する）。 */
@@ -242,6 +329,9 @@ export function applyAgentEvent(
         // 戻さないと、前のプロセスの id が残ったまま誰も片付けられなくなる
         // （SDK の `SDKBackgroundTasksChangedMessage` が明示している要件）。
         activeTaskIds: undefined,
+        // 表示側も同じ理由で「走っている印」を封じる（記録は残す）。前のプロセスの
+        // タスクは決着を報告しないので、封じないとスピナーが永久に回る。
+        subagents: sealSubagents(state.subagents, at),
         // 保留中の許可がある間は awaiting_* を維持する（ダイアログの裏で
         // "Running" に戻さない）。
         status: state.pendingPermission ? state.status : 'running',
@@ -276,14 +366,11 @@ export function applyAgentEvent(
       const seq = state.logSeq + 1;
       return {
         ...state,
-        messages: pushLogEntry(state.messages, {
-          seq,
-          kind: 'assistant_text',
-          text,
-          timestamp: event.timestamp,
-          agent,
-        }),
-        logSeq: seq,
+        ...routeLogEntry(
+          state,
+          { seq, kind: 'assistant_text', text, timestamp: event.timestamp, agent },
+          event.subagentRef,
+        ),
       };
     }
 
@@ -299,16 +386,19 @@ export function applyAgentEvent(
         todos,
         progress: todos === state.todos ? state.progress : progressOf(todos),
         prCreateToolIds,
-        messages: pushLogEntry(state.messages, {
-          seq,
-          kind: 'tool_use',
-          text: event.summary,
-          timestamp: event.timestamp,
-          agent,
-          // 詳細ビューが連続したツール実行を畳むときの内訳に使う（`core/log-collapse.ts`）。
-          tool: event.tool,
-        }),
-        logSeq: seq,
+        ...routeLogEntry(
+          state,
+          {
+            seq,
+            kind: 'tool_use',
+            text: event.summary,
+            timestamp: event.timestamp,
+            agent,
+            // 詳細ビューが連続したツール実行を畳むときの内訳に使う（`core/log-collapse.ts`）。
+            tool: event.tool,
+          },
+          event.subagentRef,
+        ),
       };
     }
 
@@ -338,13 +428,11 @@ export function applyAgentEvent(
         ...state,
         extraPrs,
         prCreateToolIds,
-        messages: pushLogEntry(state.messages, {
-          seq,
-          kind: 'tool_result',
-          text: event.summary,
-          agent,
-        }),
-        logSeq: seq,
+        ...routeLogEntry(
+          state,
+          { seq, kind: 'tool_result', text: event.summary, agent },
+          event.subagentRef,
+        ),
       };
     }
 
@@ -378,11 +466,23 @@ export function applyAgentEvent(
     }
 
     case 'task_started': {
+      // ① 完了ゲート。**先に・無条件に**（従来と 1 文字も変わらない計算）。
       const active = state.activeTaskIds ?? [];
-      if (active.includes(event.taskId)) {
+      const gate = active.includes(event.taskId) ? active : [...active, event.taskId];
+      // ② 表示。ゲートには一切影響しない（メタが無ければ何もしない）。
+      const subagents = event.subagent
+        ? startSubagent(state.subagents, { id: event.taskId, ...event.subagent }, at)
+        : state.subagents;
+      if (gate === active && subagents === state.subagents) {
         return state;
       }
-      return { ...state, activeTaskIds: [...active, event.taskId] };
+      return { ...state, activeTaskIds: gate, subagents };
+    }
+
+    // 表示専用。**ゲートを触らない**（型の上でも `activeTaskIds` に近づかない）。
+    case 'task_progress': {
+      const subagents = progressSubagent(state.subagents, event.taskId, event);
+      return subagents === state.subagents ? state : { ...state, subagents };
     }
 
     case 'task_settled': {
@@ -392,18 +492,22 @@ export function applyAgentEvent(
       // `task_settled` はもう来ない）セッションが `running` から出られなくなる。
       // 早すぎる完了より張り付きのほうが害が大きいので、安全側は「空にする」。
       const next = event.taskId ? active.filter((id) => id !== event.taskId) : [];
+      // 表示側の決着。**ゲートの計算（上の 1 行）とは独立**で、id が無いときは
+      // 触らない（ゲートは安全側に「全部畳む」が、表示で全部を決着済みにすると
+      // 走っているサブエージェントが終わったように見える嘘になる）。
+      const subagents = settleSubagent(state.subagents, event.taskId, event, at);
       // 最後の 1 本が片付き、保留していた完了があるなら今こそ確定する。走っている
       // 状態のときだけ — 途中で失敗/中断したセッションを遅れて来た通知で
       // completed にしない。許可/質問待ちだった場合は `deferredResult` を持ったまま
       // ゲートだけ空にし、回答して `running` へ戻る `permission_resolved` が確定する
       // （`settleDeferred`。ここで諦めると完了が永久に失われる）。
       if (next.length === 0 && state.deferredResult && state.status === 'running') {
-        return completeTurn(state, { ...state.deferredResult, at });
+        return completeTurn({ ...state, subagents }, { ...state.deferredResult, at });
       }
-      if (next.length === active.length) {
+      if (next.length === active.length && subagents === state.subagents) {
         return state;
       }
-      return { ...state, activeTaskIds: next };
+      return { ...state, activeTaskIds: next, subagents };
     }
 
     case 'tasks_changed': {

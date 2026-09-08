@@ -2,44 +2,31 @@ import { Box, type DOMElement, Text, useInput, useWindowSize } from 'ink';
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   type AgentId,
-  ARROW_SCROLL_LINES,
   agentLabelOf,
   COMMANDS,
+  choiceIndexAtRow,
+  choiceRowHeights,
+  choiceView,
   composerRowCount,
   type DiffStat,
-  type DisplayLine,
+  dialogContentWidth,
   dialogMaxRows,
-  isFullscreenViewport,
   isInterruptible,
   isResumable,
   isTerminalStatus,
-  LOG_EDGE_SCROLL_MS,
   type LogCollapse,
-  type LogEdge,
-  type LogPoint,
-  type LogViewport,
-  logCaretAt,
-  logEdgeAt,
-  logEdgePoint,
-  logGroupAt,
-  logLines,
-  logLinkAt,
-  logRowSelection,
-  logStatusRow,
   logViewportRows,
-  logWindow,
   type ModelOption,
   paletteMaxRows,
   parseSgrMouse,
   resumeInstruction,
-  type ScrollAnchor,
   type SessionManager,
-  scrollDown,
-  scrollUp,
-  streamLines,
+  subagentChoices,
+  subagentRow,
+  subagentRowHit,
+  subagentRowLabel,
   type ToolRun,
   toolRunLabel,
-  WHEEL_SCROLL_LINES,
 } from '@/core';
 import { AgentSelect } from './agent-select';
 import { CommandPalette } from './command-palette';
@@ -50,21 +37,23 @@ import {
   useAbsolutePosition,
   useAgentAvailability,
   useBoxHeight,
+  useClock,
   useCommandRunner,
   useLifecycleAction,
-  useLogDragSelection,
   useRecovery,
   useRunMode,
   useSessions,
 } from './hooks';
 import { useMessages } from './i18n-context';
 import { normalizeChord } from './input';
-import { BLANK_ROW, LOG_PREFIX, LogLine } from './log-line';
+import { BLANK_ROW } from './log-line';
+import { LogPane, useLogPane } from './log-pane';
 import { LoginDialog } from './login-dialog';
 import { ModelSelect } from './model-select';
 import { PermissionDialog } from './permission-dialog';
 import { PrSummary } from './pr-cell';
 import { StatusFooter } from './status-footer';
+import { SubagentPicker } from './subagent-picker';
 import { glyph, statusColor, theme } from './theme';
 
 /**
@@ -123,7 +112,22 @@ export const SessionDetail: FC<{
    * でいつでも一括の開閉ができる。
    */
   collapseTools?: boolean;
-}> = ({ manager, id, models, modelsByAgent, onBack, onCopy, onOpenUrl, collapseTools }) => {
+  /**
+   * サブエージェント専用のログ画面を開く（ログ下段の行をクリック / `/subagents`）。
+   * 渡されなければその導線を出さない（合成ルートが View を持たない構成でも壊れない）。
+   */
+  onOpenSubagent?: (taskId: string) => void;
+}> = ({
+  manager,
+  id,
+  models,
+  modelsByAgent,
+  onBack,
+  onCopy,
+  onOpenUrl,
+  collapseTools,
+  onOpenSubagent,
+}) => {
   const m = useMessages();
   const sessions = useSessions(manager);
   const mode = useRunMode(manager);
@@ -134,22 +138,6 @@ export const SessionDetail: FC<{
   const composer = useComposer({ onCopy });
   const { buffer, bufferRef } = composer;
   const composerWidth = composer.wrapWidth;
-  // ログの範囲選択。コンポーザとは別インスタンス（位置の基準が「文書の行 + 桁」で違う）。
-  const logSel = useLogDragSelection(onCopy);
-  // ドラッグが可視域の外へ出ている向き。ここにあるあいだ自動スクロールし続ける。
-  const [edge, setEdge] = useState<LogEdge | undefined>(undefined);
-  /**
-   * press した位置にあった URL。**離すまで開かない**ための保留で、途中で drag が
-   * 来たら取り消す（範囲選択のつもりの操作でブラウザを開かないため）。state ではなく
-   * ref なのは、同一 tick に複数のマウスレポートがまとまって届いても順に読めるように
-   * するため（`bufferRef` / `anchorRef` と同じ理由）。
-   */
-  const pendingLinkRef = useRef<string | undefined>(undefined);
-  /**
-   * press した位置にあったツール実行まとめ行の key。URL と同じ理由で**離すまで
-   * 開閉しない**（範囲選択のつもりのドラッグでログが組み変わらないように）。
-   */
-  const pendingGroupRef = useRef<number | undefined>(undefined);
   /**
    * 連続したツール実行を畳むか（`Ctrl+O` / `/tools` で一括切替）。false のあいだは
    * まとめ行そのものを出さない = 従来どおりの全部入りのログになる。
@@ -157,25 +145,6 @@ export const SessionDetail: FC<{
   const [grouping, setGrouping] = useState(collapseTools !== false);
   /** 個別に開いてあるまとまりの key（`ToolRun.key` = 先頭エントリの seq）。 */
   const [openRuns, setOpenRuns] = useState<ReadonlySet<number>>(() => new Set());
-  // ログ表示域の実測高さ。ここに描く行数の上限であり、スクロール1回の移動量の基準
-  // でもある。見積り（logViewportRows）より実測を優先するのは、可視域より多く描くと
-  // Yoga が溢れた行を「上でクリップ」せず「縮小」してしまい、ログの途中の行が
-  // 虫食いで欠落するため（= 上へスクロールしても読めない状態になっていた）。
-  const logRef = useRef<DOMElement>(null);
-  const measuredLogRows = useBoxHeight(logRef);
-  // ログ可視域の絶対位置（マウス当たり判定の原点）。
-  const logBox = useAbsolutePosition(logRef);
-  // Log scroll position; 'bottom' follows the newest line (see core/scroll.ts).
-  const [anchor, setAnchor] = useState<ScrollAnchor>('bottom');
-  // スクロール位置は ref にも持つ。理由は**同期的に読む必要がある**こと: 自動スクロールの
-  // 1 tick は「次のアンカー」から選択の終点（`logEdgePoint`）を組み、さらに「動かなかったか」で
-  // タイマーを止める判定をするので、setState の関数形（次の描画まで値が見えない）では書けない。
-  // ref なら 1 チャンクにまとまって届いた複数レポートも順に積める。
-  const anchorRef = useRef<ScrollAnchor>('bottom');
-  const applyAnchor = (next: ScrollAnchor) => {
-    anchorRef.current = next;
-    setAnchor(next);
-  };
   const [panel, setPanel] = useState<'input' | 'actions'>('input');
   // 許可/質問ダイアログが出ているあいだのゾーン（`pending` のときだけ意味を持つ）。
   // 既定は `dialog`: 回答は待たせている用事なので、そこへ辿り着くのに Tab を踏ませない
@@ -261,7 +230,7 @@ export const SessionDetail: FC<{
     // `status` はスロットルされた購読値なので、送信直後の連打を弾けない。
     if (manager.resume(session.id, resumeInstruction(status, m))) {
       setPanel('input');
-      applyAnchor('bottom');
+      pane.toBottom();
     }
   };
 
@@ -277,7 +246,7 @@ export const SessionDetail: FC<{
       return;
     }
     // 中断のログ行は末尾に付くので、過去ログを見ていても結果が見えるところへ戻す。
-    applyAnchor('bottom');
+    pane.toBottom();
     // interrupt は SDK の control request（await で返る）。サブプロセスがもう居ない等で
     // reject し得るので裸で投げない（unhandled rejection = TUI の死。git-and-io.md）。
     void manager.interrupt(session.id).catch(() => undefined);
@@ -343,6 +312,9 @@ export const SessionDetail: FC<{
       diff: () => setShowChanges((v) => !v),
       // `/tools` は Ctrl+O と同じ（キーを知らなくてもパレットから辿れるように置く）。
       tools: () => toggleTools(),
+      // `/subagents` はサブエージェントの専用ログへ入る。**マウスを無効にしている
+      // 環境ではログ下段の行をクリックできない**ので、これがキーボードからの唯一の経路。
+      subagents: () => openSubagents(),
       // `/sync` merges the base branch into THIS session's worktree; a conflict is
       // left in place and handed to this very session to resolve.
       sync: () => {
@@ -350,7 +322,7 @@ export const SessionDetail: FC<{
           return;
         }
         recovery.run(id, 'sync');
-        applyAnchor('bottom'); // the instruction lands at the tail — follow it
+        pane.toBottom(); // the instruction lands at the tail — follow it
       },
       // `/fix-ci` asks this session to fix its PR's red checks.
       fixCi: () => {
@@ -358,7 +330,7 @@ export const SessionDetail: FC<{
           return;
         }
         recovery.run(id, 'ci');
-        applyAnchor('bottom');
+        pane.toBottom();
       },
       // `/remove` はこのセッションを記録ごと削除する（操作パネルの `x` と同じ確認へ）。
       remove: () => setConfirm('remove'),
@@ -371,27 +343,6 @@ export const SessionDetail: FC<{
   // （既定は「codiva を終了」= 一覧ビューの意味）。
   const commandDescribes = useMemo(() => ({ exit: m.command.exitDetail }), [m.command.exitDetail]);
 
-  // Expand entries into physical rows once per (messages, width) — the scroll
-  // model (anchor/steps/hidden counts) works in rows, so multi-line messages
-  // scroll smoothly instead of jumping an entry at a time. Width accounts for
-  // the view's horizontal padding (1 cell each side).
-  const messages = session?.messages;
-  // ログ行の折返し幅。ストリーミング中の行も**同じ幅**で折り返す（食い違うと確定した
-  // 瞬間に行の割れ方が変わって画面が組み変わる）。
-  const logWidth = Math.max(1, columns - 2);
-  // ログを描く行数 = スクロール1回の移動量の基準 = アンカーの下限。`logWindow` と
-  // スクロール（移動量・アンカーの下限）で必ずこの同じ値を使う — 食い違うと最上部で
-  // アンカーが 1 行手前で止まり、先頭行に到達できなくなる。
-  // 全画面時は実測した可視高さに収める（実測が入るまでの1フレームだけ見積りで代用）。
-  // インライン描画時（端末が低くて全画面化しない）はクリップされず端末スクロールに
-  // 任せるため実測は使わず（高さ=内容なので測っても自分自身になる）、再描画コストの
-  // 上限として端末 rows を使う。
-  // **スクロール位置にもストリーミングにも依存しない**のが要点: スクロール案内は
-  // ログ枠の外の状態行（常に 1 行）へ出す（`logStatusRow`）。ここを可変にすると
-  // 見えているログ全体が 1 行跳ねる（= ガクガクする）。
-  const logCap = isFullscreenViewport(rows)
-    ? Math.max(1, Math.floor(measuredLogRows ?? logViewportRows(rows)))
-    : Math.max(1, rows);
   // まとめ行の文言。グリフ（▸/▾）は theme、語はカタログ、並べ方は純粋な
   // `toolRunLabel` が持つ。`logLines` のメモ化の依存に入るので useCallback で固定する。
   const runLabel = useCallback(
@@ -403,213 +354,172 @@ export const SessionDetail: FC<{
     () => (grouping ? { label: runLabel, isExpanded: (key) => openRuns.has(key) } : undefined),
     [grouping, runLabel, openRuns],
   );
-  const entryRows = useMemo<DisplayLine[]>(
-    () =>
-      messages
-        ? logLines(messages, logWidth, (kind) => LOG_PREFIX[kind], agentDivider, collapse)
-        : [],
-    [messages, logWidth, agentDivider, collapse],
-  );
-  // ストリーミング中の本文。**ログの末尾の行として**描くので、返ってきたぶんだけ
-  // 下へ伸びていき、末尾にいなければ（アンカーが数値なら）視界は動かない。
-  // Markdown 整形とリンク検出をしないのは、途中テキストを整形すると毎デルタで全行の
-  // 折り返しが変わり Ink のキャッシュが膨れるため（`streamLines` の注記）。
-  const streaming = session?.streamingText;
-  const streamRows = useMemo<DisplayLine[]>(
-    () => (streaming ? streamLines(streaming, logWidth, LOG_PREFIX.assistant_text, logCap) : []),
-    [streaming, logWidth, logCap],
-  );
-  const lines = useMemo<DisplayLine[]>(
-    () => (streamRows.length === 0 ? entryRows : [...entryRows, ...streamRows]),
-    [entryRows, streamRows],
-  );
-  const total = lines.length;
-  // 実際に描くウィンドウ。当たり判定（どの行をクリックしたか）と描画で**同じ結果**を使う。
-  const win = logWindow(lines, logCap, anchor);
-  // ログ直下に必ず 1 行描く状態行（スクロール案内 / 空行）。
-  const logStatus = logStatusRow(win);
   /**
-   * ログ可視域の幾何。すべて描画に使った実測値・同じウィンドウから組むので、クリック位置の
-   * 逆算が別の行に当たらない。実測前とインライン描画時（低い端末＝マウス捕捉もしない）は
-   * undefined にして、当たり判定そのものをやめる（黙って別の行を選ぶより選べないほうがよい）。
-   */
-  const logView: LogViewport | undefined =
-    logBox && measuredLogRows !== undefined && isFullscreenViewport(rows)
-      ? {
-          top: logBox.top,
-          left: logBox.left,
-          height: Math.max(1, Math.floor(measuredLogRows)),
-          firstRow: win.hiddenAbove,
-          rows: win.entries.length,
-        }
-      : undefined;
-
-  /** ログの選択を捨てる（端の自動スクロールも止める）。 */
-  const clearLogSelection = () => {
-    logSel.clear();
-    setEdge(undefined);
-  };
-
-  /**
-   * まとめ行を開閉する前に、見えている場所を動かさないための下ごしらえ。
+   * 会話ログのビューポート 1 面ぶん（実測・スクロール・範囲選択・URL クリック・
+   * まとめ行の開閉・端の自動スクロール）。サブエージェント詳細と**同じ** `useLogPane` を
+   * 通すので、「触っていない行がコピーされる」類の不具合が片方の画面だけで再発しない。
    *
-   * 末尾追従（`'bottom'`）のままだと、展開して増えたぶんが下に伸びて**押した見出しが
-   * 画面の上へ流れていく**（何を開いたのか見失う）。今の窓の終端で固定すれば、
-   * 見出しより前の行数は開閉で変わらないので見出しは同じ位置に留まる。
-   * 選択は行 index が基準なので、組み変わる前に捨てる。
+   * 折返し幅はこのビューの横パディング（左右 1 セルずつ）を引いた値。ストリーミング中の
+   * 本文も同じ幅で折り返す（食い違うと確定した瞬間に行の割れ方が変わって画面が組み変わる）。
+   *
+   * 畳み込みの**state はここ（view）が持ち**、機械（press で保留 → drag で取消 →
+   * release で開閉、アンカーの固定）は pane が持つ。
    */
-  const beforeToggle = () => {
-    if (anchorRef.current === 'bottom') {
-      applyAnchor(win.hiddenAbove + logCap);
-    }
-    clearLogSelection();
-  };
-
-  /** まとめ行 1 つを開閉する（クリック）。 */
-  const toggleRun = (key: number) => {
-    beforeToggle();
-    setOpenRuns((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(key)) {
-        next.add(key);
-      }
-      return next;
-    });
-  };
+  const pane = useLogPane({
+    entries: session?.messages,
+    streamingText: session?.streamingText,
+    width: Math.max(1, columns - 2),
+    fallbackRows: logViewportRows,
+    divider: agentDivider,
+    collapse,
+    onToggleGroup: (key) =>
+      setOpenRuns((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(key)) {
+          next.add(key);
+        }
+        return next;
+      }),
+    onCopy,
+    onOpenUrl,
+  });
 
   /**
    * ツール実行のまとめを一括で切り替える（`Ctrl+O` / `/tools`）。個別に開いてあった
    * ぶんは捨てる — 「全部たたむ / 全部ひらく」の結果が押すたびに変わらないようにする。
    */
   const toggleTools = () => {
-    beforeToggle();
+    pane.beforeToggle();
     setGrouping((on) => !on);
     setOpenRuns(new Set());
   };
 
+  // ── サブエージェント（ログ下段の 1 行 + 複数件の選択ダイアログ）─────────────
+  const subagents = session?.subagents;
+  // 走っているサブエージェントがある間だけ 1 秒ごとに再描画する（経過時間の表示）。
+  // provider が所要時間を報告していれば `subagentElapsedMs` がそれを使うので、
+  // 決着後は時計が止まる = 無条件の 1s タイマーを詳細ビューに持ち込まない。
+  const ticking = (subagents ?? []).some((run) => run.status === 'running');
+  const now = useClock(1000, ticking);
+  const subagentState = useMemo(() => subagentRow(subagents), [subagents]);
+  // ラベルは**表示幅に切って**受け取る（毎秒変わる文字列を切らずに `<Text>` へ渡すと
+  // Ink の上限なしキャッシュに積まれ続ける）。`width` はクリック当たり判定の右端。
+  const subagentLabel = useMemo(
+    () =>
+      subagentRowLabel(
+        subagentState,
+        m,
+        `${glyph.bullet} `,
+        Math.max(1, columns - 2),
+        ticking ? now : undefined,
+      ),
+    [subagentState, m, columns, ticking, now],
+  );
+  const subagentRef = useRef<DOMElement>(null);
+  const subagentBox = useAbsolutePosition(subagentRef);
+  const subagentHeight = useBoxHeight(subagentRef);
   /**
-   * 端でのドラッグ 1 tick: 1 行スクロールし、選択の終点を**スクロール後の**端の行へ伸ばす。
-   * これで新しく現れた行がそのまま選択に入り、「画面の上端／下端までドラッグすると、
-   * そのままスクロールしながら選択が続く」になる。
+   * press した位置にあったサブエージェントの task id（`'pick'` = 複数件なので
+   * ダイアログを出す）。**離すまで開かない**ための保留で、drag が来たら取り消す
+   * （行の上からドラッグを始めただけで画面が変わらないように。URL と完全同型）。
    */
-  const edgeStep = (dir: LogEdge) => {
-    const current = anchorRef.current;
-    const next =
-      dir === 'up'
-        ? scrollUp(current, total, logCap, ARROW_SCROLL_LINES)
-        : scrollDown(current, total, logCap, ARROW_SCROLL_LINES);
-    applyAnchor(next);
-    // 終点は**次に描かれる**ウィンドウの端の行。行数（`logCap`）はスクロール位置に
-    // 依存しないので、そのまま次のアンカーで数え直せばよい。
-    logSel.extend(logEdgePoint(logWindow(lines, logCap, next), dir));
-    if (next === current) {
-      // 文書の端まで来た（もう動かない）: タイマーを止める。release のレポートを取り逃した
-      // ときに永久にスクロールし続けないための保険にもなっている。
-      setEdge(undefined);
-    }
-  };
+  const pendingSubagentRef = useRef<string | undefined>(undefined);
+  /**
+   * 複数件の選択ダイアログ。カーソルは index ではなく **task id** で持つ —
+   * 開いている最中に新しいサブエージェントが append されても、指している対象が
+   * 別物に化けない。
+   */
+  const [pick, setPick] = useState<string | undefined>(undefined);
+  const pickItems = useMemo(
+    () => subagentChoices(subagents ?? [], m, ticking ? now : undefined),
+    [subagents, m, ticking, now],
+  );
+  const pickIndex = Math.max(
+    0,
+    (subagents ?? []).findIndex((run) => run.id === pick),
+  );
+  const pickRef = useRef<DOMElement>(null);
+  const pickBox = useAbsolutePosition(pickRef);
+  const pickHeight = useBoxHeight(pickRef);
+  const picking = pick !== undefined;
+  // 折返し幅と表示ウィンドウは**ここで 1 度だけ**組み、描画（`SubagentPicker`）と
+  // クリックの逆算の両方に同じものを渡す。別々に計算すると押した行と当たった
+  // 選択肢がズレる（許可ダイアログと同じ約束）。
+  const pickWidth = dialogContentWidth(columns);
+  const pickHeights = useMemo(() => choiceRowHeights(pickItems, pickWidth), [pickItems, pickWidth]);
+  const pickView = useMemo(
+    // 見出し + ヒントの 2 行を残して選択肢に割り当てる。
+    () => choiceView(pickHeights, pickIndex, Math.max(1, dialogMaxRows(rows, 'detail') - 2)),
+    [pickHeights, pickIndex, rows],
+  );
 
-  // 端で押さえたまま静止していてもスクロールを続けるためのタイマー。SGR ?1002 は
-  // **セルが変わったときだけ**移動を報告するので、レポート駆動だけでは端で止まってしまう。
-  // 最新の edgeStep は ref 経由で渡し、タイマーは向きが変わったときだけ張り替える
-  // （ログの追記や再描画ごとにタイマーを作り直すと 1 tick も進まないことがある）。
-  const edgeStepRef = useRef(edgeStep);
-  useEffect(() => {
-    edgeStepRef.current = edgeStep;
-  });
-  useEffect(() => {
-    if (!edge) {
+  /**
+   * サブエージェント行が**実際に描かれているか**。あの 1 行は認証・再開の案内と
+   * 同居していて、そちらが優先されると出ない（描いていない行のクリックを拾わない）。
+   *
+   * 関数にしてあるのは `resumable` の宣言がこれより下にあるため（呼ばれるのは
+   * マウスイベントの時点なので初期化済み）。
+   */
+  const showsSubagentRow = (): boolean =>
+    status !== 'needs_login' && !resumable && subagentLabel !== undefined;
+
+  /**
+   * その 1 行に当たったか。実測できていない・行が出ていないあいだは判定しない
+   * （黙って別の場所を押したことにするより、押せないほうがよい）。
+   */
+  const subagentHit = (x: number, y: number): boolean =>
+    showsSubagentRow() &&
+    subagentBox !== undefined &&
+    subagentHeight !== undefined &&
+    subagentLabel !== undefined &&
+    subagentRowHit({ x, y }, subagentBox, subagentHeight, subagentLabel.width);
+
+  /**
+   * 選択ダイアログのクリック位置 → 選択肢 index。判定は**描いたウィンドウ**で行い、
+   * 上端のインジケータ 1 行ぶんずらす。縦に潰れている（実測 < 描いた行数）あいだは
+   * 当たり判定そのものをやめる。
+   */
+  const pickRowAt = (y: number): number | undefined => {
+    if (!pickBox) {
       return undefined;
     }
-    const timer = setInterval(() => edgeStepRef.current(edge), LOG_EDGE_SCROLL_MS);
-    return () => clearInterval(timer);
-  }, [edge]);
-
-  // 端末幅が変わるとログを再折り返すため、行 index の指す文字が変わる。ズレた位置を
-  // 光らせ続けない（deps を付けられないのは logSel の参照が毎描画で変わるため）。
-  // ログが上限に達して**古いエントリが落ちた**ときも同じ理由で捨てる（選択は文書先頭
-  // からの表示行 index なので、先頭が消えると別の行を指す = 触っていない行がコピーされる）。
-  const widthRef = useRef(columns);
-  const firstSeqRef = useRef(messages?.[0]?.seq);
-  // ストリーミング中の行（= 確定行より後ろ）に掛かった選択の番人。行 index は文書に対する
-  // 位置なので、ライブ領域の行が入れ替わると同じ index が別の文字を指す（触っていない行が
-  // コピーされる）。3 つの手掛かりで検知する — 詳細は下の effect のコメント。
-  const live = {
-    entries: entryRows.length,
-    rows: streamRows.length,
-    head: streamRows[0]?.key,
-  };
-  const liveRef = useRef(live);
-  useEffect(() => {
-    const firstSeq = messages?.[0]?.seq;
-    if (widthRef.current !== columns || firstSeqRef.current !== firstSeq) {
-      widthRef.current = columns;
-      firstSeqRef.current = firstSeq;
-      liveRef.current = live;
-      clearLogSelection();
-      return;
-    }
-    const prev = liveRef.current;
-    // 末尾に**足されただけ**（行数が増えただけ）なら既存行の index はズレないので何もしない
-    // — ここで捨てると、流れている本文をドラッグしている最中に毎デルタ選択が消える。
-    // 崩れるのは 3 つ: 確定行が増えた（ライブ領域全体が下へずれる）/ 先頭行が変わった
-    // （cap で画面外へ押し出された）/ 行数が減った（`clipStreamText` が頭を落とした）。
-    const shifted =
-      prev.entries !== live.entries || prev.head !== live.head || live.rows < prev.rows;
-    if (!shifted) {
-      liveRef.current = live;
-      return;
-    }
-    // ライブ領域は「これまでの確定行数」から下。そこに掛かっている選択だけ捨てる。
-    // **まだ範囲になっていないドラッグ（アンカーだけ）も見る** — press した時点では
-    // 選択がまだ無いので、見ないとドラッグ中に確定したときアンカーだけが古い行を指したまま
-    // 残り、離した瞬間に触っていない行がコピーされる。
-    const reach = Math.max(logSel.anchor()?.row ?? -1, logSel.selection?.end.row ?? -1);
-    const touchesLive = reach >= prev.entries;
-    liveRef.current = live;
-    if (touchesLive) {
-      clearLogSelection();
-    }
-  });
-
-  /**
-   * ログ選択のアンカー（press）。行の上ならその文字、**行より上の余白**（ログが可視域に
-   * 満たないときの末尾寄せの隙間・上パディング）なら先頭行の行頭にする — 「画面のいちばん
-   * 上から下へ」というドラッグを受けたいので、ここでクリックを捨てない。行より下
-   * （プレビュー行・操作パネル側）は当たりにしない（ログ以外の要素があるので黙って食わない）。
-   */
-  const logAnchorAt = (x: number, y: number): LogPoint | undefined => {
-    if (!logView) {
+    const visible = pickHeights.slice(pickView.start, pickView.end);
+    const drawn =
+      visible.reduce((sum, height) => sum + height, 0) +
+      (pickView.showAbove ? 1 : 0) +
+      (pickView.showBelow ? 1 : 0);
+    if (pickHeight !== undefined && pickHeight < drawn) {
       return undefined;
     }
-    const point = logCaretAt(lines, logView, x, y);
-    if (point) {
-      return point;
-    }
-    return logEdgeAt(logView, y) === 'up' ? logEdgePoint(win, 'up') : undefined;
+    const hit = choiceIndexAtRow(visible, y - pickBox.top - (pickView.showAbove ? 1 : 0));
+    return hit === undefined ? undefined : pickView.start + hit;
   };
 
-  /**
-   * ログ上のドラッグ。可視域の外へ出たらその向きへ自動スクロールしながら選択を伸ばし
-   * （`edgeStep` + タイマー）、内側なら指している文字まで終点を動かす。
-   */
-  const handleLogDrag = (x: number, y: number) => {
-    if (!logView) {
+  /** サブエージェントを開く（1 件なら直行、複数件なら選択ダイアログ）。 */
+  const openSubagents = () => {
+    const list = subagents ?? [];
+    if (!onOpenSubagent || list.length === 0) {
+      // 0 件は一過性の通知で伝える（黙って無反応にしない）。
+      recovery.setNotice(m.subagent.empty);
       return;
     }
-    const dir = logEdgeAt(logView, y);
-    if (dir) {
-      setEdge(dir);
-      edgeStep(dir); // レポートが来た時点で 1 行進めておく（タイマーを待たない）
+    const only = list.length === 1 ? list[0] : undefined;
+    if (only) {
+      onOpenSubagent(only.id);
       return;
     }
-    setEdge(undefined);
-    const point = logCaretAt(lines, logView, x, y);
-    if (point) {
-      logSel.extend(point);
-    }
+    // 1 択のダイアログは出さない。複数件は代表を初期カーソルにして選ばせる。
+    setPick(subagentState.kind === 'idle' ? list.at(-1)?.id : subagentState.run.id);
   };
 
+  // 対象が全部消えたらダイアログを閉じる（宙に浮いたカーソルを残さない）。
+  // 許可/質問が来たときも畳む — 回答は待たせている用事なので優先する（一覧・詳細が
+  // ゾーンを既定へ戻すのと同じ方針）。
+  useEffect(() => {
+    if (pick !== undefined && ((subagents ?? []).length === 0 || pending)) {
+      setPick(undefined);
+    }
+  }, [pick, subagents, pending]);
   useInput((rawInput, rawKey) => {
     // SGR マウスレポートはキー入力より先に解釈する（レポート断片が生テキストとして
     // editText に流れ込み「スクロールしようとすると文字が入力される」のを防ぐ）。
@@ -630,65 +540,81 @@ export const SessionDetail: FC<{
       if (dialogActive && mouse.kind !== 'wheel') {
         return;
       }
+      // 選択ダイアログ表示中はホイールだけ通す（スクロールは副作用が無く、ログを
+      // 読み返す手段。許可ダイアログと同じ例外）。押下は下のカーソル移動で扱う。
+      if (picking && mouse.kind === 'wheel') {
+        pane.handleMouse(mouse);
+        return;
+      }
+      // 押下の裁定順は**この view が持つ**（コンポーザ → サブエージェント行 → ログ）。
+      // ログ側の機械（選択・URL とまとめ行の保留・端の自動スクロール）は `useLogPane`
+      // の中で、サブエージェント詳細とまったく同じものが動く。
       if (mouse.kind === 'wheel') {
-        applyAnchor(
-          mouse.dir === 'up'
-            ? scrollUp(anchorRef.current, total, logCap, WHEEL_SCROLL_LINES)
-            : scrollDown(anchorRef.current, total, logCap, WHEEL_SCROLL_LINES),
-        );
+        pane.handleMouse(mouse);
       } else if (mouse.kind === 'press') {
         // コンポーザ内のクリックはキャレット移動 + 選択アンカー（当たり判定と選択の機械は
         // 共通の `useComposer`）。ログ行の上ならログの範囲選択を始める（どちらでもなければ
         // 両方のハイライトを解除）。
         if (composer.handleMouse(mouse)) {
-          pendingLinkRef.current = undefined;
-          pendingGroupRef.current = undefined;
-          clearLogSelection();
-        } else {
-          setEdge(undefined);
-          // URL の上で押したら「離すまでドラッグしなければ開く」候補として覚える。
-          // 押した時点では開かない — ドラッグで範囲選択を始めた場合に開いてしまう。
-          // **左ボタンだけ**: 右クリック（端末のコンテキストメニューを期待した操作）や
-          // 中クリック（貼り付け）でブラウザを開くのは意図しない副作用になる。
-          pendingLinkRef.current =
-            logView && mouse.button === 'left'
-              ? logLinkAt(lines, logView, mouse.x, mouse.y)
-              : undefined;
-          // ツール実行のまとめ行も同じ扱い（押した時点では開閉しない）。まとめ行に
-          // URL は載らないので、この 2 つが同時に立つことはない。
-          pendingGroupRef.current =
-            logView && mouse.button === 'left' ? logGroupAt(lines, logView, mouse.y) : undefined;
-          const point = logAnchorAt(mouse.x, mouse.y);
-          if (point) {
-            logSel.begin(point);
-          } else {
-            logSel.clear();
+          pane.clearPendingLink();
+          pane.clearSelection();
+        } else if (picking) {
+          // ダイアログ内の押下は選択肢のカーソル移動だけ（**決定は Enter**）。
+          // 枠の外なら閉じる。どちらでも背後のログの選択は始めない。
+          const index = pickRowAt(mouse.y);
+          const target = index === undefined ? undefined : (subagents ?? [])[index];
+          if (target) {
+            setPick(target.id);
+          } else if (pickBox && mouse.y < pickBox.top) {
+            setPick(undefined);
           }
+        } else if (
+          mouse.button === 'left' &&
+          !pending &&
+          subagentHit(mouse.x, mouse.y) &&
+          onOpenSubagent
+        ) {
+          // **押した時点では開かない**（drag で範囲選択を始めるつもりの操作で画面が
+          // 変わらないように）。左ボタン限定 = 右クリック（端末メニュー）・中クリック
+          // （貼り付け）で遷移しない。許可/質問待ちの間も遷移しない — アンマウントすると
+          // ダイアログの内部 state（何問目か・書きかけの自由記述）が捨てられる。
+          const list = subagents ?? [];
+          pendingSubagentRef.current = list.length === 1 ? list[0]?.id : 'pick';
+          pane.clearPendingLink();
+          pane.clearSelection();
+        } else {
+          pane.handleMouse(mouse);
         }
       } else if (mouse.kind === 'drag') {
-        // ドラッグになった = 範囲選択なので、リンクを開く / 開閉する候補は取り消す。
-        pendingLinkRef.current = undefined;
-        pendingGroupRef.current = undefined;
-        if (!composer.handleMouse(mouse) && logSel.dragging()) {
-          handleLogDrag(mouse.x, mouse.y);
+        // ドラッグになった = 範囲選択なので、開く候補は取り消す。
+        pendingSubagentRef.current = undefined;
+        if (picking) {
+          return;
+        }
+        if (composer.handleMouse(mouse)) {
+          pane.clearPendingLink();
+        } else {
+          pane.handleMouse(mouse);
         }
       } else if (mouse.kind === 'release') {
+        // ドラッグにならずに離した = 単なるクリック → ここで開く（URL と同型）。
+        const target = pendingSubagentRef.current;
+        pendingSubagentRef.current = undefined;
+        if (target !== undefined) {
+          if (target === 'pick') {
+            openSubagents();
+          } else if (onOpenSubagent) {
+            onOpenSubagent(target);
+          }
+          return;
+        }
+        if (picking) {
+          return;
+        }
         // 離した時点で 1 回だけコピー（ドラッグごとに送らない）。ハイライトは残す。
         // アンカーの無い側は no-op なので、両方に release を渡して構わない。
         composer.handleMouse(mouse);
-        logSel.end(lines);
-        setEdge(undefined);
-        // ドラッグにならずに URL の上で離した = 単なるクリック → ブラウザで開く。
-        const url = pendingLinkRef.current;
-        pendingLinkRef.current = undefined;
-        if (url !== undefined && onOpenUrl) {
-          onOpenUrl(url);
-        }
-        const group = pendingGroupRef.current;
-        pendingGroupRef.current = undefined;
-        if (group !== undefined) {
-          toggleRun(group);
-        }
+        pane.handleMouse(mouse);
       }
       return;
     }
@@ -698,10 +624,9 @@ export const SessionDetail: FC<{
     const { input, key } = normalizeChord(rawInput, rawKey);
     // 何かキーが来たらマウス選択のハイライトは消す（自動スクロールも止める）。
     composer.clearSelection();
-    clearLogSelection();
+    pane.clearSelection();
     // press の release が届かないまま（端末外で離した等）保留が残るのを防ぐ。
-    pendingLinkRef.current = undefined;
-    pendingGroupRef.current = undefined;
+    pane.clearPendingLink();
     // 立て直しの結果表示は次の操作で引っ込める（エラーと違い一過性の通知）。
     recovery.setNotice(undefined);
     // The model picker is modal: its own useInput owns arrows/Enter/Esc. Swallow
@@ -716,6 +641,11 @@ export const SessionDetail: FC<{
       return;
     }
     if (key.escape) {
+      // サブエージェントの選択ダイアログが最優先の出口（開いたものから順に閉じる）。
+      if (picking) {
+        setPick(undefined);
+        return;
+      }
       if (confirm) {
         setConfirm(null);
         return;
@@ -758,6 +688,29 @@ export const SessionDetail: FC<{
       toggleTools();
       return;
     }
+    // サブエージェントの選択ダイアログ。**`pending` ガードより前**に置き、印字キーも
+    // 含めて**全部飲む**（背後のコンポーザに文字が入らない = キーを持つモーダルを
+    // 増やさずに同じ効果を得る）。Esc は上で、Ctrl+C / Ctrl+O はさらに前で処理済み。
+    if (picking) {
+      const list = subagents ?? [];
+      if (key.upArrow || key.downArrow) {
+        const next = Math.min(
+          Math.max(0, pickIndex + (key.upArrow ? -1 : 1)),
+          Math.max(0, list.length - 1),
+        );
+        setPick(list[next]?.id);
+        return;
+      }
+      if (key.return) {
+        const target = list[pickIndex];
+        setPick(undefined);
+        if (target && onOpenSubagent) {
+          onOpenSubagent(target.id);
+        }
+        return;
+      }
+      return;
+    }
     if (pending) {
       // 許可/質問待ちのあいだは 2 ゾーン（`DetailFocus`）を Tab で往復する。
       // ここに ↑↓ を両ゾーンで持たせないのが要点 — 一覧と同じで、混ぜるとダイアログの
@@ -770,34 +723,15 @@ export const SessionDetail: FC<{
         return; // PermissionDialog owns the keys（出口の Tab は上で処理した）
       }
       // `log` ゾーン: ログのスクロールだけを受ける（回答は Tab / クリックで戻ってから）。
-      if (key.pageUp) {
-        applyAnchor(scrollUp(anchorRef.current, total, logCap));
-        return;
-      }
-      if (key.pageDown) {
-        applyAnchor(scrollDown(anchorRef.current, total, logCap));
-        return;
-      }
-      if (key.upArrow || key.downArrow) {
-        applyAnchor(
-          key.upArrow
-            ? scrollUp(anchorRef.current, total, logCap, ARROW_SCROLL_LINES)
-            : scrollDown(anchorRef.current, total, logCap, ARROW_SCROLL_LINES),
-        );
-        return;
-      }
+      pane.handleScrollKey(key);
       // 印字キーはここでは何もしない（コンポーザはダイアログに場所を譲っていて出ていない）。
       return;
     }
     // Log scroll (terminal scrollback is disabled under the alt screen). The
     // step is derived from the *visible* log height, not the full terminal, so a
     // page never jumps past unseen lines.
-    if (key.pageUp) {
-      applyAnchor(scrollUp(anchorRef.current, total, logCap));
-      return;
-    }
-    if (key.pageDown) {
-      applyAnchor(scrollDown(anchorRef.current, total, logCap));
+    if (key.pageUp || key.pageDown) {
+      pane.handleScrollKey(key);
       return;
     }
     if (confirm) {
@@ -828,11 +762,7 @@ export const SessionDetail: FC<{
       (key.upArrow || key.downArrow) &&
       (panel === 'actions' || composerRowCount(bufferRef.current.value, composerWidth) <= 1)
     ) {
-      applyAnchor(
-        key.upArrow
-          ? scrollUp(anchorRef.current, total, logCap, ARROW_SCROLL_LINES)
-          : scrollDown(anchorRef.current, total, logCap, ARROW_SCROLL_LINES),
-      );
+      pane.handleScrollKey(key);
       return;
     }
     if (panel === 'actions') {
@@ -862,7 +792,7 @@ export const SessionDetail: FC<{
     if (result.text && session) {
       manager.send(session.id, result.text);
       composer.reset();
-      applyAnchor('bottom'); // jump back to the tail to watch the new turn
+      pane.toBottom(); // jump back to the tail to watch the new turn
     }
   });
 
@@ -895,58 +825,12 @@ export const SessionDetail: FC<{
     <Box flexDirection="column" flexGrow={1} padding={1}>
       {/*
        * ヘッダは持たない（要件: セッション詳細はコンテンツ + フッタのみ）。
-       * メッセージログの末尾ビューポートが上端いっぱいまで残り高さを占める。
-       * flexGrow で残りを占め、justifyContent="flex-end" + overflowY="hidden" で
-       * 「最新行が下端、溢れた古い行は上へクリップ」にする。<Static> はスクロール
-       * バック側に書くため全画面レイアウトでは画面外に消えてしまい使えない。
-       */}
-      <Box
-        ref={logRef}
-        flexDirection="column"
-        flexGrow={1}
-        overflowY="hidden"
-        justifyContent="flex-end"
-      >
-        {/*
-         * 行の入れ物は flexShrink={0} が必須。Ink/Yoga は溢れた子を「クリップ」せず
-         * 「縮小」するため、これが無いと可視域より1行でも多く描いた瞬間にログの途中の
-         * 行が虫食いで落ちる（上へスクロールしても読めなくなる）。縮小させなければ
-         * flex-end の溢れは上端で正しくクリップされる。行数自体は logWindow が
-         * 実測した可視高さに収めている（二重の保険）。
-         */}
-        <Box flexDirection="column" flexShrink={0}>
-          {/* 選択のハイライトは**文書の行 index**で引く（win.hiddenAbove + 表示位置）。
-              スクロールしても同じ文字が光り続けるのがこのビューの選択の要件。 */}
-          {win.entries.map((line, i) => (
-            <LogLine
-              key={line.key}
-              line={line}
-              sel={
-                logSel.selection
-                  ? logRowSelection(logSel.selection, win.hiddenAbove + i, line.text.length)
-                  : undefined
-              }
-            />
-          ))}
-        </Box>
-      </Box>
-
-      {/*
-       * ログ直下の状態行。**常に 1 行**を占める（中身が無いときは空行）。ここを
-       * 条件付きで出し入れすると、その上のログビューポートの高さが 1 行変わって
-       * 見えているログ全体が跳ねる（= スクロールがガクガクする）。詳細は
-       * `core/scroll.ts` の `LogStatusRow`。この行がフッタとの間の余白も兼ねるので、
+       * 会話ログ + その直下の状態行（**常に 1 行**）。状態行が `<LogPane>` の中に
+       * あるのは、あれが「ログの高さを状態で変えない」ための予約行だから — 離すと
+       * 片方の画面で条件付きに戻されうる。この行がフッタとの間の余白も兼ねるので、
        * 下のブロックに `marginTop` は付けない（付けると空行が 2 行並ぶ）。
        */}
-      <Box flexShrink={0}>
-        {logStatus.kind === 'scrollback' ? (
-          <Text color={theme.warn} dimColor wrap="truncate-end">
-            {m.detail.scrollHint(logStatus.hiddenBelow)}
-          </Text>
-        ) : (
-          <Text>{BLANK_ROW}</Text>
-        )}
-      </Box>
+      <LogPane pane={pane} statusHint={m.detail.scrollHint} />
 
       <Box flexDirection="column" flexShrink={0}>
         {/* 複数 PR を出したセッションだけ、全件の番号をここに出す（一覧の行末セルは
@@ -977,11 +861,28 @@ export const SessionDetail: FC<{
             高さ0に潰れて消える。縮む役は flexGrow のログ領域（内部スクロールで収まる）。
             ログ直下の状態行と同じ理由で**常に 1 行**にする（該当なしのときも空行）。
             ここはターンが終わるたびに出入りするので、条件付きにするとログが 1 行跳ねる。 */}
-        <Box flexShrink={0}>
+        {/* サブエージェントの実行状況もこの 1 行に**同居**させる（独立した行にすると
+            `DETAIL_CHROME_ROWS` の引き算が 1 増え、24 行の端末で質問ダイアログの選択肢が
+            窓に入らなくなる。`core/layout.ts`）。
+            優先順位: 認証 → 再開 → サブエージェント → Ctrl+C → 空行。
+            Ctrl+C より優先してよいのは、あれがフォーカス横断の chord で案内が無くても
+            効くのに対し、「何が走っているか」はここでしか分からないから。逆に認証・再開は
+            行動を促す案内なので譲る（そのときサブエージェントは走っていない）。
+            計測 Box はこの 1 行だけを包む（クリック位置の逆算の原点）。
+            押せることは下線で示す（ログ内リンクと同じアフォーダンス）。 */}
+        <Box ref={subagentRef} flexShrink={0}>
           {status === 'needs_login' ? (
             <Text color={statusColor.needsLogin}>{m.auth.hint(agentLabelOf(agent))}</Text>
           ) : resumable ? (
             <Text color={statusColor.interrupted}>{m.resume.oneKeyHint}</Text>
+          ) : subagentLabel ? (
+            <Text
+              color={statusColor.running}
+              underline={onOpenSubagent !== undefined}
+              wrap="truncate-end"
+            >
+              {subagentLabel.text}
+            </Text>
           ) : interruptible ? (
             // 中断も Ctrl+R と同じフォーカス横断の chord なので、フッタではなく独立した
             // 行で案内する（フッタヒントは入力欄/操作パネルで切り替わってしまう）。
@@ -1040,7 +941,7 @@ export const SessionDetail: FC<{
                 // 一覧側の `setDefaultAgent` も同じ false を「何もしない」と扱っている。
                 setActionError(m.agent.unavailable);
               }
-              applyAnchor('bottom');
+              pane.toBottom();
             }}
             onLogin={(id2) => {
               if (manager.canLogin(id2)) {
@@ -1058,9 +959,19 @@ export const SessionDetail: FC<{
             onSelect={(model) => {
               manager.setSessionModel(session.id, model);
               setModelSelect(false);
-              applyAnchor('bottom');
+              pane.toBottom();
             }}
             onCancel={() => setModelSelect(false)}
+          />
+        ) : picking ? (
+          // 入力欄の位置に出す（許可ダイアログと同じ）= ログの席を削らない。
+          // キーは view の単一ハンドラが処理する（このコンポーネントは描くだけ）。
+          <SubagentPicker
+            items={pickItems}
+            view={pickView}
+            cursor={pickIndex}
+            width={pickWidth}
+            listRef={pickRef}
           />
         ) : pending ? (
           // `log` ゾーンでも**描いたまま**にする（質問文を読みながらログを遡れるように）。

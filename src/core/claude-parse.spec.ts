@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { applyClaudeMessage, summarizeToolUse, toolResultSummary } from '@/core/claude-parse';
+import {
+  applyClaudeMessage,
+  parseClaudeMessage,
+  summarizeToolUse,
+  toolResultSummary,
+} from '@/core/claude-parse';
 import {
   MAX_LOG_ENTRIES,
   MAX_LOG_ENTRY_CHARS,
@@ -123,6 +128,61 @@ describe('applyClaudeMessage over real fixtures', () => {
     expect(state.status).toBe('completed');
     expect(state.activeTaskIds ?? []).toHaveLength(0);
     expect(state.deferredResult).toBeUndefined();
+  });
+
+  // 以下は実データから拾えるサブエージェント情報の番人。どれも「SDK は流している
+  // のに codiva が捨てていた」ものなので、落ちたら機能が退行している。
+  describe('sub-agent の実行状況（実データ）', () => {
+    it('起動時のメタを記録する', () => {
+      const run = replay(subagent).subagents?.[0];
+      expect(run).toMatchObject({
+        id: 'a9c796e8b864ec7cf',
+        // 内部ログ行の `parent_tool_use_id` と突き合わせる帰属キー。
+        toolUseId: 'toolu_019o9hAhgK3grKNL1EMFUYsS',
+        kind: 'general-purpose',
+      });
+      expect(run?.prompt?.startsWith('Create a file named report.txt')).toBe(true);
+    });
+
+    // `system/task_progress` はハンドラが無く**完全に捨てられていた**。
+    it('進捗で説明が動的に更新され、直近のツールが分かる', () => {
+      const run = replay(subagent).subagents?.[0];
+      // 起動時は "Create report.txt file" → 進捗で書き換わる。
+      expect(run?.description).toBe('Writing report.txt');
+      expect(run?.lastTool).toBe('Write');
+    });
+
+    // `task_notification.status` を読んでいなかったので成否が区別できていなかった。
+    it('決着の成否・要約・出力先・使用状況が入る', () => {
+      const run = replay(subagent).subagents?.[0];
+      expect(run?.status).toBe('completed');
+      expect(run?.summary?.startsWith('The file was created successfully')).toBe(true);
+      expect(run?.outputFile?.endsWith('.output')).toBe(true);
+      // task_updated（決着）→ task_notification（要約）の順に届き、後から来た
+      // 使用状況で上書きされる。
+      expect(run?.usage).toEqual({ totalTokens: 11990, toolUses: 1, durationMs: 8067 });
+      expect(run?.finishedAt).toBeGreaterThan(0);
+    });
+
+    // ここが機能の核心: サブエージェント内部のツール実行は `parent_tool_use_id` 付きで
+    // 親ストリームに流れてくるので、放っておくと親の作業と無標識で混ざる。
+    it('内部のツール実行を専用ログへ分離し、親のログには混ぜない', () => {
+      const state = replay(subagent);
+      const sub = (state.subagents?.[0]?.messages ?? []).map((entry) => entry.text);
+      const parent = state.messages.map((entry) => entry.text);
+      expect(sub.some((text) => text.startsWith('Write '))).toBe(true);
+      expect(sub.some((text) => text.includes('File created successfully'))).toBe(true);
+      expect(parent.some((text) => text.startsWith('Write '))).toBe(false);
+      expect(parent.some((text) => text.includes('File created successfully'))).toBe(false);
+    });
+
+    // かつては裸の `Agent` の 1 行で、何を任せたのか読み取れなかった。
+    it('親のログには何を任せたかが分かる起動行が残る', () => {
+      const state = replay(subagent);
+      expect(state.messages.map((entry) => entry.text)).toContain(
+        'Agent "Create report.txt file" (general-purpose)',
+      );
+    });
   });
 });
 
@@ -1244,5 +1304,120 @@ describe('self-created PRs (extraPrs)', () => {
       at: 5,
     });
     expect(state.extraPrs).toBe(created.extraPrs);
+  });
+});
+
+describe('parseClaudeMessage / sub-agent のライフサイクル', () => {
+  const sys = (over: Record<string, unknown>): SDKMessage =>
+    ({ type: 'system', ...over }) as unknown as SDKMessage;
+
+  /**
+   * **決着の成否をどう分類しても、ゲートは必ず解ける**ことの番人。ここで未知の値を
+   * 取りこぼして `task_settled` を出さないと、完了ゲートが永久に埋まって
+   * セッションが `running` から出られなくなる（表示の分類ミスより桁違いに重い）。
+   */
+  it.each([
+    ['completed', 'completed'],
+    ['failed', 'failed'],
+    ['stopped', 'stopped'],
+    // 未知の値・欠落は「終わったが結果が分からない」へ丸める。
+    ['killed', 'stopped'],
+    ['weird-new-status', 'stopped'],
+    [undefined, 'stopped'],
+  ])('task_notification の status=%s は outcome=%s になり、必ず決着を出す', (status, outcome) => {
+    const events = parseClaudeMessage(sys({ subtype: 'task_notification', task_id: 't1', status }));
+    expect(events).toEqual([
+      expect.objectContaining({ kind: 'task_settled', taskId: 't1', outcome }),
+    ]);
+  });
+
+  it('task_progress は進捗イベントになる（ゲートに触るイベントは出さない）', () => {
+    const events = parseClaudeMessage(
+      sys({
+        subtype: 'task_progress',
+        task_id: 't1',
+        description: 'Writing report.txt',
+        last_tool_name: 'Write',
+        usage: { total_tokens: 10, tool_uses: 2, duration_ms: 30 },
+      }),
+    );
+    expect(events).toEqual([
+      {
+        kind: 'task_progress',
+        taskId: 't1',
+        description: 'Writing report.txt',
+        lastTool: 'Write',
+        usage: { totalTokens: 10, toolUses: 2, durationMs: 30 },
+      },
+    ]);
+  });
+
+  // `paused` は「終わった」ではない。決着扱いにすると、再開したタスクを誰も追跡して
+  // いない状態で completed になり、そのあと届くメッセージで running へ戻って
+  // 二度と終われなくなる。
+  it('task_updated の paused は決着でも進捗でもない', () => {
+    expect(
+      parseClaudeMessage(
+        sys({ subtype: 'task_updated', task_id: 't1', patch: { status: 'paused' } }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('task_updated の決着は outcome を運ぶ', () => {
+    expect(
+      parseClaudeMessage(
+        sys({ subtype: 'task_updated', task_id: 't1', patch: { status: 'failed', error: 'boom' } }),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'task_settled',
+        taskId: 't1',
+        outcome: 'failed',
+        summary: 'boom',
+      }),
+    ]);
+  });
+
+  it('task_updated が説明だけを変えたときは進捗として扱う', () => {
+    expect(
+      parseClaudeMessage(
+        sys({ subtype: 'task_updated', task_id: 't1', patch: { description: 'Reading files' } }),
+      ),
+    ).toEqual([{ kind: 'task_progress', taskId: 't1', description: 'Reading files' }]);
+  });
+
+  // 雑務タスクはゲート対象外（従来どおり）。表示にも出さない。
+  it('skip_transcript の task_started は何も出さない', () => {
+    expect(
+      parseClaudeMessage(sys({ subtype: 'task_started', task_id: 't1', skip_transcript: true })),
+    ).toEqual([]);
+  });
+
+  it('subagent_type が無ければ task_type を種別に使う', () => {
+    const events = parseClaudeMessage(
+      sys({ subtype: 'task_started', task_id: 't1', task_type: 'local_workflow' }),
+    );
+    expect(events[0]).toMatchObject({
+      kind: 'task_started',
+      taskId: 't1',
+      subagent: { kind: 'local_workflow' },
+    });
+  });
+});
+
+describe('summarizeToolUse / Agent（サブエージェントの起動行）', () => {
+  it.each([
+    [
+      '説明と種別の両方',
+      { description: 'Create report.txt file', subagent_type: 'general-purpose' },
+      'Agent "Create report.txt file" (general-purpose)',
+    ],
+    ['説明だけ', { description: 'Do a thing' }, 'Agent "Do a thing"'],
+    ['種別だけ', { subagent_type: 'explore' }, 'Agent (explore)'],
+    ['どちらも無い', {}, 'Agent'],
+  ])('%s', (_name, input, expected) => {
+    expect(summarizeToolUse('Agent', input)).toBe(expected);
+    // 旧称・別名の保険（同じ体裁で出す）。
+    expect(summarizeToolUse('Task', input)).toBe(expected);
   });
 });

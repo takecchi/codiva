@@ -1,5 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { type AgentEvent, applyAgentEvent, type TodoOp } from './agent-events';
+import { type AgentEvent, applyAgentEvent, type SubagentMeta, type TodoOp } from './agent-events';
 import {
   isAuthError,
   isAuthErrorKind,
@@ -12,7 +12,15 @@ import { MAX_LOG_ENTRY_CHARS } from './log-buffer';
 import { isPrCreateTool, PR_DETECT_SCAN_CHARS } from './pr-detect';
 import type { RateLimitInfoJson } from './rate-limit';
 import { USER_INTERRUPT_DETAIL } from './status-reducer';
-import type { AgentId, AgentStopCause, AgentToolKind, SessionState, TaskStatus } from './types';
+import type {
+  AgentId,
+  AgentStopCause,
+  AgentToolKind,
+  SessionState,
+  SubagentOutcome,
+  SubagentUsage,
+  TaskStatus,
+} from './types';
 
 /**
  * Claude Agent SDK のメッセージの**形**を知る唯一の場所。
@@ -124,6 +132,16 @@ export function summarizeToolUse(name: string, input: Record<string, unknown>): 
     case 'AskUserQuestion': {
       const questions = (input.questions as { question?: string }[] | undefined) ?? [];
       return `AskUserQuestion: ${questions[0]?.question ?? ''}`;
+    }
+    // サブエージェントの起動。**実測のツール名は `Agent`**（`Task` は別名の保険）。
+    // 説明と種別を出すのは、これが「何を任せたか」の唯一の手掛かりだから — 既定の
+    // `default` に落ちると裸の `Agent` の 1 行になり、あとからログを読んでも
+    // 何のために起こしたサブエージェントなのか分からない。
+    case 'Agent':
+    case 'Task': {
+      const description = inputText(input.description);
+      const type = inputText(input.subagent_type);
+      return `Agent${description ? ` "${description}"` : ''}${type ? ` (${type})` : ''}`;
     }
     default:
       return name;
@@ -239,6 +257,63 @@ function isSettledTaskPatch(patch: unknown): boolean {
   return typeof status === 'string' && !LIVE_TASK_STATUSES.has(status);
 }
 
+/** 非空の文字列だけを通す（欠落・非文字列・空文字は undefined）。 */
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** 有限の数値だけを通す。 */
+function num(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** オブジェクトとして読める場合だけ返す（`patch` / `usage` の入口）。 */
+function objectOf(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** サブエージェントの `usage: { total_tokens, tool_uses, duration_ms }` を中立の形へ。 */
+function toSubagentUsage(value: unknown): SubagentUsage | undefined {
+  const raw = objectOf(value);
+  if (raw === undefined) {
+    return undefined;
+  }
+  const usage: SubagentUsage = {
+    totalTokens: num(raw.total_tokens),
+    toolUses: num(raw.tool_uses),
+    durationMs: num(raw.duration_ms),
+  };
+  return usage.totalTokens === undefined &&
+    usage.toolUses === undefined &&
+    usage.durationMs === undefined
+    ? undefined
+    : usage;
+}
+
+/**
+ * 決着のしかた（**表示専用**）。未知の値・欠落は `stopped`（= 終わったが結果が
+ * 分からない）へ丸める。ここの分類を外しても**ゲートには影響しない** —
+ * `task_settled` は status が何であれ必ず出すので、ゲートは必ず解ける。
+ */
+function toSubagentOutcome(value: unknown): SubagentOutcome {
+  return value === 'completed' || value === 'failed' ? value : 'stopped';
+}
+
+/**
+ * `system/task_*` が運ぶ表示用メタ。`subagent_type` を優先し、無ければ `task_type`
+ * （`local_agent` / `local_workflow` 等）を種別として使う。
+ */
+function subagentMetaOf(message: Record<string, unknown>): SubagentMeta {
+  return {
+    toolUseId: str(message.tool_use_id),
+    description: str(message.description),
+    kind: str(message.subagent_type) ?? str(message.task_type),
+    prompt: str(message.prompt),
+  };
+}
+
 /** `system/*` を写す。 */
 function fromSystem(message: Record<string, unknown>): AgentEvent[] {
   if (message.subtype === 'init') {
@@ -258,13 +333,33 @@ function fromSystem(message: Record<string, unknown>): AgentEvent[] {
     if (message.skip_transcript === true || typeof message.task_id !== 'string') {
       return [];
     }
-    return [{ kind: 'task_started', taskId: message.task_id }];
+    return [{ kind: 'task_started', taskId: message.task_id, subagent: subagentMetaOf(message) }];
+  }
+  // 進捗（実測: `description` が動的に更新され、`last_tool_name` と `usage` が付く）。
+  // **完了ゲートは触らない** — 進捗はエッジでもレベル信号でもないので、これを起点に
+  // ゲートへ積むと「進捗だけ来て決着が来ない」新しい wedge の経路になる。
+  if (message.subtype === 'task_progress' && typeof message.task_id === 'string') {
+    return [
+      {
+        kind: 'task_progress',
+        taskId: message.task_id,
+        description: str(message.description),
+        lastTool: str(message.last_tool_name),
+        usage: toSubagentUsage(message.usage),
+      },
+    ];
   }
   if (message.subtype === 'task_notification') {
     return [
       {
         kind: 'task_settled',
         taskId: typeof message.task_id === 'string' ? message.task_id : undefined,
+        // 表示用の追加情報。**`status` が何であれ決着イベントは出す**（ゲートを
+        // 解くのが最優先で、成否の分類はそれに影響しない）。
+        outcome: toSubagentOutcome(message.status),
+        summary: str(message.summary),
+        outputFile: str(message.output_file),
+        usage: toSubagentUsage(message.usage),
       },
     ];
   }
@@ -286,12 +381,24 @@ function fromSystem(message: Record<string, unknown>): AgentEvent[] {
   // 通知が来ないまま終わるタスク（TaskStop で止めた・落ちた）でも完了ゲートを
   // 解けるようにするため — 解けないとセッションが永久に `running` に張り付く。
   // 判定は「まだ走っている状態の否定」で書く（知らない言い回しでも決着側に倒す）。
-  if (
-    message.subtype === 'task_updated' &&
-    typeof message.task_id === 'string' &&
-    isSettledTaskPatch(message.patch)
-  ) {
-    return [{ kind: 'task_settled', taskId: message.task_id }];
+  if (message.subtype === 'task_updated' && typeof message.task_id === 'string') {
+    const patch = objectOf(message.patch);
+    if (isSettledTaskPatch(message.patch)) {
+      return [
+        {
+          kind: 'task_settled',
+          taskId: message.task_id,
+          outcome: toSubagentOutcome(patch?.status),
+          summary: str(patch?.error),
+        },
+      ];
+    }
+    // 決着していない更新でも説明が変わることがある（説明の動的更新のもう 1 本の経路）。
+    // ここでゲートを触らないのは `task_progress` と同じ理由。
+    const description = str(patch?.description);
+    if (description !== undefined) {
+      return [{ kind: 'task_progress', taskId: message.task_id, description }];
+    }
   }
   // リトライ可能な API 失敗。CLI が再試行するのでセッションは走ったままで、
   // ログに 1 行残すだけ（連発するので直前の同種行を書き換える）。
@@ -314,7 +421,10 @@ function fromSystem(message: Record<string, unknown>): AgentEvent[] {
 }
 
 /** `assistant` の本体（content ブロック）を写す。 */
-function fromAssistantBlocks(message: Record<string, unknown>): AgentEvent[] {
+function fromAssistantBlocks(
+  message: Record<string, unknown>,
+  subagentRef: string | undefined,
+): AgentEvent[] {
   const inner = message.message as { content?: unknown; model?: unknown } | undefined;
   const content = Array.isArray(inner?.content) ? inner.content : [];
   const timestamp = typeof message.timestamp === 'number' ? message.timestamp : undefined;
@@ -330,7 +440,12 @@ function fromAssistantBlocks(message: Record<string, unknown>): AgentEvent[] {
     }
     const block = raw as { type?: string };
     if (block.type === 'text') {
-      events.push({ kind: 'assistant_text', text: (raw as TextBlock).text, timestamp });
+      events.push({
+        kind: 'assistant_text',
+        text: (raw as TextBlock).text,
+        timestamp,
+        subagentRef,
+      });
     } else if (block.type === 'tool_use') {
       const tu = raw as ToolUseBlock;
       events.push({
@@ -343,6 +458,7 @@ function fromAssistantBlocks(message: Record<string, unknown>): AgentEvent[] {
         // tool_use id を控えて次の tool_result と突き合わせる（core/pr-detect.ts）。
         prCreate: isPrCreateTool(tu.name, tu.input ?? {}) || undefined,
         timestamp,
+        subagentRef,
       });
     }
   }
@@ -350,7 +466,7 @@ function fromAssistantBlocks(message: Record<string, unknown>): AgentEvent[] {
 }
 
 /** `user`（= tool_result の運び手）を写す。 */
-function fromUser(message: Record<string, unknown>): AgentEvent[] {
+function fromUser(message: Record<string, unknown>, subagentRef: string | undefined): AgentEvent[] {
   const inner = message.message as { content?: unknown } | undefined;
   const content = Array.isArray(inner?.content) ? inner.content : [];
   const events: AgentEvent[] = [];
@@ -365,6 +481,7 @@ function fromUser(message: Record<string, unknown>): AgentEvent[] {
         toolUseId: tr.tool_use_id,
         summary: firstLine(head),
         scanText: head,
+        subagentRef,
       });
     }
   }
@@ -447,6 +564,20 @@ function fromResult(message: Record<string, unknown>): AgentEvent[] {
 }
 
 /**
+ * この行を出したのがサブエージェントなら、その帰属キー（親側の tool_use id）。
+ *
+ * 実測（`__fixtures__/session-subagent.jsonl`）: サブエージェント内部の
+ * `assistant` / `user` は `parent_tool_use_id` に **Agent ツールの tool_use id** を
+ * 持ち、トップレベルの行は `null`。`system/task_started` の `tool_use_id` と同じ値なので、
+ * 畳み込み側（`applyAgentEvent`）がこれで専用ログへ振り分けられる。
+ *
+ * 引けなかった行は本体のログへ落ちる（= 従来どおり。行を捨てることはない）。
+ */
+function subagentRefOf(raw: Record<string, unknown>): string | undefined {
+  return str(raw.parent_tool_use_id);
+}
+
+/**
  * 生の `SDKMessage` 1 通を中立イベント列へ写す。**アダプタの入口**。
  * 状態は見ない（純粋・メッセージ単位で決まる）。
  */
@@ -503,11 +634,11 @@ export function parseClaudeMessage(message: SDKMessage): AgentEvent[] {
       const text = asString(inner?.content).trim();
       return [{ kind: 'turn_stopped', cause: 'connection', detail: text || String(raw.error) }];
     }
-    return fromAssistantBlocks(raw);
+    return fromAssistantBlocks(raw, subagentRefOf(raw));
   }
 
   if (type === 'user') {
-    return fromUser(raw);
+    return fromUser(raw, subagentRefOf(raw));
   }
 
   if (type === 'stream_event') {

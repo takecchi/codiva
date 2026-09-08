@@ -6,10 +6,10 @@ import {
   showsAccountInfo,
   supportsCapability,
 } from './agent-capabilities';
-import { NO_CAPABILITIES } from './agent-ports';
+import { type AgentCapabilities, NO_CAPABILITIES } from './agent-ports';
 import type { AgentId } from './types';
 
-const FULL = {
+const FULL: AgentCapabilities = {
   permissions: true,
   interrupt: true,
   setModel: true,
@@ -18,6 +18,7 @@ const FULL = {
   usage: true,
   cost: true,
   transcript: true,
+  subagents: true,
 };
 
 const AGENTS: AgentCapabilitySource[] = [
@@ -77,5 +78,19 @@ describe('showsAccountInfo', () => {
     ['既定が不明なら出す', undefined, true],
   ])('%s', (_label, defaultAgent, expected) => {
     expect(showsAccountInfo({ defaultAgent, capabilities })).toBe(expected);
+  });
+});
+
+describe('subagents capability', () => {
+  const lookup = capabilityLookup(AGENTS);
+
+  it.each<[AgentId | undefined, boolean]>([
+    ['claude', true],
+    ['codex', false],
+    ['grok', false],
+    // 未登録・不明なら**縮退しない**（動くはずの案内を黙って消さない）。
+    [undefined, true],
+  ])('%s → %s', (agent, expected) => {
+    expect(agentSupports(lookup, agent, 'subagents')).toBe(expected);
   });
 });

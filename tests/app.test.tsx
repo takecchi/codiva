@@ -9,11 +9,13 @@ import { DEFAULT_AGENT_LABEL, messages } from '@/core/i18n';
 import { DIALOG_CONTENT_RESERVE } from '@/core/layout';
 import { PR_POLL_STABLE_MS } from '@/core/pr-refresh';
 import { SessionManager } from '@/core/session-manager';
-import type { PrLookup, WorktreeService } from '@/core/session-ports';
+import type { PrLookup } from '@/core/session-ports';
 import { reduce } from '@/core/status-reducer';
 import type { AgentId, PrInfo, PrLookupResult, SessionState } from '@/core/types';
 import { glyph } from '@/ui/theme';
 import {
+  asMsg,
+  drivenManager,
   flush,
   makeManager,
   noopSession,
@@ -610,10 +612,6 @@ describe('App (list view)', () => {
     expect(manager.getSnapshot()[0]?.prompt).toBe('line one\nline two');
   });
 });
-
-function asMsg(m: unknown): SDKMessage {
-  return m as SDKMessage;
-}
 
 describe('App end-to-end (real Session, driven query)', () => {
   it('shows live task progress in the list and reaches 完了', async () => {
@@ -1215,23 +1213,6 @@ describe('App end-to-end (real Session, driven query)', () => {
 });
 
 describe('App detail view (in-app connection)', () => {
-  function drivenManager(extra?: Partial<WorktreeService>) {
-    const out = new AsyncQueue<SDKMessage>();
-    const queryFn = (() => {
-      const gen = (async function* () {
-        yield* out;
-      })() as unknown as Query & { interrupt: () => Promise<void> };
-      gen.interrupt = async () => {};
-      return gen;
-    }) as unknown as QueryFn;
-    const manager = new SessionManager({
-      worktrees: { ...worktrees, ...extra },
-      queryFn,
-      now: () => 0,
-    });
-    return { manager, out };
-  }
-
   it('Enter opens the in-app detail view and Esc returns to the list', async () => {
     const { manager, out } = drivenManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

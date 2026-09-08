@@ -750,6 +750,34 @@ incomplete.`）→ それを集約する `result`（`subtype: 'success'` + `is_e
    `user_input` が `deferredResult` を落とす（前のターンの完了が次のターンの途中で確定して
    しまうため。ゲート自体はまだ生きている可能性があるので残す）。
 
+**完了ゲート（`activeTaskIds`）と表示（`subagents`）は意図的に二重管理**。ユーザーがサブエージェントの
+実行状況を追えるように、実行状況と**専用ログ**を `SessionState.subagents`（`core/subagents.ts`）へ
+別フィールドとして持つ。ここをゲートと統合しなかったのは次の 3 点。
+
+1. **寿命が違う**。ゲートは `clearTurnState` で**必ず捨てる**もの（残すと次のターンの完了を飲み込んで
+   永久 `running`）。一方 `subagents` は**ターンをまたいで残す**のが機能要件で、終わったあとに
+   詳細ログを開けなければ意味がない。同じフィールドで両方は表せない。
+2. **`subagents` は有界で、決着済みも保持する**（`MAX_TRACKED_SUBAGENTS` = 8）。ここから live set を
+   導出すると、(a) 上限による追い出しが生きたタスクをゲートから消す＝**早すぎる完了**、(b) `status` の
+   分類ミス・未知の値が「まだ走っている」側に倒れて**ゲートが永久に埋まる**、のどちらかを新しい扉から
+   作り込む。ゲートは「素の文字列集合 + レベル信号の REPLACE による自己修復」という一番壊れにくい形の
+   ままにしておく。
+3. **レベル信号は表示に使えない**。`background_tasks_changed` が運ぶのは *live **background** tasks* の
+   集合で、実採取した前景の Task（`run_in_background: false`）では**一度も出ていない**。これで表示を
+   REPLACE すると、走っている前景サブエージェントが「終わった」と表示される嘘になる。だから
+   `tasks_changed` はゲートだけを触る。
+
+同じ理由で **`task_progress` はゲートを触らない**（進捗はエッジでもレベル信号でもないので、これを起点に
+積むと「進捗だけ来て決着が来ない」新しい wedge の経路になる）。表示の分類（`SubagentOutcome`）を外しても
+ゲートには影響しない — `task_settled` は `status` が何であれ必ず出す。番人は `agent-events.spec.ts` の
+**「表示用メタあり / なしでゲートの遷移が完全一致する」**テーブル。
+
+内部のログ行の振り分けは**畳み込み側**（`routeLogEntry`）。parse は `parent_tool_use_id` を
+`subagentRef` として載せるだけで状態を持たず、`applyAgentEvent` が `subagents[].toolUseId` で解決する。
+**帰属先が引けなければ本体のログへ落とす**ので、未知の provider・未知の id でも行を捨てない
+（従来どおりの見た目に degrade するだけ）。ログの予算は `LogLimits` で分け、サブエージェント 1 本は
+200 件 / 12k 文字（全 8 本でも本体の 400k の半分に収まることを spec で数値固定）。
+
 **許可要求は待ち行列**（`Session.pendingQueue`）。エージェントは 1 通のメッセージで**複数の
 tool_use を並行に**投げるため、`confirm` モードではその数だけ `canUseTool` が同時に走る。
 単一スロットに上書きすると**先の promise が永久に解決されず**、provider はその 1 本を待ち続け、
@@ -894,6 +922,8 @@ interface SessionState {
   rateLimitResetsAt?: number; // rate_limited のときの解除予定時刻
   streamingText?: string;     // stream_event の text_delta（書きかけの本文。transient・永続しない）
   activeTaskIds?: string[];   // 稼働中のサブエージェント（完了ゲート用。transient）
+  subagents?: SubagentRun[];  // サブエージェントの実行状況 + 専用ログ（表示用。transient）
+                              // ★ゲートではない（上の「二重管理」節）
   deferredResult?: { at: number; totalCostUsd?: number; resultText: string }; // 保留した result（同上）
   logSeq: number;             // LogEntry の採番カウンタ
 }

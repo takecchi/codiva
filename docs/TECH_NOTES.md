@@ -223,6 +223,24 @@ user 層を読むと**ポーリングのたびにユーザーの SessionStart ho
 
 **サブエージェント（Task ツール）**: 本体エージェントが Task ツールで作業を委譲すると、サブエージェントのメッセージは `parent_tool_use_id`（= Task の tool_use id）付きで流れてくる（トップレベルは `null`）。サブエージェント自身は独自の `result` を出さず、**`result/success` は最後にトップレベル1件だけ**。ライフサイクルは `system/task_started` → `system/task_progress` → `system/task_updated`（`patch: { status: 'completed', end_time }`）→ `system/task_notification`（`status: 'completed'|'failed'|'stopped'`）。**決着が 2 系統で届く**点が重要で、codiva は両方を `task_settled` に写す（通知が来ないまま終わるタスクでも完了ゲートが解けるように）。`patch.status` の union は `pending | running | completed | failed | killed | paused` で、**`paused` は「走っている」側**（決着扱いにすると再開後に追跡できなくなる）。さらに `system/background_tasks_changed` が**生きているタスクの全集合**を REPLACE セマンティクスで運ぶ（SDK 自身が「エッジの取りこぼしで running 表示が wedge しないよう集合ごと差し替えろ」と明示）。起動時には出ないので、CLI プロセスが起き直ったら集合を空に戻す必要がある。Task が**バックグラウンド実行**されると tool_result が即返り本体ターンが続行するため、サブエージェント稼働中に `result/success` が先に届きうる。このとき素直に completed 判定すると「作業中なのに Completed」になる。対策は `task_started` と決着イベントで稼働中タスクを追跡し、稼働中に届いた result を保留 → 全タスク settle 後に completed 確定（ARCHITECTURE.md「完了ゲート」参照）。**逆にゲートが解けなくなるとセッションが永久に `running` に張り付く**ので、決着の判定は取りこぼさない側（「まだ走っている状態の否定」）に倒してある。実データは `scripts/spike.ts` の `subagent` シナリオで採取（`__fixtures__/session-subagent.jsonl`）。
 
+**ゲート以外に使える情報**（実測。0.5.4 までは全部捨てていた）:
+
+| メッセージ | 運んでいるもの |
+|---|---|
+| `system/task_started` | `tool_use_id`（= 親の tool_use id。内部ログ行の `parent_tool_use_id` と同じ値なので**帰属キーに使える**）/ `description` / `subagent_type` / `task_type` / `prompt` |
+| `system/task_progress` | **`description` を動的に書き換えながら**（"Create report.txt file" → "Writing report.txt"）`last_tool_name` と `usage: { total_tokens, tool_uses, duration_ms }` |
+| `system/task_notification` | `status` に加えて `summary`（結果の要約）と `output_file`（サブエージェントの全出力を書いたファイルのパス） |
+| 親の `tool_use` | ツール名は **`Agent`**（`Task` ではない）。`input` に `description` / `subagent_type` / `prompt` / `run_in_background` |
+
+codiva はこれらを `SessionState.subagents` へ写し、詳細ビューの 1 行 + 専用ログ画面に出す
+（完了ゲートとは別フィールド。理由は ARCHITECTURE.md「完了ゲートと表示は意図的に二重管理」）。
+注意点 3 つ:
+
+- **前景の Task（`run_in_background: false`）では `background_tasks_changed` が一度も出ない**ので、
+  あれを「いま走っているサブエージェントの真実」として表示に使ってはいけない（ゲート専用）。
+- `usage.duration_ms` が来るおかげで、決着後の経過時間表示に毎秒タイマーが要らない。
+- `output_file` は将来 transcript 復元をやるときの本命の入口（sidechain 行を畳み直すより素直）。
+
 `includePartialMessages: true` にすると `{ type: 'stream_event', event }`（`SDKPartialAssistantMessage`）で生のストリーミングデルタが届く。**Phase 6 で採用**：`event.type === 'content_block_delta'` かつ `delta.type === 'text_delta'` のときのみ `delta.text` を `state.streamingText` に連結し、詳細ビューにタイピング風プレビューを出す。確定 `assistant` メッセージ / `result` / 追加入力で `streamingText` はクリア（確定ログが正）。`streamingText` は transient で永続しない。非テキストデルタ（`input_json_delta`・thinking 等）は状態を変えない。`~100ms` スロットル（`useSessions`）で再描画コストを抑える。
 
 ### TODO進捗の抽出（Step n/m）— 要スパイク検証

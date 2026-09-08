@@ -30,7 +30,8 @@ export type CommandAction =
   | 'sync'
   | 'fixCi'
   | 'recover'
-  | 'config';
+  | 'config'
+  | 'subagents';
 
 /** 1 つのスラッシュコマンドの定義。 */
 export interface CommandSpec {
@@ -60,6 +61,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   // `/tools` は会話ログの中の「ツール実行のまとめ」を一括で開閉する（Ctrl+O と同じ）。
   // 詳細ビュー専用（ハンドラを持たないビューでは昇格しないので通常の指示として流れる）。
   { name: 'tools', action: 'tools', describe: (m) => m.command.tools },
+  // `/subagents` は詳細ビュー専用（同じく昇格しない）。マウスを無効にしている環境では
+  // ログ下段の行をクリックできないので、**キーボードからサブエージェントへ辿り着く
+  // 唯一の経路**になる。
+  // 別名は付けない。`agents` は `/agent`（エージェント切替）の前方一致に混ざって
+  // パレットの候補を曖昧にし、`tasks` は TODO リスト（TaskCreate）と紛らわしい。
+  { name: 'subagents', action: 'subagents', describe: (m) => m.command.subagents },
   { name: 'sync', action: 'sync', describe: (m) => m.command.sync },
   // `fix-ci` はハイフン入り。`parseCommand` は最初の空白までを名前として取るので
   // そのまま完全一致で引ける（別名 `fixci` はハイフンを打ち忘れたとき用）。

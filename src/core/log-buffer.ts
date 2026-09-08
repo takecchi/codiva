@@ -73,6 +73,43 @@ export const MAX_STREAM_PREVIEW_CHARS = 32_000;
  */
 export const STREAM_PREVIEW_KEEP_CHARS = 16_000;
 
+/**
+ * ログ 1 本ぶんの予算。**3 つ揃って初めて有界**になる（件数だけでは何も縛れない —
+ * 1 件が 1 文字でも {@link MAX_LOG_ENTRY_CHARS} 文字でもよいので）。
+ *
+ * 引数として渡せるようにしてあるのは、**セッションが 1 本のログしか持たないとは
+ * 限らない**ため（サブエージェントは自分のログを持つ）。素朴に配列を N 本増やすと
+ * モジュール定数の予算がそのまま N 倍になり、ヒープを縛っている意味が消える。
+ */
+export interface LogLimits {
+  maxEntries: number;
+  maxChars: number;
+  maxEntryChars: number;
+}
+
+/** セッション本体の会話ログの予算（従来の 3 定数そのまま）。 */
+export const DEFAULT_LOG_LIMITS: LogLimits = {
+  maxEntries: MAX_LOG_ENTRIES,
+  maxChars: MAX_LOG_CHARS,
+  maxEntryChars: MAX_LOG_ENTRY_CHARS,
+};
+
+/**
+ * サブエージェント **1 本ぶん**のログの予算。親と別枠だが桁を落としてある。
+ *
+ * `MAX_TRACKED_SUBAGENTS`（`core/subagents.ts`）本ぶんの合計でも
+ * {@link MAX_LOG_CHARS} の半分に収まる大きさにしてある（番人は `log-buffer.spec.ts`）。
+ * しかもここへ移る行はもともと親のログを食っていた行なので、実効の増加はさらに小さい。
+ *
+ * 12k 文字は端末 150 行ぶん。全文の正本はサブエージェントの `outputFile`（CLI が書く）と
+ * CLI のトランスクリプトなので、パネルとして読み返すにはこれで足りる。
+ */
+export const SUBAGENT_LOG_LIMITS: LogLimits = {
+  maxEntries: 200,
+  maxChars: 12_000,
+  maxEntryChars: 4_000,
+};
+
 /** Marker appended to a clipped text so the log doesn't look silently complete. */
 const CLIPPED_SUFFIX = ' …';
 
@@ -88,10 +125,10 @@ function safeCut(text: string, at: number): number {
 }
 
 /** Clip an entry's text to {@link MAX_LOG_ENTRY_CHARS}, marking it when cut. */
-export function clipLogText(text: string): string {
-  return text.length <= MAX_LOG_ENTRY_CHARS
+export function clipLogText(text: string, maxEntryChars = MAX_LOG_ENTRY_CHARS): string {
+  return text.length <= maxEntryChars
     ? text
-    : text.slice(0, safeCut(text, MAX_LOG_ENTRY_CHARS)) + CLIPPED_SUFFIX;
+    : text.slice(0, safeCut(text, maxEntryChars)) + CLIPPED_SUFFIX;
 }
 
 /**
@@ -126,9 +163,9 @@ export function clipStreamText(text: string): string {
 }
 
 /** Clip an entry's text if needed, keeping the same object when it isn't. */
-function clipEntry(entry: LogEntry): LogEntry {
-  return entry.text.length > MAX_LOG_ENTRY_CHARS
-    ? { ...entry, text: clipLogText(entry.text) }
+function clipEntry(entry: LogEntry, maxEntryChars: number): LogEntry {
+  return entry.text.length > maxEntryChars
+    ? { ...entry, text: clipLogText(entry.text, maxEntryChars) }
     : entry;
 }
 
@@ -137,12 +174,12 @@ function clipEntry(entry: LogEntry): LogEntry {
  * characters within both budgets. Walking from the newest backwards is what makes
  * the two budgets composable — the first one to bind stops the walk.
  */
-function keptFrom(messages: readonly LogEntry[], extraChars: number): number {
+function keptFrom(messages: readonly LogEntry[], extraChars: number, limits: LogLimits): number {
   let chars = extraChars;
   let start = messages.length;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const text = messages[i]?.text ?? '';
-    if (messages.length - i + 1 > MAX_LOG_ENTRIES || chars + text.length > MAX_LOG_CHARS) {
+    if (messages.length - i + 1 > limits.maxEntries || chars + text.length > limits.maxChars) {
       break;
     }
     chars += text.length;
@@ -152,15 +189,22 @@ function keptFrom(messages: readonly LogEntry[], extraChars: number): number {
 }
 
 /**
- * Append `entry` to a session's log, clipping its text and dropping the oldest
- * entries once a budget ({@link MAX_LOG_ENTRIES} / {@link MAX_LOG_CHARS}) is
- * reached. The result is always a new array (the state is immutable), but a
- * bounded one — so the copy per append is bounded too. `seq` numbering is
- * untouched: it keeps counting up and stays the render key of a line.
+ * Append `entry` to a log, clipping its text and dropping the oldest entries once
+ * a budget ({@link LogLimits}) is reached. The result is always a new array (the
+ * state is immutable), but a bounded one — so the copy per append is bounded too.
+ * `seq` numbering is untouched: it keeps counting up and stays the render key of
+ * a line.
+ *
+ * `limits` を省略すると従来どおりセッション本体の予算（{@link DEFAULT_LOG_LIMITS}）。
+ * サブエージェントの専用ログは {@link SUBAGENT_LOG_LIMITS} を渡す。
  */
-export function pushLogEntry(messages: readonly LogEntry[], entry: LogEntry): LogEntry[] {
-  const clipped = clipEntry(entry);
-  const start = keptFrom(messages, clipped.text.length);
+export function pushLogEntry(
+  messages: readonly LogEntry[],
+  entry: LogEntry,
+  limits: LogLimits = DEFAULT_LOG_LIMITS,
+): LogEntry[] {
+  const clipped = clipEntry(entry, limits.maxEntryChars);
+  const start = keptFrom(messages, clipped.text.length, limits);
   return start === 0 ? [...messages, clipped] : [...messages.slice(start), clipped];
 }
 
@@ -169,7 +213,10 @@ export function pushLogEntry(messages: readonly LogEntry[], entry: LogEntry): Lo
  * the newest entries and clipping oversized texts. Restoring a months-old
  * transcript must not put tens of MB back into the heap at launch.
  */
-export function capLogEntries(entries: readonly LogEntry[]): LogEntry[] {
+export function capLogEntries(
+  entries: readonly LogEntry[],
+  limits: LogLimits = DEFAULT_LOG_LIMITS,
+): LogEntry[] {
   const kept: LogEntry[] = [];
   let chars = 0;
   for (let i = entries.length - 1; i >= 0; i -= 1) {
@@ -177,8 +224,8 @@ export function capLogEntries(entries: readonly LogEntry[]): LogEntry[] {
     if (entry === undefined) {
       continue;
     }
-    const clipped = clipEntry(entry);
-    if (kept.length + 1 > MAX_LOG_ENTRIES || chars + clipped.text.length > MAX_LOG_CHARS) {
+    const clipped = clipEntry(entry, limits.maxEntryChars);
+    if (kept.length + 1 > limits.maxEntries || chars + clipped.text.length > limits.maxChars) {
       break;
     }
     kept.push(clipped);
