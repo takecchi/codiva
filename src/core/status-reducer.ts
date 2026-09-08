@@ -2,6 +2,7 @@ import { clipLogText, pushLogEntry } from './log-buffer';
 import { withoutPrRef } from './pr-detect';
 import { makeTitle } from './slug';
 import { isActiveStatus } from './status-meta';
+import { sealSubagents } from './subagents';
 import type {
   CodivaEvent,
   CreateSessionInput,
@@ -123,8 +124,8 @@ export function appendLog(
  * ダイアログとして残り続ける）。`Session.commit` が「pending が消えた」ことを検知して
  * deny で解決するので、未応答の `tool_use` で終わる transcript にもならない。
  */
-function clearTurnState(state: SessionState): SessionState {
-  const { pendingPermission, ...rest } = clearTaskGate(state);
+function clearTurnState(state: SessionState, at: number): SessionState {
+  const { pendingPermission, ...rest } = clearTaskGate(state, at);
   void pendingPermission;
   return rest;
 }
@@ -132,12 +133,17 @@ function clearTurnState(state: SessionState): SessionState {
 /**
  * サブエージェント完了ゲートだけを落とす（保留中の決定は残す）。
  * ステータスは変えずにゲートだけ捨てたい遷移用（`agent_switched`）。
+ *
+ * 表示用の記録（`subagents`）は**捨てずに「走っている印」だけを封じる** — ターンが
+ * 終わったあとに詳細ログを開けることが機能要件なので消せないが、そのターンの
+ * サブエージェントはもう決着を報告しないため、封じないとスピナーが永久に回る。
  */
-function clearTaskGate(state: SessionState): SessionState {
+function clearTaskGate(state: SessionState, at: number): SessionState {
   const { deferredResult, activeTaskIds, ...rest } = state;
   void deferredResult;
   void activeTaskIds;
-  return rest;
+  const subagents = sealSubagents(rest.subagents, at);
+  return subagents === rest.subagents ? rest : { ...rest, subagents };
 }
 
 /**
@@ -162,7 +168,7 @@ export function completeTurn(
       ? appendLog(state, 'result', resultText)
       : { messages: state.messages, logSeq: state.logSeq };
   return {
-    ...clearTurnState(state),
+    ...clearTurnState(state, result.at),
     status: 'completed',
     finishedAt: result.at,
     totalCostUsd: result.totalCostUsd,
@@ -197,7 +203,7 @@ function settleDeferred(state: SessionState, at: number): SessionState {
 export function toFailed(state: SessionState, at: number, detail: string): SessionState {
   const withLog = appendLog(state, 'error', detail);
   return {
-    ...clearTurnState(state),
+    ...clearTurnState(state, at),
     status: 'failed',
     finishedAt: at,
     error: detail,
@@ -223,7 +229,7 @@ export function toRateLimited(
 ): SessionState {
   const withLog = appendLog(state, 'system', detail);
   return {
-    ...clearTurnState(state),
+    ...clearTurnState(state, at),
     status: 'rate_limited',
     finishedAt: at,
     rateLimitResetsAt: resetsAt,
@@ -290,7 +296,7 @@ export function toInterrupted(state: SessionState, at: number, detail: string): 
   }
   const withLog = appendLog(state, 'system', detail);
   return {
-    ...clearTurnState(state),
+    ...clearTurnState(state, at),
     status: 'interrupted',
     finishedAt: at,
     streamingText: undefined,
@@ -322,7 +328,7 @@ export function toNeedsLogin(state: SessionState, at: number, detail: string): S
   }
   const withLog = appendLog(state, 'error', detail);
   return {
-    ...clearTurnState(state),
+    ...clearTurnState(state, at),
     status: 'needs_login',
     finishedAt: at,
     error: detail,
@@ -522,7 +528,7 @@ export function reduce(state: SessionState, event: CodivaEvent): SessionState {
       return {
         // 完了ゲートは「今のターンで走っている Task」の記録なので、別の provider へ
         // 引き継がない（引き継ぐと切替先の `turn_completed` が永久に保留される）。
-        ...clearTaskGate(state),
+        ...clearTaskGate(state, event.at),
         agent: event.agent,
         agentSessions: carried,
         sdkSessionId: next,

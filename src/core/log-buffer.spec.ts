@@ -3,12 +3,15 @@ import {
   capLogEntries,
   clipLogText,
   clipStreamText,
+  DEFAULT_LOG_LIMITS,
+  type LogLimits,
   MAX_LOG_CHARS,
   MAX_LOG_ENTRIES,
   MAX_LOG_ENTRY_CHARS,
   MAX_STREAM_PREVIEW_CHARS,
   pushLogEntry,
   STREAM_PREVIEW_KEEP_CHARS,
+  SUBAGENT_LOG_LIMITS,
 } from './log-buffer';
 import type { LogEntry } from './types';
 
@@ -198,5 +201,70 @@ describe('capLogEntries', () => {
   it('kind と timestamp は保つ', () => {
     const capped = capLogEntries([{ seq: 7, kind: 'tool_result', text: 'ok', timestamp: 1234 }]);
     expect(capped[0]).toEqual({ seq: 7, kind: 'tool_result', text: 'ok', timestamp: 1234 });
+  });
+});
+
+describe('LogLimits（予算の差し替え）', () => {
+  const withLimits = (over: Partial<LogLimits>): LogLimits => ({
+    ...DEFAULT_LOG_LIMITS,
+    ...over,
+  });
+
+  // 省略時の挙動が変わらないことの番人（上の describe 群はすべて既定で走っている）。
+  it('既定はセッション本体の従来の予算そのもの', () => {
+    expect(DEFAULT_LOG_LIMITS).toEqual({
+      maxEntries: MAX_LOG_ENTRIES,
+      maxChars: MAX_LOG_CHARS,
+      maxEntryChars: MAX_LOG_ENTRY_CHARS,
+    });
+  });
+
+  it('件数だけを縛れる', () => {
+    const limits = withLimits({ maxEntries: 3 });
+    let messages: LogEntry[] = [];
+    for (let i = 1; i <= 6; i += 1) {
+      messages = pushLogEntry(messages, entry(i), limits);
+    }
+    expect(messages.map((e) => e.seq)).toEqual([4, 5, 6]);
+  });
+
+  it('合計文字数だけを縛れる', () => {
+    const limits = withLimits({ maxChars: 30 });
+    let messages: LogEntry[] = [];
+    for (let i = 1; i <= 10; i += 1) {
+      messages = pushLogEntry(messages, entry(i, 'x'.repeat(10)), limits);
+    }
+    // 10 文字 × 3 件でちょうど予算（新しい 1 件 + 既存 2 件）。最新は必ず残る。
+    expect(messages).toHaveLength(3);
+    expect(messages.at(-1)?.seq).toBe(10);
+  });
+
+  it('1 件あたりの文字数だけを縛れる', () => {
+    const limits = withLimits({ maxEntryChars: 5 });
+    const after = pushLogEntry([], entry(1, 'abcdefghij'), limits);
+    expect(after[0]?.text).toBe('abcde …');
+  });
+
+  // サブエージェントは自分のログを持つので、予算を親と別枠で（かつ桁を落として）縛る。
+  it('サブエージェントの予算は件数・文字数の両方で親より早く縛る', () => {
+    let messages: LogEntry[] = [];
+    for (let i = 1; i <= 300; i += 1) {
+      messages = pushLogEntry(messages, entry(i, 'y'.repeat(100)), SUBAGENT_LOG_LIMITS);
+    }
+    expect(messages.length).toBeLessThanOrEqual(SUBAGENT_LOG_LIMITS.maxEntries);
+    expect(messages.reduce((n, e) => n + e.text.length, 0)).toBeLessThanOrEqual(
+      SUBAGENT_LOG_LIMITS.maxChars,
+    );
+    expect(messages.at(-1)?.seq).toBe(300);
+  });
+
+  it('capLogEntries もサブエージェントの予算で畳める', () => {
+    const entries = Array.from({ length: 500 }, (_, i) => entry(i + 1, 'z'.repeat(100)));
+    const capped = capLogEntries(entries, SUBAGENT_LOG_LIMITS);
+    expect(capped.length).toBeLessThanOrEqual(SUBAGENT_LOG_LIMITS.maxEntries);
+    expect(capped.reduce((n, e) => n + e.text.length, 0)).toBeLessThanOrEqual(
+      SUBAGENT_LOG_LIMITS.maxChars,
+    );
+    expect(capped.at(-1)?.seq).toBe(500);
   });
 });

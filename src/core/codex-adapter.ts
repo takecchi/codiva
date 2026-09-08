@@ -94,6 +94,8 @@ export const CODEX_CAPABILITIES: AgentCapabilities = {
   usage: false,
   cost: false,
   transcript: false,
+  // codex exec の JSONL はサブエージェントを報告しない（実測）。
+  subagents: false,
 };
 
 /**

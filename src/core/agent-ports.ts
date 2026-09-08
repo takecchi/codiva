@@ -86,6 +86,24 @@ export interface AgentCapabilities {
   cost: boolean;
   /** CLI 側のトランスクリプトから会話ログを復元できる。 */
   transcript: boolean;
+  /**
+   * サブエージェント（親のツール実行として走る別のエージェント）の実行状況を報告する
+   * （`AgentEvent` の `task_started` / `task_progress` / `task_settled` に表示用メタを載せ、
+   * 内部のログ行に `subagentRef` を付ける）。
+   *
+   * **これで「表示するか」を決めてはいけない。** 表示の可否は `SessionState.subagents`
+   * が空かどうかで決める — `/agent` で Claude から Codex へ切り替えたセッションでも、
+   * **そのセッションが実際に走らせた**サブエージェントの履歴は残っているべきで、
+   * 現在のエージェントの capability で隠すと履歴が消える（`LogEntry.agent` を刻んで
+   * 過去の発言を残しているのと同じ理屈）。
+   *
+   * 使うのは「これから起きること」を語る表示だけ（空状態の説明文・キー操作のヒント）で、
+   * 判定軸は `showsAccountInfo` と同じ「次のターンを駆動するエージェント」。
+   *
+   * なお「表示を縮退させたら取得も止める」規約は自動的に満たされる — この情報は
+   * **既に読んでいる同じストリーム**から来るので、専用の probe が存在しない。
+   */
+  subagents: boolean;
 }
 
 /** 1 ターンぶんの起動オプション。provider ごとに解釈は違ってよい（無視も可）。 */
@@ -184,4 +202,5 @@ export const NO_CAPABILITIES: AgentCapabilities = {
   usage: false,
   cost: false,
   transcript: false,
+  subagents: false,
 };

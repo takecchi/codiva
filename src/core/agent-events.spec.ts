@@ -331,3 +331,267 @@ describe('applyAgentEvent / streaming preview', () => {
     expect(s1).toBe(s0);
   });
 });
+
+/**
+ * サブエージェントの**表示**を足したことで、**完了ゲートの挙動が 1 ミリも変わって
+ * いない**ことの番人。ゲートは「素の id 集合 + レベル信号の自己修復」という一番
+ * 壊れにくい形で、そこへ上限付き・決着済みも保持する表示用の構造体を混ぜると
+ * 「早すぎる完了」か「`running` の永久張り付き」を作り込む。
+ *
+ * 同じシナリオを「表示用メタなし」「あり」の 2 通りで畳み、ゲートに関わる 3 つの
+ * フィールドが完全一致することを確かめる。
+ */
+describe('applyAgentEvent / 完了ゲートは表示に影響されない', () => {
+  const gateOf = (s: SessionState) => ({
+    activeTaskIds: s.activeTaskIds,
+    deferredResult: s.deferredResult,
+    status: s.status,
+  });
+
+  const meta = { toolUseId: 'tu1', description: 'work', kind: 'general-purpose' };
+  const scenarios: Array<{ name: string; plain: AgentEvent[]; rich: AgentEvent[] }> = [
+    {
+      name: '起動だけ（ゲートに積む）',
+      plain: [{ kind: 'task_started', taskId: 't1' }],
+      rich: [{ kind: 'task_started', taskId: 't1', subagent: meta }],
+    },
+    {
+      name: '起動 → 決着',
+      plain: [
+        { kind: 'task_started', taskId: 't1' },
+        { kind: 'task_settled', taskId: 't1' },
+      ],
+      rich: [
+        { kind: 'task_started', taskId: 't1', subagent: meta },
+        { kind: 'task_settled', taskId: 't1', outcome: 'completed', summary: 'ok' },
+      ],
+    },
+    {
+      name: '起動 → 完了が先に届く（保留） → 決着で確定',
+      plain: [
+        { kind: 'task_started', taskId: 't1' },
+        { kind: 'turn_completed', text: 'done', totalCostUsd: 1 },
+        { kind: 'task_settled', taskId: 't1' },
+      ],
+      rich: [
+        { kind: 'task_started', taskId: 't1', subagent: meta },
+        { kind: 'turn_completed', text: 'done', totalCostUsd: 1 },
+        { kind: 'task_settled', taskId: 't1', outcome: 'completed' },
+      ],
+    },
+    {
+      name: '起動 2 本 → id 無しの決着（ゲートを畳む安全側）',
+      plain: [
+        { kind: 'task_started', taskId: 't1' },
+        { kind: 'task_started', taskId: 't2' },
+        { kind: 'turn_completed', text: 'done' },
+        { kind: 'task_settled' },
+      ],
+      rich: [
+        { kind: 'task_started', taskId: 't1', subagent: meta },
+        { kind: 'task_started', taskId: 't2', subagent: { toolUseId: 'tu2' } },
+        { kind: 'turn_completed', text: 'done' },
+        { kind: 'task_settled' },
+      ],
+    },
+    {
+      name: '起動 → レベル信号で空集合（自己修復）',
+      plain: [
+        { kind: 'task_started', taskId: 't1' },
+        { kind: 'turn_completed', text: 'done' },
+        { kind: 'tasks_changed', taskIds: [] },
+      ],
+      rich: [
+        { kind: 'task_started', taskId: 't1', subagent: meta },
+        { kind: 'turn_completed', text: 'done' },
+        { kind: 'tasks_changed', taskIds: [] },
+      ],
+    },
+    {
+      // 進捗はエッジでもレベル信号でもないので、ゲートに触れてはいけない。
+      name: '起動 → 進捗（ゲートを触らない） → 決着',
+      plain: [
+        { kind: 'task_started', taskId: 't1' },
+        { kind: 'task_settled', taskId: 't1' },
+      ],
+      rich: [
+        { kind: 'task_started', taskId: 't1', subagent: meta },
+        { kind: 'task_progress', taskId: 't1', description: 'Writing', lastTool: 'Write' },
+        { kind: 'task_progress', taskId: 'unknown-task', lastTool: 'Bash' },
+        { kind: 'task_settled', taskId: 't1', outcome: 'completed' },
+      ],
+    },
+  ];
+
+  it.each(scenarios.map((s) => [s.name, s] as const))('%s', (_name, scenario) => {
+    expect(gateOf(fold(running(), scenario.rich))).toEqual(gateOf(fold(running(), scenario.plain)));
+  });
+});
+
+describe('applyAgentEvent / サブエージェントの記録', () => {
+  const started = (state = running()) =>
+    applyAgentEvent(
+      state,
+      {
+        kind: 'task_started',
+        taskId: 't1',
+        subagent: { toolUseId: 'tu1', description: 'Create report', kind: 'general-purpose' },
+      },
+      1,
+    );
+
+  it('起動でメタを記録する', () => {
+    expect(started().subagents?.[0]).toMatchObject({
+      id: 't1',
+      toolUseId: 'tu1',
+      description: 'Create report',
+      kind: 'general-purpose',
+      status: 'running',
+      startedAt: 1,
+    });
+  });
+
+  it('進捗で説明・直近のツール・使用状況が入れ替わる', () => {
+    const s = applyAgentEvent(
+      started(),
+      {
+        kind: 'task_progress',
+        taskId: 't1',
+        description: 'Writing report.txt',
+        lastTool: 'Write',
+        usage: { totalTokens: 100, toolUses: 1, durationMs: 500 },
+      },
+      2,
+    );
+    expect(s.subagents?.[0]).toMatchObject({
+      description: 'Writing report.txt',
+      lastTool: 'Write',
+      usage: { totalTokens: 100, toolUses: 1, durationMs: 500 },
+    });
+  });
+
+  it('決着で成否と要約・出力先が入る', () => {
+    const s = applyAgentEvent(
+      started(),
+      {
+        kind: 'task_settled',
+        taskId: 't1',
+        outcome: 'failed',
+        summary: 'could not write',
+        outputFile: '/tmp/t1.output',
+      },
+      9,
+    );
+    expect(s.subagents?.[0]).toMatchObject({
+      status: 'failed',
+      summary: 'could not write',
+      outputFile: '/tmp/t1.output',
+      finishedAt: 9,
+    });
+  });
+
+  // ターンが終わったあとに詳細ログを開けることが機能要件なので、記録は消さない。
+  it('ターンが終わると記録は残り、走っている印だけが封じられる', () => {
+    const s = applyAgentEvent(started(), { kind: 'turn_stopped', cause: 'failed', detail: 'x' }, 5);
+    expect(s.activeTaskIds).toBeUndefined();
+    expect(s.deferredResult).toBeUndefined();
+    expect(s.subagents?.[0]).toMatchObject({
+      description: 'Create report',
+      status: 'stopped',
+      finishedAt: 5,
+    });
+  });
+
+  // 前のプロセスのタスクは決着を報告しない → 封じないとスピナーが永久に回る。
+  it('CLI プロセスが起き直っても記録は残り、印だけ封じられる', () => {
+    const s = applyAgentEvent(started(), { kind: 'session_started', sessionId: 'x' }, 7);
+    expect(s.activeTaskIds).toBeUndefined();
+    expect(s.subagents?.[0]).toMatchObject({ status: 'stopped', finishedAt: 7 });
+  });
+
+  // レベル信号は *background* タスクの全集合で、前景の Task では一度も出ない。
+  // これで表示を置き換えると、走っている前景サブエージェントが終わったように見える。
+  it('tasks_changed は表示を触らない', () => {
+    const before = started();
+    const s = applyAgentEvent(before, { kind: 'tasks_changed', taskIds: [] }, 2);
+    expect(s.subagents).toBe(before.subagents);
+  });
+});
+
+describe('applyAgentEvent / ログの振り分け', () => {
+  const withSub = () =>
+    applyAgentEvent(
+      running(),
+      { kind: 'task_started', taskId: 't1', subagent: { toolUseId: 'tu1' } },
+      1,
+    );
+
+  const textsOf = (s: SessionState) => ({
+    parent: s.messages.map((m) => m.text),
+    sub: (s.subagents?.[0]?.messages ?? []).map((m) => m.text),
+  });
+
+  it.each([
+    ['帰属キーが無ければ本体のログへ', undefined, 'parent'],
+    ['既知の帰属キーならサブエージェント専用ログへ', 'tu1', 'sub'],
+    // 未知の id でも**行を捨てない**（従来どおりの見た目に degrade するだけ）。
+    ['未知の帰属キーは本体のログへ落とす', 'nope', 'parent'],
+  ] as const)('%s', (_name, ref, dest) => {
+    const s = applyAgentEvent(
+      withSub(),
+      { kind: 'assistant_text', text: 'hello', subagentRef: ref },
+      2,
+    );
+    const { parent, sub } = textsOf(s);
+    expect(dest === 'sub' ? sub : parent).toContain('hello');
+    expect(dest === 'sub' ? parent : sub).not.toContain('hello');
+  });
+
+  it('記録が 1 本も無いセッションでは帰属キーがあっても本体へ', () => {
+    const s = applyAgentEvent(
+      running(),
+      { kind: 'tool_use', summary: 'Write x', tool: 'edit', subagentRef: 'tu1' },
+      2,
+    );
+    expect(s.messages.map((m) => m.text)).toContain('Write x');
+  });
+
+  it('seq は本体とサブで通し番号（重複しない）', () => {
+    let s = withSub();
+    s = applyAgentEvent(s, { kind: 'assistant_text', text: 'p1' }, 2);
+    s = applyAgentEvent(s, { kind: 'assistant_text', text: 's1', subagentRef: 'tu1' }, 3);
+    s = applyAgentEvent(s, { kind: 'assistant_text', text: 'p2' }, 4);
+    const seqs = [...s.messages, ...(s.subagents?.[0]?.messages ?? [])].map((e) => e.seq);
+    expect(new Set(seqs).size).toBe(seqs.length);
+    expect(s.logSeq).toBe(3);
+  });
+
+  // PR 検出は振り分けと独立に走る（サブエージェントが立てた PR も取りこぼさない）。
+  it('サブエージェントが作った PR も取り込む', () => {
+    let s = withSub();
+    s = applyAgentEvent(
+      s,
+      {
+        kind: 'tool_use',
+        id: 'x1',
+        summary: 'gh pr create',
+        tool: 'shell',
+        prCreate: true,
+        subagentRef: 'tu1',
+      },
+      2,
+    );
+    s = applyAgentEvent(
+      s,
+      {
+        kind: 'tool_result',
+        toolUseId: 'x1',
+        summary: 'created',
+        scanText: 'https://github.com/o/r/pull/7',
+        subagentRef: 'tu1',
+      },
+      3,
+    );
+    expect(s.extraPrs?.map((p) => p.number)).toContain(7);
+  });
+});
