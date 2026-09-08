@@ -140,8 +140,12 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
   `SDKMessage` を `AgentEvent[]` に写すだけ。
 - 状態の畳み込みは `core/agent-events.ts` の `applyAgentEvent` が**全 provider 共通**で持つ。
   ここに provider 固有の分岐（`message.subtype` / SDK のツール名 / CLI の文言）を足さない。
-  ツールは `AgentToolKind`（`edit` / `shell` / `todo` / `question` / `other`）へ、TODO 操作は
+  ツールは `AgentToolKind`（`read` / `edit` / `shell` / `search` / `todo` / `question` / `other`。
+  定義は `core/types.ts` = ログ行 `LogEntry.tool` も同じ語彙を持つため）へ、TODO 操作は
   `TodoOp` へ、失敗は `AgentStopCause` へ、というように**アダプタ側で正規化してから**渡す。
+  **種類は「まとめ行に出したい粒度」で切ってある**（詳細ビューが連続したツール実行を
+  「1 ファイルを読み込み・5 個のコマンドを実行」と畳む。`core/log-collapse.ts`）ので、
+  新しい provider を足すときは分かる範囲で `read` / `search` まで写す（分からなければ `other`）。
 - `applyClaudeMessage`（parse → fold の合成）は既存の実データテストの入口を保つための薄い糖衣。
   新しい呼び出し側はこれを増やさず `AgentEvent` 経由にする。
 - `status-reducer.ts` は**型付き `CodivaEvent` しか受けない**（生参照を持ち込まない）。

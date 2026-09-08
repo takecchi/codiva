@@ -6,6 +6,8 @@
  * 複数形などは、型安全に保つため文字列テンプレート関数として持つ。
  */
 
+import type { AgentToolKind } from './types';
+
 export type Lang = 'ja' | 'en';
 
 /** サポート言語の一覧（順序は UI での並びに使える）。 */
@@ -108,6 +110,15 @@ export interface Messages {
     dialogInactiveHelp: string;
     helpActions: string;
     helpInput: string;
+    /**
+     * 畳んだツール実行のまとめ行に出す内訳（`1 ファイルを読み込み` など）。
+     * 種別ごとに関数を持つのは、言語によって助数詞・語順・複数形が違うため
+     * （UI 側で `${n} 件の…` を組み立てない）。並べ方と繋ぎ方は純粋な
+     * `toolRunLabel`（`core/log-collapse.ts`）が決める。
+     */
+    toolRun: Record<AgentToolKind, (n: number) => string>;
+    /** {@link toolRun} の内訳をつなぐ区切り。 */
+    toolRunSeparator: string;
   };
   /**
    * マージ/破棄の確認フロー（一覧・詳細で共有する ConfirmPrompt / エラー表示）。
@@ -483,6 +494,8 @@ export interface Messages {
     login: string;
     /** /diff の説明 */
     diff: string;
+    /** /tools の説明（ツール実行のまとめ行を一括で開閉する） */
+    tools: string;
     /** /prompt の説明 */
     prompt: string;
     /** /remove の説明 */
@@ -544,6 +557,9 @@ export interface Messages {
     /** codexNetworkAccess: Codex のネットワーク許可 */
     codexNetworkAccess: string;
     codexNetworkAccessHelp: string;
+    /** collapseToolLogs: 会話ログのツール実行を既定で畳むか */
+    collapseToolLogs: string;
+    collapseToolLogsHelp: string;
   };
   /**
    * クラッシュ時に通常バッファ（シェルへ戻ったあとの画面）へ出す文言。
@@ -599,6 +615,16 @@ const ja: Messages = {
     helpActions: 'm/d/x: 操作 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 入力へ ・ Esc: 戻る',
     helpInput:
       'Enter: 送信 ・ Shift+Enter: 改行 ・ ↑↓/PgUp/PgDn: ログ ・ Tab: 操作 ・ Esc: 一覧へ ・ Ctrl+U: 全消し',
+    toolRun: {
+      read: (n) => `${n} ファイルを読み込み`,
+      edit: (n) => `${n} ファイルを編集`,
+      shell: (n) => `${n} 個のコマンドを実行`,
+      search: (n) => `${n} 件検索`,
+      todo: (n) => `TODO を ${n} 回更新`,
+      question: (n) => `${n} 件質問`,
+      other: (n) => `その他 ${n} 件`,
+    },
+    toolRunSeparator: '・',
   },
   action: {
     actionErrorLabel: '操作エラー',
@@ -821,6 +847,7 @@ const ja: Messages = {
     agent: 'このセッションのエージェントを切り替え',
     login: 'エージェントに codiva 内でサインイン',
     diff: '変更差分サマリの表示を切り替え',
+    tools: 'ツール実行のログをまとめる / 展開する（Ctrl+O）',
     prompt: 'リポジトリの追加指示を編集',
     remove: '選択中のセッションを削除（worktree とブランチも消す）',
     clear: '完了したセッションをまとめて削除（worktree とブランチも消す）',
@@ -856,6 +883,8 @@ const ja: Messages = {
     crashLogHelp: '異常終了したとき ~/.codiva/logs/ にレポートを書く',
     codexNetworkAccess: 'Codex のネットワークを許可する',
     codexNetworkAccessHelp: 'Codex のサンドボックスから外部へ通信できるようにする',
+    collapseToolLogs: 'ツール実行を畳む',
+    collapseToolLogsHelp: '会話ログの連続したツール実行を 1 行にまとめる（Ctrl+O で開閉）',
   },
   crash: {
     title: 'codiva が予期せず終了しました',
@@ -902,6 +931,16 @@ const en: Messages = {
     helpActions: 'm/d/x: actions · ↑↓/PgUp/PgDn: log · Tab: input · Esc: back',
     helpInput:
       'Enter: send · Shift+Enter: newline · ↑↓/PgUp/PgDn: log · Tab: actions · Esc: back · Ctrl+U: clear',
+    toolRun: {
+      read: (n) => `Read ${n} file${n === 1 ? '' : 's'}`,
+      edit: (n) => `Edited ${n} file${n === 1 ? '' : 's'}`,
+      shell: (n) => `ran ${n} shell command${n === 1 ? '' : 's'}`,
+      search: (n) => `searched ${n} time${n === 1 ? '' : 's'}`,
+      todo: (n) => `updated the TODO list ${n} time${n === 1 ? '' : 's'}`,
+      question: (n) => `asked ${n} question${n === 1 ? '' : 's'}`,
+      other: (n) => `${n} other tool call${n === 1 ? '' : 's'}`,
+    },
+    toolRunSeparator: ', ',
   },
   action: {
     actionErrorLabel: 'Action error',
@@ -1120,6 +1159,7 @@ const en: Messages = {
     agent: 'Switch the agent driving this session',
     login: 'Sign in to an agent from within codiva',
     diff: 'Toggle the changes summary',
+    tools: 'Collapse / expand tool-call log lines (Ctrl+O)',
     prompt: 'Edit the repository instructions',
     remove: 'Remove the selected session (worktree and branch deleted too)',
     clear: 'Remove every finished session (worktrees and branches deleted too)',
@@ -1155,6 +1195,8 @@ const en: Messages = {
     crashLogHelp: 'Leave a report in ~/.codiva/logs/ when codiva exits abnormally',
     codexNetworkAccess: 'Allow Codex network access',
     codexNetworkAccessHelp: 'Let the Codex sandbox reach the network',
+    collapseToolLogs: 'Collapse tool calls',
+    collapseToolLogsHelp: 'Fold consecutive tool calls in the log into one line (Ctrl+O toggles)',
   },
   crash: {
     title: 'codiva exited unexpectedly',

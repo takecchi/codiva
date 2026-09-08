@@ -11,7 +11,14 @@ import {
   toNeedsLogin,
   toRateLimited,
 } from './status-reducer';
-import type { AgentId, AgentStopCause, SessionState, TaskStatus, TodoItem } from './types';
+import type {
+  AgentId,
+  AgentStopCause,
+  AgentToolKind,
+  SessionState,
+  TaskStatus,
+  TodoItem,
+} from './types';
 
 /**
  * エージェント非依存の「起きたこと」の語彙と、その畳み込み。
@@ -33,9 +40,6 @@ import type { AgentId, AgentStopCause, SessionState, TaskStatus, TodoItem } from
  * 振る舞いを再実装しなくてよい。**セッション途中でエージェントを切り替えても**
  * （`Session.setAgent`）ログと状態は連続したままになる。
  */
-
-/** ツールの「意味」。provider ごとに実際のツール名は違うのでここへ正規化する。 */
-export type AgentToolKind = 'edit' | 'shell' | 'todo' | 'question' | 'other';
 
 /**
  * TODO リストへの操作。Claude の TaskCreate / TaskUpdate / TodoWrite のような
@@ -301,6 +305,8 @@ export function applyAgentEvent(
           text: event.summary,
           timestamp: event.timestamp,
           agent,
+          // 詳細ビューが連続したツール実行を畳むときの内訳に使う（`core/log-collapse.ts`）。
+          tool: event.tool,
         }),
         logSeq: seq,
       };

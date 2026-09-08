@@ -366,7 +366,10 @@ describe('createGrokParser streaming invariants', () => {
     ['execute', 'shell'],
     ['edit', 'edit'],
     ['ask_user', 'question'],
-    ['read', 'other'],
+    ['read', 'read'],
+    ['search', 'search'],
+    ['fetch', 'search'],
+    ['definitely-unknown', 'other'],
     [undefined, 'other'],
   ] as const)('_meta の kind %s を %s へ写す', (kind, expected) => {
     const [event] = createGrokParser().parse({

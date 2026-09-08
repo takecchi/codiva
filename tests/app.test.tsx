@@ -1293,6 +1293,58 @@ describe('App detail view (in-app connection)', () => {
     expect(calls).toBeGreaterThan(paused);
   });
 
+  it('連続したツール実行はまとめ 1 行に畳まれ、Ctrl+O で開ける', async () => {
+    const { manager, out } = drivenManager();
+    const { stdin, lastFrame } = render(<App manager={manager} />);
+    stdin.write('go');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    out.push(asMsg({ type: 'system', subtype: 'init', session_id: 'sdk-tools' }));
+    out.push(
+      asMsg({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'a.ts' } },
+            { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'ls' } },
+          ],
+        },
+      }),
+    );
+    out.push(
+      asMsg({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 't1', content: 'ok' },
+            { type: 'tool_result', tool_use_id: 't2', content: 'a.ts' },
+          ],
+        },
+      }),
+    );
+    // 後ろに本文が来て初めて「終わったまとまり」になる（走っている最中は畳まない）。
+    out.push(asMsg({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }));
+    await flush();
+    stdin.write('\t'); // focus the list
+    await flush();
+    stdin.write('\r'); // Enter → detail
+    await flush();
+
+    const collapsed = stripAnsi(lastFrame() ?? '');
+    expect(collapsed).toContain(
+      `${messages.ja.detail.toolRun.read(1)}${messages.ja.detail.toolRunSeparator}${messages.ja.detail.toolRun.shell(1)}`,
+    );
+    expect(collapsed).not.toContain('Read a.ts');
+    expect(collapsed).toContain('done'); // 会話の本文は畳まれない
+
+    stdin.write('\x0f'); // Ctrl+O → 一括で開く
+    await flush();
+    const expanded = stripAnsi(lastFrame() ?? '');
+    expect(expanded).toContain('Read a.ts');
+    expect(expanded).toContain('Bash ls');
+  });
+
   it('Ctrl+U clears the follow-up composer in the detail view', async () => {
     const { manager, out } = drivenManager();
     const { stdin, lastFrame } = render(<App manager={manager} />);

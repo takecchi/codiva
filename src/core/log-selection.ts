@@ -138,6 +138,23 @@ export function logLinkAt(
   return index === undefined ? undefined : linkAt(line.links, index);
 }
 
+/**
+ * マウス位置にある「ツール実行のまとめ見出し」の key（無ければ undefined）。
+ *
+ * `logLinkAt` と違い**行のどこを押しても当たり**にする。リンクは行の一部でしかない
+ * ので厳密に文字へ当てる必要があるが、見出しは行そのものが取っ手なので、行末より右の
+ * 余白を押したときに反応しないほうが不親切になる（`logCaretAt` が行末へ丸めるのと
+ * 同じ考え方）。
+ */
+export function logGroupAt(
+  lines: readonly DisplayLine[],
+  view: LogViewport,
+  y: number,
+): number | undefined {
+  const row = logRowAt(view, y);
+  return row === undefined ? undefined : lines[row]?.group;
+}
+
 /** ドラッグが可視域の外へ出た向き（自動スクロールの向き）。 */
 export type LogEdge = 'up' | 'down';
 
