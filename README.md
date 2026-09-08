@@ -160,6 +160,22 @@ In the session detail log, the agent's response **grows downward as it arrives**
 - **It only follows the tail while you're at the bottom.** While you're back in history via `↑`/`PgUp`/wheel, the view doesn't move a single line even as the response grows (you never get swept along mid-read). "Viewing history — N lines to latest" appears at the bottom of the screen; `↓`/`PgDn` returns to the tail and resumes following.
 - While text is still streaming it's rendered plain (no bold, no headings); it's replaced with the formatted body the moment the turn completes.
 
+### Following subagents (`/subagents`)
+
+When the agent spawns a **subagent** (Claude Code's Task tool — delegating research or sub-tasks to a separate agent), the detail view shows one line about it below the log.
+
+```
+⏺ Subagent: general-purpose · running · Writing report.txt · Write · 12s
+```
+
+- The line shows the **type, status, what it is doing right now, the last tool it used, and elapsed time**. "What it is doing" is rewritten as the subagent reports progress.
+- **Click that line to open a log view for that subagent** (`Esc` returns to the detail view). Without a mouse, type **`/subagents`**.
+- When several are running the line folds into "+N more"; clicking it (or `/subagents`) lets you pick from a list.
+- **Tools the subagent runs internally no longer mix into the parent log** — they are collected in its own log, and the parent log keeps a single line describing what was delegated.
+- Records stick around after a subagent finishes, so you can read back its result and what it did (up to 8 per session; they are dropped when codiva restarts).
+- The subagent log view has **no input field** — you cannot instruct a subagent directly. `Ctrl+C` there interrupts the *parent* session's turn.
+- Only **Claude Code** reports subagents today (nothing appears with Codex / Grok).
+
 ### Interrupting work in progress (`Ctrl+C`)
 
 Pressing `Ctrl+C` in the session detail view **interrupts the turn that session is currently running** (the same gesture as `Ctrl+C` in Claude Code). codiva itself does not exit.
@@ -443,7 +459,7 @@ Whatever you write in the target repository's `.codiva/prompt.md` is injected in
 
 Besides editing the file directly, typing **`/prompt`** in the list view's composer opens an in-TUI editor seeded with the current contents (`Enter` saves, `Shift+Enter` inserts a newline, `Esc` cancels, saving an empty buffer deletes the file). Saved content applies to **subsequently created sessions** (running sessions keep the instructions they started with).
 
-Type `/` in the composer to see the available slash commands in a palette (`/prompt`, `/config`, `/model`, `/agent` (list = pick the default / detail = switch that session), `/login` (sign in from inside codiva), `/sync`, `/fix-ci`, `/recover`, `/remove`, `/clear`, `/update`, `/help`, …). On a short terminal the tail folds into "N more", so keep typing to narrow it down (`/help` shows everything).
+Type `/` in the composer to see the available slash commands in a palette (`/prompt`, `/config`, `/model`, `/agent` (list = pick the default / detail = switch that session), `/login` (sign in from inside codiva), `/subagents` (detail view), `/sync`, `/fix-ci`, `/recover`, `/remove`, `/clear`, `/update`, `/help`, …). On a short terminal the tail folds into "N more", so keep typing to narrow it down (`/help` shows everything).
 
 ### Changing settings from the UI (`/config`)
 
