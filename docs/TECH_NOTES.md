@@ -1395,3 +1395,177 @@ worktree の共有 symlink 注意書き + `.codiva/prompt.md`（`core/system-pro
 3. クライアント役の小さなスクリプトで `initialize` → `session/new` → `session/prompt` を回し、
    届いた許可要求・質問要求に応答しながら stdout を 1 行ずつ保存する。
 4. 絶対パス・ホスト名をサニタイズしてから `src/core/__fixtures__/` へ昇格させる。
+
+## Antigravity CLI（`agy --input-format=stream-json`）の実測（agy 1.2.10 darwin/arm64, 2026-09-25）
+
+codiva の 4 つ目の provider（issue #140）。他の 3 つと同じく **CLI は同梱せず、ユーザーが
+インストールした `agy` を起動する**。
+
+- 導入: `curl -fsSL https://antigravity.google/cli/install.sh | bash` → `~/.local/bin/agy`
+- ドキュメント: <https://antigravity.google/docs/cli/>
+- 実装は `core/antigravity-*.ts` + `utils/antigravity.ts`（設計の理由は
+  [ARCHITECTURE.md](./ARCHITECTURE.md) §8）
+
+### `--print` は**次のフラグをプロンプト値として食う**（いちばん大きな落とし穴）
+
+素直に書いた起動コマンドが立ち上がらない:
+
+```console
+$ agy --print --input-format stream-json --output-format stream-json
+Error: --print took "--input-format" as its prompt. If you meant to pass a flag, put it before --print
+       or use --print=<prompt>.
+```
+
+`--print` の値が省略されたとき、パーサは**次の argv をプロンプト文字列として吸い込む**。
+ここから 2 つの規則を立てた:
+
+- **`--print` は渡さない。** `--input-format=stream-json` を付けるだけで print モードに入る
+  （stdin をパイプにすると実際に stream-json の `result` が返ることを確認済み）。
+  「付けても害は無いだろう」というフラグを足さない。
+- **値を取るフラグはすべて `--flag=value` 形で書く**（`--model=…` / `--effort=…` /
+  `--conversation=…` / `--print-timeout=0`）。スペース区切りにすると同じ食い違いを
+  別のフラグで踏みうる。
+
+codiva が組み立てる引数（`utils/antigravity.ts` の `antigravityArgs()`。**シェルは使わず引数配列**）:
+
+```
+agy --input-format=stream-json --output-format=stream-json --print-timeout=0 \
+    (--mode=accept-edits | --mode=plan | --dangerously-skip-permissions) \
+    [--model=<id>] [--effort=low|medium|high] [--conversation=<id>]
+```
+
+`--print-timeout=0`（= ターンが終わるまで待つ）は既定値と同じだが、**将来既定が変わっても
+ターンの途中で打ち切られないよう明示している**。
+
+### 終了コードと認証まわりの実測文言
+
+| コマンド / 状況 | 結果 |
+|---|---|
+| `agy --version` | `1.2.10` / exit 0 |
+| `agy models`（サインイン済み） | モデル一覧のテキスト / exit 0 |
+| `agy models`（未サインイン） | `Error: Please sign in to view available models. Launch the CLI without arguments to sign in.` / exit 1 |
+| stdin がパイプ + 未認証 | `Error: authentication required. Run 'agy' to log in, then retry.` |
+| stream-json の `result`（未認証） | `"error":"authentication failed or timed out"` |
+| 対話ログインを中断 | `Error: authentication interrupted.` |
+
+**`authentication failed or timed out` がタイムアウトに言及している**のが要注意で、
+`classifyAntigravityError` は他 provider と同じく**認証切れを最優先**で判定する
+（通信断と読み違えると「ログインし直せ」と言うべき場面で素の再開を勧めてしまう）。
+
+導入・ログイン検出（`detectAntigravityAvailability`）はこの表を使って:
+
+- `agy --version` の exit 0 → 導入済み。
+- `agy models` の exit 0 → ログイン済み。上記の「サインインしろ」文言 → 未ログイン。
+- **それ以外の失敗は `'unknown'`**（オフライン・タイムアウト・未知のエラーを未ログイン扱いに
+  すると、使えるはずのエージェントに誤った案内を出す）。`models` はネットワーク越しに取りに
+  行くので、タイムアウトは `--version` より長く取る（8 秒 / 4 秒）。
+
+### `login` サブコマンドが無い
+
+`agy login` は存在せず、サインインは**素で起動したフル TUI の中でだけ**できる。全画面 TUI の
+codiva から端末を明け渡さずに進める形へ落とせないので、`AgentAdapter.login()` は**実装しない**
+（UI にログイン導線が出ない）。Codex / Grok の `login --device-auth` に相当するものは無い。
+
+### stream-json のイベントは 3 種類だけ
+
+`--output-format=stream-json` が吐くのは **`init` / `step_update` / `result`** の 3 つ
+（`core/antigravity-events.ts`）。
+
+| `event` | 主なフィールド | codiva での扱い |
+|---|---|---|
+| `init` | `conversation_id`, `init.{cwd,tools,permission_mode,model,agent}` | `session_started`（`model` は `--model` 未指定だと**空文字**で来るので、空はモデル名として扱わない） |
+| `step_update` | `step_index`, `state`(`ACTIVE`/`DONE`), `step_type`(`user_input`/`agent_response`/`tool`/`checkpoint`), `text_delta`, `tool_name`, `tool_info.{name,parameters,output}`, `subagent_info` | 本文は `stream_text` → `DONE` で `assistant_text`、ツールは `tool_use` / `tool_result` の 2 段組みへ割り直す |
+| `result` | `conversation_id`, `status`, `response`, `error`, `duration_seconds`, `num_turns`, `usage` | `SUCCESS` → `turn_completed`、それ以外 → `turn_stopped`。**`WAITING` / `RUNNING` は決着ではない** |
+
+未認証で実際に採れた 1 行（サニタイズ前後で形は同じ）:
+
+```json
+{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"",
+ "error":"authentication failed or timed out","duration_seconds":0,"num_turns":0,
+ "usage":{"input_tokens":0,"output_tokens":0,"thinking_tokens":0,
+          "cache_read_tokens":0,"total_tokens":0}}}
+```
+
+- `conversation_id` は `""` で来ることがある。**空文字は id ではない**ので undefined へ丸める
+  （そのまま `--conversation=` に渡すと存在しない会話を指す）。
+- `usage` は**トークン数だけ**で USD もアカウント全体の使用状況も運ばない → `cost` / `usage`
+  capability は false。
+- `step_update.state` の未知の値は **`ACTIVE`（まだ動いている）側へ倒す**。決着と誤認すると
+  早すぎる確定になる。
+
+### ターンの投入は stdin の NDJSON（1 行 = 1 ターン）
+
+```json
+{"event":"user","message":{"content":"add a test for foo"}}
+```
+
+プロセスは 1 セッションで張りっぱなし（Grok と同じ側）だが、**JSON-RPC ではなく素の行
+ストリーム**なので要求 ↔ 応答の対応表は要らず、枠切りだけ `core/jsonl.ts` を共用する。
+アダプタはターンを**直列化**する（送る → `result` を見る → 次を送る）。理由は
+[ARCHITECTURE.md](./ARCHITECTURE.md) §8。
+
+**`result` を読んだあとは誰も stdout を見ていない**ので、ターンの合間に死んだプロセスには
+気付けない。そのまま次の指示を書くと EPIPE で黙って捨てられ、ユーザーには「送ったのに何も
+起きない」ターンに見える。送る前に `alive()` を見て、死んでいたら `--conversation=<id>` 付きで
+起こし直す。
+
+### `agy models` に JSON 出力モードが無い / `--model` は起動時フラグ
+
+- `agy models` は**人間向けのテキストだけ**（`--json` に相当するフラグが無い）。
+- `--model` は**起動時のフラグ**で、走っているセッションのモデルは変えられない。
+
+この 2 つから `modelCatalog` / `setModel` をどちらも false にして `/model` を出さず、設定の
+`model` 値をそのまま `--model` へ渡している。カタログを出せないのにダイアログを出すと、
+選択肢が空か他 provider のモデル名になるため（`permissions` を偽装しないのと同じ判断）。
+一方**解決済みモデルは `init.model` が運ぶ**ので、Codex で必要だった rollout の探り読みに
+相当するものは要らない（`antigravity-rollout.ts` は存在しない）。
+
+### effort と実行モードの写像
+
+codiva の effort は 5 段だが `agy --effort` は 3 段（`low` / `medium` / `high`）なので、
+`xhigh` と `max` はどちらも `high` へ丸める。
+
+許可モードは `antigravityModeArgs()`:
+
+| codiva の `permissionMode` | `agy` の引数 |
+|---|---|
+| `plan` | `--mode=plan` |
+| `bypassPermissions`（ユーザーが明示したときだけ） | `--dangerously-skip-permissions` |
+| それ以外（既定の `acceptEdits` を含む） | `--mode=accept-edits` |
+
+**`--dangerously-skip-permissions` は既定にしない。** headless の `agy` は許可ポリシーを
+CLI 内部で処理し、個々の tool call を外部へ中継する仕組みを持たない（= codiva が許可要求を
+UI へ上げる経路が原理的に無い ⇒ `permissions: false`）が、「聞かれない」ことと「全部を無条件に
+通す」ことは別の話で、後者は明示的なオプトインでしか選べないようにしてある。
+
+### 決着しなかったターンを `failed` に落とさない
+
+`result.status` が `CANCELED` / `INTERRUPTED` のとき、および**終端イベントを出さずに
+プロセスが死に、会話 id が分かっているとき**は、resumable な床（`connection`）へ倒す。
+どちらも `--conversation=<id>` で続けられるので、終端の `failed` に丸めると**再開の導線が
+消える**（Codex アダプタが終端イベント無しの死に方でやっているのと同じ考え方）。
+
+### フィクスチャの採取状況（実採取は 1 本だけ）
+
+**`src/core/__fixtures__/antigravity-*.jsonl` はすべてが実採取ではない。**
+
+| ファイル | 出所 |
+|---|---|
+| `antigravity-autherror.jsonl` | **実バイナリの出力**。agy 1.2.10 を未認証で走らせて得た `result` 1 行 |
+| `antigravity-basic.jsonl` | **公式 stream-json スキーマから構成** |
+| `antigravity-shell.jsonl` | **公式 stream-json スキーマから構成** |
+
+実セッションの採取には Google アカウントでのサインインが要り、今回は用意できなかった。
+構成を許容した根拠は、**実採取できた唯一の `result` 行が公式ドキュメントのスキーマと
+フィールド単位で完全に一致した**こと。とはいえ「想定で書かない」規約の例外なので:
+
+- `antigravity-events.ts` は**全フィールドを optional** として扱い、欠けても落ちないようにする
+  （読めない行・未知の `event` は 1 行捨てる）。
+- **資格情報が用意できた時点で実採取に差し替える。** そのときは他 provider と同じく絶対パス・
+  ホスト名をサニタイズしてから昇格させる。
+
+なおフィクスチャとツール名の写像（`antigravityToolKind`）に使っているツール名は**実バイナリから
+`strings` で抽出した実物**: `run_command` / `command_status` / `view_file` / `view_code_item` /
+`read_url_content` / `edit_file` / `create_file` / `write_to_file` / `grep_search` / `list_dir` /
+`search_web` / `ask_permission` / `suggested_responses` / `browser_*`。
+パラメータのキーは Windsurf 系の **PascalCase**（`CommandLine` / `AbsolutePath` / `TargetFile` …）。

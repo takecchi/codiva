@@ -232,7 +232,7 @@ const IGNORED_FILES_MODES: readonly IgnoredFilesMode[] = ['symlink', 'copy', 'no
  * 設定で選べるエージェント。**この配列が唯一の出所**で、実行時検証もここから導出する
  * （型は `AgentId`）。実装済みのアダプタだけを並べる。
  */
-const CONFIGURABLE_AGENTS: readonly AgentId[] = ['claude', 'codex', 'grok'];
+const CONFIGURABLE_AGENTS: readonly AgentId[] = ['claude', 'codex', 'grok', 'antigravity'];
 
 /** Codex のサンドボックスモード。値の集合は Codex CLI の `--sandbox` と同じ。 */
 const CODEX_SANDBOXES = ['read-only', 'workspace-write', 'danger-full-access'] as const;

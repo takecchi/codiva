@@ -3,6 +3,7 @@ import {
   type AgentId,
   agentLabelOf,
   type CodivaConfig,
+  createAntigravityAdapter,
   createClaudeAdapter,
   createCodexAdapter,
   createGrokAdapter,
@@ -19,6 +20,7 @@ import {
   createJevEvaluator,
   createPr,
   createTitleGenerator,
+  detectAntigravityAvailability,
   detectClaudeAvailability,
   detectCodexAvailability,
   detectGrokAvailability,
@@ -28,6 +30,7 @@ import {
   notify,
   resolveCodexRolloutModel,
   saveRepoPrompt,
+  spawnAntigravity,
   spawnCodex,
   spawnGrok,
   spawnLogin,
@@ -105,6 +108,14 @@ export function buildAgents(
       generateTitle,
       checkAvailability: () => detectGrokAvailability(),
       spawnLogin,
+    }),
+    antigravity: createAntigravityAdapter({
+      spawn: spawnAntigravity,
+      generateTitle,
+      checkAvailability: () => detectAntigravityAvailability(),
+      // `login` は渡さない。`agy` には `login` サブコマンドが無く、素で起動した
+      // フル TUI の中でしかサインインできないので、端末を明け渡さない形にできない
+      // （`AgentAdapter.login` を省略すると UI はログインの導線を出さない）。
     }),
   };
 }

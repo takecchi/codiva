@@ -1,5 +1,6 @@
 export * from './agent-login';
 export * from './alt-screen';
+export * from './antigravity';
 export * from './child-env';
 export * from './claude';
 export * from './claude-query';

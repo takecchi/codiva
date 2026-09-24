@@ -306,7 +306,7 @@ function toPrRefs(v: unknown): readonly PrRef[] | undefined {
 
 /** 既知のエージェント id だけを通す（未知の provider 名は捨てる）。 */
 function toAgentId(v: unknown): AgentId | undefined {
-  return v === 'claude' || v === 'codex' || v === 'grok' ? v : undefined;
+  return v === 'claude' || v === 'codex' || v === 'grok' || v === 'antigravity' ? v : undefined;
 }
 
 /**

@@ -22,7 +22,7 @@ export type SessionStatus =
  * 開く」という形になる。だから id ごとの resume 用セッション id を
  * {@link SessionState.agentSessions} に控えておき、戻ってきたときは続きから再開する。
  */
-export type AgentId = 'claude' | 'codex' | 'grok';
+export type AgentId = 'claude' | 'codex' | 'grok' | 'antigravity';
 
 /**
  * ターンが「完了以外」で終わった理由の分類。`failed` だけが終端で、他の 3 つは

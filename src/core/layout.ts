@@ -42,10 +42,14 @@ export function showsBranchColumn(columns: number): boolean {
 export const BADGE_COLUMN_WIDTH = 12;
 
 /**
- * 一覧のエージェント列の幅（セル）。表示名（`Claude` / `Codex` / `Grok`）は最長 6 セルで、
- * 右に 1 セルの間隔を足した固定幅列。
+ * 一覧のエージェント列の幅（セル）。表示名（`Claude` / `Codex` / `Grok` /
+ * `Antigravity`）は最長 11 セル（`Antigravity`）で、右に 1 セルの間隔を足した固定幅列。
+ *
+ * **表示名を足したらここを見直す。** 幅が足りないとセルが
+ * `wrap="truncate-end"` で切れて読めない語になり、逆に広げすぎると混在時に
+ * ブランチ列から席を奪う（列自体は混在しているときだけ出る）。
  */
-export const AGENT_COLUMN_WIDTH = 6;
+export const AGENT_COLUMN_WIDTH = 11;
 
 /** エージェント列が行から奪う幅（列 + 右の間隔）。ブランチ列の判定から差し引く。 */
 export const AGENT_COLUMN_CELLS = AGENT_COLUMN_WIDTH + 1;
@@ -54,7 +58,7 @@ export const AGENT_COLUMN_CELLS = AGENT_COLUMN_WIDTH + 1;
  * エージェント列を出すのに必要な最小の端末桁数。ブランチ列（80 桁）より緩いのは、
  * こちらは**混在しているときだけ**出る列で、狭ければブランチ列を先に落として席を作れるから。
  */
-export const MIN_AGENT_COLUMN_COLUMNS = 60;
+export const MIN_AGENT_COLUMN_COLUMNS = 65;
 
 /**
  * 一覧の行にエージェント名の列を出すか判定する純関数。`mixed` は
