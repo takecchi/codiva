@@ -253,6 +253,219 @@ describe('Session', () => {
     expect(session.getState().status).toBe('running');
   });
 
+  describe('smart mode (risk-evaluated permissions)', () => {
+    // `smart` のポリシーは同期では決めず `'evaluate'` を返し、Session が非同期の
+    // 評価器へ降りる（`core/permission-evaluator.ts`）。
+    const smartPolicy: PermissionPolicy = () => 'evaluate';
+
+    function smartSession(evaluator: ConstructorParameters<typeof Session>[0]['evaluator']) {
+      const fake = makeFakeQuery();
+      const session = new Session({
+        queryFn: fake.queryFn,
+        input: INPUT,
+        now: () => 1,
+        policy: smartPolicy,
+        evaluator,
+      });
+      return { fake, session };
+    }
+
+    it('auto-allows a tool the evaluator judges routine', async () => {
+      const seen: unknown[] = [];
+      const { fake, session } = smartSession({
+        evaluate: async (context) => {
+          seen.push(context);
+          return 'allow';
+        },
+      });
+      session.start();
+      await tick();
+      const result = await fake.call('Bash', { command: 'npm test' });
+      expect(result?.behavior).toBe('allow');
+      expect(session.getState().status).not.toBe('awaiting_permission');
+      // 文脈は provider 非依存に正規化され、直近の指示も載る。
+      expect(seen[0]).toMatchObject({
+        toolName: 'Bash',
+        tool: 'shell',
+        kind: 'tool',
+        input: { command: 'npm test' },
+        instruction: 'do the thing',
+        agent: 'claude',
+      });
+    });
+
+    it.each(['ask', 'deny'] as const)(
+      'escalates to the dialog when the evaluator says %s',
+      async (verdict) => {
+        const { fake, session } = smartSession({ evaluate: async () => verdict });
+        session.start();
+        await tick();
+        const decision = fake.call('Bash', { command: 'git push --force' });
+        await tick();
+        // `deny` でも**自動拒否せず**ダイアログへ上げる（MVP の方針）。
+        expect(session.getState().status).toBe('awaiting_permission');
+        session.denyPending('nope');
+        await expect(decision).resolves.toEqual({ behavior: 'deny', message: 'nope' });
+      },
+    );
+
+    it('escalates when the evaluator throws (API down / key expired)', async () => {
+      const { fake, session } = smartSession({
+        evaluate: () => Promise.reject(new Error('503')),
+      });
+      session.start();
+      await tick();
+      const decision = fake.call('Bash', { command: 'rm -rf /' });
+      await tick();
+      expect(session.getState().status).toBe('awaiting_permission');
+      session.allowPending();
+      await expect(decision).resolves.toMatchObject({ behavior: 'allow' });
+    });
+
+    it('escalates when no evaluator is wired at all', async () => {
+      const { fake, session } = smartSession(undefined);
+      session.start();
+      await tick();
+      const decision = fake.call('Bash', { command: 'ls' });
+      await tick();
+      expect(session.getState().status).toBe('awaiting_permission');
+      session.denyPending('no');
+      await decision;
+    });
+
+    it('escalates on timeout without hanging the turn', async () => {
+      const fake = makeFakeQuery();
+      const session = new Session({
+        queryFn: fake.queryFn,
+        input: INPUT,
+        now: () => 1,
+        policy: smartPolicy,
+        evaluator: { evaluate: () => new Promise(() => undefined) },
+        evaluateTimeoutMs: 5,
+      });
+      session.start();
+      await tick();
+      const decision = fake.call('Bash', { command: 'ls' });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(session.getState().status).toBe('awaiting_permission');
+      session.denyPending('no');
+      await decision;
+    });
+
+    // 評価を待っている間に stop() されたら、待ち行列へ積まずに断る。積むと誰も
+    // 解決せず、provider が永久に待つ（未応答の tool_use で resume も壊れる）。
+    it('denies instead of queueing when the session is stopped mid-evaluation', async () => {
+      let release: (() => void) | undefined;
+      const fake = makeFakeQuery();
+      const session = new Session({
+        queryFn: fake.queryFn,
+        input: INPUT,
+        now: () => 1,
+        policy: smartPolicy,
+        evaluator: {
+          evaluate: () =>
+            new Promise((resolve) => {
+              release = () => resolve('ask');
+            }),
+        },
+      });
+      session.start();
+      await tick();
+      const decision = fake.call('Bash', { command: 'ls' });
+      await tick();
+      session.stop();
+      release?.();
+      await expect(decision).resolves.toMatchObject({ behavior: 'deny' });
+      expect(session.getState().status).not.toBe('awaiting_permission');
+    });
+
+    // 締切は最大 timeoutMs。その間に Ctrl+C が挟まると、遅れて届いた `ask` が
+    // **死んだセッションを `awaiting_permission` に戻す**（`denyAllPending` はその時点の
+    // 待ち行列しか畳まないので、後から積んだぶんは誰も解決しない → 回答すると
+    // ストリームの無い `running` へ戻って二度と終われない）。
+    it('denies instead of reviving a turn the user interrupted mid-evaluation', async () => {
+      let release: ((v: 'allow' | 'ask') => void) | undefined;
+      const fake = makeFakeQuery();
+      const session = new Session({
+        queryFn: fake.queryFn,
+        input: INPUT,
+        now: () => 1,
+        policy: smartPolicy,
+        evaluator: {
+          evaluate: () =>
+            new Promise((resolve) => {
+              release = resolve;
+            }),
+        },
+      });
+      session.start();
+      await tick();
+      const decision = fake.call('Bash', { command: 'ls' });
+      await tick();
+      session.interrupt();
+      expect(session.getState().status).toBe('interrupted');
+      release?.('ask');
+      await expect(decision).resolves.toMatchObject({ behavior: 'deny' });
+      expect(session.getState().status).toBe('interrupted');
+    });
+
+    // 同じ理由で `allow` も渡さない（切替前の run が worktree を触り続ける）。
+    it('denies a late allow after the agent was switched away', async () => {
+      let release: ((v: 'allow' | 'ask') => void) | undefined;
+      const fake = makeFakeQuery();
+      const session = new Session({
+        queryFn: fake.queryFn,
+        input: INPUT,
+        now: () => 1,
+        policy: smartPolicy,
+        evaluator: {
+          evaluate: () =>
+            new Promise((resolve) => {
+              release = resolve;
+            }),
+        },
+      });
+      session.start();
+      await tick();
+      const decision = fake.call('Bash', { command: 'rm -rf build' });
+      await tick();
+      const other: AgentAdapter = {
+        id: 'codex',
+        displayName: 'Codex',
+        loginCommand: 'codex',
+        capabilities: NO_CAPABILITIES,
+        // 切替後の run は本題ではないので、何も出さずに終わるストリームを返す。
+        open: () => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.resolve({ done: true as const, value: undefined }),
+          }),
+        }),
+      };
+      session.setAgent(other);
+      release?.('allow');
+      await expect(decision).resolves.toMatchObject({ behavior: 'deny' });
+    });
+
+    // 質問は評価器に聞かせない（空の回答で承諾を返すと質問が黙って消える）。
+    it('never routes a question through the evaluator', async () => {
+      const calls: unknown[] = [];
+      const { fake, session } = smartSession({
+        evaluate: async (c) => {
+          calls.push(c);
+          return 'allow';
+        },
+      });
+      session.start();
+      await tick();
+      const decision = fake.call('AskUserQuestion', { questions: [] });
+      await tick();
+      expect(calls).toHaveLength(0);
+      expect(session.getState().status).toBe('awaiting_input');
+      session.denyPending('no');
+      await decision;
+    });
+  });
+
   it('start() logs the initial prompt as the first user entry', () => {
     const fake = makeFakeQuery();
     const session = new Session({ queryFn: fake.queryFn, input: INPUT, now: () => 1 });

@@ -17,7 +17,7 @@ import type {
   AgentRunRequest,
 } from './agent-ports';
 import { classifyClaudeError } from './claude-errors';
-import { parseClaudeMessage } from './claude-parse';
+import { parseClaudeMessage, toolKindOf } from './claude-parse';
 import type { QuestionSpec } from './types';
 
 /**
@@ -133,6 +133,8 @@ export function createClaudeAdapter(deps: {
           input,
           kind: isQuestion ? 'question' : 'tool',
           questions: isQuestion ? parseQuestions(input) : undefined,
+          // 中立のツール種別（リスク評価の文脈に載る）。ログ行に刻むのと同じ関数。
+          tool: toolKindOf(toolName),
         });
         // `AskUserQuestion` は `answers` を入れずに allow すると質問が無視される
         // （"The user did not answer the questions."）ので、UI の回答は

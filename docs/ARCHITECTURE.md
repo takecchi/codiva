@@ -84,7 +84,8 @@ codiva/
 │   │   ├── pr-coordinator.ts  # PrCoordinator（autoPr/refreshPrs/自動立て直し）
 │   │   ├── pr-recovery.ts    # 詰まった PR の立て直し判定・指示文（純粋）
 │   │   ├── pr-detect.ts       # セッション自身が作った PR の検知・表示ヘルパ（純粋）
-│   │   ├── run-mode.ts        # RunMode + createModePolicy
+│   │   ├── run-mode.ts        # RunMode（auto/smart/confirm）+ createModePolicy + nextRunMode
+│   │   ├── permission-evaluator.ts  # smart モードの DI 境界・文脈の絞り込み・安全側への丸め（純粋）
 │   │   ├── session-ports.ts   # codiva 側の DI seam（WorktreeService/SessionHandle/…・leaf）
 │   │   ├── worktree.ts        # Worktree 型 + MergeConflictError + ignoredCopyEntries（純粋）
 │   │   ├── list-hit.ts        # 一覧のマウス当たり判定（純粋）
@@ -398,14 +399,15 @@ provider が増えてもビュー側の分岐は増えない（未登録のエ�
 | `Ctrl+C` のヒント | `interrupt` | `ui/session-detail.tsx` | ヒント行を出さない |
 | 合計コスト（ヘッダ） | `cost` | `core/cost.ts` の `totalCostUsd(states, reportsCost)` | 報告しない provider のセッションを合計に数えない |
 | プラン名 + 使用状況ゲージ（ヘッダ） | `usage` | `showsAccountInfo`（一覧の表示 + `bootstrap/usage-poller.ts` の `enabled`） | **既定エージェント**が報告しなければ**出さないし取りにも行かない**（5 分ごとの probe を立てない） |
-| 確認モードのフッタ表示 | `permissions` | `ui/status-footer.tsx` の `confirmSupported` | `確認モード (非対応)` に差し替える（下記） |
+| 確認 / リスク判定モードのフッタ表示 | `permissions` | `ui/status-footer.tsx` の `confirmSupported` | `確認モード (非対応)` / `リスク判定 (非対応)` に差し替える（下記） |
 | トランスクリプト復元 | `transcript` | `bootstrap/restore-sessions.ts` | その provider のセッションでは読みにも行かない |
 | 認証切れの文言 | —（`AgentLabel`） | 一覧・詳細・通知 | 駆動中の provider のコマンド名を出す |
 
 **確認モードの表示を capability で変える理由**: `permissions: false` の provider（Codex）では
 許可ダイアログが原理的に出ない。それでもフッタが `確認モード` と言い切っていたので、
 「待っていれば聞かれる」と読めてしまっていた（ツールは確認なしに実行される）。ダイアログを
-偽装しないのと同じ理由で、**モード表示の側を正直にする**。
+偽装しないのと同じ理由で、**モード表示の側を正直にする**。`smart` も「判断がつかないものは
+確認へ上げる」モードなので同じ扱いにする（下の「リスクベースの許可」）。
 
 **ヘッダは「次に動くエージェント」の説明**にする。エージェント名・プラン名・モデル・使用状況は
 1 つのアカウントの話として同じ場所に並んでいるので、`/agent` で既定を切り替えたら**4 つ揃って**
@@ -940,6 +942,57 @@ tool_use を並行に**投げるため、`confirm` モードではその数だ�
 セッションが永久に許可待ち／`running` で張り付く。UI に出すのは先頭だけで、回答するたびに
 次を上げる（`permission_resolved` で一旦 `running` に戻さない）。ターンが死ぬときは
 **待ち行列ぜんぶ**を deny する（未応答の `tool_use` を 1 つでも残すと後の `resume` が壊れる）。
+
+### リスクベースの許可（`smart` モード）
+
+`auto`（全部自動）と `confirm`（全部確認）の中間として、**ツール実行ごとにリスクを判定して
+「ルーチンなものだけ自動実行する」**モードがある（issue #139）。判定には Jev
+（TypeSafe AI の判断専用モデル）を使う。
+
+```
+provider のメッセージ ──[アダプタ]──▶ PermissionRequest ──[PermissionPolicy（同期）]──▶ allow / ask / evaluate
+                                                                                              │
+                                                             PermissionContext ◀──[toPermissionContext]──┘
+                                                                     │
+                                                   [evaluatePermission]──▶ utils/jev.ts ──▶ allow / ask / deny
+                                                                     │
+                                                              allow / ask（deny は ask へ昇格）
+```
+
+設計上の要点は 5 つ。
+
+1. **`PermissionPolicy` を async 化しない。** あれは `canUseTool` のホットパスで毎回呼ばれる
+   同期の決定関数で、外部 API を同じ型へ押し込むと**ネットワークを触らない既定の判定**まで
+   非同期になる。ポリシーの戻り値を 3 値へ広げ、`'evaluate'` のときだけ `Session` が
+   非同期の評価器へ降りる。`'ask'` の経路には `await` が 1 つも無いので、待ち行列へ積む順番は
+   従来どおり `canUseTool` が呼ばれた順のまま。
+2. **評価器に渡すのは provider 非依存の `PermissionContext` だけ。** 正規化は既にアダプタが
+   済ませてある（`PermissionRequest`）ので、Jev 側に provider の知識を持ち込まない。ツール種別
+   （`AgentToolKind`）はアダプタが載せ、載っていなければ `'other'` に倒す — **ツール名から
+   当てにいかない**（provider 固有の知識が中立モジュールへ漏れる）。
+3. **安全側の丸めは 1 か所（`evaluatePermission`）に集約する。** `deny` は自動拒否せず `ask` へ
+   昇格し、タイムアウト・throw・中断・未知の値・評価器なしはすべて `ask`。判断モデルを最終
+   決定者にせず、「確認が必要な操作だけ人間へ上げる」用途に限る。**`ask` 側へ倒すのが常に
+   安全**なので、迷ったらそちらへ。
+4. **締切は評価器の答えを待たない。** 待っているのは provider の `canUseTool` なので、ここで
+   伸びるとターンごと止まる。`Promise.race` で `ask` を先に返し、評価器には abort を伝える
+   （best-effort）。
+5. **落ちている外部 API に毎回付き合わない。** 3 連敗したら 60 秒は問い合わせ自体を止める
+   （`utils/jev.ts`。`utils/pr.ts` の `PR_LOOKUP_BACKOFF_MS` と同じ考え方）。オフライン・
+   キー切れ・レート制限は次の 1 回でも直らないのに、毎ツール `timeoutMs` ぶん止まる。
+   休んでいる間の判定は `ask` なので安全側は変わらない。
+6. **未設定なら存在しない。** 評価器が配線されていなければ `smart` は shift+tab の輪にも
+   入らない（`nextRunMode`）。有効化には設定 `jev.enabled` と環境変数 `TYPESAFE_API_KEY` の
+   両方が要り、**API キーは設定ファイルに置かせない**。揃っていれば起動時のモードが `smart` に
+   なる（明示的に有効化した人にさらに shift+tab を踏ませない）。
+
+送信データは `redactToolInput` で絞る（ファイル本文・差分は大きさの目印へ、鍵らしいキーは
+キーごと削除、文字列 400 文字・12 フィールドで打ち切り）。**ここを緩めたら README の
+「送信されるもの」も一緒に直す** — 実装とドキュメントが食い違うと、privacy の約束が嘘になる。
+
+**質問（`kind: 'question'`）は評価器に聞かせない。** それ*が*「ユーザーに聞く」経路なので、
+自動 allow すると空の回答で承諾を返して質問が黙って消える（`auto` モードで同じ事故が
+実際に起きている）。ポリシーと `evaluatePermission` の両方でガードしてある。
 
 **最後の砦（`Session.consume` の finally）**: エージェントのストリームが終端イベント
 （`turn_completed` / `turn_stopped`）を出さずに終わったら、`interrupted` に落とす。streaming input mode

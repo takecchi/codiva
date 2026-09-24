@@ -23,7 +23,7 @@ import {
   toGrokPermissionParams,
   toGrokQuestionParams,
 } from './grok-events';
-import { createGrokParser } from './grok-parse';
+import { createGrokParser, grokToolKind } from './grok-parse';
 import type { QuestionSpec } from './types';
 
 /**
@@ -294,6 +294,8 @@ export function createGrokAdapter(deps: {
           toolName: tool?._meta?.['x.ai/tool']?.name ?? tool?.title ?? 'tool',
           input: tool?.rawInput ?? {},
           kind: 'tool',
+          // 中立のツール種別（リスク評価の文脈に載る）。ログ行に刻むのと同じ関数。
+          tool: grokToolKind(tool?._meta?.['x.ai/tool']),
         });
         const optionId = pickOption(params, decision.behavior === 'allow');
         reply({

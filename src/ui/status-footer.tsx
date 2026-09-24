@@ -29,18 +29,24 @@ export const StatusFooter: FC<{
   confirmSupported?: boolean;
 }> = ({ mode, hint, confirmSupported = true }) => {
   const m = useMessages();
-  const auto = mode === 'auto';
-  const modeLabel = auto
-    ? m.footer.autoMode
-    : confirmSupported
-      ? m.footer.confirmMode
-      : m.footer.confirmModeUnsupported;
+  // `smart` も「判断がつかないものは確認へ上げる」モードなので、許可要求を上げられない
+  // エージェントでは confirm と同じく機能しない → そちらも「非対応」と明示する。
+  const modeLabel =
+    mode === 'auto'
+      ? m.footer.autoMode
+      : mode === 'smart'
+        ? confirmSupported
+          ? m.footer.smartMode
+          : m.footer.smartModeUnsupported
+        : confirmSupported
+          ? m.footer.confirmMode
+          : m.footer.confirmModeUnsupported;
   return (
     <Box marginLeft={2}>
       {/* モード表示は縮まない（ツールが自動実行かどうかは常に読めるべき）。 */}
       <Box flexShrink={0}>
-        <Text color={auto ? theme.auto : theme.confirm} bold>
-          {auto ? glyph.auto : glyph.confirm} {modeLabel}
+        <Text color={theme[mode]} bold>
+          {glyph[mode]} {modeLabel}
         </Text>
       </Box>
       {/* ヒントだけが縮む枠（溢れは末尾で切り詰め、折り返さない）。 */}

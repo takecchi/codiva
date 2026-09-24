@@ -63,8 +63,14 @@ function firstQuestion(input: Record<string, unknown> | undefined): string | und
  */
 const GROK_SILENT_TOOLS = new Set(['todo_write']);
 
-/** `_meta['x.ai/tool'].kind` → 中立のツール種別。 */
-function toolKindOf(info: GrokToolInfo | undefined): AgentToolKind {
+/**
+ * `_meta['x.ai/tool'].kind` → 中立のツール種別。
+ *
+ * `grok-adapter.ts` も使う（許可要求にツール種別を載せてリスク評価の文脈にするため）
+ * ので export しているが、**ACP の形を知るのはこのファイルだけ**という規律は変わらない
+ * — 呼び出し側が渡すのはこのファイルが定義した `GrokToolInfo` で、生の JSON ではない。
+ */
+export function grokToolKind(info: GrokToolInfo | undefined): AgentToolKind {
   switch (info?.kind) {
     case 'execute':
       return 'shell';
@@ -266,7 +272,7 @@ export function createGrokParser(): GrokParser {
           const silent = GROK_SILENT_TOOLS.has(info?.name ?? '');
           const id = update.toolCallId;
           if (id !== undefined) {
-            tools.set(id, { kind: toolKindOf(info), silent });
+            tools.set(id, { kind: grokToolKind(info), silent });
           }
           if (silent) {
             return [];
@@ -278,7 +284,7 @@ export function createGrokParser(): GrokParser {
             kind: 'tool_use',
             id,
             summary: summarizeToolCall(info, update.rawInput, update.title),
-            tool: toolKindOf(info),
+            tool: grokToolKind(info),
             // 「このセッションが出した PR」は結果にしか URL が無いので、作成コマンドの
             // id を控えて結果側と突き合わせる（core/pr-detect.ts）。
             prCreate: command !== undefined && isPrCreateCommand(command) ? true : undefined,

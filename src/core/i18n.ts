@@ -458,6 +458,13 @@ export interface Messages {
    */
   footer: {
     autoMode: string;
+    /**
+     * リスク判定モード（`smart`）の表示。ルーチンなツールだけ自動実行し、
+     * 判断がつかないものは確認ダイアログへ上げる。
+     */
+    smartMode: string;
+    /** リスク判定モードだが、駆動中のエージェントが許可要求を上げられないとき。 */
+    smartModeUnsupported: string;
     confirmMode: string;
     /**
      * 確認モードだが、駆動中のエージェントが許可要求を上げられない
@@ -872,6 +879,8 @@ const ja: Messages = {
   },
   footer: {
     autoMode: '自動モード',
+    smartMode: 'リスク判定モード',
+    smartModeUnsupported: 'リスク判定 (非対応)',
     confirmMode: '確認モード',
     confirmModeUnsupported: '確認モード (非対応)',
     cycleHint: '(shift+tab で切替)',
@@ -1200,6 +1209,8 @@ const en: Messages = {
   },
   footer: {
     autoMode: 'auto mode on',
+    smartMode: 'smart mode on',
+    smartModeUnsupported: 'smart mode (n/a)',
     confirmMode: 'confirm mode on',
     confirmModeUnsupported: 'confirm mode (n/a)',
     cycleHint: '(shift+tab to cycle)',
