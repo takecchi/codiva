@@ -1,0 +1,148 @@
+name: Auto release (claude-agent-sdk)
+
+# `@anthropic-ai/claude-agent-sdk` が上がったぶんだけ codiva を patch リリースする。
+# SDK は Claude Code CLI 本体を同梱していて codiva はそれを起動するので、追従が遅れると
+# `/model` の一覧などがユーザーの `claude` CLI と食い違う（.github/dependabot.yml 参照）。
+#
+# **マージを待ち受ける形にしていない**のが要点。Dependabot の PR を auto-merge するのは
+# GITHUB_TOKEN なので、そのマージによる main への push は workflow を発火しない
+# （GitHub の無限ループ防止）。そこで「main の SDK が、**npm に公開済みの codiva** の SDK と
+# 違うならリリースする」という冪等な判定を定期実行する。判定の基準を npm に置くことで、
+# 途中で失敗しても次の実行が同じ結論に辿り着く（タグや commit を数えない）。
+on:
+  schedule:
+    - cron: '30 0 * * *' # 09:30 JST（Dependabot が 22:00 JST に出した PR が CI を抜けた頃）
+  push:
+    branches: [main]
+    paths: ['package.json'] # 人手でマージしたときに日次を待たせないための即時経路
+  workflow_dispatch:
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+env:
+  SDK: '@anthropic-ai/claude-agent-sdk'
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+      sdk_from: ${{ steps.check.outputs.sdk_from }}
+      sdk_to: ${{ steps.check.outputs.sdk_to }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Compare SDK version against the published package
+        id: check
+        run: |
+          set -euo pipefail
+
+          PKG=$(node -p "require('./package.json').name")
+          CURRENT_SDK=$(node -p "require('./package.json').dependencies[process.env.SDK] ?? ''")
+          export LOCAL_VERSION
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+
+          if [ -z "$CURRENT_SDK" ]; then
+            echo "::error::package.json の dependencies に $SDK が無い"
+            exit 1
+          fi
+
+          export PUBLISHED_VERSION
+          PUBLISHED_VERSION=$(npm view "$PKG" version 2>/dev/null || true)
+          if [ -z "$PUBLISHED_VERSION" ]; then
+            echo "npm に $PKG が未公開。初回だけは手動リリースする（docs/RELEASE.md）。"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          npm view "$PKG@$PUBLISHED_VERSION" dependencies --json > published-deps.json 2>/dev/null || true
+          PUBLISHED_SDK=$(node -e '
+            const fs = require("fs");
+            let deps = {};
+            try { deps = JSON.parse(fs.readFileSync("published-deps.json", "utf8")) ?? {}; } catch {}
+            process.stdout.write(deps[process.env.SDK] ?? "");
+          ')
+          rm -f published-deps.json
+
+          echo "published: $PKG@$PUBLISHED_VERSION -> $SDK@${PUBLISHED_SDK:-(unknown)}"
+          echo "main:      $PKG@$LOCAL_VERSION -> $SDK@$CURRENT_SDK"
+
+          # 読めなかったときは「差がある」と決めつけない（毎日リリースし続けるより黙る方が安全）。
+          if [ -z "$PUBLISHED_SDK" ]; then
+            echo "::warning::公開済み $PKG から $SDK のバージョンを読めなかった。今回は何もしない。"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$CURRENT_SDK" = "$PUBLISHED_SDK" ]; then
+            echo "SDK は公開済みリリースと同じ。何もしない。"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 次のバージョンは「公開済み」と「main の package.json」の新しい方を patch 上げする
+          # （リリース後の bump コミットが main へ戻らなかった場合でも番号を巻き戻さない）。
+          NEXT=$(node -e '
+            const parse = (v) => v.split(".").map(Number);
+            const a = parse(process.env.PUBLISHED_VERSION);
+            const b = parse(process.env.LOCAL_VERSION);
+            const base = ((a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2])) >= 0 ? a : b;
+            console.log([base[0], base[1], base[2] + 1].join("."));
+          ')
+
+          echo "次のリリース: v$NEXT（$SDK $PUBLISHED_SDK -> $CURRENT_SDK）"
+          {
+            echo "release=true"
+            echo "version=$NEXT"
+            echo "sdk_from=$PUBLISHED_SDK"
+            echo "sdk_to=$CURRENT_SDK"
+          } >> "$GITHUB_OUTPUT"
+
+  # 手動リリースと同じ job をそのまま使う（配信経路を 2 本に増やさない）。
+  publish:
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.decide.outputs.version }}
+    permissions:
+      contents: write # バージョン更新コミットを main へ push するため
+      id-token: write # npm Trusted Publishing (OIDC) と provenance のため
+
+  # Release は **publish が成功してから**作る（失敗時に宙ぶらりんのタグを残さない）。
+  # GITHUB_TOKEN で作るので release.yml を二重に発火させることはない。
+  announce:
+    needs: [decide, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.decide.outputs.version }}
+          SDK_FROM: ${{ needs.decide.outputs.sdk_from }}
+          SDK_TO: ${{ needs.decide.outputs.sdk_to }}
+        run: |
+          set -euo pipefail
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION は既にある。何もしない。"
+            exit 0
+          fi
+          gh release create "v$VERSION" \
+            --target main \
+            --title "v$VERSION" \
+            --generate-notes \
+            --notes "\`$SDK\` $SDK_FROM → $SDK_TO に追従した自動リリース。"
