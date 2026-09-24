@@ -48,12 +48,23 @@ describe('sessionOptionsFrom', () => {
 describe('buildAgents', () => {
   it('registers every implemented provider', () => {
     const agents = buildAgents({} as CodivaConfig, { repoRoot: process.cwd() });
-    expect(Object.keys(agents).sort()).toEqual(['claude', 'codex', 'grok']);
+    expect(Object.keys(agents).sort()).toEqual(['antigravity', 'claude', 'codex', 'grok']);
     expect(agents.grok?.displayName).toBe('Grok');
     expect(agents.grok?.loginCommand).toBe('grok');
     // 許可・質問を上げられる provider として登録されている（Codex との違い）。
     expect(agents.grok?.capabilities.permissions).toBe(true);
     // TUI 内ログインの導線が生えている（`/login` と `/agent` の `l`）。
     expect(agents.grok?.login).toBeDefined();
+  });
+
+  it('registers Antigravity without a login flow', () => {
+    const agents = buildAgents({} as CodivaConfig, { repoRoot: process.cwd() });
+    expect(agents.antigravity?.displayName).toBe('Antigravity');
+    expect(agents.antigravity?.loginCommand).toBe('agy');
+    // headless の `agy` は許可要求を外部へ中継できない（ダイアログを偽装しない）。
+    expect(agents.antigravity?.capabilities.permissions).toBe(false);
+    // `agy login` が無く、素の TUI でしかサインインできないので導線を出さない。
+    expect(agents.antigravity?.login).toBeUndefined();
+    expect(agents.antigravity?.checkAvailability).toBeDefined();
   });
 });

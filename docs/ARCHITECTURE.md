@@ -73,7 +73,9 @@ codiva/
 │   │   ├── codex-events.ts / codex-models.ts / codex-rollout.ts # codex exec --json の JSONL 型 / モデル一覧 / rollout から解決済みモデル
 │   │   ├── grok-adapter.ts / grok-parse.ts / grok-errors.ts    # Grok 用の 3 点セット（ACP = JSON-RPC over stdio・1 セッション 1 プロセス）
 │   │   ├── grok-events.ts / grok-models.ts  # ACP メッセージの型と受理ガード / initialize が運ぶモデル一覧
-│   │   ├── jsonl.ts           # 行区切り JSON の枠切り createJsonlSplitter（provider 非依存。Codex / Grok が共用）
+│   │   ├── antigravity-adapter.ts / antigravity-parse.ts / antigravity-errors.ts # Antigravity 用の 3 点セット（1 セッション 1 プロセス・NDJSON のターン直列化）
+│   │   ├── antigravity-events.ts # agy の stream-json（init / step_update / result）の型と受理ガード
+│   │   ├── jsonl.ts           # 行区切り JSON の枠切り createJsonlSplitter（provider 非依存。Codex / Grok / Antigravity が共用）
 │   │   ├── status-meta.ts     # STATUS_META（terminal/attention/active/resumable/復元先/通知キーの一元表）
 │   │   ├── session.ts         # 1 エージェントストリームのライフサイクル（setAgent で途中切替）
 │   │   ├── session-store.ts   # 購読可能スナップショット（順序・状態・参照同一性保持）
@@ -136,17 +138,19 @@ codiva は当初 Claude Code（`@anthropic-ai/claude-agent-sdk`）専用で、`S
 「SDK メッセージの形の知識」と「状態をどう変えるか」が 1 か所に混ざり、別のエージェント
 （Codex / Grok）を足すには畳み込みごと書き直すしかなかった。Phase A ではこれを 2 段に割り、
 provider を差し替えられる境界を入れ、Phase B で 2 つ目の provider（Codex）を、Phase C で
-3 つ目（Grok）を載せた。
+3 つ目（Grok）を、issue #140 で 4 つ目（Antigravity = Google の `agy` CLI）を載せた。
 
 ```
 provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] ──[applyAgentEvent]──▶ SessionState
    SDKMessage                claude-parse.ts       agent-events.ts       core/types.ts
    codex の JSONL            codex-parse.ts        （全 provider 共通）
    grok の ACP 通知           grok-parse.ts
+   agy の stream-json         antigravity-parse.ts
 ```
 
-3 つとも形はまったく違う（長寿命の streaming input / 1 ターン 1 プロセスの JSONL /
-JSON-RPC の双方向ストリーム）が、**違いはアダプタの中で吸収され、右半分は 1 本のまま**。
+4 つとも形はまったく違う（長寿命の streaming input / 1 ターン 1 プロセスの JSONL /
+JSON-RPC の双方向ストリーム / 1 セッション 1 プロセスの素の NDJSON）が、
+**違いはアダプタの中で吸収され、右半分は 1 本のまま**。
 
 ### 1. 境界は `SessionHandle` / `AgentAdapter`（`QueryFn` ではない）
 
@@ -216,14 +220,15 @@ provider に依存しない**ので、Claude で始めた作業を途中から C
   `SessionManager.setSessionAgent(id, agentId)`）。
 
 **どのエージェントが使えるかは検出して見せる。** 各アダプタの optional な
-`checkAvailability()`（実 I/O は `utils/claude.ts` / `utils/codex.ts` / `utils/grok.ts`。keychain は読まず、
+`checkAvailability()`（実 I/O は `utils/claude.ts` / `utils/codex.ts` / `utils/grok.ts` /
+`utils/antigravity.ts`。keychain は読まず、
 Claude のログインは env / 資格情報ファイルで分かるときだけ true・それ以外は `'unknown'`）を
 `SessionManager.checkAgents()` が集約（多重起動を 1 本に畳みキャッシュ）し、`/agent` の各行に
 `使用できます` / `未ログイン` / `未導入` を出す。設定 `agent` が無ければ起動時検出で**導入済みの
 ものを既定に自動で寄せ**（`core/agent-availability.ts` の `resolveDefaultAgentId`、永続はしない）、
 どれも未導入なら一覧にセットアップ案内を出す（`noAgentInstalled`）。この検出のおかげで
-**`claude` も `codex` も `grok` も入っていなくても codiva は起動できる**（起動時のプローブはすべて
-失敗を握り潰す）。
+**`claude` も `codex` も `grok` も `agy` も入っていなくても codiva は起動できる**（起動時の
+プローブはすべて失敗を握り潰す）。
 
 **サインインも TUI の中で完結する**（`/login` / `/agent` の `l`）。端末は明け渡さず、`<cli> login` を
 裏で起動して**出力の認証 URL・デバイスコードをダイアログに出す**（自動でブラウザも開く）。進行の
@@ -232,7 +237,9 @@ Claude のログインは env / 資格情報ファイルで分かるときだけ
 `login --device-auth`（ローカルサーバも stdin も要らない headless 向けフロー）、Claude は
 `auth login`。**login CLI は URL を色付き（ANSI）で出す**ので、拾う前にエスケープを剥がす
 （実測で取りこぼして直した）。ブラウザ側で認証が終わってプロセスが終了したら `refreshAgents` で
-状態を再判定する。
+状態を再判定する。**Antigravity だけは `login()` を実装しない** — `agy` に `login` サブコマンドが
+無く、素で起動したフル TUI の中でしかサインインできないため（§8）。`login()` が optional なので、
+UI は自動的にログイン導線を出さない。
 
 **切替の実体は「今の run の入力キューを閉じて、新しいキューに差し替える」こと。**
 `this.run = undefined` は参照を捨てるだけで、consume ループはその `AgentRun` を掴んだまま回り続け、
@@ -259,7 +266,8 @@ Claude のログインは env / 資格情報ファイルで分かるときだけ
 プロンプトの `AsyncIterable` を先読みするので、ターン中の追加指示はその場で CLI の stdin へ渡り、
 `AsyncQueue.pending` は 0 のまま（= 古い CLI 側のキューに残る）。SDK の `interrupt()` は
 `still_queued` として uuid を返すが、取り消しには送信時に uuid を打つ必要があり未対応。
-Codex / Grok は消費が遅延評価なので移し替えが効く。
+Codex / Grok / Antigravity は消費が遅延評価なので移し替えが効く（Antigravity がターンを
+**直列化**しているのはこれを成り立たせるためでもある。§8）。
 
 | 引き継がれるもの | 引き継がれないもの |
 |---|---|
@@ -335,25 +343,29 @@ provider ごとの resume id を控え、**これは永続化する**（`state.j
 ### 5. Claude 専用機能は capability で optional 化する
 
 `AgentCapabilities`（`permissions` / `interrupt` / `setModel` / `resume` / `modelCatalog` /
-`usage` / `cost` / `transcript`）で「そのエージェントが何をできるか」を表明する。UI はこれを見て
+`usage` / `cost` / `transcript` / `subagents`）で「そのエージェントが何をできるか」を表明する。UI はこれを見て
 段階的に縮退する（持たない機能のキー操作・表示を出さない）。参照するときは**固定値として持たず**
 `SessionManager.getSessionAgent(id)`（= `SessionHandle.getAgent()`）から引く（セッション途中で
 切り替えると変わりうるため）。
 
-| capability | Claude | Codex | Grok |
-|---|---|---|---|
-| `permissions` | true | **false**（exec の JSON モードは承認要求を上げられない） | true（ACP の要求がそのまま届く） |
-| `interrupt` | true | true | true |
-| `setModel` / `modelCatalog` | true | true | true |
-| `resume` | true | true | true |
-| `usage` | true | **false** | **false** |
-| `cost` | true | **false** | **false** |
-| `transcript` | true | **false** | **false** |
+| capability | Claude | Codex | Grok | Antigravity |
+|---|---|---|---|---|
+| `permissions` | true | **false**（exec の JSON モードは承認要求を上げられない） | true（ACP の要求がそのまま届く） | **false**（headless は許可ポリシーを CLI 内部で処理し、中継の口が無い） |
+| `interrupt` | true | true | true | true（プロセスを殺す。会話は `--conversation` で続く） |
+| `setModel` / `modelCatalog` | true | true | true | **false**（`--model` は起動時フラグ・`agy models` に JSON 出力が無い） |
+| `resume` | true | true | true | true（`--conversation=<conversation_id>`） |
+| `usage` | true | **false** | **false** | **false** |
+| `cost` | true | **false** | **false** | **false**（`usage` はトークン数だけ） |
+| `transcript` | true | **false** | **false** | **false** |
+| `subagents` | true | **false** | **false** | **false**（`step_update.subagent_info` はあるが、開始/決着の対を実データで確かめられていない） |
 
 現状 Claude だけが持つ（＝他 provider では縮退させる）機能は、使用状況ゲージ（`usage`）・
-コスト表示（`cost`）・CLI トランスクリプトからのログ復元（`transcript`）・学習データ利用の警告
-（Claude Code の認証情報を読む `utils/privacy.ts`）。許可/質問ダイアログ（`permissions`）は
-**Codex だけが持たない**（理由は §6）。
+コスト表示（`cost`）・CLI トランスクリプトからのログ復元（`transcript`）・サブエージェントの
+実行状況（`subagents`）・学習データ利用の警告（Claude Code の認証情報を読む `utils/privacy.ts`）。
+許可/質問ダイアログ（`permissions`）は **Codex と Antigravity が持たない**（理由は §6 / §8）。
+`subagents` を Antigravity で false にしているのは「無いから」ではなく**確かめていないから**で、
+解けない完了ゲートはセッションを永久に `running` にする（早すぎる完了より危険）ため、
+実データで対を確認できるまでゲートに積まない側へ倒している。
 モデルカタログと `/model`（`modelCatalog` / `setModel`）は Codex も Grok も持つが**選べるモデルが
 それぞれまったく別**なので、UI は駆動中のエージェントで選択肢を出し分ける。出し分けは
 provider ごとの prop（`codexModels` のような ternary）ではなく **`modelsByAgent`
@@ -376,7 +388,7 @@ provider が増えてもビュー側の分岐は増えない（未登録のエ�
 - **capability が分からないときは縮退しない**（`supportsCapability(undefined, …) === true`）。
   未登録の provider・`agent` を持たない古いセッションで機能を隠すと、動くはずの操作が黙って
   消える。既存の `caps && !caps.setModel` と同じ規約。
-- **「数字が 0 だから自然に消える」に頼らない**。Codex / Grok は USD を運ばないのでヘッダの
+- **「数字が 0 だから自然に消える」に頼らない**。Codex / Grok / Antigravity は USD を運ばないのでヘッダの
   合計コストは今のところ勝手に消えるが、それは偶然であって、混在時に「Claude ぶんの合計」を
   全体のコストとして出す余地が残る。`AgentCapabilities` を見た明示的な分岐に置き換える。
 
@@ -567,10 +579,153 @@ Codex で必要だった rollout の探り読み（`codex-rollout.ts`）に相�
 
 #### 共有した唯一のもの: `core/jsonl.ts`
 
-Codex の stdout も Grok の stdio も「1 行 1 JSON」なので、枠切り `createJsonlSplitter`
-（部分行・CRLF・末尾行・1 行の上限）を `codex-events.ts` から**provider 非依存の `core/jsonl.ts`**
-へ移して共用した。ここだけは provider 固有の知識を含まない純粋な framing なので、
-「provider の形の知識はアダプタに閉じる」規約に反しない。
+Codex の stdout も Grok の stdio も Antigravity の stdout も「1 行 1 JSON」なので、枠切り
+`createJsonlSplitter`（部分行・CRLF・末尾行・1 行の上限）を `codex-events.ts` から
+**provider 非依存の `core/jsonl.ts`** へ移して共用した。ここだけは provider 固有の知識を
+含まない純粋な framing なので、「provider の形の知識はアダプタに閉じる」規約に反しない。
+
+### 8. Antigravity アダプタ: 1 セッション 1 プロセス + ターンの直列化
+
+Antigravity（Google の `agy` CLI）は issue #140 で入れた 4 つ目の provider で、実装は
+`core/antigravity-events.ts`（stream-json の型と受理ガード）/ `core/antigravity-parse.ts`
+（`AgentEvent[]` への写像）/ `core/antigravity-errors.ts`（文言 → `AgentStopCause`）/
+`core/antigravity-adapter.ts`（制御）と、唯一の I/O `utils/antigravity.ts`。
+他の 3 つの 3 点セットと**対称**に置いてある。CLI を同梱せずユーザーの `agy` を起動する方針
+（導入は `curl -fsSL https://antigravity.google/cli/install.sh | bash`、ドキュメントは
+<https://antigravity.google/docs/cli/>）も、認証をその CLI に委ねる方針も Codex / Grok と同じ。
+
+駆動するのは
+
+```
+agy --input-format=stream-json --output-format=stream-json --print-timeout=0 \
+    --mode=accept-edits [--model=…] [--effort=…] [--conversation=<id>]
+```
+
+で、stdin に **1 行 = 1 ターン**の NDJSON（`{"event":"user","message":{"content":"…"}}`）を書く。
+stdout に流れる stream-json は **`init` / `step_update` / `result` の 3 種類だけ**（実測
+agy 1.2.10）。プロセスの粒度は Grok と同じ「1 セッション 1 プロセス」だが、**JSON-RPC ではなく
+素の行ストリーム**なので要求 ↔ 応答の対応表は要らず、枠切りだけ `core/jsonl.ts` を共用する。
+
+#### なぜターンを直列化するのか
+
+CLI 側は stdin に積まれた行を順に 1 ターンずつ処理するので、投げっぱなしでも動く。それでも
+アダプタは **1 指示を書く → その `result` を見る → 次を書く**、と直列に回している。理由は 2 つ:
+
+- **プロセスが死んだときに指示を失わないため。** 書き込んだ行はプロセスの中にしか無いので、
+  まとめて書いたあとに落ちると何ターンぶんかが黙って消える。直列なら「まだ送っていない」
+  指示はキューに残る。
+- **エージェント切替で新しい provider へ渡せるようにするため。** `Session.setAgent()` は
+  `AsyncQueue.pending` に残っているぶんを `drain()` で新しいエージェントへ移す
+  （[session-domain.md](../.claude/rules/session-domain.md)）。先読みして全部書き出してしまうと
+  pending が 0 になり、切替直前の指示を**古いエージェントが実行**してしまう。
+
+#### ターンとターンの合間の死を検出する（`alive()`）
+
+`result` を読んだ時点でそのターンの読み取りループは抜けるので、**次の指示が来るまで誰も stdout を
+見ていない**。そこでプロセスが落ちても気付けず、気付かずに次の指示を書くと EPIPE で黙って
+捨てられて「送ったのに何も起きない」ターンになる。そのため `AntigravityProcess.alive()` を持ち、
+送る前に死んでいたら畳んで **`--conversation=<id>` 付きで起こし直す**（会話は切れない）。
+
+#### Antigravity の capability と `permissions: false`
+
+| capability | Antigravity | 理由 |
+|---|---|---|
+| `permissions` | **false** | headless の `agy` は許可ポリシーを CLI 内部で処理し、個々の tool call を外部へ中継する仕組みが無い |
+| `interrupt` | true | プロセスを殺す。会話は `--conversation` で続けられるので文脈は切れない |
+| `setModel` | **false** | `--model` は**起動時のフラグ**で、走っているセッションには効かない |
+| `modelCatalog` | **false** | `agy models` は人間向けのテキストだけ（JSON 出力のフラグが無い） |
+| `resume` | true | `--conversation=<conversation_id>`（id は `init` / `result` が運ぶ） |
+| `usage` / `cost` | **false** | `usage` はトークン数だけで、USD もアカウント全体の使用状況も運ばない |
+| `transcript` | **false** | CLI 側の記録（`.gemini/antigravity/`）は Claude CLI の JSONL と別形式 |
+| `subagents` | **false** | `step_update.subagent_info` はあるが、開始 / 決着の対を実データで確かめられていない |
+
+`permissions: false` は Codex と同じ結論だが**理由は違う**（Codex は「CLI が内部で自動 reject する」、
+Antigravity は「外部ブローカの口が無い」）。どちらにせよ **codiva が許可要求を UI へ上げる経路が
+原理的に無い**ので、規約どおり「それらしい許可ダイアログ」は出さない。
+
+安全弁は**実行モード**に寄せる。codiva の `permissionMode` を次のように写す
+（`utils/antigravity.ts` の `antigravityModeArgs`）:
+
+| codiva の `permissionMode` | `agy` の引数 |
+|---|---|
+| `plan` | `--mode=plan` |
+| `bypassPermissions`（ユーザーが明示したときだけ） | `--dangerously-skip-permissions` |
+| それ以外（既定の `acceptEdits` を含む） | `--mode=accept-edits` |
+
+**`--dangerously-skip-permissions` は既定にしない。** 「許可を尋ねられない」ことと
+「全部を無条件に通す」ことは別の話で、後者は明示的なオプトインでしか選べないようにしてある。
+
+`modelCatalog` / `setModel` が両方 false なので `/model` は出さず、設定の `model` 値を
+そのまま `--model` へ渡す。**カタログを出せないのにダイアログを出すと、選択肢が空か他 provider の
+モデル名になる**（`permissions` を偽装しないのと同じ判断）。一方で**解決済みモデルは `init.model`
+が運ぶ**ので Codex のような rollout の探り読みは要らない（`--model` 未指定だと空文字で来るので、
+空はモデル名として扱わない）。
+
+effort は codiva の 5 段（`low` / `medium` / `high` / `xhigh` / `max`）を `agy` の 3 段
+（`low` / `medium` / `high`）へ丸める（`xhigh` と `max` はどちらも `high`）。
+
+#### ログイン導線を出さない（`login()` を実装しない）
+
+`agy` には `login` サブコマンドが無く、**素で起動したフル TUI の中でしかサインインできない**
+（実測 1.2.10）。全画面 TUI の中で端末を明け渡さずに進める形へ落とせないので、規約どおり
+`AgentAdapter.login()` を**省略**し、UI にログインの導線を出さない（ユーザーが自分で `agy` を
+起動してサインインする）。
+
+導入・ログインの検出（`detectAntigravityAvailability`）は 2 段:
+
+- 導入 = `agy --version` が 0 で返るか。
+- ログイン = `agy models` の終了コードと文言。0 なら true、`Error: Please sign in to view
+  available models.` のように**「サインインしろ」と言われたときだけ** false、それ以外の失敗
+  （オフライン・タイムアウト・未知のエラー）は **`'unknown'`** に倒す。ネットワーク不通を
+  未ログイン扱いにすると、使えるはずのエージェントに誤った案内を出すことになる。
+
+#### 失敗分類: 決着しなかったターンは `failed` に落とさない
+
+`classifyAntigravityError` の判定順は他と同じく**認証切れが最優先**（`agy` の未認証メッセージが
+`authentication failed or timed out` と**タイムアウトに言及する**ため、通信断と読み違えると
+「ログインし直せ」と言うべき場面で素の再開を勧めてしまう）。
+
+加えて 2 つ、**resumable な床（`connection`）へ倒す**経路がある:
+
+- `result.status` が `CANCELED` / `INTERRUPTED` のとき。
+- 終端イベント（`result`）を出さないままプロセスが死に、会話 id が分かっているとき。
+
+どちらも `--conversation=<id>` で続けられるので、終端の `failed` に丸めると**再開の導線が
+消える**（Codex アダプタが終端イベント無しの死に方でやっているのと同じ考え方）。
+
+なお `result.status` の `WAITING` / `RUNNING` は**ターンの決着として扱わない**（途中経過）。
+step の `state` も同様に、**知らない値は `ACTIVE`（まだ動いている）側へ倒す** — 決着と誤認して
+早すぎる確定を出さないため。
+
+#### パーサが状態を持つ理由（`createAntigravityParser`）
+
+`step_update` は「同じ `step_index` に対する `ACTIVE` の連打 → `DONE`」という形で届くので、
+Grok と同じくパーサは状態を持つ:
+
+- 本文（`step_type: 'agent_response'`）は `text_delta` の積み上げなので、`DONE` まで溜めて
+  確定した 1 件の `assistant_text` にする（途中は `stream_text` としてライブプレビューへ流す）。
+- ツール（`step_type: 'tool'`）は開始と結果が同じ step の `ACTIVE` / `DONE` に分かれるので、
+  codiva のログが基準にしている **tool_use ↔ tool_result の 2 段組み**へ割り直す。
+
+パーサは**プロセスごとに作る**（`step_index` はプロセス内の通し番号なので、起こし直したら
+状態も捨てる）。`DONE` を貰えないまま終わった step は `flush()` が閉じる（対応の取れない
+`tool_use` が残るとログの畳み込みが崩れる）。
+
+#### フィクスチャの採取状況（正直に書く）
+
+`src/core/__fixtures__/antigravity-*.jsonl` は**すべてが実採取ではない**。
+
+| ファイル | 出所 |
+|---|---|
+| `antigravity-autherror.jsonl` | **実バイナリの出力**（agy 1.2.10 を未認証で走らせて得た `result` 1 行） |
+| `antigravity-basic.jsonl` / `antigravity-shell.jsonl` | **公式 stream-json スキーマから構成**したもの（実セッションの採取に Google アカウントのサインインが必要で、実施できていない） |
+
+構成を許容した根拠は、**実採取できた唯一の `result` 行が公式ドキュメントのスキーマと
+フィールド単位で完全に一致した**こと。とはいえこれは「想定で書かない」規約の例外なので、
+`antigravity-events.ts` は**全フィールドを optional**として扱い（欠けても落ちない）、
+**資格情報が用意できた時点で実採取に差し替える**。
+なおフィクスチャとツール名の写像に使っている名前（`run_command` / `view_file` / `edit_file` /
+`grep_search` / `ask_permission` / `browser_*` …）は、実バイナリから `strings` で抽出した実物。
 
 ## セッション状態機械
 

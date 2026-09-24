@@ -3217,7 +3217,12 @@ describe('App list view (/agent default + availability)', () => {
             worktrees,
             agents: {
               claude: fakeAdapter('claude', 'Claude'),
-              codex: fakeAdapter('codex', 'Codex'),
+              // `/model` はモデル切替を持つ provider でしか開かないので、
+              // その capability を立てた fake で駆動する（実 Codex も true）。
+              codex: fakeAdapter('codex', 'Codex', undefined, {
+                ...NO_CAPABILITIES,
+                setModel: true,
+              }),
             },
             agent: fakeAdapter('codex', 'Codex'),
             defaultAgentId: 'codex',
@@ -3235,6 +3240,34 @@ describe('App list view (/agent default + availability)', () => {
     await flush();
     const frame = stripAnsi(app.lastFrame() ?? '');
     expect(frame).toContain('GPT-5.6-Codex');
+    expect(frame).not.toContain('Fable');
+  });
+
+  it('/model はモデル切替を持たない既定エージェントでは開かず理由を出す', async () => {
+    // 番人: カタログを持たない provider（Antigravity）が既定のときに素通しすると、
+    // 他 provider のモデル名が並び、選んだ値がそのまま `--model` に渡って起動が失敗する。
+    const app = render(
+      <App
+        manager={
+          new SessionManager({
+            worktrees,
+            agents: { antigravity: fakeAdapter('antigravity', 'Antigravity') },
+            agent: fakeAdapter('antigravity', 'Antigravity'),
+            defaultAgentId: 'antigravity',
+            now: () => 0,
+          })
+        }
+        modelCatalog={Promise.resolve(MODEL_CATALOG)}
+      />,
+    );
+    await flush();
+    app.stdin.write('/model');
+    await flush();
+    app.stdin.write('\r');
+    await flush();
+    const frame = stripAnsi(app.lastFrame() ?? '');
+    expect(frame).toContain('Antigravity');
+    // Claude のカタログが漏れていない。
     expect(frame).not.toContain('Fable');
   });
 

@@ -402,7 +402,18 @@ export const SessionList: FC<{
       exit: onQuit,
       help: () => setShowHelp(true),
       // `/model` はセッションを作らずモデル選択ダイアログを開く。
-      model: () => setModelSelect(true),
+      // **モデル切替を持たない provider が既定のときは開かない**（詳細ビューの
+      // `/model` と同じ規約で、黙って無反応にせず理由を出す）。ここを素通しにすると、
+      // カタログを持たない provider では他 provider のモデル名が並び、選んだ値が
+      // そのまま `--model` に渡って起動が失敗する。判定は `supportsCapability` 経由
+      // なので、capability の分からない provider では従来どおり開く（縮退しない）。
+      model: () => {
+        if (!agentSupports(capabilities, defaultAgent, 'setModel')) {
+          setActionError(m.agent.unsupported(agentNames.get(defaultAgent ?? 'claude') ?? ''));
+          return;
+        }
+        setModelSelect(true);
+      },
       // `/agent` は**新規セッションの既定 provider**を選ぶ（詳細ビューの `/agent` は
       // 「そのセッションを切り替える」で意味が違う）。選ぶと config に永続化する。
       agent: () => setAgentSelect(true),

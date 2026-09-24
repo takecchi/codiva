@@ -4,9 +4,11 @@
 **`core/agent-ports.ts` / `core/agent-events.ts` / `core/agent-capabilities.ts` /
 `core/agent-handoff.ts` / `core/claude-adapter.ts` / `core/claude-parse.ts` /
 `core/claude-errors.ts` / `core/codex-adapter.ts` / `core/codex-parse.ts` / `core/codex-errors.ts` /
-`core/grok-adapter.ts` / `core/grok-parse.ts` / `core/grok-errors.ts` / `core/jsonl.ts` /
+`core/grok-adapter.ts` / `core/grok-parse.ts` / `core/grok-errors.ts` /
+`core/antigravity-adapter.ts` / `core/antigravity-parse.ts` / `core/antigravity-errors.ts` /
+`core/jsonl.ts` /
 `core/session.ts` / `utils/model-catalog.ts` / `utils/codex.ts` / `utils/grok.ts` /
-`utils/title.ts` を触る前に読む。**
+`utils/antigravity.ts` / `utils/title.ts` を触る前に読む。**
 実測データと詳細は [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)、設計の理由は
 [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md)「エージェント抽象」。
 
@@ -30,7 +32,7 @@
 - 許可要求の型も自前（`PermissionDecision`）。SDK の `PermissionResult` を core へ持ち込まず、
   provider 形への写像はアダプタが行う（Claude は `claude-adapter.ts` の `canUseTool`）。
 - その provider に無い機能は `AgentCapabilities` で表明する（`permissions` / `interrupt` /
-  `setModel` / `resume` / `modelCatalog` / `usage` / `cost` / `transcript`）。UI は capability を
+  `setModel` / `resume` / `modelCatalog` / `usage` / `cost` / `transcript` / `subagents`）。UI は capability を
   見て縮退する。**判定は純粋な `core/agent-capabilities.ts` を通す**（`supportsCapability` /
   `capabilityLookup` / `agentSupports` / `showsAccountInfo`）。守ること 2 つ:
   - **capability が分からないときは縮退しない**（未登録の provider・`agent` を持たない古い
@@ -50,10 +52,12 @@
   （+ JSONL の型と受理ガードだけを持つ `codex-events.ts`、rollout の形を知る
   `codex-rollout.ts`、実 I/O の `utils/codex.ts`）、Grok は `grok-adapter.ts` / `grok-parse.ts` /
   `grok-errors.ts`（+ ACP メッセージの型と受理ガードだけを持つ `grok-events.ts`、
-  モデル一覧の変換 `grok-models.ts`、実 I/O の `utils/grok.ts`）。
+  モデル一覧の変換 `grok-models.ts`、実 I/O の `utils/grok.ts`）、Antigravity は
+  `antigravity-adapter.ts` / `antigravity-parse.ts` / `antigravity-errors.ts`（+ stream-json の型と
+  受理ガードだけを持つ `antigravity-events.ts`、実 I/O の `utils/antigravity.ts`）。
   **その CLI / SDK の形の知識をこの外へ漏らさない。**
   例外は**その provider の知識を持たない純粋なヘルパ**だけ（行区切り JSON の枠切り
-  `core/jsonl.ts` の `createJsonlSplitter` は Codex と Grok が共用する）。
+  `core/jsonl.ts` の `createJsonlSplitter` は Codex / Grok / Antigravity が共用する）。
 - **その provider が「実際に動いているモデル」を報告しないなら、推測で埋めない。**
   `codex exec --json` はモデル名を一切運ばない（実測 0.147.0）。`--model` を明示していない
   セッションのモデル名は、CLI が書き残す rollout の `turn_context` からしか分からないので、
@@ -74,6 +78,9 @@
   `session/resume` の結果（`models.currentModelId`）・ターン応答の `_meta.modelId`・
   `_x.ai/models/update` で解決済みモデルを直接運ぶので、rollout 相当の探り読みは要らない
   （`grok-rollout.ts` は存在しない）。報告経路があるなら素直にそれを `model_resolved` へ写す。
+  Antigravity も `init.model` で報告するので同じ（`antigravity-rollout.ts` は無い）。ただし
+  `--model` を明示していないと**空文字**で来るので、空はモデル名として扱わない — 空を通すと
+  一覧のモデル欄に「名前の無いモデル」が出る。
 - **CLI は同梱せず、ユーザーがインストールしたものを起動する**（`git` / `gh` と同じ扱い）。
   provider の SDK パッケージを依存に足すと、その provider を使わないユーザーにまで
   プラットフォーム別バイナリを配ることになる。認証もその CLI のログインに委ねる
@@ -90,6 +97,22 @@
   同時に載るので、要求と応答の対応づけは JSON-RPC の `id` の対応表で持つ。
   **一方通行のモード（Grok の `-p --output-format streaming-json`）を選ばない** — 許可も質問も
   「向こうから要求が来て、答えるまで止まる」形なので、双方向のチャンネルが無いと表現できない。
+- **「1 セッション = 1 プロセス + 行ストリーム」もある**（RPC の対応表は要らない形）。
+  Antigravity は `agy --input-format=stream-json --output-format=stream-json` を 1 本張り、
+  stdin へ 1 行 1 ターンの NDJSON（`{"event":"user","message":{"content":"…"}}`）を書く。
+  要求 ↔ 応答の `id` が無いので、**ターンはアダプタ側で直列化する**（送る → `result` を見る →
+  次を送る）。投げっぱなしでも CLI は順に処理するが、直列にしておくと (1) プロセスが死んだ
+  ときに書き損じた指示を失わず、(2) `AsyncQueue.pending` に積み残しが残るのでエージェント
+  切替時に `drain()` で新しいエージェントへ渡せる（[session-domain.md](./session-domain.md)）。
+- **ターンとターンの合間に死んだプロセスを検出できるようにする。** `result` を読んで待つのを
+  やめたあとは誰も stdout を見ていないので、そこで落ちても気付けない。気付かずに次の指示を
+  書くと EPIPE で黙って捨てられ、ユーザーには「送ったのに何も起きない」ターンに見える
+  （`AntigravityProcess.alive()` がこれ専用）。
+- **CLI の引数の解釈も実測で確かめる。** `agy --print --input-format stream-json` は
+  **`--print` が次のフラグをプロンプト値として食い**（`Error: --print took "--input-format"
+  as its prompt …`）起動できない。値を取るフラグは**必ず `--flag=value` 形**で渡し、
+  「付けても害は無いだろう」というフラグを足さない（Antigravity は `--input-format=stream-json`
+  だけで print モードに入るので `--print` を渡さない）。
 - **エージェント側から来た要求には必ず答える。** ACP の `session/request_permission` /
   `_x.ai/ask_user_question` はどちらも**答えるまで向こうが止まる**ので、取りこぼすと
   **ターンが永久に終わらない**（`awaiting_permission` のまま出口が無い）。パラメータが読めなくて
@@ -109,8 +132,12 @@
   codiva が UI へ上げる経路が原理的に無い。ここで「それらしい許可ダイアログ」を出すと、
   ユーザーが許可したのに実際は拒否されているという嘘になる。**capability を false にして
   黙って出さない**方を選び、安全弁は provider 側の仕組み（Codex ならサンドボックス設定
-  `codexSandbox`）に寄せる。同じ理由で、質問（`QuestionSpec`）を表現できない provider も
-  `permissions: false` のままにする。
+  `codexSandbox`、Antigravity なら実行モード `--mode`）に寄せる。同じ理由で、質問
+  （`QuestionSpec`）を表現できない provider も `permissions: false` のままにする。
+  **「全許可」を既定にしない。** Antigravity の `--dangerously-skip-permissions` は
+  `permissionMode: "bypassPermissions"` をユーザーが明示したときだけ渡し、それ以外は
+  `--mode=accept-edits`（codiva の既定 `acceptEdits` に対応）/ `--mode=plan` へ倒す。
+  許可を尋ねられないことと、全部を無条件に通すことは別の話。
 - **「エラー行」と「ターンの終わり」を混同しない**。Codex は再試行の実況
   （`Reconnecting... 1/5 (...)`）を `{"type":"error"}` として流し、諦めたときだけ `turn.failed`
   を出す。エラー型を素直に失敗へ写すと**自力で回復するセッションが赤くなる**ので、
@@ -120,6 +147,11 @@
   差し替えて（Codex なら `-c model_provider=...` でローカルのモック Responses API へ向ける）
   実 CLI を走らせ、出力をサニタイズして `src/core/__fixtures__/` へ昇格させる
   （手順は [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)「Codex CLI」節）。
+  **どうしても実採取できないときは、そのことをドキュメントに明記する。** Antigravity は
+  実セッションに Google アカウントのサインインが要り、未認証で採れた `result` 1 行
+  （`antigravity-autherror.jsonl`）以外は**公式 stream-json スキーマから組み立てた**
+  フィクスチャになっている。「実データでテストした」と装わず、採取状況と差し替えの
+  必要性を TECH_NOTES に残す（[docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)「Antigravity CLI」節）。
 - **TUI 内ログインは「端末を明け渡さない」形で書く**。login を提供する provider は
   `AgentAdapter.login()`（`AgentLoginProcess` を返す）を実装する。全画面 TUI の中で
   `<cli> login` を裏で起動し、**出力の認証 URL / デバイスコードを拾ってダイアログに出す**
@@ -127,7 +159,10 @@
   ブラウザで進む OAuth を選ぶ（Codex / Grok は stdin もローカルサーバも要らない
   `login --device-auth`）。**login CLI は URL を色付き（ANSI）で出す**ので、拾う前に必ず
   エスケープを剥がす（実測で取りこぼした）。TUI 内ログインを表現できない provider は
-  `login()` を省略する（UI はログインの導線を出さない）。
+  `login()` を省略する（UI はログインの導線を出さない）。Antigravity がこれで、`agy` には
+  `login` サブコマンドが無く、**素で起動したフル TUI の中でしかサインインできない**
+  （＝端末を明け渡さずには進められない）。無理に `agy` を起こして画面を奪うより、
+  導線を出さずに「`agy` を自分で起動してサインインする」に委ねる。
 
 ## 形の知識は 2 段に割る（アダプタの parse → 共通の fold）
 

@@ -1,6 +1,6 @@
 # codiva
 
-> A TUI app you launch inside a Git repository. Every instruction you type starts a coding-agent session (Claude Code / Codex / Grok) on its own isolated git worktree, and they all run in parallel.
+> A TUI app you launch inside a Git repository. Every instruction you type starts a coding-agent session (Claude Code / Codex / Grok / Antigravity) on its own isolated git worktree, and they all run in parallel.
 
 [![npm version](https://img.shields.io/npm/v/codiva.svg)](https://www.npmjs.com/package/codiva)
 [![CI](https://github.com/takecchi/codiva/actions/workflows/ci.yml/badge.svg)](https://github.com/takecchi/codiva/actions/workflows/ci.yml)
@@ -10,26 +10,27 @@
 
 `codiva` is a terminal UI that spins up a coding-agent session on a fresh git worktree + branch every time you type a plain-language instruction, so several tasks make progress at the same time. The goal is simple: *keep throwing instructions at it and watch the work happen in parallel.*
 
-**It is not Claude Code only.** You can pick any of these three (switch with `/agent` in the session list — see [Choosing and switching agents](#choosing-and-switching-agents-agent)):
+**It is not Claude Code only.** You can pick any of these four (switch with `/agent` in the session list — see [Choosing and switching agents](#choosing-and-switching-agents-agent)):
 
 | Agent | What it launches |
 |---|---|
 | **Claude Code** | [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) (the `claude` CLI) |
 | **Codex** | OpenAI's `codex` CLI |
 | **Grok** | xAI's `grok` CLI |
+| **Antigravity** | Google's [`agy` CLI](https://antigravity.google/docs/cli/) |
 
 You can choose the default for new sessions, and you can also switch a running session mid-flight (the worktree, working tree and PR all carry over). Where agents differ in what they support (permission dialogs, cost display, …) is spelled out in the capability table below.
 
 ## Features
 
 - **Parallel sessions** — every instruction gets its own worktree (`.codiva/worktrees/<slug>`) and branch (`codiva/<slug>`), so file edits never collide.
-- **Pick your agent** — Claude Code / **Codex** (`codex` CLI) / **Grok** (xAI's `grok` CLI). Use `/agent` in the list to choose the default for new sessions (saved automatically), and `/agent` in the detail view to switch an existing session mid-flight. Install and login status is shown in `/agent`, and `/login` lets you sign in from inside codiva.
+- **Pick your agent** — Claude Code / **Codex** (`codex` CLI) / **Grok** (xAI's `grok` CLI) / **Antigravity** (Google's `agy` CLI). Use `/agent` in the list to choose the default for new sessions (saved automatically), and `/agent` in the detail view to switch an existing session mid-flight. Install and login status is shown in `/agent`, and `/login` lets you sign in from inside codiva (Antigravity is the exception — `agy` has no `login` subcommand).
 - **Live progress** — the list view shows every session's state (`Running` / `Step 4/7` / `Question` / `Awaiting permission` / `Completed` / `Failed`) and elapsed time.
 - **Non-blocking submission** — you can type the next instruction the instant you submit one.
 - **Permission replies and follow-ups** — approve/deny tool use and send follow-up instructions to a running session from the detail view.
 - **Merge or discard** — review the diff stat of a finished session, then merge it into the base branch or throw the whole worktree away.
 - **Repo-wide instructions** — anything written in `.codiva/prompt.md` (e.g. "open a PR when you're done") is injected into every session. Editable inside the TUI via `/prompt`.
-- **Plan / usage display** (Claude only) — the list header shows your claude.ai plan tier (Pro / Max / Team / Enterprise) and usage limit windows (percentage used, time until reset). Codex / Grok don't report these, so nothing is shown while one of them is the default agent.
+- **Plan / usage display** (Claude only) — the list header shows your claude.ai plan tier (Pro / Max / Team / Enterprise) and usage limit windows (percentage used, time until reset). Codex / Grok / Antigravity don't report these, so nothing is shown while one of them is the default agent.
 - **Current branch** — the header shows the branch the target repository has checked out (i.e. where new sessions branch from and merge back to). It catches up within seconds even if you switch branches in another terminal.
 - **Training-data warning** (Claude only) — a notice line appears in the startup header only when claude.ai's "Help improve our AI models" setting is ON.
 - **Update notification** — codiva checks npm for a newer version at startup and shows one line in the header if there is one. `/update` upgrades in place after a confirmation.
@@ -39,8 +40,8 @@ You can choose the default for new sessions, and you can also switch a running s
 ## Requirements
 
 - Node.js **>= 20**
-- **At least one of the `claude` / `codex` / `grok` CLIs** installed and logged in (see [Choosing and switching agents](#choosing-and-switching-agents-agent)).
-  codiva starts even with none of them installed, and `/login` lets you sign in from inside codiva.
+- **At least one of the `claude` / `codex` / `grok` / `agy` (Antigravity) CLIs** installed and logged in (see [Choosing and switching agents](#choosing-and-switching-agents-agent)).
+  codiva starts even with none of them installed, and `/login` lets you sign in from inside codiva (for `agy`, run `agy` on its own to sign in).
 - The target directory is a Git repository with at least one commit
 
 ## Installation
@@ -196,7 +197,7 @@ When the agent spawns a **subagent** (Claude Code's Task tool — delegating res
 - Records stick around after a subagent finishes, so you can read back its result and what it did (up to 8 per session; they are dropped when codiva restarts).
 - The subagent log view has **no input field** — you cannot instruct a subagent directly. `Ctrl+C` there interrupts the *parent* session's turn.
 - The subagent log view supports the same **tool-run folding** (`Ctrl+O` / click), text selection and URL clicks as the detail view (there is one log implementation, so behaviour never diverges).
-- Only **Claude Code** reports subagents today (nothing appears with Codex / Grok).
+- Only **Claude Code** reports subagents today (nothing appears with Codex / Grok / Antigravity).
 
 ### Interrupting work in progress (`Ctrl+C`)
 
@@ -309,7 +310,7 @@ Instead of querying every session every 20 seconds, codiva does this:
 
 ### Plan / usage display (when the default agent is Claude)
 
-The list view's header (banner) shows the claude.ai plan you're logged into and your usage limit windows (Codex / Grok don't report these, so nothing appears while one of them is the default).
+The list view's header (banner) shows the claude.ai plan you're logged into and your usage limit windows (Codex / Grok / Antigravity don't report these, so nothing appears while one of them is the default).
 
 ```
 Codiva v0.3.1   3 sessions
@@ -325,20 +326,22 @@ Usage
 - Updates come from two sources: running sessions get the latest values Claude sends at the start of each turn, and idle ones get an **automatic fetch every 5 minutes** (both are queries to Claude that run no inference, so there's no token usage or billing). Time-to-reset counts down.
 - Some plans don't get a percentage (`%`) back from Claude. In that case the gauge is omitted and only the time remaining is shown (so 0% isn't misread).
 - With an API key / Bedrock / Vertex there is no subscription limit, so this display doesn't appear.
-- **The header describes "the agent that will run next".** Switch the default to Codex / Grok with `/agent` and the agent name, plan, model and usage all switch together (neither reports a plan or usage, so the plan line and gauges disappear and the model falls back to `Model: CLI default`). The 5-minute claude.ai fetch also stops while that's the case, and resumes when you switch the default back to Claude.
+- **The header describes "the agent that will run next".** Switch the default to Codex / Grok / Antigravity with `/agent` and the agent name, plan, model and usage all switch together (none of them report a plan or usage, so the plan line and gauges disappear and the model falls back to `Model: CLI default`). The 5-minute claude.ai fetch also stops while that's the case, and resumes when you switch the default back to Claude.
 - The status bar at the bottom only carries the mode indicator (`⏵⏵ auto mode`) and key hints. Plan / usage live in the header (press Esc to return to the list if you want to see them from the detail view).
 
 ### Choosing and switching agents (`/agent`)
 
-Sessions can be driven by **Claude Code** (the `claude` CLI / Claude Agent SDK), **Codex** (OpenAI's `codex` CLI) or **Grok** (xAI's `grok` CLI). Claude is the default, but codiva is perfectly usable with only Codex / Grok installed.
+Sessions can be driven by **Claude Code** (the `claude` CLI / Claude Agent SDK), **Codex** (OpenAI's `codex` CLI), **Grok** (xAI's `grok` CLI) or **Antigravity** (Google's `agy` CLI). Claude is the default, but codiva is perfectly usable with only the other three installed.
 
-1. Install the CLI you want and log in (`claude` → `claude auth login` / `codex` → `codex login` / `grok` → `grok login`. Grok installs via `curl -fsSL https://x.ai/cli/install.sh | bash` and also works with `XAI_API_KEY`). **codiva does not bundle these CLIs** — like `git` and `gh`, it launches the commands installed on your machine (so users who don't need a provider aren't shipped a large binary). codiva never touches their credentials either.
-2. **Type `/agent` in the list** and pick an agent; that's it — it becomes the default for new sessions (no hand-editing config: your choice is saved to `~/.codiva/config.json`. Writing `"agent": "codex"` / `"agent": "grok"` yourself works too). The dialog lists each agent's **install and login status** (`Ready` / `Not signed in` / `Not installed`).
+1. Install the CLI you want and log in (`claude` → `claude auth login` / `codex` → `codex login` / `grok` → `grok login` / `agy` → **run `agy` with no arguments and sign in there**). Grok installs via `curl -fsSL https://x.ai/cli/install.sh | bash` (and also works with `XAI_API_KEY`); Antigravity installs via `curl -fsSL https://antigravity.google/cli/install.sh | bash`, which puts `agy` in `~/.local/bin` (make sure that's on your `PATH`; docs at <https://antigravity.google/docs/cli/>). **codiva does not bundle these CLIs** — like `git` and `gh`, it launches the commands installed on your machine (so users who don't need a provider aren't shipped a large binary). codiva never touches their credentials either.
+2. **Type `/agent` in the list** and pick an agent; that's it — it becomes the default for new sessions (no hand-editing config: your choice is saved to `~/.codiva/config.json`. Writing `"agent": "codex"` / `"agent": "grok"` / `"agent": "antigravity"` yourself works too). The dialog lists each agent's **install and login status** (`Ready` / `Not signed in` / `Not installed`).
 3. To switch an already-running session, open the detail view (`Enter` from the list) and pick **`/agent`** there. The switch takes effect **from the next instruction**.
 
-codiva starts even with none of `claude`, `codex` or `grok` installed. In that case the list says "No coding agent found" — follow the instructions to install one and log in.
+codiva starts even with none of `claude`, `codex`, `grok` or `agy` installed. In that case the list says "No coding agent found" — follow the instructions to install one and log in.
 
 **You can sign in from inside codiva.** Type **`/login`** in the list or detail view (or select a target in the `/agent` dialog and press `l`) and codiva launches `codex login` / `claude auth login` / `grok login --device-auth` in the background, **showing the auth URL and one-time code in a dialog** (the URL is also opened in your browser automatically). Finish signing in there and the status updates on its own (`Esc` aborts). The terminal is never handed over, so other sessions keep running.
+
+**Antigravity is the one exception — you can't sign in from inside codiva.** `agy` has no `login` subcommand; signing in only happens inside the **full-screen TUI you get by running `agy` with no arguments**, and driving that from within codiva would mean surrendering the terminal (wrecking every other session's display). Run `agy` in a separate terminal and sign in there. The `/agent` dialog shows its install and login status but offers no login affordance.
 
 Here's what does and doesn't carry over when you switch with `/agent`:
 
@@ -359,14 +362,16 @@ The provider-native context can't be transferred directly, so **codiva copies th
 
 #### Capability differences between agents
 
-Worktree isolation, parallel execution, follow-ups, interrupting (`Ctrl+C`), merge / discard, PR automation (`/sync` / `/fix-ci`), desktop notifications, repo-wide instructions (`.codiva/prompt.md`) and `/model` all **work the same on every agent**. Only these four things differ.
+Worktree isolation, parallel execution, follow-ups, interrupting (`Ctrl+C`), merge / discard, PR automation (`/sync` / `/fix-ci`), desktop notifications and repo-wide instructions (`.codiva/prompt.md`) all **work the same on every agent**. Only these six things differ.
 
-| | Claude Code | Codex | Grok |
-|---|---|---|---|
-| Tool permission / question dialogs | ✅ | ❌ (sandbox instead) | ✅ |
-| Cost display (total in the header) | ✅ | ❌ | ❌ |
-| Plan / usage gauges | ✅ | ❌ | ❌ |
-| Log restoration after a restart | ✅ | ❌ (resuming the conversation still works) | ❌ (same) |
+| | Claude Code | Codex | Grok | Antigravity |
+|---|---|---|---|---|
+| Tool permission / question dialogs | ✅ | ❌ (sandbox instead) | ✅ | ❌ (run mode instead) |
+| Cost display (total in the header) | ✅ | ❌ | ❌ | ❌ |
+| Plan / usage gauges | ✅ | ❌ | ❌ | ❌ |
+| Log restoration after a restart | ✅ | ❌ (resuming the conversation still works) | ❌ (same) | ❌ (same) |
+| Model selection via `/model` | ✅ | ✅ | ✅ | ❌ (the `model` setting is passed at launch) |
+| Signing in from inside codiva (`/login`) | ✅ | ✅ | ✅ | ❌ (run `agy` on its own) |
 
 **Codex session limitations** (differences from a Claude session):
 
@@ -382,6 +387,18 @@ Worktree isolation, parallel execution, follow-ups, interrupting (`Ctrl+C`), mer
 - **It doesn't display cost.** Grok only returns token counts at the end of a turn — no amounts, no account-wide usage. Grok sessions are excluded from the header's total cost, and the plan display and usage gauges (which are about your Claude account) don't appear while Grok is the default.
 - **The log isn't restored after a restart** (resuming the session itself does work). Log reconstruction reads the Claude CLI's transcript files, and Grok's transcripts use a different format.
 - `/model` lists Grok's own models. On machines where that list can't be fetched you only get "default" (codiva doesn't guess model names). Switching provider with `/agent` resets an incompatible model selection to the CLI default. Unlike Codex, Grok **tells you which model is actually running**, so the session list shows a model name even when you didn't set one with `/model`.
+
+**Antigravity session limitations** (differences from a Claude session):
+
+- **It doesn't ask for tool permission.** Headless `agy` decides permission policy inside the CLI and has no way to broker individual tool calls out to an external client. For the same reason (and with the same conclusion) as Codex, codiva doesn't fake a plausible-looking permission dialog and makes **the run mode the safety valve** instead. Antigravity sessions also never enter the `Question` state.
+  - The default is `--mode=accept-edits` (matching codiva's default permission mode, `acceptEdits`). Setting `permissionMode` to `"plan"` gives you `--mode=plan` (plan only, no edits).
+  - **Full bypass (`--dangerously-skip-permissions`) is passed only when you explicitly set `permissionMode` to `"bypassPermissions"`.** "You don't get asked" and "everything is allowed unconditionally" are different things, so the latter is never the default.
+- **There is no `/model`.** `agy models` prints human-readable text only (there is no JSON output flag), and `--model` is a **launch-time flag** that can't change the model of a running session. Set the model you want in `~/.codiva/config.json`'s `model` key instead (it's passed as `--model` when the session starts). Showing a dialog we can't populate would just list nothing, or another agent's model names. The **model actually running does appear in the session list**, because `agy` reports it at startup.
+- **It doesn't display cost.** `agy` only returns token counts at the end of a turn — no amounts, no account-wide usage. Antigravity sessions are excluded from the header's total cost, and the plan display and usage gauges (which are about your Claude account) don't appear while Antigravity is the default.
+- **You can't sign in from inside codiva** (see above). Run `agy` in a separate terminal. Login status is probed with `agy models`, and codiva reports `Not signed in` **only** when it's told to sign in. When it can't tell (offline, timeout, …) it **does not** treat that as signed-out, so a usable agent never gets a misleading prompt.
+- **The log isn't restored after a restart** (resuming the session itself does work). Log reconstruction reads the Claude CLI's transcript files, and Antigravity's transcripts use a different format.
+- **Subagent progress isn't shown.** `agy`'s output has fields that look like it, but the start/finish pairing hasn't been confirmed against real data. Tracking it half-way could produce sessions that finish without codiva noticing, so nothing is shown until that's verified.
+- Interrupting (`Ctrl+C`) kills the `agy` process, but **the conversation carries on** (your next instruction resumes the same one). For the same reason, cancelled turns — and turns whose process dies without emitting a terminal event — are treated as "interrupted" rather than "failed", so you can just send a follow-up.
 
 ## Configuration
 
@@ -415,7 +432,7 @@ The on/off settings can be toggled from the TUI (`/config` in the list view — 
 - `autoSync`: whether to merge the base branch in automatically when a PR conflicts. Default `false` (see above).
 - `autoFixCi`: whether to ask the session to fix CI automatically when it fails. Default `false` (see above).
 - `crashLog`: whether to write a crash log to `~/.codiva/logs/` on an unexpected exit. Default `true` (see below). With `false` no file is written; codiva still prints the reason and restores the terminal.
-- `agent`: which agent new sessions use by default. `"claude"` (default) / `"codex"` / `"grok"`. **Choosing one via `/agent` in the list saves it here**, so you normally don't write it by hand. Per-session switching is `/agent` in the detail view (see above).
+- `agent`: which agent new sessions use by default. `"claude"` (default) / `"codex"` / `"grok"` / `"antigravity"`. **Choosing one via `/agent` in the list saves it here**, so you normally don't write it by hand. Per-session switching is `/agent` in the detail view (see above).
 - `claudeSettingSources`: an array of the settings layers a Claude session loads. `"user"` (`~/.claude/settings.json`) / `"project"` (`<repo>/.claude/settings.json`) / `"local"` (`<repo>/.claude/settings.local.json`). The default is `["project"]`, and `"project"` is always included whether you list it or not (the target repository's CLAUDE.md is only read through that layer).
   ```json
   { "claudeSettingSources": ["user", "project", "local"] }
