@@ -5,6 +5,7 @@ codiva の npm 配信は **npm Trusted Publishing（OIDC）** を使い、GitHub
 
 - 初回だけ、手元から手動で publish する（パッケージが npm 上に存在しないと Trusted Publisher を設定できないため）。
 - 2 回目以降は、**GitHub 上で Release を publish するだけ**で自動配信される。
+- さらに `@anthropic-ai/claude-agent-sdk` の更新だけは、**検知から配信まで全自動**で回る（[自動リリース](#自動リリースclaude-agent-sdk-追従)）。
 
 配線は [`.github/workflows/release.yml`](../.github/workflows/release.yml)。
 
@@ -25,6 +26,17 @@ release.yml が発火
         ▼
 npm に codiva@1.2.3 が公開される
 ```
+
+`release.yml` の publish ジョブには入口が 2 つある（配信経路は 1 本のまま）:
+
+| 入口 | 誰が使うか | バージョンの出所 |
+|---|---|---|
+| `on: release: [published]` | 人間（通常のリリース） | タグ名 `v1.2.3` |
+| `on: workflow_call` | `auto-release.yml`（自動リリース） | 呼び出し側が渡す `version` |
+
+> **`release.yml` というファイル名を変えない。** npm の Trusted Publisher は OIDC の
+> `job_workflow_ref`（= job を定義しているファイル）でこの名前を検証している。
+> reusable workflow として呼ばれても job の定義元はこのファイルなので一致する。
 
 ---
 
@@ -135,6 +147,71 @@ git push origin main
 
 ---
 
+## 自動リリース（claude-agent-sdk 追従）
+
+`@anthropic-ai/claude-agent-sdk` は **Claude Code CLI 本体を同梱**していて、codiva は
+`pathToClaudeCodeExecutable` を指定していない = **その同梱バイナリを起動する**（ユーザーが
+入れた `claude` CLI は導入判定と `/login` にしか使っていない）。SDK の `0.3.<N>` は CLI の
+`2.1.<N>` に対応するので、SDK の追従が遅れると codiva だけが古い Claude Code で動く。
+実際、`/model` の一覧（`supportedModels()` の返り値をそのまま出している）が
+ユーザーの `claude` より 1 世代古い説明文になる不具合が出た。
+
+そのため **SDK の更新だけは検知から配信まで自動化**してある。
+
+```
+Dependabot（毎日 22:00 JST）
+        │  SDK の更新を検知して単独 PR を作る
+        ▼
+dependabot-auto-merge.yml
+        │  SDK の PR かつ non-major なら auto-merge を有効化
+        │  （マージされるのは CI が緑になってから）
+        ▼
+main に SDK の bump が入る
+        │
+        ▼
+auto-release.yml（毎日 09:30 JST / main への package.json push / 手動実行）
+        │  1. npm に公開済みの codiva の SDK バージョンと main のそれを比べる
+        │  2. 違えば patch を 1 つ上げて…
+        │  3. release.yml を workflow_call で呼ぶ（= npm publish）
+        │  4. publish 成功後に GitHub Release を作る
+        ▼
+npm に新しい codiva が公開される
+```
+
+### なぜ「マージを待ち受ける」形にしていないか
+
+**GITHUB_TOKEN が起こしたイベントは workflow を発火しない**（GitHub の無限ループ防止）。
+auto-merge を有効化するのは GITHUB_TOKEN なので、そのマージによる main への push も、
+そこで作った Release も、次の workflow を起動しない。
+
+そこで 2 つの設計にした:
+
+- **リリースの発火は `workflow_call`**。`auto-release.yml` が同一 run 内で `release.yml` を
+  直接呼ぶので、PAT を Secrets に置かなくてよい。
+- **判定は冪等**。「main の SDK バージョン」と「**npm に公開済みの codiva** が持つ SDK
+  バージョン」を比べるだけなので、途中で失敗しても次の定期実行が同じ結論に辿り着く
+  （タグや commit を数えていない）。だから「マージの瞬間」を取りこぼしても問題ない。
+
+### 前提（リポジトリ設定・1 回だけ）
+
+1. **Settings → General → Pull Requests → Allow auto-merge** を有効にする。
+   無効だと `gh pr merge --auto` が `Auto-merge is not allowed for this repository` で落ちる。
+2. **main に必須ステータスチェックを設定する**（Settings → Rules → Rulesets などで CI を required に）。
+   必須チェックが 1 つも無いと auto-merge は待つものが無く、CI を見ずに即マージされる。
+3. **レビュー必須にしている場合**は、auto-merge は承認されるまで待ち続ける（自動では進まない）。
+   SDK の PR だけ自動で流したいなら、その設定を見直すか `dependabot[bot]` を bypass に入れる。
+4. Dependabot が有効であること（Settings → Code security → Dependabot version updates）。
+
+### 手で止めたいとき
+
+- 一時的に止める: `.github/dependabot.yml` の npm 側 `schedule.interval` を `monthly` に落とすか、
+  `dependabot-auto-merge.yml` の条件を外す。
+- 特定の PR だけ止める: その PR で `gh pr merge --disable-auto` を実行する。
+- 自動リリースだけ止める: `auto-release.yml` の `schedule` と `push` を消し、
+  `workflow_dispatch` だけ残す（判定ロジックは手動実行でそのまま使える）。
+
+---
+
 ## 補足・トラブルシュート
 
 - **タグとコミットの関係**: Release タグはリリースを切った時点の main コミットを指す。
@@ -145,3 +222,17 @@ git push origin main
 - **`Unable to authenticate`（CI）**: Trusted Publisher の Repository / Workflow filename が
   実ファイル（`release.yml`）と完全一致しているか、`id-token: write` があるかを確認。
 - **npm のバージョン**: Trusted Publishing は npm >= 11.5.1 が必要。ワークフローで `npm install -g npm@latest` 済み。
+- **自動リリースのタグは publish の**後**に作る**: 手動リリース（タグが先）と順序が逆なので、
+  `auto-release.yml` のタグはバージョン更新コミットを指す。意図的な差で、問題は無い。
+- **`Unable to authenticate`（自動リリースだけ失敗する）**: npm の Trusted Publisher が
+  reusable workflow 経由の `job_workflow_ref` を受けられていない可能性がある。
+  切り分けは手動リリース（Release を publish）を 1 回試すこと — そちらが通るなら OIDC の
+  claim の違いが原因なので、`auto-release.yml` の `publish` ジョブを
+  「PAT で Release を publish して `release.yml` を発火させる」方式に差し替える
+  （その場合 Secrets に `contents: write` を持つトークンが 1 つ必要になる）。
+- **自動リリースが走らない**: `auto-release.yml` を `workflow_dispatch` で手動実行し、
+  `decide` ジョブのログを見る。`SDK は公開済みリリースと同じ` なら Dependabot の PR が
+  まだ main に入っていない（auto-merge の前提設定を確認）。
+- **自動リリースが毎日走ってしまう**: `decide` が npm から SDK バージョンを読めていない
+  （`::warning::` が出ていれば読めていない）。その場合はリリースせず黙るので害は無いが、
+  `npm view <pkg>@<version> dependencies --json` が返る状態かを確認する。

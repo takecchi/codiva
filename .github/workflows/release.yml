@@ -1,16 +1,32 @@
 name: Release
 
-# GitHub 上で Release を publish すると発火する。
-# リリースタグ（例: v1.2.3）からバージョンを決定し、package.json を同期して
-# npm へ Trusted Publishing（OIDC / トークンレス）で配信し、
-# バージョン更新コミットを main に戻す。
+# バージョンを決めて package.json を同期し、npm へ Trusted Publishing
+# （OIDC / トークンレス）で配信して、バージョン更新コミットを main に戻す。
+#
+# 入口は 2 つある:
+#   1. GitHub 上で Release を publish する（手動リリース。タグ v1.2.3 からバージョンを取る）
+#   2. workflow_call（自動リリース。auto-release.yml が version を渡して呼ぶ）
+#
+# 2 が「Release を作って 1 を発火させる」形になっていないのは、**GITHUB_TOKEN で作成した
+# Release は他の workflow を発火しない**（GitHub の無限ループ防止）ため。PAT を Secrets に
+# 置かずに済ませるため、reusable workflow として同一 run 内から直接呼ぶ。
+#
+# npm の Trusted Publisher は workflow filename `release.yml` を見る（OIDC の
+# `job_workflow_ref`）。job を定義しているのはこのファイルなので reusable 経由でも一致する。
+# **このファイル名を変えない**（npm 側の設定と一致しなくなり publish が認証できなくなる）。
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      version:
+        description: 'publish するバージョン（先頭の v は付けない）'
+        required: true
+        type: string
 
 # 同一リリースの多重実行を防ぐ（バージョン更新コミットの競合回避）。
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -42,12 +58,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # リリースタグ（v1.2.3 / 1.2.3 どちらも可）から package.json を更新する。
-      - name: Sync version from release tag
+      # workflow_call なら inputs.version、Release 発火ならタグ（v1.2.3 / 1.2.3 どちらも可）。
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$INPUT_VERSION"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
           echo "Releasing version: $VERSION"
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Sync version into package.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Build
         run: npm run build
@@ -58,6 +85,8 @@ jobs:
 
       # バージョン更新を main へ戻す（次回リリースまで main が古いバージョンのままになるのを防ぐ）。
       - name: Commit version bump back to main
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -65,6 +94,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No version change to commit."
           else
-            git commit -m "chore: release v${GITHUB_REF_NAME#v}"
+            git commit -m "chore: release v${VERSION}"
             git push origin HEAD:main
           fi

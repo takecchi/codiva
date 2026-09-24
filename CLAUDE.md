@@ -52,7 +52,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | `docs/TECH_NOTES.md` | Agent SDK / Ink / git worktree の技術リファレンスと**実測結果** |
 | `docs/PRD.md` | 要件・受け入れシナリオ（歴史的資料寄り） |
 | `docs/TASKS.md` / `docs/REFACTORING.md` | Phase 単位の作業計画と DoD（**Phase 順に進める**） |
-| `docs/RELEASE.md` | npm 配信（Trusted Publishing）の手順 |
+| `docs/RELEASE.md` | npm 配信（Trusted Publishing）の手順 + **claude-agent-sdk 追従の自動リリース** |
 
 ## コードの地図（やりたいこと → 触る場所）
 
