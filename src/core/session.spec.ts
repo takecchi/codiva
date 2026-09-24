@@ -434,12 +434,11 @@ describe('Session', () => {
         displayName: 'Codex',
         loginCommand: 'codex',
         capabilities: NO_CAPABILITIES,
-        open: (r: AgentRunRequest) => ({
-          async *[Symbol.asyncIterator]() {
-            for await (const _text of r.prompt) {
-              // 何も出さない（切替後の run は本題ではない）。
-            }
-          },
+        // 切替後の run は本題ではないので、何も出さずに終わるストリームを返す。
+        open: () => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.resolve({ done: true as const, value: undefined }),
+          }),
         }),
       };
       session.setAgent(other);
