@@ -12,6 +12,14 @@ import { childProcessEnv } from './child-env';
  * `Options.env` は `process.env` とマージされず**丸ごと置き換える**ので、
  * `childProcessEnv()` が `process.env` のコピーを返すことに依存している
  * （部分的な差分を渡すと認証情報ごと消える）。
+ *
+ * 呼び出し側が `options.env` を渡したときは**その差分だけを上に重ねる**。
+ * 丸ごと置き換えではないので、上の保証（認証情報も `NODE_ENV` の除去も残る）は
+ * そのままに、`claude` 固有のフラグ（タイトル生成の
+ * `CLAUDE_CODE_DISABLE_AUTO_MEMORY`）を足せる。
  */
 export const claudeQuery: typeof query = (params) =>
-  query({ ...params, options: { ...params.options, env: childProcessEnv() } });
+  query({
+    ...params,
+    options: { ...params.options, env: { ...childProcessEnv(), ...params.options?.env } },
+  });

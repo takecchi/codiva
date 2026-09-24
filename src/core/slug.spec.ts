@@ -53,4 +53,25 @@ describe('makeTitle', () => {
   it('preserves Japanese text (only length-limits)', () => {
     expect(makeTitle('ログイン機能を実装')).toBe('ログイン機能を実装');
   });
+
+  // 「リンク + ひとこと」の指示はタイトルを生成しない（要約器はリンク先を読めない）ので、
+  // ここの出力がそのまま残る。URL をそのまま置くと 50 文字の枠を使い切って本文が消える。
+  const githubUrls: ReadonlyArray<readonly [string, string]> = [
+    [
+      'https://github.com/takecchi/codiva/issues/139\nこちらの対応をお願いします。',
+      'codiva#139 こちらの対応をお願いします。',
+    ],
+    [
+      'https://github.com/The-Phage-Inc/glucose-flight-backend/pull/1723 リリース日を変更',
+      'glucose-flight-backend#1723 リリース日を変更',
+    ],
+    ['https://github.com/o/r/issues/7#issuecomment-42 を見て', 'r#7 を見て'],
+  ];
+  it.each(githubUrls)('folds a GitHub issue/PR URL: %j', (prompt, expected) => {
+    expect(makeTitle(prompt)).toBe(expected);
+  });
+
+  it('leaves other URLs alone (their shape is unknown)', () => {
+    expect(makeTitle('https://example.com/a/b を見て')).toBe('https://example.com/a/b を見て');
+  });
 });

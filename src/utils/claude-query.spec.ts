@@ -39,4 +39,16 @@ describe('claudeQuery', () => {
     const options = queryMock.mock.calls[0]?.[0]?.options;
     expect(options?.env?.NODE_ENV).toBe('development');
   });
+
+  // タイトル生成が `CLAUDE_CODE_DISABLE_AUTO_MEMORY` を足せるように差分を重ねる。
+  // 丸ごと置き換えに戻すと、そこで認証情報ごと消える（#103 の保証が外れる）。
+  it('呼び出し側の env は差分として重ね、既定のコピーは残す', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.CODIVA_NODE_ENV_INJECTED = '1';
+    claudeQuery({ prompt: 'hi', options: { env: { CUSTOM_FLAG: '1' } } } as Params);
+    const options = queryMock.mock.calls[0]?.[0]?.options;
+    expect(options?.env?.CUSTOM_FLAG).toBe('1');
+    expect(options?.env?.PATH).toBe(process.env.PATH);
+    expect(options?.env?.NODE_ENV).toBeUndefined();
+  });
 });
