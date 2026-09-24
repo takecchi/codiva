@@ -4,6 +4,7 @@ import { UNKNOWN_AVAILABILITY } from './agent-ports';
 import type { QueryFn } from './claude-adapter';
 import { errorMessage } from './errors';
 import { type AgentLabel, agentLabelOf, type Messages } from './i18n';
+import type { PermissionEvaluator } from './permission-evaluator';
 import { assemblePersistedState, type PersistedState, restoredSessionState } from './persistence';
 import { PrCoordinator } from './pr-coordinator';
 import {
@@ -22,7 +23,7 @@ import {
   sortRateLimitWindows,
   toRateLimitWindow,
 } from './rate-limit';
-import { createModePolicy, type RunMode } from './run-mode';
+import { createModePolicy, nextRunMode, type RunMode } from './run-mode';
 import { type PermissionPolicy, Session, type SessionOptions } from './session';
 import { discardSession, mergeSession, sessionDiffStat } from './session-actions';
 import type {
@@ -77,6 +78,15 @@ export interface SessionManagerDeps {
   now?: () => number;
   options?: SessionOptions;
   policy?: PermissionPolicy;
+  /**
+   * リスクベースの許可判定（`smart` モード）。**これが無いと `smart` は
+   * shift+tab の輪に入らない**ので、未配線のユーザーには何も変わらない
+   * （`core/run-mode.ts` の `nextRunMode`）。実装は `utils/jev.ts`、
+   * 組み立ては `bootstrap/build-manager.ts`。
+   */
+  permissionEvaluator?: PermissionEvaluator;
+  /** 評価 1 回あたりの上限時間（超過は `ask`）。 */
+  permissionEvaluateTimeoutMs?: number;
   /** Called on every session status transition (prev → next). Wired to desktop notifications. */
   onTransition?: (prev: SessionState, next: SessionState) => void;
   /** Called (as a dirty signal) whenever the persistable set changes; wired to a debounced save. */
@@ -194,7 +204,12 @@ export class SessionManager {
    */
   private account: AccountSummary | undefined;
   private seq = 0;
-  private mode: RunMode = 'auto';
+  /**
+   * 起動時のモード。評価器が配線されている（= ユーザーが明示的にリスク判定を
+   * 有効にした）なら `smart` から始める — そのために設定したのだから、さらに
+   * shift+tab を踏ませない。未配線なら従来どおり `auto`。
+   */
+  private mode: RunMode;
   private readonly now: () => number;
   /**
    * Live per-session knobs forwarded to each new Session. Seeded from
@@ -216,6 +231,7 @@ export class SessionManager {
   private readonly modePolicy: PermissionPolicy = createModePolicy(() => this.mode);
 
   constructor(private readonly deps: SessionManagerDeps) {
+    this.mode = deps.permissionEvaluator ? 'smart' : 'auto';
     this.now = deps.now ?? Date.now;
     this.options = { ...deps.options };
     this.defaultAgentId = deps.defaultAgentId;
@@ -289,9 +305,13 @@ export class SessionManager {
     return this.mode;
   }
 
-  /** Flip auto ⇄ confirm and notify subscribers so the footer re-renders. */
+  /**
+   * Advance the tool-approval mode and notify subscribers so the footer re-renders.
+   * 輪は auto → smart → confirm → auto。**`smart` は評価器が配線されているときだけ**
+   * 輪に入るので、未設定なら従来どおり auto ⇄ confirm（`nextRunMode`）。
+   */
   cycleMode(): RunMode {
-    this.mode = this.mode === 'auto' ? 'confirm' : 'auto';
+    this.mode = nextRunMode(this.mode, this.deps.permissionEvaluator !== undefined);
     this.store.notify();
     return this.mode;
   }
@@ -424,6 +444,8 @@ export class SessionManager {
       options: this.options,
       now: this.now,
       policy: this.deps.policy ?? this.modePolicy,
+      evaluator: this.deps.permissionEvaluator,
+      evaluateTimeoutMs: this.deps.permissionEvaluateTimeoutMs,
       onChange,
       onRateLimit,
       generateTitle: extra ? undefined : this.deps.generateTitle,

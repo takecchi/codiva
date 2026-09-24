@@ -1444,6 +1444,30 @@ zsh: abort      codiva
 
 ---
 
+## リスクベースのツール実行許可（`smart` モード / issue #139）✅
+
+`auto`（全部自動）と `confirm`（全部確認）の中間。ツール実行ごとに Jev
+（TypeSafe AI の判断専用モデル）へリスクを聞き、ルーチンなものだけ自動実行する。
+**完全なオプトイン**で、未設定なら `shift+tab` の輪にも現れない。
+
+- [x] `RunMode` に `smart` を足し、輪は `nextRunMode(mode, smartAvailable)` が決める（純粋）
+- [x] `PermissionPolicy` の戻り値を 3 値（`allow` / `ask` / `evaluate`）へ広げる
+      — **同期のまま**にして、`evaluate` のときだけ非同期へ降りる
+- [x] `core/permission-evaluator.ts`: DI 境界（`PermissionEvaluator`）・文脈の絞り込み
+      （`toPermissionContext` / `redactToolInput`）・安全側への丸め（`evaluatePermission`）
+- [x] `utils/jev.ts`: `POST /v1/systemone` の 1 往復（**SDK パッケージは足さない**）
+- [x] `PermissionRequest.tool`（中立のツール種別）をアダプタ（Claude / Grok）が載せる
+- [x] 設定 `jev` + 環境変数 `TYPESAFE_API_KEY`。**API キーは設定ファイルに置かせない**
+- [x] フッタの `smart` 表示（`permissions: false` の provider では「非対応」）
+- [x] ja / en 両カタログ・README（ja / en）に**送信データと privacy 上の注意**を明記
+- [x] テスト: 評価器の丸め（deny→ask / timeout / throw / 未設定）・Jev の応答解釈・
+      `Session` を通した end-to-end・`nextRunMode`・設定の検証
+
+**将来候補**（この issue のスコープ外）: エージェント選択の推薦・CI failure の分類・
+prompt injection の検知・confidence を使った段階的な確認レベル。
+
+---
+
 ## 各 Phase 共通の完了チェック
 
 1. `npm run lint` / `npm test` が通る

@@ -16,6 +16,7 @@ import {
 } from '@/core';
 import {
   claudeQuery,
+  createJevEvaluator,
   createPr,
   createTitleGenerator,
   detectClaudeAvailability,
@@ -127,6 +128,8 @@ export function buildManager(opts: {
    * ここで自前のスナップショットを持って丸ごと上書きしない（`/config` の変更を消す）。
    */
   saveConfigPatch?: (patch: Partial<CodivaConfig>) => void;
+  /** codiva のバージョン（Jev への User-Agent に載せる）。 */
+  version?: string;
 }): SessionManager {
   const {
     repoRoot,
@@ -139,6 +142,19 @@ export function buildManager(opts: {
   } = opts;
 
   const agents = buildAgents(config, { repoRoot });
+
+  // リスクベースの許可判定（`smart` モード）。**設定で明示的に有効化 + 環境変数
+  // `TYPESAFE_API_KEY` が揃ったときだけ**評価器ができる。undefined のままなら
+  // `smart` は shift+tab の輪にも入らず、既存の挙動は 1 ミリも変わらない。
+  const permissionEvaluator =
+    config.jev?.enabled === true
+      ? createJevEvaluator({
+          model: config.jev.model,
+          baseUrl: config.jev.baseUrl,
+          allowThreshold: config.jev.allowThreshold,
+          version: opts.version,
+        })
+      : undefined;
 
   // Notifications default on; disable with `"notifications": false` in config.
   const onTransition =
@@ -165,6 +181,8 @@ export function buildManager(opts: {
     queryFn: claudeQuery,
     generateTitle: createTitleGenerator(claudeQuery, { cwd: repoRoot }),
     options: sessionOptionsFrom(config, appendSystemPrompt),
+    permissionEvaluator,
+    permissionEvaluateTimeoutMs: config.jev?.timeoutMs,
     onTransition,
     onPersist,
     // 「CLI 既定に戻す」= model を消す。差分の `undefined` はキー削除として扱われる。

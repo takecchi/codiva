@@ -371,3 +371,67 @@ describe('resolveIgnoredFilesMode', () => {
     expect(resolveIgnoredFilesMode({ ignoredFiles: 'symlink', copyIgnored: true })).toBe('symlink');
   });
 });
+
+describe('toConfig: jev (smart mode)', () => {
+  it('is absent when nothing is configured (existing behaviour untouched)', () => {
+    expect(toConfig({}).jev).toBeUndefined();
+  });
+
+  it('accepts a full section', () => {
+    expect(
+      toConfig({
+        jev: {
+          enabled: true,
+          timeoutMs: 2000,
+          allowThreshold: 0.8,
+          model: 'jev-1.13',
+          baseUrl: 'https://openrouter.ai/api',
+        },
+      }).jev,
+    ).toEqual({
+      enabled: true,
+      timeoutMs: 2000,
+      allowThreshold: 0.8,
+      model: 'jev-1.13',
+      baseUrl: 'https://openrouter.ai/api',
+    });
+  });
+
+  it.each<[string, unknown]>([
+    ['not an object', 'yes'],
+    ['an array', []],
+    ['null', null],
+    ['empty', {}],
+    ['only junk keys', { nope: 1, apiKey: 'sk-x' }],
+  ])('drops a jev section that is %s', (_label, jev) => {
+    expect(toConfig({ jev }).jev).toBeUndefined();
+  });
+
+  // API キーは設定ファイルに置かせない（環境変数 `TYPESAFE_API_KEY` から読む）。
+  it('never carries an apiKey through, even if one is written in the file', () => {
+    const jev = toConfig({ jev: { enabled: true, apiKey: 'sk-leak' } }).jev;
+    expect(jev).toEqual({ enabled: true });
+    expect(JSON.stringify(jev)).not.toContain('sk-leak');
+  });
+
+  it.each<[string, unknown]>([
+    ['above 1', 1.5],
+    ['negative', -0.1],
+    ['not a number', '0.9'],
+    ['NaN', Number.NaN],
+  ])('drops an allowThreshold that is %s', (_label, allowThreshold) => {
+    expect(toConfig({ jev: { enabled: true, allowThreshold } }).jev).toEqual({ enabled: true });
+  });
+
+  it.each([0, 1])('keeps the boundary threshold %s', (allowThreshold) => {
+    expect(toConfig({ jev: { allowThreshold } }).jev).toEqual({ allowThreshold });
+  });
+
+  it.each<[string, unknown]>([
+    ['zero', 0],
+    ['negative', -1],
+    ['a string', '1500'],
+  ])('drops a timeoutMs that is %s', (_label, timeoutMs) => {
+    expect(toConfig({ jev: { enabled: true, timeoutMs } }).jev).toEqual({ enabled: true });
+  });
+});

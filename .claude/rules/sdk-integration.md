@@ -2,6 +2,7 @@
 
 コーディングエージェントとの境界と、`@anthropic-ai/claude-agent-sdk` を触るときの不変条件。
 **`core/agent-ports.ts` / `core/agent-events.ts` / `core/agent-capabilities.ts` /
+`core/permission-evaluator.ts` / `utils/jev.ts` /
 `core/agent-handoff.ts` / `core/claude-adapter.ts` / `core/claude-parse.ts` /
 `core/claude-errors.ts` / `core/codex-adapter.ts` / `core/codex-parse.ts` / `core/codex-errors.ts` /
 `core/grok-adapter.ts` / `core/grok-parse.ts` / `core/grok-errors.ts` / `core/jsonl.ts` /
@@ -257,6 +258,21 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
 - ルーチンツール（Write/Edit/Bash 等）は `auto` モードで自動 allow、`confirm` モードで UI に上げる。
   判定は `core/run-mode.ts` の `createModePolicy`。`acceptEdits` でも `Write` が
   `canUseTool` に落ちてくる（実測）ので「編集系は自動許可」を前提にしない。
+- **`PermissionPolicy` を async 化しない。** 外部 API を使う判定（`smart` モード）は
+  `'evaluate'` を返して保留し、`Session` がそのときだけ非同期の評価器
+  （`core/permission-evaluator.ts` の `PermissionEvaluator`）へ降りる。同期の決定関数に
+  ネットワークを押し込むと、**ネットワークを触らない既定の判定**まで巻き添えで async になる。
+- **リスク判定の答えを最終決定にしない。** `deny` は自動拒否せず `ask` へ昇格し、タイムアウト・
+  throw・中断・未知の値・評価器なしもすべて `ask`。丸めは `evaluatePermission` の 1 か所に
+  集約してあるので、新しい評価器を足すときもそこを通す（`PermissionEvaluator` は throw して
+  よい契約）。締切は**評価器の答えを待たない** — 待っているのは `canUseTool` なので、
+  伸びるとターンごと止まる。
+- **評価器へ渡すのは `PermissionContext` だけ**（provider 非依存）。生の provider メッセージも
+  `SDKMessage` も渡さない。ツール種別はアダプタが `PermissionRequest.tool` に載せ、無ければ
+  `'other'` — **ツール名から当てにいかない**。送信内容は `redactToolInput` で絞ってあり、
+  **緩めたら README（ja / en 両方）の「送信されるもの」も一緒に直す**。
+- **外部 API のキーを設定ファイルに書かせない。** 環境変数から読む（Jev なら
+  `TYPESAFE_API_KEY`）。`toConfig` はキーらしい項目を素通りさせない。
 - **質問かどうかを「ツール名」で判定しない。** 質問の名前は provider ごとに違う
   （Claude は `AskUserQuestion`、Grok は `_x.ai/ask_user_question`）。ポリシーが見るのは
   アダプタが正規化した `kind: 'question'` で、判定は `core/session.ts` の `isQuestion` に

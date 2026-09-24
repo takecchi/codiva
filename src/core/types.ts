@@ -281,6 +281,16 @@ export interface PermissionRequest {
   input: Record<string, unknown>;
   kind: 'question' | 'tool';
   questions?: QuestionSpec[];
+  /**
+   * 中立のツール種別（アダプタが正規化した値。`LogEntry.tool` と同じ語彙）。
+   * リスク評価（`smart` モード）の文脈に載せるために持つ。
+   *
+   * **optional のまま**にしておく: 報告しない provider があってよく、欠けたら
+   * `'other'` に倒すだけ（`toPermissionContext`）。ここが無いからといって
+   * ツール名から当てにいってはいけない — provider 固有の知識が `core/` の
+   * 中立モジュールへ漏れる。
+   */
+  tool?: AgentToolKind;
 }
 
 /** Immutable snapshot the UI renders. Produced only by the reducer. */
