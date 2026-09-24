@@ -23,7 +23,7 @@ jobs:
       # PR タイトルの文字列一致で判定しない（Dependabot の文面に依存させない）。
       - name: Fetch Dependabot metadata
         id: meta
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
