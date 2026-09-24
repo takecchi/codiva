@@ -1,0 +1,38 @@
+name: Dependabot auto-merge
+
+# Dependabot が出した `@anthropic-ai/claude-agent-sdk` の更新 PR **だけ**を auto-merge に
+# 乗せる。ここで直接マージはしない — 実際にマージされるのは必須チェック（CI）が緑に
+# なってからで、判断は GitHub の auto-merge に委ねる。
+#
+# 対象を SDK に絞るのは、この PR が `auto-release.yml` を通じて **npm への自動配信**まで
+# 繋がるため。他の依存（ink / react / biome …）は挙動が変わりうるので人間が見る。
+on: pull_request
+
+# Dependabot 起因の `pull_request` では GITHUB_TOKEN が既定で read-only になるため、
+# ここで明示的に引き上げる。**secrets は引き上げられない**ので、この workflow は
+# GITHUB_TOKEN 以外の secret を使わない。
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      # PR タイトルの文字列一致で判定しない（Dependabot の文面に依存させない）。
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # major は破壊的変更を含みうるので人間が見る（自動配信まで繋げない）。
+      - name: Enable auto-merge (claude-agent-sdk, non-major only)
+        if: >-
+          steps.meta.outputs.update-type != 'version-update:semver-major'
+          && contains(steps.meta.outputs.dependency-names, '@anthropic-ai/claude-agent-sdk')
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --squash --auto "$PR_URL"

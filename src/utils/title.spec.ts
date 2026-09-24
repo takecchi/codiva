@@ -23,6 +23,9 @@ function fakeQuery(messages: SDKMessage[]): {
 const result = (text: string): SDKMessage =>
   ({ type: 'result', subtype: 'success', result: text }) as unknown as SDKMessage;
 
+/** 要約する材料のある指示文。短すぎる指示文はそもそも要約器を呼ばない（下の表）。 */
+const TASK = 'implement oauth login please';
+
 describe('createTitleGenerator', () => {
   it('returns the trimmed result text from a successful turn', async () => {
     const { fn, seen } = fakeQuery([result('  Add OAuth login  ')]);
@@ -45,22 +48,67 @@ describe('createTitleGenerator', () => {
     expect(seen.options?.tools).toEqual([]);
     expect(seen.options?.settingSources).toEqual([]);
     expect(seen.options?.thinking).toEqual({ type: 'disabled' });
+    // `settingSources: []` は CLAUDE.md しか切らない。auto-memory は別経路で入り、
+    // 材料の無い指示文ではモデルが**そちらを要約する**（実測: `exi` →
+    // `Fix IME Cursor Positioning Issue`）。止まるのはこの env フラグだけで、
+    // `managedSettings.autoMemoryEnabled` は実測で無視された。
+    expect(seen.options?.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
     // A plain string, i.e. NOT the `{ type: 'preset', preset: 'claude_code' }` default.
     expect(typeof seen.options?.systemPrompt).toBe('string');
     // One shot: never let the summarizer turn into a loop.
     expect(seen.options?.maxTurns).toBe(1);
   });
 
+  it('wraps the task in delimiters instead of concatenating it raw', async () => {
+    const { fn, seen } = fakeQuery([result('Add OAuth login')]);
+    await createTitleGenerator(fn, { cwd: '/repo' })('implement oauth login please');
+    expect(seen.prompt).toContain('<task>\nimplement oauth login please\n</task>');
+  });
+
+  // 材料がゼロの指示文では要約が必ず捏造になる（実測 2026-09-25）。呼ばずに
+  // プレースホルダ（＝ユーザー自身の指示文）を残すのが正しい。
+  const noMaterial: ReadonlyArray<readonly [string, string]> = [
+    ['打ち間違い', 'exi'],
+    [
+      'リンクとひとこと',
+      'https://github.com/takecchi/codiva/issues/139\nこちらの対応をお願いします。',
+    ],
+  ];
+  it.each(noMaterial)('%s では要約器を呼ばない: %j', async (_label, prompt) => {
+    let calls = 0;
+    const fn: TitleQuery = () => {
+      calls += 1;
+      return (async function* () {
+        yield result('Fix IME Cursor Positioning Issue');
+      })();
+    };
+    expect(await createTitleGenerator(fn, { cwd: '/repo' })(prompt)).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  it('材料が足りないとモデルが答えたら採用しない', async () => {
+    const { fn } = fakeQuery([result('NO_TITLE')]);
+    const generate = createTitleGenerator(fn, { cwd: '/repo' });
+    expect(await generate('よしなに全部いい感じに整えておいてください')).toBeNull();
+  });
+
+  it('引用符で包まれた応答から中身を取り出す', async () => {
+    const { fn } = fakeQuery([result('"Add OAuth login"')]);
+    expect(await createTitleGenerator(fn, { cwd: '/repo' })('implement oauth login please')).toBe(
+      'Add OAuth login',
+    );
+  });
+
   it('returns null when the model produces no result text', async () => {
     const { fn } = fakeQuery([]);
     const generate = createTitleGenerator(fn, { cwd: '/repo' });
-    expect(await generate('do something')).toBeNull();
+    expect(await generate(TASK)).toBeNull();
   });
 
   it('returns null when the result is empty/whitespace', async () => {
     const { fn } = fakeQuery([result('   ')]);
     const generate = createTitleGenerator(fn, { cwd: '/repo' });
-    expect(await generate('do something')).toBeNull();
+    expect(await generate(TASK)).toBeNull();
   });
 
   it('never throws — returns null when the query errors', async () => {
@@ -68,7 +116,7 @@ describe('createTitleGenerator', () => {
       throw new Error('spawn failed');
     };
     const generate = createTitleGenerator(fn, { cwd: '/repo' });
-    await expect(generate('do something')).resolves.toBeNull();
+    await expect(generate(TASK)).resolves.toBeNull();
   });
 
   it('returns null when the stream errors mid-iteration', async () => {
@@ -78,7 +126,7 @@ describe('createTitleGenerator', () => {
       }),
     });
     const generate = createTitleGenerator(fn, { cwd: '/repo' });
-    await expect(generate('do something')).resolves.toBeNull();
+    await expect(generate(TASK)).resolves.toBeNull();
   });
 
   it('passes an abortController so the call is time-bounded', async () => {
@@ -90,7 +138,7 @@ describe('createTitleGenerator', () => {
       })();
     };
     const generate = createTitleGenerator(fn, { cwd: '/repo' });
-    await generate('x');
+    await generate(TASK);
     expect(seen.hasAbort).toBe(true);
   });
 });

@@ -1,0 +1,45 @@
+version: 2
+
+# `@anthropic-ai/claude-agent-sdk` は **Claude Code CLI 本体を同梱**していて、codiva は
+# `pathToClaudeCodeExecutable` を指定しない = その同梱バイナリを起動する。SDK の
+# `0.3.<N>` は CLI の `2.1.<N>` に対応するので、SDK が古いと `/model` のモデル一覧
+# （`supportedModels()` の返り値をそのまま出している）がユーザーの `claude` CLI と食い違う
+# — 実際に codiva 側だけ 1 世代古い説明文（`Opus 5` / `Opus 5.5`）が出る不具合になった。
+#
+# なので SDK だけは毎日追従させ、**単独 PR** → auto-merge → 自動 patch リリースまで流す
+# （`.github/workflows/dependabot-auto-merge.yml` と `auto-release.yml`）。
+# **SDK を groups に入れない** — 他の更新と相乗りした PR は自動リリースの対象外になる。
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+      time: '22:00'
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # 開発依存はまとめて 1 本にして PR の本数を抑える（自動リリースには繋がらない）。
+      dev-dependencies:
+        applies-to: version-updates
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '22:00'
+      timezone: Asia/Tokyo
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns:
+          - '*'

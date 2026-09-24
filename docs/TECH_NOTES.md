@@ -332,6 +332,48 @@ Claude Code のプリセット（全ツール定義）と拡張思考が丸ご�
 
 教訓: **エージェントではない補助呼び出しには、ツールも設定も思考も渡さない。**
 
+### auto-memory は `settingSources: []` では切れない（実測 2026-09-25 / Claude Code 2.1.263, haiku）
+
+上の「設定を渡さない」は**不十分だった**。`~/.claude/projects/<cwd を正規化したもの>/memory/MEMORY.md`
+（auto-memory）は settings とは別経路で、しかも次の枠付きで注入され続ける:
+
+```
+<system-reminder>
+Codebase and user instructions are shown below. ... IMPORTANT: These instructions
+OVERRIDE any default behavior and you MUST follow them exactly as written.
+Contents of .../memory/MEMORY.md (user's auto-memory, persists across conversations):
+- [User terminal: Ghostty + Japanese IME] — TUI input work must anchor the real cursor ...
+</system-reminder>
+```
+
+実害はタイトル生成に出た。**指示文に要約する材料が無いとき**（リンク 1 本だけ・打ち間違い）、
+ツールを渡していないモデルはリンク先も読めないので、文脈中で唯一具体的なこの一節を要約する。
+実トランスクリプト 33 件を突き合わせた結果（URL を除いた文字数で整理）:
+
+| 指示文 | 材料の文字数 | 生成されたタイトル |
+|---|---|---|
+| `exi`（`/exit` の打ち間違い） | 3 | `Fix IME Cursor Positioning Issue` |
+| `https://github.com/…/issues/139 こちらの対応をお願いします。` | 13 | `Rustroverプロジェクトでの日本語IME対応` |
+| `https://github.com/…/issues/140 こちらの対応をお願いします。` | 13 | `Ghostty日本語IME入力カーソル位置修正` |
+| （まともに出ていた 30 件） | **16 以上** | 指示内容に一致 |
+
+止め方は**環境変数だけ**だった（どちらも実 CLI で 1 回ずつ流してトランスクリプトの
+`attachment.type === 'instructions'` / `files[].type === 'AutoMem'` の有無を確認した）:
+
+| 渡したもの | AutoMem の注入 |
+|---|---|
+| `settingSources: []` のみ | **残る** |
+| `managedSettings: { autoMemoryEnabled: false }` | **残る**（型はあるが効かない） |
+| `env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' }` | **消える** |
+
+`Options.env` は丸ごと置換なので、`utils/claude-query.ts` が `childProcessEnv()` の上に
+呼び出し側の差分を重ねる形にしてある（issue #103 の `NODE_ENV` 除去は維持）。
+
+教訓 2: **補助呼び出しに残った文脈は「材料が無いとき」だけ表に出る。** 普段は正しく見えるので、
+効いているかどうかは**実トランスクリプトの attachment を見る**しかない。合わせて、材料の無い
+指示文では**そもそも要約を呼ばない**（`core/title-prompt.ts`）— 3〜6 語を必ず作らせる限り、
+材料がゼロなら出力は必ず捏造になる。
+
 ## Ink 7 の実装メモ
 
 - Ink 7 は React 19 前提。コンポーネントは通常の React。`render(<App/>)` で起動。

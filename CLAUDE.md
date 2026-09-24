@@ -52,7 +52,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | `docs/TECH_NOTES.md` | Agent SDK / Ink / git worktree の技術リファレンスと**実測結果** |
 | `docs/PRD.md` | 要件・受け入れシナリオ（歴史的資料寄り） |
 | `docs/TASKS.md` / `docs/REFACTORING.md` | Phase 単位の作業計画と DoD（**Phase 順に進める**） |
-| `docs/RELEASE.md` | npm 配信（Trusted Publishing）の手順 |
+| `docs/RELEASE.md` | npm 配信（Trusted Publishing）の手順 + **claude-agent-sdk 追従の自動リリース** |
 
 ## コードの地図（やりたいこと → 触る場所）
 
@@ -68,6 +68,7 @@ CI（`.github/workflows/ci.yml`）は `lint → typecheck → test → build`。
 | エージェントの導入・ログイン検出 | `core/agent-ports.ts` の `AgentAdapter.checkAvailability` / `AgentAvailability` / `core/agent-availability.ts`（`resolveDefaultAgentId` / `noAgentInstalled`・純粋）/ `utils/claude.ts` の `detectClaudeAvailability`・`utils/codex.ts` の `detectCodexAvailability`・`utils/grok.ts` の `detectGrokAvailability`・`utils/antigravity.ts` の `detectAntigravityAvailability`（`agy --version` = 導入 → `agy models` = ログイン。**「サインインしろ」と言われたときだけ false**・それ以外の失敗は `'unknown'`）（実 I/O）/ `SessionManager.checkAgents`（集約・キャッシュ）/ `ui/hooks.ts` の `useAgentAvailability`。**Antigravity に `login` は無い**（`agy` に login サブコマンドが無く、素で起動したフル TUI の中でしかサインインできない）ので `AgentAdapter.login` を省略し、UI にログイン導線を出さない |
 | エージェントに codiva 内でサインイン（`/login` / `/agent` の `l`）| `core/agent-login.ts`（URL/コード抽出・ANSI 除去・純粋）/ `utils/agent-login.ts`（`spawnLogin` = プロセス起動）/ `ui/login-dialog.tsx` / `core/agent-ports.ts` の `AgentAdapter.login` + `AgentLoginProcess` / `SessionManager.startLogin` / `canLogin` / `refreshAgents` |
 | セッションへ渡す systemPrompt | `core/system-prompt.ts`（worktree の共有 symlink 注意書き + `.codiva/prompt.md` の合成） |
+| セッションのタイトル | `core/slug.ts` の `makeTitle`（プレースホルダ = 指示文そのもの。GitHub の issue/PR URL は `repo#番号` へ畳む）/ `core/title-prompt.ts`（要約プロンプトの組み立て・材料の有無・応答の解釈・純粋）/ `utils/title.ts`（`haiku` 1 回きりの実 I/O。**auto-memory を env で切る**）。採用できないときは必ずプレースホルダへ倒す |
 | セッションのライフサイクル | `core/session.ts`（1 エージェントストリーム。`setAgent()` で途中切替）/ `core/session-manager.ts`（ファサード）/ `session-store.ts` / `session-actions.ts` / `pr-coordinator.ts` / `run-mode.ts` / `session-ports.ts`（DI seam） |
 | worktree・マージ・破棄 | `utils/worktree-manager.ts`（I/O）/ `core/worktree.ts`（型・純関数）/ `core/session-actions.ts` |
 | PR 自動化 | `core/pr-coordinator.ts` / `utils/pr.ts`（`gh` はここだけ） |

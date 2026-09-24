@@ -7,8 +7,8 @@
 `core/grok-adapter.ts` / `core/grok-parse.ts` / `core/grok-errors.ts` /
 `core/antigravity-adapter.ts` / `core/antigravity-parse.ts` / `core/antigravity-errors.ts` /
 `core/jsonl.ts` /
-`core/session.ts` / `utils/model-catalog.ts` / `utils/codex.ts` / `utils/grok.ts` /
-`utils/antigravity.ts` / `utils/title.ts` を触る前に読む。**
+`core/session.ts` / `core/title-prompt.ts` / `utils/model-catalog.ts` / `utils/codex.ts` /
+`utils/grok.ts` / `utils/antigravity.ts` / `utils/title.ts` を触る前に読む。**
 実測データと詳細は [docs/TECH_NOTES.md](../../docs/TECH_NOTES.md)、設計の理由は
 [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md)「エージェント抽象」。
 
@@ -241,7 +241,19 @@ provider のメッセージ ──[アダプタの parse]──▶ AgentEvent[] 
   現挙動を壊さないが、将来ベースの systemPrompt を導入するなら array / preset-append 形へ
   変える必要がある（`claude-adapter.ts` のコメント参照）。
 - **AI 向けのプロンプト文字列は i18n カタログに置かない**（UI 文字列ではない）。英語で書く
-  （`core/system-prompt.ts` / `utils/title.ts` の `TITLE_INSTRUCTION` が前例）。
+  （`core/system-prompt.ts` / `core/title-prompt.ts` が前例）。
+- **補助呼び出し（要約・分類）には、そのタスク以外の文脈を 1 つも渡さない。**
+  `settingSources: []` で切れるのは CLAUDE.md / settings.json **だけ**で、auto-memory
+  （`~/.claude/projects/<cwd>/memory/MEMORY.md`）は別経路で、しかも「この指示は既定の動作を
+  上書きする。必ず従え」という枠で注入され続ける（実測）。止まるのは
+  `env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' }` だけで、`managedSettings.autoMemoryEnabled`
+  は型があるのに効かない。残った文脈は**普段は表に出ず、要約する材料が無いときだけ**
+  出力を乗っ取るので（`exi` → `Fix IME Cursor Positioning Issue`）、効いているかどうかは
+  実トランスクリプトの attachment で確かめる（docs/TECH_NOTES.md）。
+- **材料が無い入力では補助呼び出しを「やらない」。** 3〜6 語のタイトルを必ず作らせる限り、
+  リンク 1 本だけの指示は必ず捏造になる。判定は純粋な `core/title-prompt.ts`（`titleTask` /
+  `buildTitlePrompt` / `parseTitleReply`）に置き、採用できないときは**プレースホルダ
+  （ユーザー自身の指示文）を残す**方へ倒す。
 - `resume` は**モデル側コンテキストだけ**を復元し、過去メッセージをストリームに再送出しない。
   UI のログは transcript から再構築する（[session-domain.md](./session-domain.md)）。
   渡してよいのは**その provider が発行した id だけ**（`SessionState.agentSessions[agent]`）。
