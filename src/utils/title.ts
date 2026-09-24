@@ -1,4 +1,5 @@
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { buildTitlePrompt, parseTitleReply, titleTask } from '@/core';
 
 /**
  * Cheap, fast model for one-shot title summarization.
@@ -33,25 +34,25 @@ const TITLE_OPTIONS = {
   tools: [],
   /** No CLAUDE.md / settings.json: irrelevant to summarizing, and unbounded in size. */
   settingSources: [],
+  /**
+   * **`settingSources: []` does NOT stop auto-memory.** The CLI still injects
+   * `~/.claude/projects/<cwd>/memory/MEMORY.md` as a system-reminder — and frames it
+   * as "these instructions OVERRIDE any default behavior and you MUST follow them".
+   * Measured in real transcripts (2026-09-25): with nothing to summarize, Haiku
+   * summarized *that* instead, so `exi` became `Fix IME Cursor Positioning Issue`.
+   *
+   * The env flag is what actually turns it off — `managedSettings:
+   * { autoMemoryEnabled: false }` reads like the right seam but was measured to be
+   * ignored (the AutoMem attachment still arrived). `claudeQuery` layers this over
+   * `childProcessEnv()`, so issue #103's `NODE_ENV` stripping still applies.
+   * (The other two layers are in `core/title-prompt.ts`.)
+   */
+  env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
   /** Replace the claude_code preset with one line — this is not an agent. */
   systemPrompt: 'You write short, precise titles. Reply with the title only.',
   /** A 3-to-6-word summary needs no reasoning budget; it only adds latency. */
   thinking: { type: 'disabled' },
 } as const satisfies Partial<Options>;
-
-/**
- * Instruction prepended to the prompt. We embed it in the prompt (rather than a
- * system option) to avoid depending on option names, and ask for the task's own
- * language so titles match the user's input.
- */
-const TITLE_INSTRUCTION = [
-  'Summarize the following task as a short title of 3 to 6 words.',
-  'Reply with ONLY the title — no quotes, no punctuation at the end, no preamble.',
-  'Write it in the same language as the task.',
-  '',
-  'Task:',
-  '',
-].join('\n');
 
 /**
  * The slice of the SDK's `query` we use: a single-shot string prompt yielding
@@ -72,11 +73,18 @@ export function createTitleGenerator(
   opts: { cwd: string },
 ): (prompt: string) => Promise<string | null> {
   return async (prompt: string): Promise<string | null> => {
+    // 材料の無い指示文（リンク 1 本・打ち間違い）では**呼ばない**。3〜6 語を必ず
+    // 作らせると捏造になるので、生の指示文をタイトルとして残すほうが正しい
+    // （判定の根拠は core/title-prompt.ts）。ついでにサブプロセス 1 本を節約する。
+    const task = titleTask(prompt);
+    if (task === undefined) {
+      return null;
+    }
     const abortController = new AbortController();
     const timer = setTimeout(() => abortController.abort(), TITLE_TIMEOUT_MS);
     try {
       const stream = queryFn({
-        prompt: `${TITLE_INSTRUCTION}${prompt}`,
+        prompt: buildTitlePrompt(task),
         options: {
           ...TITLE_OPTIONS,
           model: TITLE_MODEL,
@@ -89,8 +97,7 @@ export function createTitleGenerator(
       for await (const message of stream) {
         const m = message as { type?: string; subtype?: string; result?: unknown };
         if (m.type === 'result' && m.subtype === 'success' && typeof m.result === 'string') {
-          const trimmed = m.result.trim();
-          title = trimmed.length > 0 ? trimmed : null;
+          title = parseTitleReply(m.result);
         }
       }
       return title;

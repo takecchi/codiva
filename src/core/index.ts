@@ -75,6 +75,7 @@ export * from './subagents';
 export * from './system-prompt';
 export * from './text-buffer';
 export * from './text-selection';
+export * from './title-prompt';
 export * from './transcript';
 export * from './types';
 export * from './update';
