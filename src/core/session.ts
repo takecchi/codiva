@@ -5,6 +5,11 @@ import { AsyncQueue } from './async-queue';
 import { createClaudeAdapter, type QueryFn } from './claude-adapter';
 import type { EffortLevel, PermissionMode } from './config';
 import { errorMessage } from './errors';
+import {
+  evaluatePermission,
+  type PermissionEvaluator,
+  toPermissionContext,
+} from './permission-evaluator';
 import type { RateLimitInfoJson } from './rate-limit';
 import { isInterruptible } from './status-meta';
 import {
@@ -34,12 +39,16 @@ import type { IgnoredFilesMode } from './worktree';
  * `kind` は「ツール実行の許可」か「ユーザーへの質問」か（アダプタが正規化した値）。
  * **ツール名で質問を見分けてはいけない** — `AskUserQuestion` は Claude の名前で、
  * Grok は `_x.ai/ask_user_question` を、他の provider はまた別の名前を使う。
+ *
+ * `'evaluate'` は「同期では決めない」= 非同期のリスク評価器
+ * （`core/permission-evaluator.ts`）へ降りる、という保留の値。評価器が無ければ
+ * `'ask'` と同じ（`smart` を選んだのに黙って全自動にはしない）。
  */
 export type PermissionPolicy = (
   toolName: string,
   input: Record<string, unknown>,
   kind?: PermissionRequest['kind'],
-) => 'allow' | 'ask';
+) => 'allow' | 'ask' | 'evaluate';
 
 /**
  * Default policy: run everything automatically so sessions are autonomous.
@@ -92,6 +101,14 @@ export interface SessionDeps {
   options?: SessionOptions;
   now?: () => number;
   policy?: PermissionPolicy;
+  /**
+   * `policy` が `'evaluate'`（= `smart` モード）を返したときに降りる非同期の
+   * リスク評価器。未注入なら `'evaluate'` は `'ask'` と同じ扱い。実 I/O は
+   * `utils/jev.ts`、安全側への丸めは `core/permission-evaluator.ts`。
+   */
+  evaluator?: PermissionEvaluator;
+  /** 評価の上限時間（超過は `ask`）。省略時は `DEFAULT_EVALUATE_TIMEOUT_MS`。 */
+  evaluateTimeoutMs?: number;
   onChange?: (state: SessionState) => void;
   /**
    * Called with the raw `rate_limit_info` whenever the SDK emits a
@@ -544,6 +561,22 @@ export class Session {
     this.dispatch({ kind: 'conflict', files, at: this.now() });
   }
 
+  /**
+   * 「いま走っているターンは、`epoch` を採った時点と同じものか」。**非同期の判断から
+   * 戻ってきたときの門番**で、3 つを同時に見る:
+   *   - `abortController` … `stop()` / `abort()`（セッションごと畳んだ）
+   *   - `epoch` … `setAgent()`（切替前の run の残響。詳細は {@link epoch}）
+   *   - `isInterruptible(status)` … 中断・失敗・完了（ターンだけが終わった）
+   * 3 つ目が要るのは、`interrupt()` が `abortController` を触らず `epoch` も上げないから。
+   */
+  private turnIsLive(epoch: number): boolean {
+    return (
+      !this.abortController.signal.aborted &&
+      epoch === this.epoch &&
+      isInterruptible(this.state.status)
+    );
+  }
+
   private resolvePending(result: PermissionDecision): void {
     const pending = this.pendingQueue.shift();
     if (!pending) {
@@ -565,10 +598,52 @@ export class Session {
    * ユーザーに聞くべきものだけ UI へ上げる（解決するまでエージェントはブロック
    * してよい）。「何が質問か」といったツール名の意味づけはアダプタ側で済んでいる
    * ので、ここは codiva 自身のポリシー（`core/run-mode.ts`）だけを見る。
+   *
+   * `smart` モードのときポリシーは `'evaluate'` を返し、非同期のリスク評価器
+   * （`core/permission-evaluator.ts` → `utils/jev.ts`）へ降りる。評価器が
+   * `allow` と言ったものだけ自動実行し、**それ以外（`deny` / 失敗 / タイムアウト /
+   * 評価器なし）はすべて UI へ上げる**。
+   *
+   * `'ask'` の経路には `await` が 1 つも無い（async 関数は最初の await まで同期に
+   * 走る）ので、待ち行列へ積む順番は従来どおり `canUseTool` が呼ばれた順のまま。
    */
-  private requestPermission = (req: Omit<PermissionRequest, 'id'>): Promise<PermissionDecision> => {
-    if (this.policy(req.toolName, req.input, req.kind) === 'allow') {
-      return Promise.resolve({ behavior: 'allow', input: req.input });
+  private requestPermission = async (
+    req: Omit<PermissionRequest, 'id'>,
+  ): Promise<PermissionDecision> => {
+    const verdict = this.policy(req.toolName, req.input, req.kind);
+    if (verdict === 'allow') {
+      return { behavior: 'allow', input: req.input };
+    }
+    if (verdict === 'evaluate') {
+      // 非同期の判断から戻ったとき「まだこのターンか」を見分けるための印。
+      const epoch = this.epoch;
+      const outcome = await evaluatePermission(
+        this.deps.evaluator,
+        toPermissionContext(req, {
+          // 「何をさせている最中か」が無いと、同じ `git push` でも判断材料が足りない。
+          instruction: lastUserInstruction(this.state.messages),
+          agent: this.adapter.id,
+        }),
+        {
+          timeoutMs: this.deps.evaluateTimeoutMs,
+          // セッションが畳まれたら評価も畳む（答えを待つ相手がもう居ない）。
+          signal: this.abortController.signal,
+        },
+      );
+      // **判断の結果より先に「まだこのターンか」を見る。** 評価は最大 timeoutMs 待つので、
+      // その間に中断（`Ctrl+C`）・失敗・`stop()`・エージェント切替が挟まりうる。
+      // 終わったターンの要求をそのまま処理すると、
+      //  - `allow` なら、もう誰も見ていない run がツールを実行する
+      //  - `ask` なら、**死んだセッションが `awaiting_permission` に戻る**（`denyAllPending` は
+      //    その時点の待ち行列しか畳まないので、後から積んだぶんは誰も解決しない）。回答すると
+      //    `permission_resolved` でストリームの無い `running` へ戻り、二度と終われない。
+      // どちらも `session-domain.md` が禁じている wedge なので、断って畳む。
+      if (!this.turnIsLive(epoch)) {
+        return { behavior: 'deny', message: 'turn ended' };
+      }
+      if (outcome === 'allow') {
+        return { behavior: 'allow', input: req.input };
+      }
     }
     this.reqSeq += 1;
     const request: PermissionRequest = { ...req, id: `${this.state.id}:${this.reqSeq}` };

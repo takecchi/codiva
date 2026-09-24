@@ -194,10 +194,36 @@ export interface CodivaConfig {
    */
   collapseToolLogs?: boolean;
   /**
+   * リスクベースのツール実行許可（`smart` モード）で使う Jev（TypeSafe AI）の設定。
+   * **未設定なら機能ごと出てこない**（shift+tab の輪は従来の auto ⇄ confirm のまま）。
+   *
+   * 有効化には `enabled: true` に加えて**環境変数 `TYPESAFE_API_KEY`** が要る。
+   * API キーは設定ファイルに平文で置かせない。
+   *
+   * 有効なセッションでは、許可要求のたびにツール名・種別・**絞り込んだ**ツール入力・
+   * 直近のユーザー指示が TypeSafe の API へ送られる（`core/permission-evaluator.ts` の
+   * `redactToolInput` / README の「送信されるもの」）。
+   */
+  jev?: JevConfig;
+  /**
    * @deprecated `ignoredFiles` を使う。後方互換のためだけに残す:
    * `true`→`'copy'` 相当、`false`→`'none'` 相当として解釈される（`resolveIgnoredFilesMode`）。
    */
   copyIgnored?: boolean;
+}
+
+/** `smart` モードのリスク判定（Jev）の設定。API キーは含めない（環境変数から読む）。 */
+export interface JevConfig {
+  /** 有効化。既定 false。`TYPESAFE_API_KEY` が無ければ true でも使われない。 */
+  enabled?: boolean;
+  /** 判定 1 回の上限時間（ms）。超えたら確認ダイアログへ倒す。既定 1500。 */
+  timeoutMs?: number;
+  /** `allow` を採用する確率のしきい値（0〜1）。既定 0.9。 */
+  allowThreshold?: number;
+  /** モデル id。既定 `"jev-latest"`。 */
+  model?: string;
+  /** API のベース URL。既定 `"https://api.typesafe.ai"`（環境変数 `TYPESAFE_BASE_URL` でも可）。 */
+  baseUrl?: string;
 }
 
 const IGNORED_FILES_MODES: readonly IgnoredFilesMode[] = ['symlink', 'copy', 'none'];
@@ -237,7 +263,46 @@ interface CodivaConfigJson {
   codexSandbox?: unknown;
   codexNetworkAccess?: unknown;
   collapseToolLogs?: unknown;
+  jev?: unknown;
   copyIgnored?: unknown;
+}
+
+/**
+ * `jev` セクションを検証する。**1 項目でも読めれば採用**し、読めない項目だけ落とす
+ * （他の設定と同じく寛容に既定へフォールバックする）。何も残らなければ未設定扱い。
+ */
+function toJevConfig(value: unknown): JevConfig | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const jev: JevConfig = {};
+  const enabled = toBoolean(raw.enabled);
+  if (enabled !== undefined) {
+    jev.enabled = enabled;
+  }
+  const timeoutMs = toPositiveNumber(raw.timeoutMs);
+  if (timeoutMs !== undefined) {
+    jev.timeoutMs = timeoutMs;
+  }
+  // しきい値は確率なので 0〜1 の外は捨てる（1.5 を「絶対に allow しない」と読ませない）。
+  if (
+    typeof raw.allowThreshold === 'number' &&
+    Number.isFinite(raw.allowThreshold) &&
+    raw.allowThreshold >= 0 &&
+    raw.allowThreshold <= 1
+  ) {
+    jev.allowThreshold = raw.allowThreshold;
+  }
+  const model = toModel(raw.model);
+  if (model !== undefined) {
+    jev.model = model;
+  }
+  const baseUrl = toModel(raw.baseUrl);
+  if (baseUrl !== undefined) {
+    jev.baseUrl = baseUrl;
+  }
+  return Object.keys(jev).length > 0 ? jev : undefined;
 }
 
 function toAgent(value: unknown): AgentId | undefined {
@@ -278,8 +343,12 @@ function toPermissionMode(value: unknown): PermissionMode | undefined {
   return PERMISSION_MODES.includes(value as PermissionMode) ? (value as PermissionMode) : undefined;
 }
 
-function toMaxBudget(value: unknown): number | undefined {
+function toPositiveNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function toMaxBudget(value: unknown): number | undefined {
+  return toPositiveNumber(value);
 }
 
 function toBoolean(value: unknown): boolean | undefined {
@@ -448,6 +517,10 @@ export function toConfig(json: unknown): CodivaConfig {
   const collapseToolLogs = toBoolean(raw.collapseToolLogs);
   if (collapseToolLogs !== undefined) {
     config.collapseToolLogs = collapseToolLogs;
+  }
+  const jev = toJevConfig(raw.jev);
+  if (jev !== undefined) {
+    config.jev = jev;
   }
   const copyIgnored = toBoolean(raw.copyIgnored);
   if (copyIgnored !== undefined) {

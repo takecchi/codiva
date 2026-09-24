@@ -10,6 +10,7 @@ export * from './crash-log';
 export * from './exec';
 export * from './git';
 export * from './grok';
+export * from './jev';
 export * from './model-catalog';
 export * from './mouse';
 export * from './notify';

@@ -383,6 +383,73 @@ Worktree isolation, parallel execution, follow-ups, interrupting (`Ctrl+C`), mer
 - **The log isn't restored after a restart** (resuming the session itself does work). Log reconstruction reads the Claude CLI's transcript files, and Grok's transcripts use a different format.
 - `/model` lists Grok's own models. On machines where that list can't be fetched you only get "default" (codiva doesn't guess model names). Switching provider with `/agent` resets an incompatible model selection to the CLI default. Unlike Codex, Grok **tells you which model is actually running**, so the session list shows a model name even when you didn't set one with `/model`.
 
+### Tool approval modes (`shift+tab`)
+
+The footer shows the current mode; `shift+tab` cycles it.
+
+| Mode | Indicator | Behaviour |
+|---|---|---|
+| Auto | `⏵⏵ auto mode on` | Runs every tool automatically except questions (default) |
+| Confirm | `⏸ confirm mode on` | Shows a permission dialog for every tool |
+| Smart | `⏵? smart mode on` | **Opt-in.** Judges each tool call's risk and auto-runs only the routine ones |
+
+Questions (the `AskUserQuestion` equivalent) **always** reach a dialog, in every mode. Asking you *is* the point of that tool, so auto-allowing it would answer "yes" with no answers attached and the question would silently vanish.
+
+#### Smart mode (Jev / TypeSafe AI)
+
+`auto mode` is fast but will happily run `git push --force`; `confirm mode` is safe but stops you on every `ls`. Smart mode sits in between: it **judges each tool call and auto-runs only the routine ones, escalating anything it can't vouch for to the usual permission dialog**. The judgement comes from [Jev](https://docs.typesafe.ai), TypeSafe AI's decision-only model — it writes no prose, it answers typed questions with probabilities.
+
+**It is completely off by default** and doesn't even appear in the `shift+tab` cycle until you enable it (so you keep the familiar auto ⇄ confirm pair).
+
+Enabling it takes **both** of:
+
+1. `"jev": { "enabled": true }` in `~/.codiva/config.json`
+2. the `TYPESAFE_API_KEY` environment variable (get a key at [console.typesafe.ai](https://console.typesafe.ai/settings/keys) — **it cannot go in the config file**)
+
+```json
+{
+  "jev": {
+    "enabled": true,
+    "timeoutMs": 1500,
+    "allowThreshold": 0.9
+  }
+}
+```
+
+```sh
+export TYPESAFE_API_KEY=...
+```
+
+With both in place codiva starts in smart mode (`shift+tab` still takes you to confirm / auto whenever you want).
+
+**The verdict is never the final word.** codiva auto-runs a tool only when Jev answers "routine" *and* the probability of that answer is at least `allowThreshold` (default 0.9). Everything else goes to the dialog.
+
+| Jev's answer | What codiva does |
+|---|---|
+| `allow` (probability ≥ threshold) | Runs it |
+| `allow` (probability < threshold) | Permission dialog |
+| `ask` | Permission dialog |
+| `deny` | Permission dialog — **never an automatic rejection** |
+| Timeout / API error / offline / expired key | Permission dialog |
+
+So **a broken Jev never fails towards "just run it"**. While it's down, smart mode behaves exactly like confirm mode. After three consecutive failures codiva stops calling out for 60 seconds, so being offline or holding an expired key doesn't cost you `timeoutMs` on every single tool call.
+
+> [!IMPORTANT]
+> **What gets sent to the external API.** Every time a session running in smart mode asks for permission, the following is sent to TypeSafe AI's API (`https://api.typesafe.ai/v1/systemone`):
+>
+> - the tool name (`Bash`, …) and its normalized kind (`shell` / `edit` / `read` …)
+> - a **trimmed** copy of the tool input — shell commands, file paths and the like, except that
+>   - file bodies and diffs (`content` / `old_string` / `new_string` / `patch`, …) are **not sent**; they are replaced with a size marker such as `<5000 chars>`
+>   - keys that look like secrets (`token` / `secret` / `password` / `apiKey`, …) are **dropped entirely, key and all**
+>   - strings are cut at 400 characters and the payload at 12 fields
+> - your most recent instruction (up to 600 characters) and which agent is driving (`claude` / `codex` / `grok`)
+>
+> Repository content itself (file bodies, diffs, git history) is never sent. That said, **command lines and file paths are**, so don't enable this where that isn't acceptable. While it's off (the default) codiva never talks to TypeSafe AI at all.
+
+Point it at your own gateway with `jev.baseUrl` (or the `TYPESAFE_BASE_URL` environment variable).
+
+Note that it **does nothing on agents that can't surface tool permissions (Codex)**; the footer reads `⏵? smart mode (n/a)` there.
+
 ## Configuration
 
 The on/off settings can be toggled from the TUI (`/config` in the list view — see [Changing settings from the UI](#changing-settings-from-the-ui-config)). Below is the full set of keys for editing the file directly.
@@ -423,6 +490,12 @@ The on/off settings can be toggled from the TUI (`/config` in the list view — 
   **Add `"user"` if you want your Claude Code plugins to work in codiva sessions too.** Plugin activation (`enabledPlugins`) for anything installed with `claude plugin install` is written to `~/.claude/settings.json`, so with the default, none of a plugin's skills / commands / subagents / hooks / MCP servers get loaded. The side effect is that **the rest of that layer (hooks, permissions, statusLine, …) also loads into your sessions**. That's why the default is `["project"]`: sessions run unattended in a worktree rather than in front of you, so codiva errs on the side of not silently importing your local Claude Code setup.
 - `codexSandbox`: the sandbox for Codex sessions. `"read-only"` / `"workspace-write"` (default) / `"danger-full-access"`. Because Codex can't ask for tool permission, **this is the only safety valve for Codex sessions**. The default `workspace-write` means "read anything, write only inside the session's worktree".
 - `codexNetworkAccess`: whether to allow network access when `codexSandbox` is `"workspace-write"`. Default `true`. Codex's own default is to block it, but that makes `npm install` and `gh` fail and most work never finishes, so codiva opens it (set `false` to close it).
+- `jev`: settings for smart mode (above). Off by default; it only activates when `enabled: true` **and** the `TYPESAFE_API_KEY` environment variable are both present. **The API key cannot be put here** — it is read from the environment only, so it never sits in plain text in a config file.
+  - `enabled`: turn it on. Default `false`.
+  - `timeoutMs`: per-judgement budget in ms. Default `1500`; exceeding it falls back to the permission dialog.
+  - `allowThreshold`: probability required before auto-running (0–1). Default `0.9`; raising it means more dialogs.
+  - `model`: model id. Default `"jev-latest"`.
+  - `baseUrl`: API base URL. Default `"https://api.typesafe.ai"` (the `TYPESAFE_BASE_URL` environment variable works too).
 - `collapseToolLogs`: whether the session detail log folds runs of consecutive tool calls into a single summary line. Default `true`; set it to `false` to keep every line as before (either way, `Ctrl+O` / `/tools` toggles it on the spot).
 
 ### Shared symlinks and "detach when you need to"

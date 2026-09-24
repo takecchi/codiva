@@ -52,8 +52,10 @@ export const theme = {
   accent: palette.teal, // primary brand accent — prompt caret, wordmark, focus, selection
   dim: palette.mist, // dim text / inactive
   // Tool-approval mode indicator in the footer. Reuses the signal cues:
-  // auto = "go" (green like success), confirm = "pause" (amber like a decision).
+  // auto = "go" (green like success), smart = "screening" (blue like working),
+  // confirm = "pause" (amber like a decision).
   auto: statusColor.completed, // ⏵⏵ auto mode indicator
+  smart: statusColor.running, // ⏵? smart (risk-evaluated) mode indicator
   confirm: statusColor.awaitingPermission, // ⏸ confirm mode indicator
   // Affirmative / negative for y/n confirm prompts.
   yes: statusColor.completed, // y — go
@@ -115,6 +117,7 @@ export const glyph = {
   star: '✻', // header mark
   caret: '❯', // input prompt
   auto: '⏵⏵', // auto-run mode indicator
+  smart: '⏵?', // smart (risk-evaluated) mode indicator
   confirm: '⏸', // confirm mode indicator
   dot: '·', // hint separator
   bullet: '⏺', // tool-use log line

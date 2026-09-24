@@ -51,6 +51,7 @@ export * from './model';
 export * from './models';
 export * from './mouse';
 export * from './notify';
+export * from './permission-evaluator';
 export * from './persistence';
 export * from './pr-coordinator';
 export * from './pr-detect';

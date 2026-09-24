@@ -126,6 +126,7 @@ async function main(): Promise<void> {
     saveConfigPatch: (patch) => {
       configStore.update(patch);
     },
+    version: appVersion,
   });
 
   // クラッシュ時の後始末を配線する。alt screen のまま死ぬと例外の内容が画面ごと消え、

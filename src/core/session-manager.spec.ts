@@ -1637,6 +1637,34 @@ describe('SessionManager', () => {
       // Sessions did not change, so their snapshot array keeps identity.
       expect(manager.getSnapshot()).toBe(before);
     });
+
+    // issue #139: リスク評価器を配線していないユーザーの体験は 1 ミリも変えない。
+    // `smart` は選択肢としても現れない。
+    it('never reaches smart mode without an evaluator', () => {
+      const { manager } = makeManager();
+      const seen = new Set([manager.getMode()]);
+      for (let i = 0; i < 4; i += 1) {
+        seen.add(manager.cycleMode());
+      }
+      expect([...seen].sort()).toEqual(['auto', 'confirm']);
+    });
+
+    it('starts in smart mode and cycles auto → smart → confirm when an evaluator is wired', () => {
+      const manager = new SessionManager({
+        worktrees: fakeWorktrees(),
+        queryFn: (() => {
+          throw new Error('unused');
+        }) as never,
+        now: () => 100,
+        createSession: ({ input, onChange }) => new FakeSession(input, onChange),
+        permissionEvaluator: { evaluate: async () => 'allow' },
+      });
+      // 明示的に有効にした人にさらに shift+tab を踏ませない。
+      expect(manager.getMode()).toBe('smart');
+      expect(manager.cycleMode()).toBe('confirm');
+      expect(manager.cycleMode()).toBe('auto');
+      expect(manager.cycleMode()).toBe('smart');
+    });
   });
 
   describe('model selection (/model)', () => {
