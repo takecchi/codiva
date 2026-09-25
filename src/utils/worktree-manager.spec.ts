@@ -540,6 +540,31 @@ describe('WorktreeManager', () => {
       await expect(wm.pruneExcludedLinks()).resolves.toEqual([]);
     });
 
+    // husky v9 の `.husky/_/` は中に `*` の .gitignore を置くので ls-files が親と中身を
+    // 両方返す。子まで処理すると親のリンク越しに元のフックを消し、自己参照リンクへ置き換えていた。
+    it.each([['symlink'], ['copy']] as const)(
+      "never rewrites the repo root's files through a linked parent (husky, %s mode)",
+      async (mode) => {
+        await mkdir(join(repo, '.husky', '_'), { recursive: true });
+        await writeFile(join(repo, '.husky', '_', '.gitignore'), '*');
+        await writeFile(join(repo, '.husky', '_', 'h'), '#!/bin/sh\n');
+        await writeFile(join(repo, '.husky', '_', 'pre-commit'), '. "$(dirname "$0")/h"\n');
+
+        const wm = new WorktreeManager(repo, { ignoredFiles: mode });
+        const wt = await wm.add(`husky-${mode}`);
+        await wm.pruneExcludedLinks();
+
+        // 元リポジトリのフックは実体のまま・中身も無傷
+        expect((await lstat(join(repo, '.husky', '_', 'h'))).isSymbolicLink()).toBe(false);
+        expect(await readFile(join(repo, '.husky', '_', 'h'), 'utf8')).toBe('#!/bin/sh\n');
+        expect(await readFile(join(repo, '.husky', '_', 'pre-commit'), 'utf8')).toBe(
+          '. "$(dirname "$0")/h"\n',
+        );
+        // worktree からも読める
+        expect(await readFile(join(wt.path, '.husky', '_', 'h'), 'utf8')).toBe('#!/bin/sh\n');
+      },
+    );
+
     it('lets ignoredFilesExclude add a project-specific path', async () => {
       const wm = new WorktreeManager(repo, { ignoredFilesExclude: ['.env'] });
       const wt = await wm.add('no-env');
