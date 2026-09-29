@@ -54,6 +54,29 @@ describe('ignoredCopyEntries', () => {
     const excludes = ignoredExcludePatterns(['!dist', '.venv']);
     expect(ignoredCopyEntries(raw, excludes)).toEqual(['.env', 'node_modules/', 'dist/']);
   });
+
+  // husky v9 の `.husky/_/` は中に `*` の .gitignore を持つので、ls-files が親と中身を
+  // 両方返す（実測）。子まで処理すると、親のリンク越しに元リポジトリのフックを消して
+  // 自己参照リンクへ置き換えてしまう。
+  it.each([
+    {
+      name: 'husky の .husky/_/ は親 1 件だけ',
+      raw: ['.husky/_/', '.husky/_/.gitignore', '.husky/_/h', '.husky/_/pre-commit', '.env'],
+      want: ['.husky/_/', '.env'],
+    },
+    {
+      name: '除外された親の中身も引き継がない',
+      raw: ['dist/', 'dist/.gitignore', 'dist/index.js', '.env'],
+      want: ['.env'],
+    },
+    {
+      name: '名前が前方一致するだけの兄弟は残す',
+      raw: ['.husky/_/', '.husky/_foo', '.husky/_x/'],
+      want: ['.husky/_/', '.husky/_foo', '.husky/_x/'],
+    },
+  ])('drops entries nested in another listed dir: $name', ({ raw, want }) => {
+    expect(ignoredCopyEntries(raw.join('\n'))).toEqual(want);
+  });
 });
 
 describe('isExcludedIgnoredEntry', () => {
@@ -109,6 +132,12 @@ describe('excludedIgnoredEntries', () => {
     expect(excludedIgnoredEntries(raw, ignoredExcludePatterns(['!dist', '.venv']))).toEqual([
       '.venv/',
     ]);
+  });
+
+  // 引き継いだ親の中の除外エントリを消しに行くと、リンク越しに元リポジトリの実体へ届く。
+  it('drops excluded entries nested in another listed dir', () => {
+    const raw = ['.husky/_/', '.husky/_/x.tsbuildinfo', 'dist/'].join('\n');
+    expect(excludedIgnoredEntries(raw)).toEqual(['dist/']);
   });
 });
 
