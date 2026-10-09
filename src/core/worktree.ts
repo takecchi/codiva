@@ -184,7 +184,27 @@ function isInternalEntry(entry: string): boolean {
 }
 
 /**
- * `ignoredCopyEntries()` の裏返し: 生出力のうち**除外されたエントリ**を返す純関数
+ * 生出力を行へ分け、**すでに列挙されたディレクトリの中にあるエントリを落とす**。
+ *
+ * 除外の出所（`.gitignore`）がディレクトリの**中**にあると、`--directory` でも git は
+ * 1 件に畳まず `dir/` と `dir/<中身>` を両方返す。husky v9 の `.husky/_/`（中に `*` の
+ * `.gitignore` を置く）がまさにこれで、実測で `.husky/_/` `.husky/_/.gitignore`
+ * `.husky/_/h` … が並ぶ。親をリンクしたあとに子を処理すると、`<worktree>/.husky/_/h` は
+ * **リンク越しに元リポジトリの実体**を指すので、`rm` が元のフックを消し、`symlink` が
+ * 元の場所に「自分自身を指すリンク」を作る（= メインチェックアウトの husky が壊れる）。
+ * 親が引き継がれるなら子は既に含まれ、親が除外なら子も要らないので、子は常に捨ててよい。
+ */
+function topLevelEntries(raw: string): string[] {
+  const entries = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const dirs = entries.filter((entry) => entry.endsWith('/'));
+  return entries.filter((entry) => !dirs.some((dir) => dir !== entry && entry.startsWith(dir)));
+}
+
+/**
+ * `ignoredCopyEntries()` の裏返し:生出力のうち**除外されたエントリ**を返す純関数
  * （`.codiva/` と `.git` はそもそも引き継がないのでここにも含めない）。
  *
  * 用途は既存 worktree の後片付け: 以前のバージョンが張ったビルド生成物へのリンクは、
@@ -195,11 +215,9 @@ export function excludedIgnoredEntries(
   raw: string,
   excludes: readonly string[] = DEFAULT_IGNORED_EXCLUDES,
 ): string[] {
-  return raw
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((entry) => !isInternalEntry(entry) && isExcludedIgnoredEntry(entry, excludes));
+  return topLevelEntries(raw).filter(
+    (entry) => !isInternalEntry(entry) && isExcludedIgnoredEntry(entry, excludes),
+  );
 }
 
 /**
@@ -216,9 +234,7 @@ export function ignoredCopyEntries(
   raw: string,
   excludes: readonly string[] = DEFAULT_IGNORED_EXCLUDES,
 ): string[] {
-  return raw
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((entry) => !isInternalEntry(entry) && !isExcludedIgnoredEntry(entry, excludes));
+  return topLevelEntries(raw).filter(
+    (entry) => !isInternalEntry(entry) && !isExcludedIgnoredEntry(entry, excludes),
+  );
 }

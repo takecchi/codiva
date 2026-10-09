@@ -39,6 +39,27 @@ function porcelainPaths(raw: string): string[] {
 }
 
 /**
+ * `root` から `rel` の親までの途中にシンボリックリンクがあるか（`rel` 自身は見ない）。
+ * あればそのパスへの書き込み・削除はリンク越しに**別の場所の実体**へ届く。
+ * 見えない（まだ無い）ディレクトリはリンクではないので false 側に倒す。
+ */
+async function crossesSymlink(root: string, rel: string): Promise<boolean> {
+  const parts = rel.split('/').filter(Boolean).slice(0, -1);
+  let current = root;
+  for (const part of parts) {
+    current = join(current, part);
+    const info = await lstat(current).catch(() => undefined);
+    if (!info) {
+      return false;
+    }
+    if (info.isSymbolicLink()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Creates and tears down git worktrees for sessions. Every worktree lives under
  * `.codiva/worktrees/<slug>` on branch `codiva/<slug>`, branched from the repo's
  * current HEAD. The repo's own files are never modified — the only thing codiva
@@ -202,6 +223,11 @@ export class WorktreeManager {
       const from = join(this.repoRoot, rel);
       const to = join(worktreePath, rel);
       try {
+        // 親をリンクした後に子を処理すると、リンク越しに元リポジトリの実体を消して
+        // 自己参照リンクを作る（husky の `.husky/_/`）。純関数で畳んであるが、書く前にも確かめる。
+        if (await crossesSymlink(worktreePath, rel)) {
+          continue;
+        }
         await mkdir(dirname(to), { recursive: true });
         if (this.ignoredFiles === 'symlink') {
           // 既存があると symlink は EEXIST になるので、cp の force 相当に合わせて消してから張る。
@@ -250,7 +276,12 @@ export class WorktreeManager {
         continue;
       }
       for (const entry of excluded) {
-        const path = join(root, dir.name, entry.replace(/\/$/, ''));
+        const rel = entry.replace(/\/$/, '');
+        const path = join(root, dir.name, rel);
+        // 祖先がリンクなら lstat/unlink は元リポジトリの実体に届く。触らない。
+        if (await crossesSymlink(join(root, dir.name), rel)) {
+          continue;
+        }
         const stat = await lstat(path).catch(() => undefined);
         if (!stat?.isSymbolicLink()) {
           continue;
